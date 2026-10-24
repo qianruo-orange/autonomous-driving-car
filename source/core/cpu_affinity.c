@@ -16,7 +16,7 @@
 #include "core/log.h"
 
 /* Cortex 大核 CPU part 编号（适配 RKNPU 全系平台）：
-   RK3588 大核 A76=0xd0b，RK3576 大核 A72=0xd08；
+   大核 A76=0xd0b、A72=0xd08（如 RK3576）；
    小核 A55=0xd05 / A53=0xd03。同构小核平台（RK3566/RK3568 全 A55）
    检测不到大核时自动退化为默认调度，不绑核。 */
 #define CPU_PART_A76 0xd0b

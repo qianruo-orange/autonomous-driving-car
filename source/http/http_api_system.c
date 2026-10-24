@@ -69,7 +69,7 @@ void http_system_api(app_ctx_t *app, int fd)
     fp = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
     if (fp) { fscanf(fp, "%d", &temp); fclose(fp); temp /= 1000; }
 
-    /* NPU 逐核负载（RKNPU 全系兼容：三核平台 RK3588/RK3576 输出三值，
+    /* NPU 逐核负载（RKNPU 全系兼容：三核平台（如 RK3576）输出三值，
      * 单核平台 RK3566/RK3568 仅输出 Core0 一值，缺失核保持 -1，前端显示 N/A） */
     int npu_cores[3] = {-1, -1, -1};
     fp = fopen("/sys/kernel/debug/rknpu/load", "r");

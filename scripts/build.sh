@@ -15,7 +15,7 @@ usage() {
     echo "  -D, --debug     build with debug output to terminal"
     echo "  -R, --release   build for production (default)"
     echo "  -C, --clean     remove build directory, bin directory, cmake directory, generated CMake artifacts, and clear logs"
-    echo "  -P, --platform  目标 RKNPU 平台（rk3588/rk3576/rk3568/rk3566/rk3562 等）"
+    echo "  -P, --platform  目标 RKNPU 平台（rk3576/rk3568/rk3566/rk3562 等）"
     echo "                  默认从 /proc/device-tree/compatible 自动辨识当前板卡芯片"
     echo ""
     echo "编译前自动同步模型：部署 config/models/<平台>/yolo26.rknn 到 config/，"

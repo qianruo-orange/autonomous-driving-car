@@ -62,8 +62,8 @@ third_party/
 .venv/
 __pycache__/
 
-# 自动下载缓存的模型权重（可由 ultralytics 重新下载）
-config/models/weights/
+# 板端模型转换缓存（各平台 .rknn 产物与自动下载的权重，均可由 build.sh 重新转换/下载）
+config/models/
 
 # 本地配置信息
 .env
