@@ -3,7 +3,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="rk3588-edge-gateway"
+APP_NAME="rockchip-smart-gateway"
 DEPLOY_DIR="/opt/$APP_NAME"
 BINARY="$PROJECT_DIR/bin/$APP_NAME"
 SERVICE_SRC="$PROJECT_DIR/$APP_NAME.service"
@@ -56,7 +56,7 @@ do_install() {
 
     # 清理旧 WebRTC 边车（mediamtx + fifo pusher）：直播已改回 fMP4/MSE 直供，
     # 不再需要外部 RTSP 中转。从旧版本升级时留着会白占 VPU/内存并抢 8554/8889 端口
-    for u in mediamtx rk3588-edge-gateway-webrtc; do
+    for u in mediamtx rockchip-smart-gateway-webrtc; do
         if [ -f /etc/systemd/system/"$u".service ]; then
             echo "[CLEAN] legacy webrtc unit: $u"
             systemctl stop "$u" 2>/dev/null || true

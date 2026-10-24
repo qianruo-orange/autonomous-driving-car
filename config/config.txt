@@ -1,4 +1,4 @@
-# rk3588-edge-gateway — auto-saved
+# rockchip-smart-gateway — auto-saved
 
 tcp_port 6666
 max_clients 16

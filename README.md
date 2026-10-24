@@ -1,4 +1,4 @@
-# rk3588-edge-gateway
+# rockchip-smart-gateway
 
 基于 epoll 的 CAN / CAN FD 数据采集、DBC 信号解析与 TCP/IP 通信解决方案，内置 Web 管理界面、视频流、AI 目标检测（RKNN + YOLO26）、网络录像与 systemd 看门狗，支持按系统信息自动识别可配置 CAN 通道。适用于 RK3588（如 Orange Pi 5 Max）/ Linux 运行环境，使用 C11 实现。
 
@@ -161,10 +161,10 @@ CAN 数据提取接口（从总线读数据）：
 ## 目录结构
 
 ```text
-rk3588-edge-gateway/
+rockchip-smart-gateway/
 ├── CMakeLists.txt
 ├── README.md
-├── rk3588-edge-gateway.service  # systemd 服务单元
+├── rockchip-smart-gateway.service  # systemd 服务单元
 ├── include/                          # 头文件
 │   ├── core/
 │   │   ├── common.h                  # 应用上下文与公共工具
@@ -294,7 +294,7 @@ apt install build-essential cmake libsystemd-dev libnl-3-dev libnl-route-3-dev l
 ## 构建
 
 ```bash
-cd /home/orangepi/rk3588-edge-gateway
+cd /home/orangepi/rockchip-smart-gateway
 ./scripts/build.sh -R   # Release（默认）
 ./scripts/build.sh -D   # Debug
 ./scripts/build.sh -C   # 清理构建产物与 logs
@@ -302,15 +302,15 @@ cd /home/orangepi/rk3588-edge-gateway
 
 `build.sh` 构建前会自动检查依赖（工具链 + 开发库 + librknnrt），缺失时打印具体缺项与安装命令并中止，避免在 cmake / make 阶段才暴露晦涩报错；`libavcodec-dev`（FFmpeg rkmpp 后端）为可选依赖，缺失时自动回退 V4L2 rkvenc 编码。
 
-构建产物：`./bin/rk3588-edge-gateway`
+构建产物：`./bin/rockchip-smart-gateway`
 
 版本信息由 CMake 在配置阶段生成到 `include/core/version.h`，包括 `APP_NAME`、`APP_VERSION`、`APP_GIT_COMMIT`、`APP_GIT_BRANCH`、`APP_GIT_DIRTY`、`APP_BUILD_TYPE`、`APP_BUILD_DATE`。
 
 ## 运行方式
 
 ```bash
-cd /home/orangepi/rk3588-edge-gateway
-./bin/rk3588-edge-gateway
+cd /home/orangepi/rockchip-smart-gateway
+./bin/rockchip-smart-gateway
 ```
 
 > 请在项目根目录运行，确保 `config/`、`html/` 和 `logs/` 目录可用。
@@ -327,7 +327,7 @@ sudo ./scripts/deploy.sh -r     # 重装（卸载后重新安装）
 sudo ./scripts/deploy.sh -h     # 查看帮助
 ```
 
-`deploy.sh` 需 root 权限，安装目录为 `/opt/rk3588-edge-gateway/`，部署内容如下：
+`deploy.sh` 需 root 权限，安装目录为 `/opt/rockchip-smart-gateway/`，部署内容如下：
 
 | 源 | 目标 |
 | --- | --- |
@@ -337,13 +337,13 @@ sudo ./scripts/deploy.sh -h     # 查看帮助
 
 > 注：`config/config.txt` 与 `config/` 下的 DBC 模板文件**不会**被复制；首次部署使用程序内置默认值，后续通过 Web 配置页保存配置、上传 DBC 文件。`logs/` 与 `recordings/` 目录由部署脚本创建。
 
-服务名称：`rk3588-edge-gateway`
+服务名称：`rockchip-smart-gateway`
 
 查看服务状态：
 
 ```bash
-systemctl status rk3588-edge-gateway
-journalctl -u rk3588-edge-gateway -f
+systemctl status rockchip-smart-gateway
+journalctl -u rockchip-smart-gateway -f
 ```
 
 部署要点：
@@ -469,7 +469,7 @@ RKNN + YOLO26（官方 ultralytics 单输出格式 `(1, 84, 8400)`，fp16，官�
 服务启动后默认自动录制，依赖 RK3588 硬件 H.264 编码器（`/dev/video-enc0`，rkvenc）：
 
 - 触发方式：默认自动开启（无需 Web 操作）；也保留 `/api/rec/start` / `/api/rec/stop` 手动接口（手动停止后不再自动续录）
-- 按天分目录：录制文件存于 `recordings/YYYYMMDD/`，每天一个子目录，自动跨天切换；文件名规范化只保留时间（`rec_HHMMSS.mp4`，同秒冲突自动追加序号），日志文件同理为 `rk3588-edge-gateway_info.log` / `_error.log`
+- 按天分目录：录制文件存于 `recordings/YYYYMMDD/`，每天一个子目录，自动跨天切换；文件名规范化只保留时间（`rec_HHMMSS.mp4`，同秒冲突自动追加序号），日志文件同理为 `rockchip-smart-gateway_info.log` / `_error.log`
 - 分辨率：录制分辨率取摄像头配置 `video_width` / `video_height` 的选定值（任意分辨率），未配置时退回首帧探测
 - 帧率：开录前连续抓帧实测（不写死），钳制在 1~120 fps
 - 编码链路：零拷贝取环形队列显示帧 NV12（AI 必要流程，停摆直接宕机，无原始帧回退）→ `/dev/video-enc0` 硬件编码 H.264（CBR，码率 `宽×高×2`，钳制 300k~16M，GOP = fps×2）→ 封装
@@ -492,8 +492,8 @@ RKNN + YOLO26（官方 ultralytics 单输出格式 `(1, 84, 8400)`，fp16，官�
 ```text
 logs/
 └── YYYYMMDD/
-    ├── rk3588-edge-gateway_info.log
-    └── rk3588-edge-gateway_error.log
+    ├── rockchip-smart-gateway_info.log
+    └── rockchip-smart-gateway_error.log
 ```
 
 ## 清理说明
