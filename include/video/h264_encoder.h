@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 /**
- * video/h264_encoder.h — RK3588 硬件 H.264 编码器封装。
+ * video/h264_encoder.h — Rockchip 硬件 H.264 编码器封装。
  *
  * 后端自动选择：优先 FFmpeg h264_rkmpp（Rockchip MPP，编译启用 HAVE_AVCODEC
  * 且运行时可用），否则 V4L2 M2M rkvenc（/dev/video-enc0 或探测到的节点）。

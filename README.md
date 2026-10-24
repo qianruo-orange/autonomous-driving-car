@@ -1,6 +1,6 @@
 # rockchip-smart-gateway
 
-基于 epoll 的 CAN / CAN FD 数据采集、DBC 信号解析与 TCP/IP 通信解决方案，内置 Web 管理界面、视频流、AI 目标检测（RKNN + YOLO26）、网络录像与 systemd 看门狗，支持按系统信息自动识别可配置 CAN 通道。适用于 RK3588（如 Orange Pi 5 Max）/ Linux 运行环境，使用 C11 实现。
+基于 epoll 的 CAN / CAN FD 数据采集、DBC 信号解析与 TCP/IP 通信解决方案，内置 Web 管理界面、视频流、AI 目标检测（RKNN + YOLO26）、网络录像与 systemd 看门狗，支持按系统信息自动识别可配置 CAN 通道。适用于 Rockchip（如 Orange Pi 5 Max）/ Linux 运行环境，使用 C11 实现。
 
 ## 功能特性
 
@@ -11,7 +11,7 @@
 - 视频流服务：通过 V4L2 接入摄像头并输出 MJPEG 视频流
 - 视频帧环形队列：采集 / 推理 / 显示 / 编码四游标 + 分阶段缓冲池复用，V4L2 mmap 指针零拷贝入环（整帧只移动指针），内置分阶段丢帧计数器，仅凭计数器即可定位丢帧环节
 - AI 目标检测：RKNN + YOLO26（官方 ultralytics rknn 单输出格式），多线程推理池并行加速，检测结果实时画框推流
-- 网络录像：默认自动开启录屏（按天分目录 `recordings/YYYYMMDD/`，零拷贝取环形队列显示帧直接编码），RK3588 硬件编码为 H.264 并封装 MP4(avc1) 文件，分辨率取自摄像头配置；下载界面与日志合并为「文件下载」页（/logs 双 TAB），支持下载、删除、打包下载
+- 网络录像：默认自动开启录屏（按天分目录 `recordings/YYYYMMDD/`，零拷贝取环形队列显示帧直接编码），Rockchip 硬件编码为 H.264 并封装 MP4(avc1) 文件，分辨率取自摄像头配置；下载界面与日志合并为「文件下载」页（/logs 双 TAB），支持下载、删除、打包下载
 - systemd 看门狗：监控关键线程心跳，防止异常卡死
 - 热更新配置：Web 页面修改后立即生效
 - 运行维护：日志按日期与大小自动轮转（按天分目录、文件名不含重复日期）、清理脚本、部署脚本
@@ -190,7 +190,7 @@ rockchip-smart-gateway/
 │   │   ├── video_stream.h            # V4L2 视频流接口
 │   │   ├── frame_ring.h              # 视频帧环形队列（四游标零拷贝 + 分阶段丢帧计数）
 │   │   ├── video_rec.h               # 网络录像模块接口
-│   │   ├── h264_encoder.h            # RK3588 硬件 H.264 编码器封装接口（V4L2 M2M rkvenc）
+│   │   ├── h264_encoder.h            # Rockchip 硬件 H.264 编码器封装接口（V4L2 M2M rkvenc）
 │   │   └── rec_mp4.h                 # MP4(avc1) 封装器接口（纯封装，可独立测试）
 │   ├── ai/
 │   │   ├── rknn_yolo.h               # RKNN YOLO 框架入口
@@ -282,7 +282,7 @@ rockchip-smart-gateway/
 - librknnrt（板载 RKNN 运行时，模型由 rknn-toolkit2 在 PC 上转换）
 - libjpeg（JPEG 解码与 AI 画框用）
 - OpenCV 4（core + imgproc，检测框画框与标签文字渲染）
-- RK3588 硬件编码器 `/dev/video-enc0`（rkvenc，Linux V4L2 M2M 驱动，录像 H.264 编码用）
+- Rockchip 硬件编码器 `/dev/video-enc0`（rkvenc，Linux V4L2 M2M 驱动，录像 H.264 编码用）
 - Linux SocketCAN 支持
 
 安装示例：
@@ -447,7 +447,7 @@ journalctl -u rockchip-smart-gateway -f
 RKNN + YOLO26（官方 ultralytics 单输出格式 `(1, 84, 8400)`，fp16，官方 mean/std），由 `rknn-toolkit2` 转换后在板载 NPU 推理：
 
 - 模型加载：`ai_model` 指向 `.rknn` 文件，校验输出必须为单个检测头 `(1, 84, 8400)`；类别名由 `ai_names` 加载（COCO 格式，每行一个类名，缺失回退内置 COCO 80 类）
-- 流水线：`ai_task` 事件驱动等待环形队列 produce 游标（不再按固定间隔采样；`ai_interval_ms` 为相邻取帧最小间隔，默认 10ms 在相机帧率下无感）→ 取槽随任务投递（任务存续期间钉住 raw 槽，采集不回收）→ N 个推理 worker（独立 rknn context，worker i 绑定 NPU 核 i%3，RK3588 三核等量分配）→ 推理后分两路：rgb 写槽（显示链路），NMS 结果（名称+置信度+坐标）入结果队列 → composer 消费队列最新结果（乱序完成时跳过旧结果，计 render_skipped）→ EMA 平滑（α=0.4，同类 IoU≥0.3 匹配）→ 渲染进槽（nv12 / jpeg）→ 显示 / 编码游标消费
+- 流水线：`ai_task` 事件驱动等待环形队列 produce 游标（不再按固定间隔采样；`ai_interval_ms` 为相邻取帧最小间隔，默认 10ms 在相机帧率下无感）→ 取槽随任务投递（任务存续期间钉住 raw 槽，采集不回收）→ N 个推理 worker（独立 rknn context，worker i 绑定 NPU 核 i%3，Rockchip 三核等量分配）→ 推理后分两路：rgb 写槽（显示链路），NMS 结果（名称+置信度+坐标）入结果队列 → composer 消费队列最新结果（乱序完成时跳过旧结果，计 render_skipped）→ EMA 平滑（α=0.4，同类 IoU≥0.3 匹配）→ 渲染进槽（nv12 / jpeg）→ 显示 / 编码游标消费
 - 画框渲染：直接调用 OpenCV（`cv::rectangle` 3px 实色 + LINE_AA 抗锯齿；`cv::putText` Hershey Simplex 白色粗体字 + 实色底块，默认挂在框顶外侧，顶部不足落框内），每一帧都输出标注帧，不混入未推理的原始帧
 - 热更新：`ai_threads` / `ai_conf` / `ai_nms` / `ai_interval_ms` 保存后立即重建推理池生效，无需重启进程；`ai_model` / `ai_names` 可通过 Web 配置页或 API 上传（校验 RKNN magic / 标签格式后原子替换文件并热重载）
 - 必要流程：AI 推理不可停用；模型缺失 / NPU 驱动未加载 / 推理失败时直接报错——启动路径整体失败退出（systemd 进入 failed），运行期热重载失败由 API 返回 `saved_reload_failed`，画框流 `/video/mjpeg_ai` 返回 503（不回退原始帧）
@@ -459,14 +459,14 @@ RKNN + YOLO26（官方 ultralytics 单输出格式 `(1, 84, 8400)`，fp16，官�
 1. 获取权重与工具：从 ultralytics 官方发布页下载 YOLO26 权重（如 `yolo26n.pt`）；安装 `rknn-toolkit2`（含 `rknn-toolkit-lite2` 用于板端验证）与 `ultralytics`
 2. 导出 ONNX：用 ultralytics 官方脚本导出检测头（640×640，单输出，输出张量 `(1, 84, 8400)`，84 = 4 框 + 80 类）
 3. 转换 RKNN：`rknn.config(mean_values=官方默认, std_values=官方默认, target_platform='rk3588')`，`hybrid_quantization_step2` 不启用，导出 fp16 权重（推荐）或 int8（需量化数据集）；转换后校验输出 shape 必须为 `(1, 84, 8400)`
-4. 板端验证：在 RK3588 上用 `rknn-toolkit-lite2` 加载推理，与 ONNX/PT 输出对拍（允许 fp16 微小误差）；`rknn_init` 通过后即可部署
+4. 板端验证：在 Rockchip 上用 `rknn-toolkit-lite2` 加载推理，与 ONNX/PT 输出对拍（允许 fp16 微小误差）；`rknn_init` 通过后即可部署
 5. 部署：Web 配置页上传 `yolo26.rknn`（或放入 `config/` 并设置 `ai_model`），同时上传类别标签文件（或 `config/coco.names`）；日志输出 `ai: model '...' loaded, classes '...' (80), input 640x640, single output, threads N (NPU core i%3)` 即转换正确
 
 > 仓库 `config/yolo26.rknn` 为 yolo26n 官方权重转换（fp16，单输出 (1,84,8400)，官方 mean/std，无内置 NMS）。
 
 ## 网络录像
 
-服务启动后默认自动录制，依赖 RK3588 硬件 H.264 编码器（`/dev/video-enc0`，rkvenc）：
+服务启动后默认自动录制，依赖 Rockchip 硬件 H.264 编码器（`/dev/video-enc0`，rkvenc）：
 
 - 触发方式：默认自动开启（无需 Web 操作）；也保留 `/api/rec/start` / `/api/rec/stop` 手动接口（手动停止后不再自动续录）
 - 按天分目录：录制文件存于 `recordings/YYYYMMDD/`，每天一个子目录，自动跨天切换；文件名规范化只保留时间（`rec_HHMMSS.mp4`，同秒冲突自动追加序号），日志文件同理为 `rockchip-smart-gateway_info.log` / `_error.log`

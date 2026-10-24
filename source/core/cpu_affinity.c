@@ -15,7 +15,7 @@
 #include "core/cpu_affinity.h"
 #include "core/log.h"
 
-/* Cortex-A76 的 CPU part 编号（RK3588 大核；0xd05 为 Cortex-A55 小核） */
+/* Cortex-A76 的 CPU part 编号（Rockchip 大核；0xd05 为 Cortex-A55 小核） */
 #define CPU_PART_A76 0xd0b
 
 static pthread_once_t s_once = PTHREAD_ONCE_INIT;

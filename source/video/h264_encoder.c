@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
- * h264_encoder.c — RK3588 硬件 H.264 编码器封装。
+ * h264_encoder.c — Rockchip 硬件 H.264 编码器封装。
  *
  * 后端自动选择（编译 + 运行时）：
  *   1) FFmpeg h264_rkmpp（Rockchip MPP 硬件编码，HAVE_AVCODEC 且运行时存在）

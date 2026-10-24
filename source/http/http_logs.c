@@ -201,7 +201,7 @@ static void serve_log_pack(int fd, const char *log_dir)
     }
 
     char tmppath[512];
-    snprintf(tmppath, sizeof(tmppath), "/tmp/rk3588_logs_pack_%d.tar.gz", (int)getpid());
+    snprintf(tmppath, sizeof(tmppath), "/tmp/rockchip_logs_pack_%d.tar.gz", (int)getpid());
     char cmd[1400];
     snprintf(cmd, sizeof(cmd), "tar -czf %s -C %s . 2>/dev/null", tmppath, log_dir);
     if (system(cmd) != 0 || access(tmppath, F_OK) != 0) {

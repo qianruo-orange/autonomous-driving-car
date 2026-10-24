@@ -69,7 +69,7 @@ void http_system_api(app_ctx_t *app, int fd)
     fp = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
     if (fp) { fscanf(fp, "%d", &temp); fclose(fp); temp /= 1000; }
 
-    /* NPU 逐核负载 (RK3588: 3 cores) */
+    /* NPU 逐核负载 (Rockchip: 3 cores) */
     int npu_cores[3] = {-1, -1, -1};
     fp = fopen("/sys/kernel/debug/rknpu/load", "r");
     if (fp) {
