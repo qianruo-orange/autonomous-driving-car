@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <sys/statvfs.h>
+#include <string.h>
 /**
  * http_api_system.c — 系统监控 API（CPU / 内存 / 磁盘 / 温度 / GPU / NPU）。
  */
@@ -69,19 +70,24 @@ void http_system_api(app_ctx_t *app, int fd)
     fp = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
     if (fp) { fscanf(fp, "%d", &temp); fclose(fp); temp /= 1000; }
 
-    /* NPU 逐核负载（RKNPU 全系兼容：三核平台 RK3588/RK3576 输出三值，
-     * 单核平台 RK3566/RK3568 仅输出 Core0 一值，缺失核保持 -1，前端显示 N/A） */
+    /* NPU 逐核负载（RKNPU 全系兼容：RK3588 三核 / RK3576 双核 / RK3566 等单核；
+     * 逐核定位 "CoreN: x%" 自适应解析，任意核缺失保持 -1，前端显示 N/A） */
     int npu_cores[3] = {-1, -1, -1};
     fp = fopen("/sys/kernel/debug/rknpu/load", "r");
     if (fp) {
         char buf[256];
         if (fgets(buf, sizeof(buf), fp)) {
-            if (sscanf(buf, "NPU load: Core0: %d%%, Core1: %d%%, Core2: %d%%",
-                       &npu_cores[0], &npu_cores[1], &npu_cores[2]) < 3) {
-                /* 单核 NPU 格式："NPU load: Core0: x%" 或 "NPU load: x%" */
-                if (sscanf(buf, "NPU load: Core0: %d%%", &npu_cores[0]) < 1)
-                    sscanf(buf, "NPU load: %d%%", &npu_cores[0]);
+            int parsed = 0;
+            for (int c = 0; c < 3; c++) {
+                char key[16];
+                snprintf(key, sizeof(key), "Core%d:", c);
+                const char *p = strstr(buf, key);
+                if (p && sscanf(p + strlen(key), " %d%%", &npu_cores[c]) == 1)
+                    parsed++;
             }
+            /* 无 Core 前缀的单值格式："NPU load: x%" */
+            if (parsed == 0)
+                sscanf(buf, "NPU load: %d%%", &npu_cores[0]);
         }
         fclose(fp);
     }

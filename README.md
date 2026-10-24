@@ -452,7 +452,7 @@ journalctl -u rockchip-smart-gateway -f
 RKNN + YOLO26（官方 ultralytics 单输出格式 `(1, 84, 8400)`，fp16，官方 mean/std），由 `rknn-toolkit2` 转换后在板载 NPU 推理：
 
 - 模型加载：`ai_model` 指向 `.rknn` 文件，校验输出必须为单个检测头 `(1, 84, 8400)`；类别名由 `ai_names` 加载（COCO 格式，每行一个类名，缺失回退内置 COCO 80 类）
-- 流水线：`ai_task` 事件驱动等待环形队列 produce 游标（不再按固定间隔采样；`ai_interval_ms` 为相邻取帧最小间隔，默认 10ms 在相机帧率下无感）→ 取槽随任务投递（任务存续期间钉住 raw 槽，采集不回收）→ N 个推理 worker（独立 rknn context，worker i 优先绑定 NPU 核 i%3：三核平台 RK3588/RK3576 等量分摊，单核 RKNPU 平台 RK3566/RK3568/RK3562 自动回退核 0，全系兼容）→ 推理后分两路：rgb 写槽（显示链路），NMS 结果（名称+置信度+坐标）入结果队列 → composer 消费队列最新结果（乱序完成时跳过旧结果，计 render_skipped）→ EMA 平滑（α=0.4，同类 IoU≥0.3 匹配）→ 渲染进槽（nv12 / jpeg）→ 显示 / 编码游标消费
+- 流水线：`ai_task` 事件驱动等待环形队列 produce 游标（不再按固定间隔采样；`ai_interval_ms` 为相邻取帧最小间隔，默认 10ms 在相机帧率下无感）→ 取槽随任务投递（任务存续期间钉住 raw 槽，采集不回收）→ N 个推理 worker（独立 rknn context，worker i 优先绑定 NPU 核 i%3：RK3588 三核 / RK3576 双核尽量分摊（请求不存在的核自动回退），单核 RKNPU 平台 RK3566/RK3568/RK3562 自动回退核 0，全系兼容）→ 推理后分两路：rgb 写槽（显示链路），NMS 结果（名称+置信度+坐标）入结果队列 → composer 消费队列最新结果（乱序完成时跳过旧结果，计 render_skipped）→ EMA 平滑（α=0.4，同类 IoU≥0.3 匹配）→ 渲染进槽（nv12 / jpeg）→ 显示 / 编码游标消费
 - 画框渲染：直接调用 OpenCV（`cv::rectangle` 3px 实色 + LINE_AA 抗锯齿；`cv::putText` Hershey Simplex 白色粗体字 + 实色底块，默认挂在框顶外侧，顶部不足落框内），每一帧都输出标注帧，不混入未推理的原始帧
 - 热更新：`ai_threads` / `ai_conf` / `ai_nms` / `ai_interval_ms` 保存后立即重建推理池生效，无需重启进程；`ai_model` / `ai_names` 可通过 Web 配置页或 API 上传（校验 RKNN magic / 标签格式后原子替换文件并热重载）
 - 必要流程：AI 推理不可停用；模型缺失 / NPU 驱动未加载 / 推理失败时直接报错——启动路径整体失败退出（systemd 进入 failed），运行期热重载失败由 API 返回 `saved_reload_failed`，画框流 `/video/mjpeg_ai` 返回 503（不回退原始帧）

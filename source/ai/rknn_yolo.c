@@ -568,9 +568,9 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
         wk->ctx = 0;
         return -1;
     }
-    /* 绑定 NPU 核：worker i 优先用核 i%3，三核平台（RK3588/RK3576）等量分摊；
-     * 单核 RKNPU 平台（RK3566/RK3568/RK3562）不支持核 1/2，逐级回退到
-     * 核 0 / AUTO，保证 RKNPU 全系平台兼容运行。 */
+    /* 绑定 NPU 核：worker i 优先用核 i%3；RK3588 三核等量分摊，RK3576 为双核
+     * （核 2 请求失败时自动回退），单核平台（RK3566/RK3568/RK3562）不支持核 1/2，
+     * 逐级回退到核 0 / AUTO，保证 RKNPU 全系平台兼容运行。 */
     static const rknn_core_mask kCoreMask[3] = {
         RKNN_NPU_CORE_0, RKNN_NPU_CORE_1, RKNN_NPU_CORE_2,
     };
