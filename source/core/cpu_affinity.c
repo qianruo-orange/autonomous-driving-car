@@ -15,8 +15,12 @@
 #include "core/cpu_affinity.h"
 #include "core/log.h"
 
-/* Cortex-A76 的 CPU part 编号（Rockchip 大核；0xd05 为 Cortex-A55 小核） */
+/* Cortex 大核 CPU part 编号（适配 RKNPU 全系平台）：
+   RK3588 大核 A76=0xd0b，RK3576 大核 A72=0xd08；
+   小核 A55=0xd05 / A53=0xd03。同构小核平台（RK3566/RK3568 全 A55）
+   检测不到大核时自动退化为默认调度，不绑核。 */
 #define CPU_PART_A76 0xd0b
+#define CPU_PART_A72 0xd08
 
 static pthread_once_t s_once = PTHREAD_ONCE_INIT;
 static cpu_set_t      s_big_set;
@@ -40,7 +44,8 @@ static void cpu_detect_big(void)
         if (strncmp(line, "processor", 9) == 0) {
             cur = atoi(colon + 1);
         } else if (strncmp(line, "CPU part", 8) == 0) {
-            if ((unsigned int)strtoul(colon + 1, NULL, 0) == CPU_PART_A76 &&
+            unsigned int part = (unsigned int)strtoul(colon + 1, NULL, 0);
+            if ((part == CPU_PART_A76 || part == CPU_PART_A72) &&
                 cur >= 0 && cur < CPU_SETSIZE) {
                 CPU_SET(cur, &s_big_set);
                 s_big_count++;

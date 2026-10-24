@@ -279,7 +279,7 @@ rockchip-smart-gateway/
 - libsystemd
 - libnl-3
 - libnl-route-3
-- librknnrt（板载 RKNN 运行时，模型由 rknn-toolkit2 在 PC 上转换）
+- librknnrt（板载 RKNN 运行时，模型由 rknn-toolkit2 转换，支持板端或 PC）
 - libjpeg（JPEG 解码与 AI 画框用）
 - OpenCV 4（core + imgproc，检测框画框与标签文字渲染）
 - Rockchip 硬件编码器 `/dev/video-enc0`（rkvenc，Linux V4L2 M2M 驱动，录像 H.264 编码用）
@@ -295,12 +295,17 @@ apt install build-essential cmake libsystemd-dev libnl-3-dev libnl-route-3-dev l
 
 ```bash
 cd /home/orangepi/rockchip-smart-gateway
-./scripts/build.sh -R   # Release（默认）
-./scripts/build.sh -D   # Debug
-./scripts/build.sh -C   # 清理构建产物与 logs
+./scripts/build.sh            # Release（默认），自动辨识当前板卡 RKNPU 平台
+./scripts/build.sh -D         # Debug
+./scripts/build.sh -P rk3588  # 显式指定目标平台（覆盖自动辨识，如交叉部署场景）
+./scripts/build.sh -C         # 清理构建产物与 logs
 ```
 
 `build.sh` 构建前会自动检查依赖（工具链 + 开发库 + librknnrt），缺失时打印具体缺项与安装命令并中止，避免在 cmake / make 阶段才暴露晦涩报错；`libavcodec-dev`（FFmpeg rkmpp 后端）为可选依赖，缺失时自动回退 V4L2 rkvenc 编码。
+
+**平台辨识与模型同步**（RKNPU 全系兼容）：
+- 平台默认从 `/proc/device-tree/compatible` 自动辨识（如 `rockchip,rk3576` → `rk3576`），`-P` 可显式覆盖
+- 编译前自动同步 `config/yolo26.rknn`：优先部署 `config/models/<平台>/yolo26.rknn`；运行模型平台不匹配或缺失时调用 ultralytics 官方 CLI（`yolo export model=<权重> format=rknn name=<平台>`）在板端自动转换（见「RKNN 转换工作流」），转换产物按平台存入 `config/models/` 复用
 
 构建产物：`./bin/rockchip-smart-gateway`
 
@@ -447,22 +452,36 @@ journalctl -u rockchip-smart-gateway -f
 RKNN + YOLO26（官方 ultralytics 单输出格式 `(1, 84, 8400)`，fp16，官方 mean/std），由 `rknn-toolkit2` 转换后在板载 NPU 推理：
 
 - 模型加载：`ai_model` 指向 `.rknn` 文件，校验输出必须为单个检测头 `(1, 84, 8400)`；类别名由 `ai_names` 加载（COCO 格式，每行一个类名，缺失回退内置 COCO 80 类）
-- 流水线：`ai_task` 事件驱动等待环形队列 produce 游标（不再按固定间隔采样；`ai_interval_ms` 为相邻取帧最小间隔，默认 10ms 在相机帧率下无感）→ 取槽随任务投递（任务存续期间钉住 raw 槽，采集不回收）→ N 个推理 worker（独立 rknn context，worker i 绑定 NPU 核 i%3，Rockchip 三核等量分配）→ 推理后分两路：rgb 写槽（显示链路），NMS 结果（名称+置信度+坐标）入结果队列 → composer 消费队列最新结果（乱序完成时跳过旧结果，计 render_skipped）→ EMA 平滑（α=0.4，同类 IoU≥0.3 匹配）→ 渲染进槽（nv12 / jpeg）→ 显示 / 编码游标消费
+- 流水线：`ai_task` 事件驱动等待环形队列 produce 游标（不再按固定间隔采样；`ai_interval_ms` 为相邻取帧最小间隔，默认 10ms 在相机帧率下无感）→ 取槽随任务投递（任务存续期间钉住 raw 槽，采集不回收）→ N 个推理 worker（独立 rknn context，worker i 优先绑定 NPU 核 i%3：三核平台 RK3588/RK3576 等量分摊，单核 RKNPU 平台 RK3566/RK3568/RK3562 自动回退核 0，全系兼容）→ 推理后分两路：rgb 写槽（显示链路），NMS 结果（名称+置信度+坐标）入结果队列 → composer 消费队列最新结果（乱序完成时跳过旧结果，计 render_skipped）→ EMA 平滑（α=0.4，同类 IoU≥0.3 匹配）→ 渲染进槽（nv12 / jpeg）→ 显示 / 编码游标消费
 - 画框渲染：直接调用 OpenCV（`cv::rectangle` 3px 实色 + LINE_AA 抗锯齿；`cv::putText` Hershey Simplex 白色粗体字 + 实色底块，默认挂在框顶外侧，顶部不足落框内），每一帧都输出标注帧，不混入未推理的原始帧
 - 热更新：`ai_threads` / `ai_conf` / `ai_nms` / `ai_interval_ms` 保存后立即重建推理池生效，无需重启进程；`ai_model` / `ai_names` 可通过 Web 配置页或 API 上传（校验 RKNN magic / 标签格式后原子替换文件并热重载）
 - 必要流程：AI 推理不可停用；模型缺失 / NPU 驱动未加载 / 推理失败时直接报错——启动路径整体失败退出（systemd 进入 failed），运行期热重载失败由 API 返回 `saved_reload_failed`，画框流 `/video/mjpeg_ai` 返回 503（不回退原始帧）
 
 ### RKNN 转换工作流
 
-在 PC（x86_64，Python 3.10）上用 rknn-toolkit2 将官方 YOLO26 权重转为板端模型：
+推荐直接在板端完成（也支持 x86_64 PC）：ultralytics 新版内置 RKNN 导出，且 `rknn-toolkit2 >= 2.3.0` 提供 aarch64 wheel，Rockchip 板端即可转换，`build.sh` 编译时自动调用：
 
-1. 获取权重与工具：从 ultralytics 官方发布页下载 YOLO26 权重（如 `yolo26n.pt`）；安装 `rknn-toolkit2`（含 `rknn-toolkit-lite2` 用于板端验证）与 `ultralytics`
-2. 导出 ONNX：用 ultralytics 官方脚本导出检测头（640×640，单输出，输出张量 `(1, 84, 8400)`，84 = 4 框 + 80 类）
-3. 转换 RKNN：`rknn.config(mean_values=官方默认, std_values=官方默认, target_platform='rk3588')`，`hybrid_quantization_step2` 不启用，导出 fp16 权重（推荐）或 int8（需量化数据集）；转换后校验输出 shape 必须为 `(1, 84, 8400)`
-4. 板端验证：在 Rockchip 上用 `rknn-toolkit-lite2` 加载推理，与 ONNX/PT 输出对拍（允许 fp16 微小误差）；`rknn_init` 通过后即可部署
-5. 部署：Web 配置页上传 `yolo26.rknn`（或放入 `config/` 并设置 `ai_model`），同时上传类别标签文件（或 `config/coco.names`）；日志输出 `ai: model '...' loaded, classes '...' (80), input 640x640, single output, threads N (NPU core i%3)` 即转换正确
+1. 初始化转换环境（板端一次性）。rknn-toolkit2 不在 PyPI 发布，且 aarch64 wheel 仅提供到 Python 3.12（Armbian 系统自带 Python 通常更新，如 3.13 装不了 cp312 wheel），因此用 uv 建项目内独立 `.venv`（`build.sh` 会优先使用 `.venv/bin/yolo`）：
+   ```bash
+   sudo apt-get install -y python3-pip
+   pip3 install --break-system-packages uv
+   uv venv .venv --python 3.12
+   uv pip install --python .venv/bin/python ultralytics
+   # rknn-toolkit2（>= 2.3.0 提供 aarch64 wheel）从官方仓库下载对应架构/Python 版本的 wheel 安装：
+   # https://github.com/airockchip/rknn-toolkit2/tree/master/rknn-toolkit2/packages
+   # 板端选 packages/arm64/，PC 选 packages/x86_64/，按 venv 的 Python 版本（cp312）匹配文件名
+   uv pip install --python .venv/bin/python rknn_toolkit2-2.5.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+   ```
+   > 国内网络直连 GitHub / raw.githubusercontent.com 受限时，可用镜像加速下载 wheel（如 `https://ghfast.top/<原URL>`）。若系统配置了不可达的全局代理，安装前先 `env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy` 清除再执行。
+2. 转换：`build.sh` 编译时检测到模型缺失 / 平台不匹配时，直接调用 ultralytics 官方 CLI 完成板端转换（平台参数由脚本自动辨识后传入，无需手填）：
+   ```bash
+   yolo export model=yolo26n.pt format=rknn name=rk3576
+   ```
+   权重文件（默认 `yolo26n.pt`，环境变量 `YOLO_WEIGHTS` 可指定）缺失时由 ultralytics 自动下载最新官方权重（首次转换需联网，下载后缓存到 `config/models/weights/` 复用）；`name` 为目标平台（`rk3588` / `rk3576` / `rk3568` / `rk3566` / `rk3562` / `rk2118` / `rv1126b`），fp16 权重，单输出 `(1, 84, 8400)`
+3. 产物：统一存入 `config/models/<平台>/yolo26.rknn`，`build.sh` 编译时自动部署到 `config/yolo26.rknn`
+4. 部署验证：Web 配置页上传 `yolo26.rknn`（或放入 `config/` 并设置 `ai_model`），同时上传类别标签文件（或 `config/coco.names`）；日志输出 `ai: model '...' loaded, classes '...' (80), input 640x640, single output, threads N (NPU core i%3)` 即转换正确
 
-> 仓库 `config/yolo26.rknn` 为 yolo26n 官方权重转换（fp16，单输出 (1,84,8400)，官方 mean/std，无内置 NMS）。
+> 仓库 `config/yolo26.rknn` 为 yolo26n 官方权重转换（fp16，单输出 (1,84,8400)，官方 mean/std，无内置 NMS）。注意：RKNN 模型与转换时平台绑定，跨芯片不可直接复用（仓库自带版本为 `rk3588` 平台，在 RK3576 等其他芯片上 `rknn_init` 会失败）；在非 RK3588 板子上首次 `build.sh` 编译会自动转换出对应平台模型并替换。
 
 ## 网络录像
 

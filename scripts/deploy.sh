@@ -1,5 +1,5 @@
-# SPDX-License-Identifier: GPL-3.0-or-later
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
