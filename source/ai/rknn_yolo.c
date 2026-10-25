@@ -555,6 +555,64 @@ static int load_model_file(const char *path, unsigned char **buf_out, size_t *le
     return 0;
 }
 
+/* 通过设备树 compatible 推断 NPU 核心数（合法 core mask 上限 = 2^npu_cores - 1）。
+ * 默认 1 核（CORE_0 始终合法），未知/单核平台安全回退。结果缓存，仅首次读取。 */
+/* 通过设备树 compatible 推断 NPU 核心数，覆盖 Rockchip 全系 RKNPU：
+ *   RK3588 / RK3588S        -> 3 核 (合法掩码上限 7)
+ *   RK3576 / RK3576M        -> 2 核 (合法掩码上限 3)
+ *   RK3568 / RK3566 / RK3562 -> 1 核 (合法掩码上限 1)
+ *   RV1126 / RV1109 / RV1106 / RV1103 -> 1 核
+ *   RK3399PRO / RK1808      -> 1 核
+ * 合法 core mask 上限 = 2^npu_cores - 1，据此只用合法单核掩码，从根上杜绝运行时的
+ * "unavailable core mask found for current platform" 报错，全系兼容。
+ * 未识别 SoC 默认 1 核（CORE_0 始终合法），保证不报错、可启动；
+ * 新增平台只需在此表追加一行。结果缓存，仅首次读取。 */
+static int npu_core_count(void)
+{
+    static int n = 0;
+    if (n) return n;
+    n = 1; /* 安全默认：单核 */
+
+    static const struct {
+        const char *compat;
+        int cores;
+    } table[] = {
+        { "rk3588",    3 },
+        { "rk3576",    2 },
+        { "rk3568",    1 },
+        { "rk3566",    1 },
+        { "rk3562",    1 },
+        { "rv1126",    1 },
+        { "rv1109",    1 },
+        { "rv1106",    1 },
+        { "rv1103",    1 },
+        { "rk3399pro", 1 },
+        { "rk1808",    1 },
+        { NULL,        0 },
+    };
+
+    char buf[512];
+    FILE *f = fopen("/proc/device-tree/compatible", "r");
+    if (f) {
+        size_t r = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        if (r > 0) {
+            buf[r] = '\0';
+            /* compatible 为多个以 '\0' 分隔的字符串，命中首个 SoC 即确定核数 */
+            for (char *p = buf; p < buf + r; p += strlen(p) + 1) {
+                for (int i = 0; table[i].compat; i++) {
+                    if (strstr(p, table[i].compat)) {
+                        n = table[i].cores;
+                        goto done;
+                    }
+                }
+            }
+        }
+    }
+done:
+    return n;
+}
+
 /* 创建一个推理上下文：rknn_init + 绑定 NPU 核 + 查输出属性 + 分配输入缓冲 */
 static int yolo_worker_setup(yolo_worker_t *wk, int idx)
 {
@@ -568,13 +626,14 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
         wk->ctx = 0;
         return -1;
     }
-    /* 绑定 NPU 核：worker i 优先用核 i%3；RK3588 三核等量分摊，RK3576 为双核
-     * （核 2 请求失败时自动回退），单核平台（RK3566/RK3568/RK3562）不支持核 1/2，
-     * 逐级回退到核 0 / AUTO，保证 RKNPU 全系平台兼容运行。 */
-    static const rknn_core_mask kCoreMask[3] = {
-        RKNN_NPU_CORE_0, RKNN_NPU_CORE_1, RKNN_NPU_CORE_2,
-    };
-    if (rknn_set_core_mask(wk->ctx, kCoreMask[idx % 3]) != RKNN_SUCC &&
+    /* 绑定 NPU 核：按 SoC 实际 NPU 核心数派发（npu_core_count 已覆盖 RK3588 三核 /
+     * RK3576 双核 / RK356x·RV1126·RV110x·RK3399PRO·RK1808 单核等全系），worker i
+     * 固定绑到核 (i % npu_cores)。单核掩码 1<<k 必然 <= 合法掩码上限 2^npu_cores-1，
+     * 从根上不再请求非法掩码，消除运行时的 "unavailable core mask found for current
+     * platform" 报错；未知平台默认核 0，全系兼容。 */
+    int cores = npu_core_count();
+    rknn_core_mask mask = (rknn_core_mask)(1u << (idx % cores)); /* CORE_0/1/2... */
+    if (rknn_set_core_mask(wk->ctx, mask) != RKNN_SUCC &&
         rknn_set_core_mask(wk->ctx, RKNN_NPU_CORE_0) != RKNN_SUCC &&
         rknn_set_core_mask(wk->ctx, RKNN_NPU_CORE_AUTO) != RKNN_SUCC)
         LOG_ERROR("ai: worker %d set_core_mask failed", idx);
