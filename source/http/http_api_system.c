@@ -71,23 +71,31 @@ void http_system_api(app_ctx_t *app, int fd)
     if (fp) { fscanf(fp, "%d", &temp); fclose(fp); temp /= 1000; }
 
     /* NPU 逐核负载（RKNPU 全系兼容：RK3588 三核 / RK3576 双核 / RK3566 等单核；
-     * 逐核定位 "CoreN: x%" 自适应解析，任意核缺失保持 -1，前端显示 N/A） */
+     * 逐核定位 "CoreN: x%" 自适应解析，核数按实际解析结果统计（npu_count），
+     * 前端按 npu_count 动态渲染；任意核缺失保持 -1，前端显示 N/A */
     int npu_cores[3] = {-1, -1, -1};
+    int npu_count = 0;
     fp = fopen("/sys/kernel/debug/rknpu/load", "r");
     if (fp) {
         char buf[256];
-        if (fgets(buf, sizeof(buf), fp)) {
-            int parsed = 0;
+        while (fgets(buf, sizeof(buf), fp)) {
             for (int c = 0; c < 3; c++) {
+                if (npu_cores[c] >= 0) continue;
                 char key[16];
                 snprintf(key, sizeof(key), "Core%d:", c);
                 const char *p = strstr(buf, key);
-                if (p && sscanf(p + strlen(key), " %d%%", &npu_cores[c]) == 1)
-                    parsed++;
+                if (p && sscanf(p + strlen(key), " %d%%", &npu_cores[c]) == 1
+                    && c + 1 > npu_count)
+                    npu_count = c + 1;
             }
-            /* 无 Core 前缀的单值格式："NPU load: x%" */
-            if (parsed == 0)
-                sscanf(buf, "NPU load: %d%%", &npu_cores[0]);
+            /* 无 Core 前缀的单值格式："NPU load: x%"（单核 SoC） */
+            if (npu_count == 0) {
+                int v;
+                if (sscanf(buf, "NPU load: %d%%", &v) == 1) {
+                    npu_cores[0] = v;
+                    npu_count = 1;
+                }
+            }
         }
         fclose(fp);
     }
@@ -113,8 +121,10 @@ void http_system_api(app_ctx_t *app, int fd)
             i > 0 ? "," : "", core_user[i], core_sys[i], core_idle[i]);
     JSON_ADD(json, off, "],");
 
-    JSON_ADD(json, off, "\"npu_cores\":[%d,%d,%d],",
-        npu_cores[0], npu_cores[1], npu_cores[2]);
+    JSON_ADD(json, off, "\"npu_count\":%d,\"npu_cores\":[", npu_count);
+    for (int c = 0; c < npu_count; c++)
+        JSON_ADD(json, off, "%s%d", c > 0 ? "," : "", npu_cores[c]);
+    JSON_ADD(json, off, "],");
 
     JSON_ADD(json, off,
         "\"mem_pct\":%d,\"mem_total\":%ld,\"mem_avail\":%ld,"

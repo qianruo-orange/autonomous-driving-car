@@ -3,7 +3,8 @@
 (function() {
   var lastCpu = {user:0,sys:0,idle:0,total:0};
   var lastCores = [];
-  var npuInited = false;
+  var npuCount = -1;
+  var cpuInited = false;
 
   /* 网络速度跟踪 */
   var lastNet = {eth0:{rx:0,tx:0,ts:0},wlan0:{rx:0,tx:0,ts:0}};
@@ -283,7 +284,6 @@
   }
 
   function initCoreBars(id, names) {
-    if (npuInited) return;
     var h = '';
     for (var i = 0; i < names.length; i++)
       h += '<div><div class="core-label"><span>' + names[i] + '</span><span id="' + id + '_pct' + i + '">0%</span></div><div class="core-bar"><div id="' + id + '_bar' + i + '" style="width:0%"></div></div></div>';
@@ -320,7 +320,10 @@
 
       /* CPU 逐核 */
       if (d.cpu_cores) {
-        initCoreBars('cpu_cores', ['Core0','Core1','Core2','Core3','Core4','Core5','Core6','Core7']);
+        if (!cpuInited) {
+          initCoreBars('cpu_cores', ['Core0','Core1','Core2','Core3','Core4','Core5','Core6','Core7']);
+          cpuInited = true;
+        }
         if (!lastCores.length) lastCores = d.cpu_cores.map(function(c) { return {u:c.u,s:c.s,i:c.i}; });
         for (var i = 0; i < 8; i++) {
           var c = d.cpu_cores[i], l = lastCores[i];
@@ -333,15 +336,31 @@
         lastCores = d.cpu_cores.map(function(c) { return {u:c.u,s:c.s,i:c.i}; });
       }
 
-      /* NPU 逐核 */
-      initCoreBars('npu_cores', ['NPU0','NPU1','NPU2']);
-      for (var i = 0; i < 3; i++) {
-        var p2 = d.npu_cores[i];
-        document.getElementById('npu_cores_pct' + i).textContent = (p2 >= 0 ? p2 + '%' : 'N/A');
-        var b2 = document.getElementById('npu_cores_bar' + i);
-        b2.style.width = (p2 >= 0 ? p2 : 0) + '%'; b2.className = 'blue';
+      /* NPU 逐核（核数自适应：按后端 /api/system 的 npu_count 动态渲染，
+         RK3588 三核 / RK3576 双核 / RK3566 单核均自动匹配） */
+      if (d.npu_count !== undefined && d.npu_count !== npuCount) {
+        npuCount = d.npu_count;
+        var npuNames = [];
+        for (var ni = 0; ni < npuCount; ni++) npuNames.push('NPU' + ni);
+        if (!npuNames.length) {
+          /* 后端无法获取 NPU 负载时保留单行占位，显示 N/A */
+          npuNames.push('NPU');
+          initCoreBars('npu_cores', npuNames);
+          document.getElementById('npu_cores_pct0').textContent = 'N/A';
+        } else {
+          initCoreBars('npu_cores', npuNames);
+        }
       }
-      npuInited = true;
+      if (d.npu_cores) {
+        for (var i = 0; i < d.npu_cores.length; i++) {
+          var p2 = d.npu_cores[i];
+          var pctEl = document.getElementById('npu_cores_pct' + i);
+          if (!pctEl) continue;
+          pctEl.textContent = (p2 >= 0 ? p2 + '%' : 'N/A');
+          var b2 = document.getElementById('npu_cores_bar' + i);
+          b2.style.width = (p2 >= 0 ? p2 : 0) + '%'; b2.className = 'blue';
+        }
+      }
 
       document.getElementById('mem_val').textContent = d.mem_pct + '%';
       document.getElementById('mem_total').textContent = (d.mem_total/1024/1024).toFixed(1) + 'G';
