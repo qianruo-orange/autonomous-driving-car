@@ -4,7 +4,7 @@
   var lastCpu = {user:0,sys:0,idle:0,total:0};
   var lastCores = [];
   var npuCount = -1;
-  var cpuInited = false;
+  var cpuCount = -1;   /* 已渲染的 CPU 核数，变化时重建核条 */
 
   /* 网络速度跟踪 */
   var lastNet = {eth0:{rx:0,tx:0,ts:0},wlan0:{rx:0,tx:0,ts:0}};
@@ -287,7 +287,10 @@
     var h = '';
     for (var i = 0; i < names.length; i++)
       h += '<div><div class="core-label"><span>' + names[i] + '</span><span id="' + id + '_pct' + i + '">0%</span></div><div class="core-bar"><div id="' + id + '_bar' + i + '" style="width:0%"></div></div></div>';
-    document.getElementById(id).innerHTML = h;
+    var el = document.getElementById(id);
+    el.innerHTML = h;
+    /* 列数随核数自适应：核少则单排大格，核多则自动换行（尺寸随数量变化） */
+    el.style.gridTemplateColumns = 'repeat(' + Math.min(names.length, 4) + ', minmax(0, 1fr))';
   }
 
   function fmtTime() {
@@ -318,14 +321,18 @@
       var cb = document.getElementById('cpu_bar');
       cb.style.width = cpuPct + '%'; cb.className = barColor(cpuPct);
 
-      /* CPU 逐核 */
+      /* CPU 逐核（核数随平台自适应：真实核数来自后端 d.cpu_cores，不再写死 8 核） */
       if (d.cpu_cores) {
-        if (!cpuInited) {
-          initCoreBars('cpu_cores', ['Core0','Core1','Core2','Core3','Core4','Core5','Core6','Core7']);
-          cpuInited = true;
+        var nCpu = d.cpu_cores.length;
+        if (nCpu !== cpuCount) {
+          cpuCount = nCpu;
+          var cpuNames = [];
+          for (var ci = 0; ci < nCpu; ci++) cpuNames.push('Core' + ci);
+          initCoreBars('cpu_cores', cpuNames);
+          lastCores = [];   /* 核数变化后重置差值基准 */
         }
         if (!lastCores.length) lastCores = d.cpu_cores.map(function(c) { return {u:c.u,s:c.s,i:c.i}; });
-        for (var i = 0; i < 8; i++) {
+        for (var i = 0; i < nCpu; i++) {
           var c = d.cpu_cores[i], l = lastCores[i];
           var du2 = c.u + c.s - l.u - l.s, di = c.i - l.i, dt2 = du2 + di;
           var p = dt2 > 0 ? Math.round(du2 * 100 / dt2) : 0;
