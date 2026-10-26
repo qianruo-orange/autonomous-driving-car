@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <sys/statvfs.h>
 #include <string.h>
+#include <dirent.h>
 /**
  * http_api_system.c — 系统监控 API（CPU / 内存 / 磁盘 / 温度 / GPU / NPU）。
  */
@@ -52,7 +53,21 @@ void http_system_api(app_ctx_t *app, int fd)
         fclose(fp);
     }
 
-    /* 内存 */
+    /* per-core CPU frequency (MHz): scaling_cur_freq (kHz) -> MHz; fallback cpuinfo_cur_freq */
+    long core_freq[MAX_CORES] = {0};
+    for (int c = 0; c < num_cores; c++) {
+        char fp[128];
+        snprintf(fp, sizeof(fp), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", c);
+        FILE *ff = fopen(fp, "r");
+        if (ff) { long khz = 0; if (fscanf(ff, "%ld", &khz) == 1 && khz > 0) core_freq[c] = khz / 1000; fclose(ff); }
+        else {
+            snprintf(fp, sizeof(fp), "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_cur_freq", c);
+            ff = fopen(fp, "r");
+            if (ff) { long khz = 0; if (fscanf(ff, "%ld", &khz) == 1 && khz > 0) core_freq[c] = khz / 1000; fclose(ff); }
+        }
+    }
+
+    /* memory */
     long mem_total = http_read_key_long("/proc/meminfo", "MemTotal:");
     long mem_avail = http_read_key_long("/proc/meminfo", "MemAvailable:");
     int mem_pct = (mem_total > 0) ? (int)(100 - (mem_avail * 100 / mem_total)) : 0;
@@ -100,12 +115,39 @@ void http_system_api(app_ctx_t *app, int fd)
         fclose(fp);
     }
 
-    /* GPU (Mali) */
+    /* GPU (Mali) — 自适应查找 devfreq 节点：RK3588=fb000000.gpu / RK3576=27800000.gpu 等。
+       优先读 load（RK3588 等暴露负载的驱动）；RK356x/RK3576 驱动未暴露 load 时，
+       回退读 cur_freq 作为 GPU 频率指标（Hz→MHz），保证 GPU 卡片在所有平台都有真实信息 */
     long gpu_load = -1;
-    fp = fopen("/sys/class/devfreq/fb000000.gpu/load", "r");
-    if (fp) {
-        char buf[64]; fgets(buf, sizeof(buf), fp); fclose(fp);
-        sscanf(buf, "%ld", &gpu_load);
+    long gpu_freq = -1;
+    DIR *dev = opendir("/sys/class/devfreq");
+    if (dev) {
+        struct dirent *de;
+        while ((de = readdir(dev))) {
+            if (strstr(de->d_name, "gpu") == NULL) continue;
+            char base[256];
+            snprintf(base, sizeof(base), "/sys/class/devfreq/%s", de->d_name);
+            FILE *gfp;
+            char gp[320];
+            snprintf(gp, sizeof(gp), "%s/load", base);
+            gfp = fopen(gp, "r");
+            if (gfp) {
+                char buf[64];
+                if (fgets(buf, sizeof(buf), gfp)) sscanf(buf, "%ld", &gpu_load);
+                fclose(gfp);
+            }
+            if (gpu_load < 0) {   /* 无 load 文件时回退读当前频率 */
+                snprintf(gp, sizeof(gp), "%s/cur_freq", base);
+                gfp = fopen(gp, "r");
+                if (gfp) {
+                    long f = -1;
+                    if (fscanf(gfp, "%ld", &f) == 1 && f > 0) gpu_freq = f / 1000000;
+                    fclose(gfp);
+                }
+            }
+            if (gpu_load >= 0 || gpu_freq >= 0) break;
+        }
+        closedir(dev);
     }
 
     /* 组装 JSON（使用边界检查宏） */
@@ -120,6 +162,10 @@ void http_system_api(app_ctx_t *app, int fd)
         JSON_ADD(json, off, "%s{\"u\":%ld,\"s\":%ld,\"i\":%ld}",
             i > 0 ? "," : "", core_user[i], core_sys[i], core_idle[i]);
     JSON_ADD(json, off, "],");
+    JSON_ADD(json, off, "\"cpu_freqs\":[");
+    for (int i = 0; i < num_cores; i++)
+        JSON_ADD(json, off, "%s%ld", i > 0 ? "," : "", core_freq[i]);
+    JSON_ADD(json, off, "],");
 
     JSON_ADD(json, off, "\"npu_count\":%d,\"npu_cores\":[", npu_count);
     for (int c = 0; c < npu_count; c++)
@@ -130,13 +176,13 @@ void http_system_api(app_ctx_t *app, int fd)
         "\"mem_pct\":%d,\"mem_total\":%ld,\"mem_avail\":%ld,"
         "\"disk_total\":%ld,\"disk_avail\":%ld,"
         "\"temp\":%d,"
-        "\"gpu\":%ld,"
+        "\"gpu\":%ld,\"gpu_freq\":%ld,"
         "\"app_version\":\"%s\",\"git_commit\":\"%s\",\"build_date\":\"%s\""
         "}",
         mem_pct, mem_total, mem_avail,
         disk_total, disk_avail,
         temp,
-        gpu_load,
+        gpu_load, gpu_freq,
         APP_VERSION, APP_GIT_COMMIT, APP_BUILD_DATE);
 
     http_ok_json(fd, json, (size_t)off);

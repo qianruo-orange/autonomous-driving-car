@@ -1,15 +1,30 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* config.css — 配置页面样式 毛玻璃水滴风（主题变量化） */
 body{padding:30px}
-h1{font-size:24px;margin-bottom:16px}
-.card{border-radius:18px;padding:20px;margin-bottom:16px;max-width:700px}
-.card h3{color:var(--accent);border-bottom:1px solid var(--card-border);padding-bottom:6px;display:flex;align-items:center;gap:8px}
+h1{font-size:24px;margin-bottom:0}
+/* 顶栏：左侧标题+功能按钮，右侧导航按钮 */
+.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
+.tb-left{display:flex;align-items:center;gap:8px}
+.tb-right{display:flex;align-items:center;gap:6px}
+.tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+.top-bar .theme-btn{position:static;margin-left:0;flex:none}
+.card{border-radius:18px;padding:20px;margin-bottom:16px;max-width:700px;transition:border-color .25s}
+.card h3{color:var(--accent);border-left:3px solid var(--accent);border-bottom:1px solid var(--card-border);padding-left:10px;padding-bottom:6px;display:flex;align-items:center;gap:8px}
+#card_ai h3{border-left-color:#34d399}
+#card_can h3{border-left-color:#fbbf24}
+#card_net h3{border-left-color:#38bdf8}
+#card_video h3{border-left-color:#818cf8}
+#card_cpufreq h3{border-left-color:#f472b6}
+#card_nettest h3{border-left-color:#fb923c}
+.card-status{font-size:12px;white-space:nowrap;transition:opacity .3s}
+.card-status.ok{color:#4cc9a0}
+.card-status.err{color:#e0556a}
 #canSel{background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:14px;font-weight:600;min-width:200px}
 .top{display:flex;align-items:center;gap:16px;margin-bottom:16px}
 .top h1{margin-bottom:0}
 .top .nav{margin:0 0 0 auto;display:flex;gap:8px}
-.top .nav a{padding:6px 12px;background:var(--btn-bg);border:1px solid var(--card-border);border-radius:10px;font-size:13px;text-decoration:none;backdrop-filter:blur(8px)}
-.top .nav a:hover{background:var(--hover);border-color:var(--card-border2)}
+.top .nav a{padding:6px 12px;background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));border:1px solid var(--card-border);border-radius:10px;font-size:13px;text-decoration:none;backdrop-filter:blur(8px);transition:all .25s;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+.top .nav a:hover{background:linear-gradient(135deg,rgba(94,194,240,.16),rgba(94,194,240,.08));border-color:var(--accent);box-shadow:0 4px 12px rgba(94,194,240,.15);transform:translateY(-1px)}
 .top .theme-btn{position:static;margin-left:16px;flex:none}
 .row{display:flex;align-items:center;margin:8px 0}
 .row label{width:150px;color:var(--muted);font-size:14px;margin-right:12px}
@@ -41,13 +56,8 @@ h1{font-size:24px;margin-bottom:16px}
 .vid2 .row label{width:150px;min-width:150px}
 .vid2 .row input,.vid2 .row select{max-width:none;width:100%}
 .row button{margin-left:8px;flex:none}
-.btn{padding:8px 18px;border-radius:10px;border:none;cursor:pointer;font-size:13px;margin:4px;transition:all .2s}
-.btn-save{background:linear-gradient(135deg,#236e4a,#2d8a5c);color:#fff;box-shadow:0 2px 12px rgba(35,110,74,.3)}
-.btn-save:hover{box-shadow:0 4px 16px rgba(35,110,74,.4)}
-.btn-back{background:var(--btn-bg);color:var(--text);border:1px solid var(--card-border);backdrop-filter:blur(8px)}
-.btn-back:hover{background:var(--hover)}
-.btn-query{background:var(--hover);color:var(--accent);border:1px solid var(--card-border2);backdrop-filter:blur(8px);padding:5px 12px;font-size:12px;margin-left:8px;flex:none}
-.btn-query:hover{background:var(--hover);color:var(--accent-hover)}
+.btn-query{background:linear-gradient(135deg,rgba(94,194,240,.1),rgba(94,194,240,.04));color:var(--accent);border:1px solid var(--card-border2);backdrop-filter:blur(8px);padding:5px 12px;font-size:12px;margin-left:8px;flex:none;transition:all .25s}
+.btn-query:hover{background:linear-gradient(135deg,rgba(94,194,240,.2),rgba(94,194,240,.1));color:var(--accent-hover);transform:translateY(-1px)}
 #msg{padding:8px;margin:8px 0;border-radius:8px;display:none}
 #msg.ok{display:block;background:rgba(76,201,160,.08);border:1px solid rgba(76,201,160,.2);color:#4cc9a0}
 #msg.err{display:block;background:rgba(224,85,106,.08);border:1px solid rgba(224,85,106,.2);color:#e0556a}
@@ -65,18 +75,33 @@ h1{font-size:24px;margin-bottom:16px}
 .filter-row{display:grid;grid-template-columns:96px 96px 24px;gap:6px;align-items:center}
 .filter-row input{width:100%;min-width:0;background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:4px 6px;border-radius:4px;font-size:12px;font-family:monospace}
 .filter-row .del-btn{background:#c0394e;color:#fff;border:none;width:24px;height:24px;border-radius:4px;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0}
-.add-btn{background:var(--btn-bg);color:var(--muted);border:1px solid var(--card-border);padding:2px 10px;border-radius:6px;cursor:pointer;font-size:11px;margin-top:4px;transition:all .2s}
-.add-btn:hover{color:var(--text);background:var(--hover)}
+.add-btn{background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));color:var(--muted);border:1px solid var(--card-border);padding:2px 10px;border-radius:6px;cursor:pointer;font-size:11px;margin-top:4px;transition:all .25s}
+.add-btn:hover{color:var(--accent);background:linear-gradient(135deg,rgba(94,194,240,.14),rgba(94,194,240,.06));border-color:var(--accent)}
 .can-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
 #card_ai{grid-column:1 / -1;grid-row:1}
 #card_can{grid-column:1 / -1;grid-row:2}
 #card_net{grid-column:1;grid-row:3}
 #card_video{grid-column:2;grid-row:3}
+#card_cpufreq{grid-column:1;grid-row:4}
+#card_nettest{grid-column:2;grid-row:4}
+/* 网络测试卡片 */
+.nt-section{display:grid;grid-template-columns:100px 1fr auto;gap:10px 12px;align-items:center;margin-top:8px}
+.nt-row{display:contents}
+.nt-row>label{color:var(--muted);font-size:14px;text-align:center}
+.nt-input-group{display:flex;align-items:center;gap:8px}
+.nt-input-group input,.nt-input-group select{flex:1;background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;min-width:0}
+.nt-go{padding:6px 16px!important;font-size:13px!important;white-space:nowrap;min-width:60px;justify-content:center;transition:all .25s!important}
+.nt-go:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(94,194,240,.2)!important}
+.nt-result{font-size:12px;color:var(--muted);margin-left:8px;white-space:nowrap}
+.nt-result.testing{color:var(--accent)}
+.nt-result .nt-ok{color:#4cc9a0}
+.nt-result .nt-fail{color:#e0556a}
+.nt-result .nt-val{color:var(--text);font-weight:600}
 .can-grid .card{max-width:none;width:100%;margin-bottom:0}
 .can-grid .card h3{min-height:38px;display:flex;align-items:center;gap:8px}
 @media(max-width:640px){
   .can-grid{grid-template-columns:1fr}
-  #card_can,#card_net,#card_video{grid-column:1;grid-row:auto}
+  #card_can,#card_net,#card_video,#card_cpufreq,#card_nettest{grid-column:1;grid-row:auto}
   body{padding:12px}
   .top{flex-wrap:wrap;gap:8px}
   .top h1{font-size:20px}

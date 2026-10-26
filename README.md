@@ -1,6 +1,6 @@
 # rockchip-smart-gateway
 
-基于 epoll 的 CAN / CAN FD 数据采集、DBC 信号解析与 TCP/IP 通信解决方案，内置 Web 管理界面、视频流、AI 目标检测（RKNN + YOLO26）、网络录像与 systemd 看门狗，支持按系统信息自动识别可配置 CAN 通道。适用于 Rockchip（如 Orange Pi 5 Max）/ Linux 运行环境，使用 C11 实现。
+基于 epoll 的 CAN / CAN FD 数据采集、DBC 信号解析与 TCP/IP 通信解决方案，内置 Web 管理界面、视频流、AI 目标检测（RKNN + YOLO26）、网络录像与 systemd 看门狗。**全面适配 Rockchip 全系 RKNPU 平台**（RK3588 / RK3576 / RK356x / RV1126 / RV110x / RK3399PRO / RK1808 等），NPU / CPU / GPU 等硬件资源的核数与负载均按平台真实情况自动识别与展示。适用于 Rockchip（如 Radxa Rock 4D、Orange Pi 5 系列）等运行 Linux 的边缘设备，使用 C11 实现。
 
 ## 功能特性
 
@@ -11,11 +11,14 @@
 - 视频流服务：通过 V4L2 接入摄像头并输出 MJPEG 视频流
 - 视频帧环形队列：采集 / 推理 / 显示 / 编码四游标 + 分阶段缓冲池复用，V4L2 mmap 指针零拷贝入环（整帧只移动指针），内置分阶段丢帧计数器，仅凭计数器即可定位丢帧环节
 - AI 目标检测：RKNN + YOLO26（官方 ultralytics rknn 单输出格式），多线程推理池并行加速，检测结果实时画框推流
-- 网络录像：默认自动开启录屏（按天分目录 `recordings/YYYYMMDD/`，零拷贝取环形队列显示帧直接编码），Rockchip 硬件编码为 H.264 并封装 MP4(avc1) 文件，分辨率取自摄像头配置；下载界面与日志合并为「文件下载」页（/logs 双 TAB），支持下载、删除、打包下载
+- **平台自适应 NPU 调度（Rockchip 全系）**：按 SoC 实际 NPU 核心数自动选择合法核掩码，RKNN `rknn_set_core_mask` 不再报 `unavailable core mask`，多核自动分摊推理负载（RK3588 三核 / RK3576 双核 / RK356x 等单核平台均兼容）
+- **前端 NPU / CPU 核数自适应**：仪表盘按后端上报的真实核数动态渲染核格 —— 数量随平台变化、尺寸随数量自动缩放（核少大格、核多自动换行）
+- **GPU 监控自适应**：优先读取 GPU 负载（RK3588 等暴露 `load` 的驱动）；RK3576 / RK356x 等驱动未暴露 `load` 时，自动回退显示 GPU 当前运行频率，保证 GPU 卡片在所有平台都有真实信息
+- 网络录像：默认自动开启录屏（按天分目录 `recordings/YYYYMMDD/`），Rockchip 硬件编码为 H.264 并封装 MP4(avc1) 文件，分辨率取自摄像头配置
 - systemd 看门狗：监控关键线程心跳，防止异常卡死
 - 热更新配置：Web 页面修改后立即生效
-- 运行维护：日志按日期与大小自动轮转（按天分目录、文件名不含重复日期）、清理脚本、部署脚本
-- 数据注入 / 提取：REST API 提供 CAN 报文注入（/api/can/send）、DBC 上传热加载、配置写入，以及视频流 / CAN 原始帧与 DBC 解码信号 / 录像 / 日志等数据提取
+- 运行维护：日志按日期与大小自动轮转（按天分目录）、清理脚本、部署脚本
+- 数据注入 / 提取：REST API 提供 CAN 报文注入（`/api/can/send`）、DBC 上传热加载、配置写入，以及视频流 / CAN 原始帧与 DBC 解码信号 / 录像 / 日志等数据提取
 
 ## 系统架构
 
@@ -40,7 +43,7 @@
 | `tcp` | TCP 监听、连接管理与数据收发 |
 | `http` | HTTP 管理服务主循环、REST API、MJPEG 推流 |
 | `video` | V4L2 采集：mmap 指针零拷贝入环形队列，推进 produce 游标 |
-| `ai` | 事件驱动消费环槽（infer 游标）、推理任务投递；模型加载与多线程推理池（每线程独立 rknn context）；推理后分两路：rgb 写槽走显示链路，NMS 结果（名称+置信度+坐标）入结果队列供 composer 消费 |
+| `ai` | 事件驱动消费环槽（infer 游标）、推理任务投递；模型加载与多线程推理池（每线程独立 rknn context，按 `i % 实际NPU核数` 绑定核）；推理后分两路：rgb 写槽走显示链路，NMS 结果（名称+置信度+坐标）入结果队列供 composer 消费 |
 | `rec` | 网络录像：从环取显示帧 NV12 直接编码（encode 游标；AI 停摆 >1s 置 fatal 整体宕机）→ H.264 硬件编码 → MP4(avc1) 封装落盘 |
 | `watchdog` | 线程心跳监控与 `sd_notify` |
 
@@ -62,7 +65,7 @@ V4L2 摄像头（MJPEG / YUYV）
 
 - 帧环形队列：32 槽 × 四阶段缓冲（raw / rgb / nv12 / jpeg），四游标（produce / infer / display / encode）单调推进；缓冲按需分配、游标越过后回池复用——整帧只移动指针，无逐帧 malloc / memcpy
 - 采集：`video_task` V4L2 mmap 缓冲 DQBUF 后指针直接进槽（延迟 QBUF 至消费完成，真正零拷贝），环满才丢弃（capture_dropped）；优先 MJPEG，失败回退 YUYV；分辨率取 `video_width` / `video_height`
-- 推理：`ai_task` 阻塞等待 produce 游标（事件驱动，不再按固定间隔采样），取槽随任务投递 worker（任务存续期间钉住 raw 槽，采集不回收），解码 RGB 写入槽；推理后数据流分两路——rgb 写槽走显示链路，NMS 后处理结果（目标名称 + 置信度 + 标注框四点坐标）入结果队列（纯元数据，不携带缓冲）
+- 推理：`ai_task` 阻塞等待 produce 游标（事件驱动），取槽随任务投递 worker（任务存续期间钉住 raw 槽，采集不回收），解码 RGB 写入槽；推理后数据流分两路——rgb 写槽走显示链路，NMS 后处理结果（目标名称 + 置信度 + 标注框四点坐标）入结果队列（纯元数据，不携带缓冲）
 - 显示：composer 事件驱动消费结果队列（排空只留最新，旧结果丢弃计 render_skipped），按 seq 定位 rgb_done 槽画框写 nv12 / jpeg 进槽；每个 `/video/mjpeg*` 连接一个独立线程各自拷贝最新 JPEG 推流（multipart/x-mixed-replace），慢客户端不钉槽、不阻塞其他连接
 - 编码：`rec_task` 从 encode 游标零拷贝窃取显示帧 NV12（用毕归还缓冲池）；与编码器分辨率不符时跳过（encode_skipped）
 - AI 必要流程：模型缺失 / NPU 不可用时启动直接失败退出（systemd failed），`/video/mjpeg_ai` 返回 503，不回退原始帧；运行期 AI 停摆 >1s（无新标注帧）不回退原始帧，直接整体宕机（退出码 1 → systemd Restart=on-failure 拉起）
@@ -76,27 +79,6 @@ V4L2 摄像头（MJPEG / YUYV）
 | `GET /api/video/caps` | 摄像头能力（分辨率 / 格式） |
 | `GET /api/video/stats` | 环形队列分阶段计数器（produce_seq / 各阶段丢帧 / 缓冲池占用），回答"摄像头 vs 推理"丢帧问题 |
 | `GET /api/video/devices` | 可用视频设备列表 |
-
-### 帧率实测与丢帧诊断
-
-实测环境：Orange Pi 5 Max + USB 摄像头，设定 30fps @1280×720 MJPEG（2026-08-28 实测）：
-
-| 节点（游标） | 实测帧率 | 依据 |
-| --- | --- | --- |
-| 采集（produce） | 24.9 | `/api/video/stats` produce_seq 增量（18s 449 帧），driver_dropped 0 |
-| 推理（infer） | 24.9 | 事件驱动逐帧消费，infer_dropped 0（推理零丢帧） |
-| 显示（display） | ~24.9 | composer 最新帧优先渲染；HTTP 客户端实测 24.3（客户端轮询合并少量帧），render_skipped 仅个别 |
-| 编码（encode） | 24.8 | `/api/rec/status` 帧数增量（12s 298 帧），encode_skipped 0 |
-
-结论：设定 30fps 下相机实际送达 ~25fps（缺口在相机侧），推理 / 显示 / 编码全链路与送达率持平，管线固有损失 <3%。
-
-`/api/video/stats` 返回各阶段计数器，服务日志每 60s 汇总一次（"ring 60s" 行），仅凭计数器即可定位丢帧环节：
-
-- `driver_dropped`：驱动侧丢帧（V4L2 sequence 缺口）→ 相机 / USB 带宽问题
-- `capture_dropped`：环形队列满丢帧 → 下游消费过慢
-- `infer_dropped`：推理跟不上采集 → 加大 `ai_threads` / 降低分辨率
-- `render_skipped`：composer 最新帧优先跳过的旧结果（并行推理乱序完成时正常出现，持续偏大说明推理节拍抖动）
-- `encode_skipped`：与编码器分辨率不符跳过的帧（配置变更瞬间的正常过渡）
 
 ### CAN 数据流向
 
@@ -121,7 +103,7 @@ CAN 数据注入接口（写数据到总线）：
 | `POST /api/can/send` | 注入一帧 CAN/CAN FD 报文（body：`ifname=can0&id=0x123&data=01 02 03`，支持 0x 前缀、空格/逗号/连字符分隔） |
 | `POST /api/can/toggle` | 控制接口 up / down（body：`ifname=can0&action=up`） |
 | `POST /api/can/dbc` | 上传 DBC 数据库（`?ifname=can0`，body 为 DBC 文本，校验通过后热加载并落盘） |
-| `POST /api/config` | 写入配置（body 带 `target` 指定模块：`can` / `net` / `video`，只应用该模块参数并重启对应模块；缺省为全量） |
+| `POST /api/config` | 写入配置（body 带 `target` 指定模块：`can` / `net` / `video` / `ai`，只应用该模块参数并重启对应模块；缺省为全量） |
 
 CAN 数据提取接口（从总线读数据）：
 
@@ -146,17 +128,26 @@ CAN 数据提取接口（从总线读数据）：
 - TCP 服务面向外部客户端：连接数上限 `max_clients`（默认 16），非阻塞 + epoll 管理，部分写由 wbuf 续发
 - 发送链路（TX 队列 + eventfd + 广播/定向分发）已就绪，供后续业务注入（如 CAN 帧转发到 TCP 客户端）；当前版本 TCP 接收方向不转发数据
 
-### 其他数据接口
+### 系统监控接口
 
-| 接口 | 说明 |
+`GET /api/system` 返回 CPU / 内存 / 磁盘 / 温度 / 网络速度 / NPU / GPU 等实时数据：
+
+| 字段 | 说明 |
 | --- | --- |
-| `GET /video/mjpeg_ai` | 见上文视频流向 |
-| `GET /api/rec/list` / `GET /recfile/<日期/文件名>` / `GET /api/rec/pack` | 录像数据提取（列表 / 单文件下载 / 打包下载） |
-| `GET /api/logs` / `GET /logfile/<日期/文件名>` / `GET /logs/pack` | 日志数据提取 |
-| `GET /api/system` | 系统状态（CPU / 内存 / 磁盘 / 温度 / 网络速度） |
-| `GET /api/network` / `GET /api/network/ifaces` | 网络状态与接口信息 |
-| `POST /api/reboot` / `POST /api/shutdown` | 设备控制（root） |
-| `POST /api/rec/start` / `POST /api/rec/stop` | 录像控制（root，默认已自动开启） |
+| `cpu_cores` | 每个 CPU 核心的累计使用率（数组，长度 = 真实核心数） |
+| `npu_count` / `npu_cores` | NPU 核心数及各核负载（%，-1 表示缺失）；核数由内核 `debugfs` 实际解析，自动匹配 RK3588 三核 / RK3576 双核 / 单核 |
+| `gpu` | GPU 负载百分比（%）。**仅 RK3588 等暴露 `load` 的驱动可用**，其余平台为 -1 |
+| `gpu_freq` | GPU 当前运行频率（MHz）。当驱动未暴露 `load` 时（如 RK3576 / RK356x），以此作为 GPU 卡片的真实指标回退显示 |
+
+## 平台适配（Rockchip 全系 RKNPU）
+
+本项目的 NPU 调度与硬件展示均**按平台实际情况自适应**，无需针对具体 SoC 改代码：
+
+- **NPU 核掩码自动适配**：`source/ai/rknn_yolo.c` 启动时读 `/proc/device-tree/compatible` 推断 NPU 核心数（RK3588/3588S=3、RK3576/3576M=2、RK356x / RV1126 / RV110x / RK3399PRO / RK1808=1，未知安全回退单核），仅使用 ≤ 合法上限的单核掩码（`1u << (idx % cores)`），根除 `rknn_set_core_mask: unavailable core mask` 运行时报错，并保留多核分摊。
+- **AI 推理线程数按 NPU 核数自适应**：`ai_threads` 配置项会被取整为「NPU 核数的整数倍」（范围 `cores~15`，默认每核 1 个），各核等量分配 worker；不再写死为 3 的倍数（旧版仅适配 RK3588 三核）。
+- **前端 NPU / CPU 核格自适应**：仪表盘按 `npu_count` / `cpu_cores.length` 动态生成核格，数量随平台变化、尺寸随数量缩放（核少单排大格、核多自动换行）。
+- **GPU 监控自适应**：见上 `gpu` / `gpu_freq` 说明。
+- **模型按平台同步**：`build.sh` 在编译前自动按平台（`/proc/device-tree/compatible` 或 `-P` 指定）选取/转换对应 RKNN 模型（如 `config/models/rk3576/yolo26.rknn`），详见下文「构建」。
 
 ## 目录结构
 
@@ -172,7 +163,7 @@ rockchip-smart-gateway/
 │   │   ├── log.h                     # 日志接口
 │   │   ├── ring.h                    # 无锁环形队列
 │   │   ├── epoll_util.h              # epoll 辅助工具
-│   │   └── version.h                 # 版本宏（CMake 生成）
+│   │   └── version.h                 # 版本宏（CMake 生成，gitignore）
 │   ├── can/
 │   │   ├── can_queue.h               # CAN 收发队列
 │   │   ├── can_socket.h              # SocketCAN 接口
@@ -191,84 +182,32 @@ rockchip-smart-gateway/
 │   │   ├── frame_ring.h              # 视频帧环形队列（四游标零拷贝 + 分阶段丢帧计数）
 │   │   ├── video_rec.h               # 网络录像模块接口
 │   │   ├── h264_encoder.h            # Rockchip 硬件 H.264 编码器封装接口（V4L2 M2M rkvenc）
-│   │   └── rec_mp4.h                 # MP4(avc1) 封装器接口（纯封装，可独立测试）
+│   │   └── rec_mp4.h                 # MP4(avc1) 封装器接口
 │   ├── ai/
-│   │   ├── rknn_yolo.h               # RKNN YOLO 框架入口
+│   │   ├── rknn_yolo.h               # RKNN YOLO 框架入口（含 npu_core_count 声明）
 │   │   ├── yolo_types.h              # 检测结果结构定义
 │   │   ├── yolo_image.h              # 图像处理接口（JPEG / YUYV / letterbox）
 │   │   ├── yolo_postprocess.h        # 单输出后处理接口
-│   │   ├── yolo_draw.h               # 画框接口
-│   │   └── rknn_api.h                # RKNN 运行时头文件（rknn-toolkit2 提供）
+│   │   └── yolo_draw.h               # 画框接口
 │   └── watchdog/
 │       └── watchdog.h                # 看门狗接口
 ├── source/                           # 源代码
-│   ├── core/
-│   │   ├── main.c                    # 入口、模块总表、线程编排
-│   │   ├── config.c                  # 配置读写
-│   │   └── log.c                     # 日志实现
-│   ├── can/
-│   │   ├── can_queue.c               # CAN 收发队列实现
-│   │   ├── can_socket.c              # SocketCAN 收发
-│   │   └── dbc_parser.c              # DBC 解析实现
-│   ├── tcp/
-│   │   ├── tcp_server.c              # TCP 服务实现
-│   │   └── tcp_queue.c               # TCP 发送队列实现
-│   ├── http/
-│   │   ├── http.c                    # HTTP 路由与静态文件
-│   │   ├── http_util.c               # HTTP 表单/URL 解析工具
-│   │   ├── http_api_can.c            # CAN 相关 API
-│   │   ├── http_api_dbc.c            # DBC 解码结果 API
-│   │   ├── http_api_config.c         # 配置 API
-│   │   ├── http_api_network.c        # 网络 API
-│   │   ├── http_api_system.c         # 系统 API
-│   │   ├── http_api_video.c          # 视频 API
-│   │   ├── http_api_rec.c            # 录像 API（start/stop/status/list/delete/pack/下载）
-│   │   ├── http_api_ai.c             # AI 文件上传 API（模型 / 类别标签，热重载）
-│   │   ├── http_logs.c               # 日志查看
-│   │   └── http_reboot.c             # 重启 / 关机
-│   ├── video/
-│   │   ├── video_stream.c            # V4L2 视频流实现（采集零拷贝入环）
-│   │   ├── frame_ring.c              # 帧环形队列实现（游标推进 / 缓冲池回池 / 引用计数 / 丢弃计数）
-│   │   ├── video_rec.c               # 网络录像模块实现（录制线程 + encode 游标取帧）
-│   │   ├── h264_encoder.c            # H.264 硬件编码器实现（V4L2 M2M MPLANE，NV12→H.264）
-│   │   └── rec_mp4.c                 # MP4(avc1) 封装器实现
-│   ├── ai/
-│   │   ├── rknn_yolo.c               # 模型加载 + 多线程推理池 + 事件驱动取环槽 + 结果队列（NMS 结果）+ 渲染 composer
-│   │   ├── yolo_image.c              # 图像处理实现（libjpeg / 格式转换 / letterbox+padding）
-│   │   ├── yolo_postprocess.c        # YOLO26 单输出后处理（框已解码，阈值 + NMS，letterbox 逆映射）
-│   │   └── yolo_draw.cpp             # 画框实现（OpenCV cv::rectangle / cv::putText）
-│   └── watchdog/
-│       └── watchdog.c                # 看门狗实现
-├── tests/
-│   └── frame_ring_test.c             # 帧环形队列单元测试（游标推进 / 回池 / 回绕 / 引用计数 / 丢弃计数）
-├── html/                             # Web 前端
-│   ├── index.html                    # 监控页（边缘智能网关仪表盘）
-│   ├── config.html                   # 配置页
-│   ├── dbc.html                      # DBC 解析页
-│   ├── logs.html                     # 文件下载页（日志 / 录像双 TAB）
-│   ├── css/
-│   │   ├── common.css                # 全局共享样式
-│   │   ├── config.css                # 配置页样式
-│   │   ├── logs.css                  # 文件下载页样式
-│   │   └── monitor.css               # 监控页样式
-│   └── js/
-│       ├── theme.js                  # 主题切换
-│       ├── config.js                 # 配置页脚本
-│       ├── dbc.js                    # DBC 页脚本
-│       ├── logs.js                   # 文件下载页脚本（日志 / 录像）
-│       └── monitor.js                # 监控页脚本
-├── config/                           # 运行时配置
-│   ├── config.txt                    # 主配置
-│   ├── can0.dbc                      # CAN0 通道 DBC 模板
-│   └── can1.dbc                      # CAN1 通道 DBC 模板
-├── docs/                             # 文档与截图
-├── scripts/
-│   ├── build.sh                      # 构建脚本
-│   └── deploy.sh                     # 部署脚本
-├── bin/                              # 可执行输出（构建生成）
-├── build/                            # CMake 构建目录（构建生成）
-├── logs/                             # 运行日志
-├── recordings/                       # 网络录像输出目录（MP4，运行生成）
+│   ├── core/      main.c / config.c / log.c
+│   ├── can/       can_queue.c / can_socket.c / dbc_parser.c
+│   ├── tcp/       tcp_server.c / tcp_queue.c
+│   ├── http/      http.c / http_util.c / http_api_*.c（can/dbc/config/network/system/video/rec/ai/logs/reboot）
+│   ├── video/     video_stream.c / frame_ring.c / video_rec.c / h264_encoder.c / rec_mp4.c
+│   ├── ai/        rknn_yolo.c / yolo_image.c / yolo_postprocess.c / yolo_draw.cpp
+│   └── watchdog/  watchdog.c
+├── tests/        frame_ring_test.c
+├── html/         index.html / config.html / dbc.html / logs.html + css/ + js/
+├── config/       运行时配置（config.txt 为设备专属，已 gitignore；另含 can0.dbc / can1.dbc 模板）
+├── docs/         文档与截图
+├── scripts/     build.sh / deploy.sh
+├── bin/         可执行输出（构建生成，gitignore）
+├── build/       CMake 构建目录（构建生成，gitignore）
+├── logs/        运行日志（运行生成，gitignore）
+├── recordings/  网络录像输出（运行生成，gitignore）
 └── .gitignore
 ```
 
@@ -277,8 +216,7 @@ rockchip-smart-gateway/
 - gcc / g++（C11 / C++11，检测框渲染模块为 C++ 并直接调用 OpenCV）
 - cmake ≥ 3.10
 - libsystemd
-- libnl-3
-- libnl-route-3
+- libnl-3 / libnl-route-3
 - librknnrt（板载 RKNN 运行时，模型由 rknn-toolkit2 转换，支持板端或 PC）
 - libjpeg（JPEG 解码与 AI 画框用）
 - OpenCV 4（core + imgproc，检测框画框与标签文字渲染）
@@ -294,27 +232,27 @@ apt install build-essential cmake libsystemd-dev libnl-3-dev libnl-route-3-dev l
 ## 构建
 
 ```bash
-cd /home/orangepi/rockchip-smart-gateway
+cd /home/qianruo/rockchip-smart-gateway
 ./scripts/build.sh            # Release（默认），自动辨识当前板卡 RKNPU 平台
 ./scripts/build.sh -D         # Debug
 ./scripts/build.sh -P rk3576  # 显式指定目标平台（覆盖自动辨识，如交叉部署场景）
 ./scripts/build.sh -C         # 清理构建产物与 logs
 ```
 
-`build.sh` 构建前会自动检查依赖（工具链 + 开发库 + librknnrt），缺失时打印具体缺项与安装命令并中止，避免在 cmake / make 阶段才暴露晦涩报错；`libavcodec-dev`（FFmpeg rkmpp 后端）为可选依赖，缺失时自动回退 V4L2 rkvenc 编码。
+`build.sh` 构建前会自动检查依赖（工具链 + 开发库 + librknnrt），缺失时打印具体缺项与安装命令并中止。
 
 **平台辨识与模型同步**（RKNPU 全系兼容）：
 - 平台默认从 `/proc/device-tree/compatible` 自动辨识（如 `rockchip,rk3576` → `rk3576`），`-P` 可显式覆盖
-- 编译前自动同步 `config/yolo26.rknn`：优先部署 `config/models/<平台>/yolo26.rknn`；运行模型平台不匹配或缺失时调用 ultralytics 官方 CLI（`yolo export model=<权重> format=rknn name=<平台>`）在板端自动转换（见「RKNN 转换工作流」），转换产物按平台存入 `config/models/` 复用
+- 编译前自动同步 `config/yolo26.rknn`：优先部署 `config/models/<平台>/yolo26.rknn`；运行模型平台不匹配或缺失时调用 ultralytics 官方 CLI（`yolo export model=<权重> format=rknn name=<平台>`）在板端自动转换，转换产物按平台存入 `config/models/` 复用
 
 构建产物：`./bin/rockchip-smart-gateway`
 
-版本信息由 CMake 在配置阶段生成到 `include/core/version.h`，包括 `APP_NAME`、`APP_VERSION`、`APP_GIT_COMMIT`、`APP_GIT_BRANCH`、`APP_GIT_DIRTY`、`APP_BUILD_TYPE`、`APP_BUILD_DATE`。
+版本信息由 CMake 在配置阶段生成到 `include/core/version.h`（含 `APP_NAME` / `APP_VERSION` / `APP_GIT_COMMIT` / `APP_GIT_BRANCH` / `APP_GIT_DIRTY` / `APP_BUILD_TYPE` / `APP_BUILD_DATE`），该文件为生成物，已加入 `.gitignore`。
 
 ## 运行方式
 
 ```bash
-cd /home/orangepi/rockchip-smart-gateway
+cd /home/qianruo/rockchip-smart-gateway
 ./bin/rockchip-smart-gateway
 ```
 
@@ -322,7 +260,7 @@ cd /home/orangepi/rockchip-smart-gateway
 
 ## systemd 部署
 
-前置条件：已通过 `./scripts/build.sh -R` 生成可执行文件。
+前置条件：已通过 `./scripts/build.sh` 生成可执行文件。
 
 ```bash
 sudo ./scripts/deploy.sh        # 安装并启动（默认动作，等同 -i）
@@ -338,9 +276,10 @@ sudo ./scripts/deploy.sh -h     # 查看帮助
 | --- | --- |
 | `bin/<可执行文件>` | `/opt/.../bin/` |
 | `html/` | `/opt/.../html/` |
+| `config/`（含 config.txt 与 DBC 模板） | `/opt/.../config/`（部署前先回拉设备端 config.txt，避免网页修改丢失） |
 | systemd 服务单元 | `/etc/systemd/system/` |
 
-> 注：`config/config.txt` 与 `config/` 下的 DBC 模板文件**不会**被复制；首次部署使用程序内置默认值，后续通过 Web 配置页保存配置、上传 DBC 文件。`logs/` 与 `recordings/` 目录由部署脚本创建。
+> 注：`config/config.txt` 为设备专属运行配置（如 `video_device` 因板卡而异），已加入 `.gitignore`；`include/core/version.h` 为编译生成物，同样 gitignore。二者均不纳入版本库，避免每次构建/部署产生改动噪音。
 
 服务名称：`rockchip-smart-gateway`
 
@@ -384,7 +323,7 @@ journalctl -u rockchip-smart-gateway -f
 | `ai_conf` | `<n>` | 置信度阈值百分比（1~100），默认 25（0.25） |
 | `ai_nms` | `<n>` | NMS IoU 阈值百分比（1~100），默认 45（0.45） |
 | `ai_interval_ms` | `<n>` | 推理节流间隔（10~5000ms），默认 10（每帧推理） |
-| `ai_threads` | `<n>` | 推理工作线程数（3 的倍数：3~15，自动向下取整），默认 3；每线程独立 rknn context，worker i 绑定 NPU 核 i%3 |
+| `ai_threads` | `<n>` | 推理工作线程数，**自动取整为 NPU 核数的整数倍（范围 `cores`~15，默认每核 1 个）**；每线程独立 rknn context，worker `i` 按 `i % 实际NPU核数` 绑定 NPU 核。配置页下拉框随平台 NPU 核数动态生成（如双核平台为 2/4/6/8/10/12/14，各标注「每核 N 个」） |
 
 未提供配置文件时，将从系统枚举实际存在的 CAN 接口（netlink 路由，`kind=="can"`）并套用默认参数；若系统无法枚举到接口，则回退到 `can0` / `can1`。
 
@@ -402,10 +341,13 @@ journalctl -u rockchip-smart-gateway -f
 服务默认监听 HTTP 端口 80，提供以下入口：
 
 - `/`：仪表盘（视频流下方实时显示客户端实测帧率徽标）
+  - **CPU 卡片**：总体使用率 + 逐核核格（数量/尺寸随平台自适应）
+  - **NPU 卡片**：逐核负载核格（`npu_count` 个，数量/尺寸随平台自适应）
+  - **GPU 卡片**：优先显示负载百分比；驱动未暴露 `load` 时显示当前运行频率（MHz）并标注「负载不可用」
 - `/dbc`：DBC 信号解析
 - `/config`：运行配置
-  - 视频卡：格式 / 分辨率 / 帧率合并为单一下拉框（设备、格式两行纵向排列，标签定宽、下拉框等宽对齐），按相机真实能力枚举（`/api/video/caps`），选择即保存（`video_fps`）并立即生效
-  - AI 卡：推理参数 2×2 网格排列（无启用开关——AI 为必要流程），与模型文件上传左右分栏（1:1），上传热生效
+  - 视频卡：格式 / 分辨率 / 帧率合并为单一下拉框，按相机真实能力枚举（`/api/video/caps`），选择即保存并立即生效
+  - AI 卡：推理参数 2×2 网格排列（无启用开关——AI 为必要流程），与模型文件上传左右分栏；**「推理线程数」下拉框按平台 NPU 核数动态生成**（如双核平台为 2/4/6/8/10/12/14，各标注「每核 N 个」），保存时后端自动取整为核数整数倍
   - CAN 卡：波特率 / DBC 上传 / CAN FD / FD 波特率一行配置，通道下拉框标注 FD 能力
   - 网络卡：IP 模式（关闭 / 静态 / DHCP），仅「静态」模式显示 IP / 掩码 / 网关输入框
   - 顶部「导出配置」：一键打包下载整个 config 目录（config.txt / DBC / 标签 / RKNN 模型），便于备份与移植
@@ -415,118 +357,26 @@ journalctl -u rockchip-smart-gateway -f
 
 | 方法 | 路径 | 认证 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/api/system` | 无 | 系统监控数据 |
+| GET | `/api/system` | 无 | 系统监控数据（含 `cpu_cores` / `npu_count` / `npu_cores` / `gpu` / `gpu_freq` 等） |
 | GET | `/api/can` | 无 | CAN 接口状态 |
 | GET | `/api/can/ifaces` | 无 | 系统 CAN 接口枚举（含 FD 能力） |
-| GET | `/api/can/decoded` | 无 | 接收方向 DBC 解析后的最近 CAN 信号（JSON） |
-| GET | `/api/can/decoded/tx` | 无 | 发送方向 DBC 解析后的最近 CAN 信号（JSON） |
-| GET | `/api/can/frames` | 无 | 最近接收的原始 CAN 帧 |
-| POST | `/api/can/send` | root | 发送 CAN 帧 |
-| POST | `/api/can/dbc?ifname=` | root | 上传某通道的 DBC 文件 |
-| POST | `/api/can/toggle` | root | 切换 CAN 接口开关 |
-| POST | `/api/ai/upload?type=model` | root | 上传 YOLO26 `.rknn` 模型（≤64MB，校验 RKNN magic），原子替换后热重载推理池 |
-| POST | `/api/ai/upload?type=names` | root | 上传类别标签文件（≤256KB，1~128 行，每行 ≤23 字符），原子替换后热重载 |
-| GET/POST | `/api/config` | root | 读取 / 写入配置 |
-| GET | `/api/config/export` | root | 打包下载整个 config 目录（config.txt / DBC / 标签 / RKNN 模型，tar.gz） |
-| GET | `/api/network` | 无 | 网络统计 |
-| GET | `/api/network/ifaces` | 无 | 网络接口信息 |
-| GET | `/api/video/devices` | 无 | 摄像头设备列表 |
-| GET | `/api/video/caps` | 无 | 视频参数列表 |
-| GET | `/api/video/stats` | 无 | 环形队列分阶段计数器（produce_seq / 各阶段丢帧 / 缓冲池占用），定位丢帧环节 |
-| GET | `/video/mjpeg` | 无 | MJPEG 视频流 |
-| GET | `/video/mjpeg_ai` | 无 | AI 画框 MJPEG 视频流（AI 不可用返回 503，不回退原始帧） |
-| POST | `/api/rec/start` | root | 手动开始网络录像（默认已自动开启，一般无需调用） |
-| POST | `/api/rec/stop` | root | 手动停止网络录像（自动写 moov 收尾；停止后不再自动续录） |
-| GET | `/api/rec/status` | 无 | 录制状态（录制中 / 文件名 / 帧数 / 字节数 / 帧率） |
-| GET | `/api/rec/list` | 无 | 录像文件列表（按时间倒序；`日期/文件名` 两段式，按天分目录） |
-| POST | `/api/rec/delete` | root | 删除录像文件（body 为 `日期/文件名`） |
-| GET | `/recfile/<日期/文件名>` | root | 下载录像文件 |
-| GET | `/api/rec/pack` | root | 打包下载全部录像（tar.gz，上限 2GB） |
-| GET | `/api/logs`、`/logs`、`/logfile/*` | root | 日志列表 / 下载 / 删除 |
-| GET | `/logs/pack` | root | 打包下载全部日志（tar.gz） |
+| GET | `/api/can/frames` | 无 | 最近原始接收帧 |
+| GET | `/api/can/decoded` | 无 | 接收方向 DBC 解码信号 |
+| GET | `/api/can/decoded/tx` | 无 | 发送方向 DBC 解码信号 |
+| POST | `/api/can/send` | 无 | 注入 CAN/CAN FD 报文 |
+| POST | `/api/can/toggle` | 无 | 控制接口 up/down |
+| POST | `/api/can/dbc` | 无 | 上传 DBC（热加载） |
+| POST | `/api/config` | 无 | 写入配置（`target` 指定模块） |
+| GET | `/api/video/caps` | 无 | 摄像头能力 |
+| GET | `/api/video/stats` | 无 | 环形队列分阶段计数器 |
+| GET | `/api/video/devices` | 无 | 可用视频设备 |
+| GET | `/video/mjpeg` | 无 | 原始 MJPEG 流 |
+| GET | `/video/mjpeg_ai` | 无 | AI 画框 MJPEG 流 |
+| GET | `/api/rec/list` / `GET /recfile/<日期/文件名>` / `GET /api/rec/pack` | 无 | 录像列表 / 单文件 / 打包下载 |
+| GET | `/api/logs` / `GET /logfile/<日期/文件名>` / `GET /logs/pack` | 无 | 日志查看 / 下载 / 打包 |
+| POST | `/api/rec/start` / `POST /api/rec/stop` | root | 录像控制（默认已自动开启） |
+| POST | `/api/reboot` / `POST /api/shutdown` | root | 设备控制 |
 
-> 认证说明：监控页（`/`）与 DBC 页（`/dbc`）需要普通用户认证；配置页（`/config`）、文件下载页（`/logs`）与所有写操作接口要求管理员权限（root 或 sudo 组成员，如 orangepi）。
+## 许可
 
-## AI 目标检测
-
-RKNN + YOLO26（官方 ultralytics 单输出格式 `(1, 84, 8400)`，fp16，官方 mean/std），由 `rknn-toolkit2` 转换后在板载 NPU 推理：
-
-- 模型加载：`ai_model` 指向 `.rknn` 文件，校验输出必须为单个检测头 `(1, 84, 8400)`；类别名由 `ai_names` 加载（COCO 格式，每行一个类名，缺失回退内置 COCO 80 类）
-- 流水线：`ai_task` 事件驱动等待环形队列 produce 游标（不再按固定间隔采样；`ai_interval_ms` 为相邻取帧最小间隔，默认 10ms 在相机帧率下无感）→ 取槽随任务投递（任务存续期间钉住 raw 槽，采集不回收）→ N 个推理 worker（独立 rknn context，worker i 优先绑定 NPU 核 i%3：RK3588 三核 / RK3576 双核尽量分摊（请求不存在的核自动回退），单核 RKNPU 平台 RK3566/RK3568/RK3562 自动回退核 0，全系兼容）→ 推理后分两路：rgb 写槽（显示链路），NMS 结果（名称+置信度+坐标）入结果队列 → composer 消费队列最新结果（乱序完成时跳过旧结果，计 render_skipped）→ EMA 平滑（α=0.4，同类 IoU≥0.3 匹配）→ 渲染进槽（nv12 / jpeg）→ 显示 / 编码游标消费
-- 画框渲染：直接调用 OpenCV（`cv::rectangle` 3px 实色 + LINE_AA 抗锯齿；`cv::putText` Hershey Simplex 白色粗体字 + 实色底块，默认挂在框顶外侧，顶部不足落框内），每一帧都输出标注帧，不混入未推理的原始帧
-- 热更新：`ai_threads` / `ai_conf` / `ai_nms` / `ai_interval_ms` 保存后立即重建推理池生效，无需重启进程；`ai_model` / `ai_names` 可通过 Web 配置页或 API 上传（校验 RKNN magic / 标签格式后原子替换文件并热重载）
-- 必要流程：AI 推理不可停用；模型缺失 / NPU 驱动未加载 / 推理失败时直接报错——启动路径整体失败退出（systemd 进入 failed），运行期热重载失败由 API 返回 `saved_reload_failed`，画框流 `/video/mjpeg_ai` 返回 503（不回退原始帧）
-
-### RKNN 转换工作流
-
-推荐直接在板端完成（也支持 x86_64 PC）：ultralytics 新版内置 RKNN 导出，且 `rknn-toolkit2 >= 2.3.0` 提供 aarch64 wheel，Rockchip 板端即可转换，`build.sh` 编译时自动调用：
-
-1. 初始化转换环境（板端一次性）。rknn-toolkit2 不在 PyPI 发布，且 aarch64 wheel 仅提供到 Python 3.12（Armbian 系统自带 Python 通常更新，如 3.13 装不了 cp312 wheel），因此用 uv 建项目内独立 `.venv`（`build.sh` 会优先使用 `.venv/bin/yolo`）：
-   ```bash
-   sudo apt-get install -y python3-pip
-   pip3 install --break-system-packages uv
-   uv venv .venv --python 3.12
-   uv pip install --python .venv/bin/python ultralytics
-   # rknn-toolkit2（>= 2.3.0 提供 aarch64 wheel）从官方仓库下载对应架构/Python 版本的 wheel 安装：
-   # https://github.com/airockchip/rknn-toolkit2/tree/master/rknn-toolkit2/packages
-   # 板端选 packages/arm64/，PC 选 packages/x86_64/，按 venv 的 Python 版本（cp312）匹配文件名
-   uv pip install --python .venv/bin/python rknn_toolkit2-2.5.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
-   ```
-   > 国内网络直连 GitHub / raw.githubusercontent.com 受限时，可用镜像加速下载 wheel（如 `https://ghfast.top/<原URL>`）。若系统配置了不可达的全局代理，安装前先 `env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy` 清除再执行。
-2. 转换：`build.sh` 编译时检测到模型缺失 / 平台不匹配时，直接调用 ultralytics 官方 CLI 完成板端转换（平台参数由脚本自动辨识后传入，无需手填）：
-   ```bash
-   yolo export model=yolo26n.pt format=rknn name=rk3576
-   ```
-   权重文件（默认 `yolo26n.pt`，环境变量 `YOLO_WEIGHTS` 可指定）缺失时由 ultralytics 自动下载最新官方权重（首次转换需联网，下载后缓存到 `config/models/weights/` 复用）；`name` 为目标平台（`rk3588` / `rk3576` / `rk3568` / `rk3566` / `rk3562` / `rk2118` / `rv1126b`），fp16 权重，单输出 `(1, 84, 8400)`
-3. 产物：统一存入 `config/models/<平台>/yolo26.rknn`，`build.sh` 编译时自动部署到 `config/yolo26.rknn`
-4. 部署验证：Web 配置页上传 `yolo26.rknn`（或放入 `config/` 并设置 `ai_model`），同时上传类别标签文件（或 `config/coco.names`）；日志输出 `ai: model '...' loaded, classes '...' (80), input 640x640, single output, threads N (NPU core i%3)` 即转换正确
-
-> 仓库不自带模型权重文件：RKNN 模型与转换时平台绑定，跨芯片不可直接复用，因此云端不保留任何 `.rknn` / `.pt` 权重；首次 `build.sh` 编译时会自动辨识当前板卡平台并转换生成 `config/yolo26.rknn`（yolo26n 官方权重，fp16，单输出 (1,84,8400)，官方 mean/std，无内置 NMS）。
-
-## 网络录像
-
-服务启动后默认自动录制，依赖 Rockchip 硬件 H.264 编码器（`/dev/video-enc0`，rkvenc）：
-
-- 触发方式：默认自动开启（无需 Web 操作）；也保留 `/api/rec/start` / `/api/rec/stop` 手动接口（手动停止后不再自动续录）
-- 按天分目录：录制文件存于 `recordings/YYYYMMDD/`，每天一个子目录，自动跨天切换；文件名规范化只保留时间（`rec_HHMMSS.mp4`，同秒冲突自动追加序号），日志文件同理为 `rockchip-smart-gateway_info.log` / `_error.log`
-- 分辨率：录制分辨率取摄像头配置 `video_width` / `video_height` 的选定值（任意分辨率），未配置时退回首帧探测
-- 帧率：开录前连续抓帧实测（不写死），钳制在 1~120 fps
-- 编码链路：零拷贝取环形队列显示帧 NV12（AI 必要流程，停摆直接宕机，无原始帧回退）→ `/dev/video-enc0` 硬件编码 H.264（CBR，码率 `宽×高×2`，钳制 300k~16M，GOP = fps×2）→ 封装
-- 封装格式：标准 ISO BMFF MP4（avc1 track，SPS/PPS 取自编码器，stss 记录 IDR 关键帧），`ftyp + mdat + moov`，moov 末尾回写记录每帧偏移与时长，Chrome / VLC / ffplay 均可播放
-- 下载管理：与日志下载界面合并为「文件下载」页（`/logs`），TAB 切换日志 / 录像列表，支持下载、删除、打包下载（日志 `/logs/pack`、录像 `/api/rec/pack`，录像打包上限 2GB；文件名白名单 + 两段式路径校验防穿越）
-- 上限保护：单次录制帧数与 mdat 体积上限（防止 32 位 size 溢出），达到上限自动收尾并续录下一段
-
-## 看门狗机制
-
-- 通过模块总表 `g_modules[]` 为 `can_recv`、`can_send`、`tcp`、`http`、`video`、`ai`、`rec`、`main` 注册心跳监控
-- 每个模块带 `timeout` / `max_miss` 参数；`watchdog` 线程自身 `timeout=0`，不监督自己
-- 线程以名字注册 / 喂狗 / 注销，超时日志可直接定位到具体线程名（如 `thread 'http'`）
-- 心跳超时将触发整体退出
-- 每 5 秒调用 `sd_notify("WATCHDOG=1")`（`WatchdogSec=10` 的一半）
-
-## 日志管理
-
-日志按级别与日期归档，按天分目录（日期已体现在目录名，文件名不再重复日期），单文件超过 10MB 自动轮转。
-
-```text
-logs/
-└── YYYYMMDD/
-    ├── rockchip-smart-gateway_info.log
-    └── rockchip-smart-gateway_error.log
-```
-
-## 清理说明
-
-执行 `./scripts/build.sh -C` 时，将删除以下内容：
-
-- `build/`
-- `bin/`
-- `include/core/version.h`（由 CMake 生成的版本头）
-- CMake 生成文件（`CMakeCache.txt`、`CMakeFiles`、`cmake_install.cmake`、`Makefile`）
-- 并重建空 `logs/`
-
-## 许可证
-
-本项目采用 **GPL-3.0-or-later**（GNU 通用公共许可证 v3 或更高版本）发布，全文见仓库根目录 `LICENSE` 文件。所有自有源文件顶部均带 `SPDX-License-Identifier: GPL-3.0-or-later` 声明。
-
-> 注意：`include/ai/rknn_api.h` 来自 Rockchip RKNN SDK，版权归 Rockchip 所有，不受本仓库 GPL 声明约束；`librknnrt` 运行时库按 Rockchip 官方授权使用。
+GPL-3.0-or-later。

@@ -19,8 +19,8 @@
       var arr = ifname ? latest.filter(function(e) { return e.ifname === ifname; }) : latest;
 
       if (!arr.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无解析数据（请确认已配置 dbc_path 且总线上有匹配报文）</td></tr>';
-        meta.textContent = '';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty" data-i18n="暂无解析数据（请确认已配置 dbc_path 且总线上有匹配报文）">' + t('暂无解析数据（请确认已配置 dbc_path 且总线上有匹配报文）') + '</td></tr>';
+        setI18nText(meta, '');
         return;
       }
 
@@ -36,7 +36,7 @@
           + '</tr>';
       }
       tbody.innerHTML = h;
-      meta.textContent = '共 ' + arr.length + ' 条记录，每 0.5s 自动刷新';
+      setI18nText(meta, '{count}条记录，每 0.5s 自动刷新', {count: arr.length});
     }
 
     function refreshChannels() {
@@ -45,7 +45,7 @@
       latest.forEach(function(e) { set[e.ifname] = 1; });
       var names = Object.keys(set).sort();
 
-      var h = '<option value="">全部</option>';
+      var h = '<option value="" data-i18n="全部">' + t('全部') + '</option>';
       names.forEach(function(n) {
         h += '<option value="' + esc(n) + '">' + esc(n) + '</option>';
       });
@@ -61,8 +61,8 @@
         refreshChannels();
         render();
       } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败</td></tr>';
-        meta.textContent = '';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty" data-i18n="加载失败">' + t('加载失败') + '</td></tr>';
+        setI18nText(meta, '');
       }
     }
 

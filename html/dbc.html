@@ -4,54 +4,61 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DBC 信号解析</title>
+<title data-i18n="DBC 信号解析">DBC 信号解析</title>
 <link rel="stylesheet" href="/css/common.css">
 <script src="/js/theme.js"></script>
+<script src="/js/i18n.js"></script>
+<script src="/js/auth.js"></script>
 <style>
-.top-bar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:16px}
-.top-bar .nav{margin:0 0 0 auto;display:flex;gap:14px}
-.top-bar .theme-btn{position:static;margin-left:16px;flex:none}
-.nav a{padding:6px 12px;border:1px solid var(--card-border2);border-radius:10px;background:var(--card-bg)}
-.table-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:13px}
+.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
+.tb-left{display:flex;align-items:center;gap:8px}
+.tb-right{display:flex;align-items:center;gap:6px}
+.tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+.top-bar .theme-btn{position:static;flex:none}
+.table-wrap{overflow-x:auto;border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:13px;background:var(--card-bg);backdrop-filter:blur(12px);border:1px solid var(--card-border);border-radius:10px;overflow:hidden}
 th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--card-border);white-space:nowrap}
-th{color:var(--muted);font-weight:600}
+th{color:var(--muted);font-weight:600;background:rgba(94,194,240,.03)}
 td{color:var(--text)}
 .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
-.id{color:var(--accent)}
-.name{color:var(--name)}
+.id{color:var(--accent);text-shadow:0 0 8px var(--glow)}
+.name{color:var(--name);font-weight:500}
 .sig{white-space:normal;word-break:break-all}
 .empty{color:var(--muted-2);text-align:center;padding:32px}
 .meta{color:var(--muted-2);font-size:12px;margin-top:8px}
 .card-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
 .filter{font-size:13px;color:var(--muted)}
-.filter select{margin-left:6px;padding:5px 10px;border:1px solid var(--card-border2);border-radius:8px;background:var(--card-bg);color:var(--text)}
+.filter select{margin-left:6px;padding:5px 10px;border:1px solid var(--card-border2);border-radius:8px;background:var(--input-bg);color:var(--text);backdrop-filter:blur(4px);transition:border-color .2s}
+.filter select:hover{border-color:var(--accent)}
+.card:nth-child(2) h3{border-left-color:#34d399}
+.card:nth-child(3) h3{border-left-color:#818cf8}
 </style>
 </head>
 <body>
 <div class="top-bar">
-  <h1>DBC 信号解析</h1>
-  <div class="nav">
-    <a href="/">📊 仪表盘</a>
-    <a href="/config">⚙ 配置</a>
-    <a href="/logs">📁 文件下载</a>
+  <div class="tb-left"><h1>📡 <span data-i18n="DBC 信号解析">DBC 信号解析</span></h1></div>
+  <div class="tb-right">
+    <a href="/" class="btn btn-back">📊 <span data-i18n="仪表盘">仪表盘</span></a>
+    <a href="/config" class="btn btn-back">⚙ <span data-i18n="配置">配置</span></a>
+    <a href="/logs" class="btn btn-back">📁 <span data-i18n="文件下载">文件下载</span></a>
+    <button id="langBtn" class="theme-btn" onclick="toggleLang()" data-i18n-title="切换语言">EN</button>
+    <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" data-i18n-title="切换主题">🌙</button>
   </div>
-  <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换主题">🌙 主题</button>
 </div>
 <div class="card">
   <div class="card-head">
-    <h3>最近解析的 CAN 信号</h3>
-    <label class="filter">通道
-      <select id="channel"><option value="">全部</option></select>
+    <h3 data-i18n="最近解析的 CAN 信号">最近解析的 CAN 信号</h3>
+    <label class="filter"><span data-i18n="通道">通道</span>
+      <select id="channel"><option value="" data-i18n="全部">全部</option></select>
     </label>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>#</th><th>接口</th><th>ID</th><th>报文</th><th>信号值</th></tr>
+        <tr><th>#</th><th data-i18n="接口">接口</th><th>ID</th><th data-i18n="报文">报文</th><th data-i18n="信号值">信号值</th></tr>
       </thead>
       <tbody id="rows">
-        <tr><td colspan="5" class="empty">等待数据…</td></tr>
+        <tr><td colspan="5" class="empty" data-i18n="等待数据…">等待数据…</td></tr>
       </tbody>
     </table>
   </div>
@@ -59,18 +66,18 @@ td{color:var(--text)}
 </div>
 <div class="card">
   <div class="card-head">
-    <h3>最近发送的 CAN 信号（发送方向）</h3>
-    <label class="filter">通道
-      <select id="channel-tx"><option value="">全部</option></select>
+    <h3 data-i18n="最近发送的 CAN 信号（发送方向）">最近发送的 CAN 信号（发送方向）</h3>
+    <label class="filter"><span data-i18n="通道">通道</span>
+      <select id="channel-tx"><option value="" data-i18n="全部">全部</option></select>
     </label>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>#</th><th>接口</th><th>ID</th><th>报文</th><th>信号值</th></tr>
+        <tr><th>#</th><th data-i18n="接口">接口</th><th>ID</th><th data-i18n="报文">报文</th><th data-i18n="信号值">信号值</th></tr>
       </thead>
       <tbody id="rows-tx">
-        <tr><td colspan="5" class="empty">等待数据…</td></tr>
+        <tr><td colspan="5" class="empty" data-i18n="等待数据…">等待数据…</td></tr>
       </tbody>
     </table>
   </div>

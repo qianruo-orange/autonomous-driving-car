@@ -1,20 +1,24 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* monitor.css — 仪表盘页面样式 毛玻璃水滴风（主题变量化） */
-/* 顶栏与下方 .monitor-grid 同栅格（minmax(0,1fr) 16px 420px）：
-   文件下载右缘对齐视频卡右缘，datetime 左缘对齐 CPU 卡左缘 */
-.top-bar{display:grid;grid-template-columns:minmax(0,1fr) 16px 420px;align-items:center;margin-bottom:4px}
-.tb-left{display:flex;align-items:center;min-width:0;flex-wrap:wrap}
-.tb-left .nav{margin:0 0 0 auto}
-.tb-right{display:flex;align-items:center;min-width:0}
-#datetime{color:var(--muted);font-size:16px}
-.top-bar .nav a{padding:5px 12px;font-size:12px}
-.top-bar .theme-btn{position:static;margin-left:16px;flex:none}
-.pwr{padding:5px 12px;border-radius:10px;text-decoration:none;font-size:12px;margin-left:10px;border:1px solid rgba(255,255,255,.12)}
-.pwr-reboot{background:#c0394e;color:#fff}
-.pwr-shutdown{background:#8b4513;color:#fff}
+/* 顶栏：左侧标题，右侧导航按钮 */
+.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
+.tb-left{display:flex;align-items:center}
+.tb-right{display:flex;align-items:center;gap:6px}
+.tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
+#datetime{color:var(--muted);font-size:13px;margin-left:4px}
+.top-bar .theme-btn{position:static;margin-left:0;flex:none}
+.pwr{padding:5px 12px;border-radius:10px;text-decoration:none;font-size:12px;border:1px solid rgba(255,255,255,.12);transition:all .25s;font-weight:500}
+.pwr-reboot{background:linear-gradient(135deg,#c0394e,#d94459);color:#fff;box-shadow:0 2px 8px rgba(192,57,78,.25)}
+.pwr-reboot:hover{box-shadow:0 4px 16px rgba(192,57,78,.4);transform:translateY(-1px)}
+.pwr-shutdown{background:linear-gradient(135deg,#8b4513,#a0522d);color:#fff;box-shadow:0 2px 8px rgba(139,69,19,.25)}
+.pwr-shutdown:hover{box-shadow:0 4px 16px rgba(139,69,19,.4);transform:translateY(-1px)}
 .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
 .pair{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
 .pair .card{min-width:0;display:flex;flex-direction:column}
+.pair .card h3{border-left-color:#34d399}
+.pair .card:nth-child(2) h3{border-left-color:#fbbf24}
+.pair .card:nth-child(3) h3{border-left-color:#38bdf8}
+.pair .card:nth-child(4) h3{border-left-color:#818cf8}
 
 /* 新的主界面布局：视频在左，状态框在右。
    margin-top 12px：卡片上缘距顶栏按钮约 12px（原 6px 视觉上过近） */
@@ -43,8 +47,8 @@
 .stats{display:flex;gap:20px;flex-wrap:wrap}
 .stat{text-align:center} .stat span{display:block;font-size:12px;color:var(--muted)}
 .nav{display:flex;gap:12px;margin:16px 0}
-.nav a{padding:6px 14px;background:var(--btn-bg);border:1px solid var(--card-border);border-radius:10px;font-size:13px;backdrop-filter:blur(8px);transition:all .2s}
-.nav a:hover{background:var(--hover);border-color:var(--card-border2)}
+.nav a{padding:6px 14px;background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));border:1px solid var(--card-border);border-radius:10px;font-size:13px;backdrop-filter:blur(8px);transition:all .25s;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+.nav a:hover{background:linear-gradient(135deg,rgba(94,194,240,.16),rgba(94,194,240,.08));border-color:var(--accent);box-shadow:0 4px 12px rgba(94,194,240,.15);transform:translateY(-1px)}
 .core-bars{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:2px 8px;margin-top:8px}
 /* NPU 核数与尺寸由 monitor.js 按平台动态设置 */
 .core-bar{height:6px;background:var(--track);border-radius:3px;overflow:hidden;box-shadow:inset 0 1px 2px var(--inset-shadow)}
@@ -73,9 +77,9 @@
 
 /* ---- 网络录像 ---- */
 .rec-bar{display:flex;align-items:center;gap:10px;margin-top:10px}
-.rec-btn{padding:6px 14px;background:var(--btn-bg);border:1px solid var(--card-border);border-radius:10px;font-size:13px;cursor:pointer;backdrop-filter:blur(8px);transition:all .2s;color:var(--text)}
-.rec-btn:hover{background:var(--hover)}
-.rec-btn.rec-on{background:rgba(224,85,106,.15);border-color:#e0556a;color:#e0556a}
+.rec-btn{padding:6px 14px;background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));border:1px solid var(--card-border);border-radius:10px;font-size:13px;cursor:pointer;backdrop-filter:blur(8px);transition:all .25s;color:var(--text);box-shadow:0 2px 6px rgba(0,0,0,.08)}
+.rec-btn:hover{background:linear-gradient(135deg,rgba(94,194,240,.16),rgba(94,194,240,.08));border-color:var(--accent);transform:translateY(-1px)}
+.rec-btn.rec-on{background:linear-gradient(135deg,rgba(224,85,106,.15),rgba(224,85,106,.08));border-color:#e0556a;color:#e0556a;box-shadow:0 2px 10px rgba(224,85,106,.2)}
 .rec-status{font-size:13px;color:var(--muted);font-family:monospace}
 .rec-status.rec-live{color:#e0556a;font-weight:bold;animation:rec-blink 1s infinite}
 @keyframes rec-blink{50%{opacity:.35}}

@@ -212,18 +212,20 @@ void *video_rec_task(void *arg)
                 usleep(100000);
                 continue;
             }
-            /* 码率 = 宽 × 高 × 系数/100（配置页"码率系数"，默认 175 即 1.75bps/px，
-               720p≈1.6M，VBR 目标）。上限由直播链路决定而非画质偏好：实测 WiFi
-               链路只能稳定送达 ~2Mbps，超出后 fMP4 走 TCP 不会丢帧但会持续堆积，
-               表现为直播越看越滞后、最终断流重连。编码器同时喂录像与直播，
-               故上调系数前须确认链路能承载（H.264 同画质比 H.265 多吃约三成码率，
-               画质不足时优先调低分辨率而不是无脑加码率） */
-            int ppx = app->cfg->video_bitrate_ppx;
-            if (ppx <= 0) ppx = 175;
+            /* bitrate = width * height * COEFF/100, with a fixed COEFF=175 (1.75 bps/px,
+               ~1.6M at 720p, VBR target). The ceiling is set by the live-stream link, not by
+               quality preference: in practice WiFi can only reliably deliver ~2Mbps, and beyond
+               that fMP4 over TCP won't drop frames but keeps buffering, so the live view lags more
+               and more until it drops and reconnects. The same encoder feeds both recording and
+               the live stream, so before raising the coefficient confirm the link can handle it
+               (H.264 at equal quality costs ~30% more bitrate than H.265; when quality is lacking,
+               lower the resolution first rather than blindly raising the bitrate). */
+            int ppx = 175;  /* fixed coefficient: 1.75 bps/px */
             int bitrate = (int)((uint64_t)pw * ph * (unsigned)ppx / 100u);
             if (bitrate < 300000)  bitrate = 300000;
             if (bitrate > 16000000) bitrate = 16000000;
-            h264_encoder_t *enc = h264_encoder_create(pw, ph, fps, bitrate);
+            h264_encoder_t *enc = h264_encoder_create(pw, ph, fps, bitrate,
+                strcmp(app->cfg->video_codec, "hardware") == 0 ? H264_CODEC_HARDWARE : H264_CODEC_SOFTWARE);
             if (!enc) {
                 init_fail_cnt++;
                 pthread_mutex_lock(&g_rec.lock);

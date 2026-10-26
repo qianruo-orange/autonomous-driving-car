@@ -129,3 +129,14 @@ endif()
 add_executable(frame_ring_test tests/frame_ring_test.c source/video/frame_ring.c)
 target_include_directories(frame_ring_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(frame_ring_test PRIVATE pthread)
+
+# Exercise the real fMP4 stream client over a local socketpair. Keep assertions
+# enabled in Release builds because they validate emitted sample timestamps.
+add_executable(h264_timeline_test tests/h264_timeline_test.c)
+target_include_directories(h264_timeline_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/source/video)
+target_compile_options(h264_timeline_test PRIVATE -UNDEBUG)
+target_link_libraries(h264_timeline_test PRIVATE pthread)
+
+enable_testing()
+add_test(NAME frame_ring COMMAND frame_ring_test)
+add_test(NAME h264_timeline COMMAND h264_timeline_test)

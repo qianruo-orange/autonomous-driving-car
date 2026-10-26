@@ -13,11 +13,28 @@
     document.getElementById('dbr').style.display = document.getElementById('fd').value === 'on' ? 'flex' : 'none';
   }
 
-  function show(t, c) {
-    var m = document.getElementById('msg');
-    m.className = t;
-    m.textContent = c;
+  function cardStatus(cardId, type, msg, values) {
+    var el = document.getElementById('status_' + cardId);
+    if (!el) return;
+    el.className = 'card-status ' + type;
+    setI18nText(el, msg, values);
+    if (type === 'ok') setTimeout(function() { el.className = 'card-status'; setI18nText(el, ''); }, 3000);
+    else setTimeout(function() { el.className = 'card-status'; setI18nText(el, ''); }, 5000);
   }
+
+  function updateFileName(input) {
+    var label = document.querySelector('[data-file-name="' + input.id + '"]');
+    if (!label) return;
+    if (input.files && input.files.length) {
+      label.removeAttribute('data-i18n');
+      label.textContent = input.files[0].name;
+    } else setI18nText(label, '未选择文件');
+  }
+  document.querySelectorAll('[data-file-picker]').forEach(function(button) {
+    var input = document.getElementById(button.getAttribute('data-file-picker'));
+    button.addEventListener('click', function() { input.click(); });
+    input.addEventListener('change', function() { updateFileName(input); });
+  });
 
   function setSwitch(up) {
     document.getElementById('st').textContent = up ? '\ud83d\udfe2' : '\ud83d\udd34';
@@ -65,6 +82,7 @@
     chkFd();
     setFilters(f.filters || []);
     document.getElementById('dbc').value = '';
+    updateFileName(document.getElementById('dbc'));
   }
 
   window.onCanSel = function() {
@@ -95,7 +113,7 @@
   window.uploadDbc = async function() {
     var input = document.getElementById('dbc');
     var file = input.files && input.files[0];
-    if (!file) { show('err', '请先选择 DBC 文件'); return; }
+    if (!file) { cardStatus('can', 'err', '请先选择 DBC 文件'); return; }
     var n = curName();
     try {
       var r = await authFetch('/api/can/dbc?ifname=' + n, {
@@ -105,17 +123,17 @@
       });
       var j = r.ok ? await r.json() : null;
       if (j && j.result === 'ok') {
-        show('ok', '✓ ' + n + ' DBC 已上传（' + j.messages + ' 报文 / ' + j.signals + ' 信号）');
+        cardStatus('can', 'ok', '✓ DBC 已上传（{messages} 报文 / {signals} 信号）', {messages: j.messages, signals: j.signals});
       } else {
-        show('err', '上传失败(' + r.status + ')');
+        cardStatus('can', 'err', '上传失败 ({status})', {status: r.status});
       }
-    } catch(e) { show('err', '上传失败'); }
-    setTimeout(function() { document.getElementById('msg').className = ''; }, 3000);
+    } catch(e) { cardStatus('can', 'err', '上传失败'); }
   };
 
   var capsData = null;
   var camDevs = [];   /* 系统枚举到的摄像头列表 [{path,card},...] */
-  var cfgVideoFps = 0;   /* 配置中的帧率（0=自动），页面加载时用于回选合并下拉框 */
+  var cfgVideoFps = 0;   /* configured frame rate (0=auto), used to reselect on load */
+  var codecCaps = null;  /* codec-driven resolution/fps capability */
   var selVidFps = 0;     /* 当前选中项（格式/分辨率/帧率合一）的帧率，保存时提交 */
 
   /* 页面加载时扫描可用摄像头 */
@@ -129,69 +147,95 @@
       for (var i = 0; i < camDevs.length; i++)
         sel.innerHTML += '<option value="' + camDevs[i].path + '">' + camDevs[i].path + ' - ' + camDevs[i].card + '</option>';
       if (camDevs.length === 0)
-        sel.innerHTML = '<option value="">无可用摄像头</option>';
-    } catch(e) { sel.innerHTML = '<option value="">扫描失败</option>'; }
+        sel.innerHTML = '<option value="" data-i18n="无可用摄像头">' + t('无可用摄像头') + '</option>';
+    } catch(e) { sel.innerHTML = '<option value="" data-i18n="扫描失败">' + t('扫描失败') + '</option>'; }
   }
 
   window.queryCaps = async function() {
     var dev = document.getElementById('vd').value;
     var sel = document.getElementById('vr');
-    if (!dev) { sel.innerHTML = '<option value="">-- 请选择设备 --</option>'; return; }
-    sel.innerHTML = '<option value="">查询中...</option>';
+    if (!dev) { sel.innerHTML = '<option value="">-- select device --</option>'; return; }
+    sel.innerHTML = '<option value="">querying...</option>';
     try {
       var r = await fetch('/api/video/caps?device=' + encodeURIComponent(dev));
-      if (!r.ok) { sel.innerHTML = '<option value="">设备不可用</option>'; return; }
+      if (!r.ok) { sel.innerHTML = '<option value="">device unavailable</option>'; return; }
       capsData = await r.json();
-      sel.innerHTML = '';
-
-      /* 格式 / 分辨率 / 帧率合并为一个下拉框：每项 = fmt + 尺寸 + @fps */
-      var curW = parseInt(document.getElementById('vw').value) || 0;
-      var curH = parseInt(document.getElementById('vh').value) || 0;
-      var matchVal = '';   /* 尺寸 + 帧率都匹配 */
-      var matchSize = '';  /* 仅尺寸匹配（配置帧率为 0 时用） */
-
-      for (var i = 0; i < capsData.formats.length; i++) {
-        var f = capsData.formats[i];
-        for (var j = 0; j < f.sizes.length; j++) {
-          var s = f.sizes[j];
-          var fps = s.fps && s.fps.length ? s.fps : [60,50,30,25,20,15,10,5];
-          for (var k = 0; k < fps.length; k++) {
-            var val = i + '_' + j + '_' + fps[k];
-            var txt = f.fmt + '  ' + s.w + '×' + s.h + (s.label ? ' (' + s.label + ')' : '') + ' @ ' + fps[k] + ' FPS';
-            sel.innerHTML += '<option value="' + val + '">' + txt + '</option>';
-            if (s.w === curW && s.h === curH) {
-              if (!matchSize) matchSize = val;
-              if (cfgVideoFps > 0 && fps[k] === cfgVideoFps) matchVal = val;
-            }
-          }
-        }
-      }
-
-      if (matchVal) sel.value = matchVal;
-      else if (matchSize) sel.value = matchSize;
-      else if (sel.options.length > 0) sel.selectedIndex = 0;
-      onResChange();
-    } catch(e) { sel.innerHTML = '<option value="">查询失败</option>'; }
+      rebuildResOptions();
+    } catch(e) { sel.innerHTML = '<option value="">query failed</option>'; }
   };
 
   window.onResChange = function() {
     var sel = document.getElementById('vr');
     var val = sel.value;
-    if (!val || !capsData) return;
-    var parts = val.split('_');
-    var fi = parseInt(parts[0]), ri = parseInt(parts[1]);
-    var s = capsData.formats[fi].sizes[ri];
-    document.getElementById('vw').value = s.w;
-    document.getElementById('vh').value = s.h;
-    selVidFps = parseInt(parts[2], 10) || 0;   /* 帧率随选项一起保存 */
-    onBpxChange();                             /* 分辨率变了，实际码率跟着变 */
+    if (!val) return;
+    var p = val.split('_');
+    var w = parseInt(p[0], 10), h = parseInt(p[1], 10);
+    var fps = parseInt(p[2], 10) || 0;
+    document.getElementById('vw').value = w;
+    document.getElementById('vh').value = h;
+    selVidFps = fps;                 /* frame rate saved together with the option */
+    onBpxChange();                  /* resolution changed -> actual bitrate changes */
+  };
+
+  /* Load codec-driven capability (resolution/fps) for the given backend. */
+  async function loadCodecCaps(codec) {
+    try {
+      var r = await fetch('/api/video/codeccaps?codec=' + encodeURIComponent(codec));
+      if (!r.ok) return;
+      codecCaps = await r.json();
+    } catch(e) {}
+  }
+
+  /* Rebuild the resolution/fps dropdown from the ACTIVE codec's capability.
+     Optionally intersected with the selected camera's real caps so we never
+     offer a resolution the camera cannot produce. */
+  function rebuildResOptions() {
+    var sel = document.getElementById('vr');
+    if (!codecCaps || !codecCaps.caps) return;
+    var curW = parseInt(document.getElementById('vw').value) || 0;
+    var curH = parseInt(document.getElementById('vh').value) || 0;
+    var matchVal = '', matchSize = '';
+    sel.innerHTML = '';
+    for (var i = 0; i < codecCaps.caps.length; i++) {
+      var s = codecCaps.caps[i];
+      if (capsData && capsData.formats) {
+        var ok = false;
+        for (var fi = 0; fi < capsData.formats.length && !ok; fi++) {
+          var fmt = capsData.formats[fi];
+          for (var si = 0; si < fmt.sizes.length; si++)
+            if (fmt.sizes[si].w === s.w && fmt.sizes[si].h === s.h) { ok = true; break; }
+        }
+        if (!ok) continue;   /* camera cannot produce this size */
+      }
+      var fps = (s.fps && s.fps.length) ? s.fps : [30,25,20,15,10,5];
+      for (var k = 0; k < fps.length; k++) {
+        var val = s.w + '_' + s.h + '_' + fps[k];
+        var txt = s.w + 'x' + s.h + (s.label ? ' (' + s.label + ')' : '') + ' @ ' + fps[k] + ' FPS';
+        sel.innerHTML += '<option value="' + val + '">' + txt + '</option>';
+        if (s.w === curW && s.h === curH) {
+          if (!matchSize) matchSize = val;
+          if (cfgVideoFps > 0 && fps[k] === cfgVideoFps) matchVal = val;
+        }
+      }
+    }
+    if (matchVal) sel.value = matchVal;
+    else if (matchSize) sel.value = matchSize;
+    else if (sel.options.length > 0) sel.selectedIndex = 0;
+    onResChange();
+  }
+
+  /* Codec switch: reload capability and rebuild the resolution list. */
+  window.onCodecChange = async function() {
+    await loadCodecCaps(document.getElementById('vc').value);
+    rebuildResOptions();
   };
 
   /* 码率系数 → 实际码率提示：与后端同式 bitrate = 宽×高×系数/100（bps） */
   window.onBpxChange = function() {
     var hint = document.getElementById('vbp_hint');
     if (!hint) return;
-    var ppx = parseInt(document.getElementById('vbp').value, 10);
+    var vbp = document.getElementById('vbp'); if (!vbp) return;
+    var ppx = parseInt(vbp.value, 10);
     var w = parseInt(document.getElementById('vw').value, 10);
     var h = parseInt(document.getElementById('vh').value, 10);
     if (!ppx || !w || !h) { hint.textContent = ''; return; }
@@ -215,7 +259,7 @@
   /* 加载网络接口列表，填充"绑定网卡"下拉框 */
   async function loadIfaces() {
     var sel = document.getElementById('bind');
-    sel.innerHTML = '<option value="">所有网卡</option>';
+    sel.innerHTML = '<option value="" data-i18n="所有网卡">' + t('所有网卡') + '</option>';
     try {
       var r = await fetch('/api/network/ifaces');
       if (!r.ok) return;
@@ -236,9 +280,27 @@
     } catch(e) {}
   }
 
+  function buildAiThreadSelect(npu) {
+    var cores = (npu && npu > 0) ? npu : 1;
+    var sel = document.getElementById('ai_th');
+    if (!sel) return;
+    sel.innerHTML = '';
+    for (var k = 1; k * cores <= 15; k++) {
+      var val = k * cores;
+      var option = document.createElement('option');
+      option.value = String(val);
+      setI18nText(option, '{threads}（每核 {perCore} 个）', {threads: val, perCore: k});
+      sel.appendChild(option);
+    }
+    var hint = document.getElementById('ai_th_hint');
+    setI18nText(hint, '（NPU {cores} 核）', {cores: cores});
+  }
+
   async function loadCfg() {
     try {
       var cfg = await (await fetch('/api/config')).json();
+      var sys = null;
+      try { sys = await (await fetch('/api/system')).json(); } catch(e) {}
       document.getElementById('tp').value = cfg.tcp_port || '';
       document.getElementById('mc').value = cfg.max_clients || '';
       document.getElementById('bind').value = cfg.tcp_bind || '';
@@ -252,18 +314,31 @@
         if (camDevs[di].path === cfgDev) { devInList = true; break; }
       vd.value = devInList ? cfgDev : (camDevs.length ? camDevs[0].path : '');
       if (vd.value) setTimeout(queryCaps, 500);
+      var vcEl = document.getElementById('vc');
+      if (vcEl) {
+        vcEl.value = (cfg.video_codec === 'hardware') ? 'hardware' : 'software';
+        await loadCodecCaps(vcEl.value);
+        rebuildResOptions();
+      }
+      var vcEl = document.getElementById('vc');
+      if (vcEl) {
+        vcEl.value = (cfg.video_codec === 'hardware') ? 'hardware' : 'software';
+        await loadCodecCaps(vcEl.value);
+        rebuildResOptions();
+      }
 
       /* 分辨率由设备实际能力（/api/video/caps）决定：
          配置中有有效值则匹配选中，否则默认取第一个支持的分辨率 */
       document.getElementById('vw').value = cfg.video_width > 0 ? cfg.video_width : '';
       document.getElementById('vh').value = cfg.video_height > 0 ? cfg.video_height : '';
       cfgVideoFps = cfg.video_fps || 0;
-      document.getElementById('vbp').value = cfg.video_bitrate_ppx || 175;
+      var vbp = document.getElementById('vbp'); if (vbp) vbp.value = cfg.video_bitrate_ppx || 175;
       onBpxChange();
 
-      /* AI 检测配置（必要流程；线程数下拉框为 3 的倍数；置信度/NMS 显示为百分比） */
+      /* AI 检测配置（必要流程；线程数下拉框按平台 NPU 核数动态生成；置信度/NMS 显示为百分比） */
+      buildAiThreadSelect(sys ? sys.npu_count : (cfg.npu_count || 1));
       var el = document.getElementById('ai_th');
-      if (el) el.value = String(cfg.ai_threads || 3);
+      if (el) el.value = String(cfg.ai_threads || (sys && sys.npu_count) || 1);
       document.getElementById('ai_cf').value = Math.round((cfg.ai_conf || 0.25) * 100);
       document.getElementById('ai_nm').value = Math.round((cfg.ai_nms || 0.45) * 100);
       document.getElementById('ai_iv').value = cfg.ai_interval_ms || 10;
@@ -272,11 +347,10 @@
       document.getElementById('ip_a').value = cfg.ip_addr || '';
       document.getElementById('ip_m').value = cfg.ip_mask || '';
       document.getElementById('ip_g').value = cfg.ip_gw || '';
-      var cur = '当前 ' + (cfg.ip_cur_if || '') + '  ';
-      cur += cfg.ip_cur_addr ? ('IP ' + cfg.ip_cur_addr) : '无 IP';
-      if (cfg.ip_cur_mask) cur += ' / ' + cfg.ip_cur_mask;
-      if (cfg.ip_cur_gw) cur += ' 网关 ' + cfg.ip_cur_gw;
-      document.getElementById('ip_cur').textContent = cur;
+      var ipKey = !cfg.ip_cur_addr ? '当前 {interface}  无 IP' :
+        cfg.ip_cur_gw ? '当前 {interface}  IP {address}{mask} 网关 {gateway}' : '当前 {interface}  IP {address}{mask}';
+      setI18nText(document.getElementById('ip_cur'), ipKey, {interface: cfg.ip_cur_if || '',
+        address: cfg.ip_cur_addr || '', mask: cfg.ip_cur_mask ? ' / ' + cfg.ip_cur_mask : '', gateway: cfg.ip_cur_gw || ''});
       chkIpMode();
 
       canNames = Object.keys(cfg.cans || {});
@@ -295,19 +369,22 @@
       var sel = document.getElementById('canSel');
       sel.innerHTML = '';
       if (canNames.length === 0) {
-        sel.innerHTML = '<option value="0">无可用 CAN 接口</option>';
+        sel.innerHTML = '<option value="0" data-i18n="无可用 CAN 接口">' + t('无可用 CAN 接口') + '</option>';
         document.getElementById('cfg').style.display = 'none';
         document.getElementById('hint').style.display = 'block';
-        document.getElementById('hint').textContent = '系统未检测到 CAN 设备';
+        setI18nText(document.getElementById('hint'), '系统未检测到 CAN 设备');
       } else {
         for (var i = 0; i < canNames.length; i++) {
           var nm = canNames[i];
           var tag = '';
           if (canFD[nm] === 1) tag = ' (CAN-FD)';
-          else if (canFD[nm] === 0) tag = ' (无 CAN-FD)';
-          sel.innerHTML += '<option value="' + i + '">' + nm + tag + '</option>';
+          var option = document.createElement('option');
+          option.value = String(i);
+          if (canFD[nm] === 0) setI18nText(option, '{interface} (无 CAN-FD)', {interface: nm});
+          else option.textContent = nm + tag;
+          sel.appendChild(option);
         }
-        document.getElementById('hint').textContent = '接口已关闭，开启后可配置';
+        setI18nText(document.getElementById('hint'), '接口已关闭，开启后可配置');
       }
       if (curCan >= canNames.length) curCan = 0;
       sel.value = String(curCan);
@@ -329,19 +406,25 @@
   window.loadCfg = loadCfg;
 
   /* 提交一个模块的配置（target 指定模块，后端只应用该模块并重启对应模块） */
-  async function postConfig(d) {
+  async function postConfig(d, cardId) {
     try {
       var r = await authFetch('/api/config', {method: 'POST', body: new URLSearchParams(d)});
-      show(r.ok ? 'ok' : 'err', r.ok ? '✓ 已保存，模块已重启生效' : '失败(' + r.status + ')');
-      if (r.ok) setTimeout(function() { document.getElementById('msg').className = ''; }, 3000);
-    } catch(e) { show('err', '请求失败'); }
+      if (cardId) {
+        if (r.ok) cardStatus(cardId, 'ok', '✓ 已保存');
+        else cardStatus(cardId, 'err', '请求失败 ({status})', {status: r.status});
+      }
+      return r.ok;
+    } catch(e) {
+      if (cardId) cardStatus(cardId, 'err', '请求失败');
+      return false;
+    }
   }
 
   /* 保存当前 CAN 通道配置并重新配置该通道 */
   window.saveCan = async function() {
     collectCan();
     var name = canNames[curCan];
-    if (!name) { show('err', '无可用 CAN 接口'); return; }
+    if (!name) { cardStatus('can', 'err', '无可用 CAN 接口'); return; }
     var f = cansCfg[name] || {};
     var d = {target: 'can'};
     d['ifname' + curCan] = name;
@@ -354,7 +437,7 @@
       d['filter_id_' + curCan + '_' + k] = filters[k].id;
       d['filter_mask_' + curCan + '_' + k] = filters[k].mask;
     }
-    await postConfig(d);
+    await postConfig(d, 'can');
   };
 
   /* 保存网络设置：TCP 数据通道参数 + 该网卡的 IP 配置（IP 即 TCP 绑定网卡的 IP） */
@@ -362,34 +445,36 @@
     var mode = document.getElementById('ip_mode').value;
     var ifn = document.getElementById('bind').value;
     if (mode !== '') {
-      if (!ifn) { show('err', '配置 IP 需要先选择绑定网卡'); return; }
+      if (!ifn) { cardStatus('net', 'err', '配置 IP 需要先选择绑定网卡'); return; }
       if (mode === 'static') {
         var a = document.getElementById('ip_a').value.trim();
         var m = document.getElementById('ip_m').value.trim();
-        if (!a || !m) { show('err', '静态模式需要填写 IP 地址与子网掩码'); return; }
-        if (!confirm('将把 ' + ifn + ' 设为静态 IP ' + a + '/' + m
-          + (document.getElementById('ip_g').value ? '，网关 ' + document.getElementById('ip_g').value : '')
-          + '。\n若当前页面通过该网卡访问，连接会断开，请用新 IP 重新访问。')) return;
+        if (!a || !m) { cardStatus('net', 'err', '静态模式需要填写 IP 地址与子网掩码'); return; }
+        if (!confirm(t('将把 ') + ifn + t(' 设为静态 IP ') + a + '/' + m
+          + (document.getElementById('ip_g').value ? t('，网关 ') + document.getElementById('ip_g').value : '')
+          + t('。\n若当前页面通过该网卡访问，连接会断开，请用新 IP 重新访问。'))) return;
       } else if (mode === 'dhcp') {
-        if (!confirm('将把 ' + ifn + ' 切换到 DHCP 自动获取。\nIP 变化后请用新地址重新访问。')) return;
+        if (!confirm(t('将把 ') + ifn + t(' 切换到 DHCP 自动获取。\nIP 变化后请用新地址重新访问。'))) return;
       }
     }
     /* 1) TCP 服务参数 */
-    await postConfig({
+    var ok1 = await postConfig({
       target: 'net',
       tcp_port: document.getElementById('tp').value,
       max_clients: document.getElementById('mc').value,
       tcp_bind: ifn
     });
     /* 2) IP 设置（mode 为空 = 关闭不管理，仍保存字段） */
-    await postConfig({
-      target: 'ip',
-      ip_ifname: ifn,
-      ip_mode: mode,
-      ip_addr: document.getElementById('ip_a').value.trim(),
-      ip_mask: document.getElementById('ip_m').value.trim(),
-      ip_gw: document.getElementById('ip_g').value.trim()
-    });
+    if (ok1) {
+      await postConfig({
+        target: 'ip',
+        ip_ifname: ifn,
+        ip_mode: mode,
+        ip_addr: document.getElementById('ip_a').value.trim(),
+        ip_mask: document.getElementById('ip_m').value.trim(),
+        ip_gw: document.getElementById('ip_g').value.trim()
+      }, 'net');
+    }
   };
 
   /* 按 IP 模式显隐静态地址输入行 */
@@ -401,7 +486,7 @@
     document.getElementById('ip_g_row').style.display = show ? 'flex' : 'none';
   };
 
-  /* 保存视频配置并重启视频流 */
+  /* Save video config and restart the video stream. */
   window.saveVideo = async function() {
     await postConfig({
       target: 'video',
@@ -409,21 +494,22 @@
       video_width: document.getElementById('vw').value,
       video_height: document.getElementById('vh').value,
       video_fps: selVidFps,
-      video_bitrate_ppx: document.getElementById('vbp').value
-    });
+      video_bitrate_ppx: (document.getElementById('vbp') || {}).value || 175,
+      video_codec: document.getElementById('vc').value
+    }, 'video');
   };
 
   /* 保存 AI 配置并热重载推理池（线程数取 3 的倍数） */
   window.saveAi = async function() {
     var th = parseInt(document.getElementById('ai_th').value, 10);
-    if (!th || th % 3 !== 0) th = 3;
+    if (!th || th < 1) th = 1;   /* 后端会自动取整为 NPU 核数的整数倍 */
     await postConfig({
       target: 'ai',
       ai_threads: th,
       ai_conf: document.getElementById('ai_cf').value,
       ai_nms: document.getElementById('ai_nm').value,
       ai_interval_ms: document.getElementById('ai_iv').value
-    });
+    }, 'ai');
     setTimeout(loadCfg, 1200);   /* 重载完成后刷新显示 */
   };
 
@@ -431,7 +517,7 @@
   window.uploadAi = async function(type) {
     var input = document.getElementById(type === 'model' ? 'ai_model_f' : 'ai_names_f');
     var file = input.files && input.files[0];
-    if (!file) { show('err', '请先选择' + (type === 'model' ? '模型' : '类别标签') + '文件'); return; }
+    if (!file) { cardStatus('ai', 'err', type === 'model' ? '请先选择模型文件' : '请先选择类别标签文件'); return; }
     try {
       var r = await authFetch('/api/ai/upload?type=' + type, {
         method: 'POST',
@@ -440,17 +526,16 @@
       });
       var j = r.ok ? await r.json() : null;
       if (j && j.result === 'ok') {
-        var extra = type === 'names' ? ('（' + j.classes + ' 个类别）') : '';
-        show('ok', '✓ ' + j.path + ' 已上传并热生效' + extra);
+        cardStatus('ai', 'ok', type === 'names' ? '✓ 已上传并热生效 ({classes} classes)' : '✓ 已上传并热生效', {classes: j.classes});
         setTimeout(loadCfg, 800);
       } else if (j) {
-        show('err', '上传失败：' + (j.result || ('HTTP ' + r.status)));
+        cardStatus('ai', 'err', '上传失败 ({status})', {status: j.result || ('HTTP ' + r.status)});
       } else {
-        show('err', '上传失败(' + r.status + ')');
+        cardStatus('ai', 'err', '上传失败 ({status})', {status: r.status});
       }
-    } catch(e) { show('err', '上传失败'); }
+    } catch(e) { cardStatus('ai', 'err', '上传失败'); }
     input.value = '';
-    setTimeout(function() { document.getElementById('msg').className = ''; }, 4000);
+    updateFileName(input);
   };
 
   /* 导出配置：只导出 config 文件夹——后端打包整个 config 目录
@@ -466,22 +551,264 @@
       pa.download = 'config_pack.tar.gz';
       pa.click();
       setTimeout(function() { URL.revokeObjectURL(pa.href); }, 1000);
-      show('ok', '✓ 配置已导出（config 文件夹）');
+      cardStatus('export', 'ok', '✓ 配置已导出');
     } catch(e) {
-      show('err', '配置导出失败（' + e.message + '）');
+      cardStatus('export', 'err', '导出失败 ({status})', {status: e.message});
     }
   };
 
   window.reboot = async function() {
-    if (!confirm('确定要重启设备吗？')) return;
+    if (!confirm(t('确定要重启设备吗？'))) return;
     try { await authFetch('/api/reboot'); } catch(e) {}
   };
 
   window.shutdown = async function() {
-    if (!confirm('确定要关闭设备吗？')) return;
+    if (!confirm(t('确定要关闭设备吗？'))) return;
     try { await authFetch('/api/shutdown'); } catch(e) {}
   };
 
   /* 先扫描设备列表、CAN 接口与网卡列表，再加载配置 */
-  loadDevices().then(loadCanIfaces).then(loadIfaces).then(loadCfg);
+  loadDevices().then(loadCanIfaces).then(loadIfaces).then(loadCfg).then(loadCpuFreq);
+
+  /* ---- CPU 频率配置 ---- */
+  async function loadCpuFreq() {
+    try {
+      var r = await fetch('/api/cpu_freq');
+      if (!r.ok) return;
+      var d = await r.json();
+
+      /* 填充 governor 下拉框 */
+      var govSel = document.getElementById('cf_gov');
+      if (govSel && d.governors) {
+        govSel.innerHTML = '';
+        var govNames = {
+          'performance': '性能模式',
+          'ondemand': '按需调频',
+          'schedutil': '调度器驱动',
+          'powersave': '省电模式',
+          'conservative': '保守模式',
+          'userspace': '用户空间'
+        };
+        for (var i = 0; i < d.governors.length; i++) {
+          var g = d.governors[i];
+          var option = document.createElement('option');
+          option.value = g;
+          setI18nText(option, govNames[g] || g);
+          govSel.appendChild(option);
+        }
+        govSel.value = d.governor || '';
+      }
+
+      /* 填充频率下拉框 */
+      var freqs = d.frequencies || [];
+      function fillFreqSel(id, curVal) {
+        var sel = document.getElementById(id);
+        if (!sel) return;
+        sel.innerHTML = '';
+        for (var i = 0; i < freqs.length; i++) {
+          var f = freqs[i];
+          var mhz = (f / 1000).toFixed(0);
+          sel.innerHTML += '<option value="' + f + '">' + mhz + ' MHz</option>';
+        }
+        sel.value = String(curVal);
+      }
+      fillFreqSel('cf_min', d.min_freq);
+      fillFreqSel('cf_max', d.max_freq);
+
+      /* 当前状态 */
+      var curEl = document.getElementById('cf_cur');
+      if (curEl) {
+        var curMhz = (d.cur_freq / 1000).toFixed(0);
+        var minMhz = (d.min_freq / 1000).toFixed(0);
+        var maxMhz = (d.max_freq / 1000).toFixed(0);
+        setI18nText(curEl, '当前 {current} MHz 范围 {min} - {max} MHz 策略 {governor}',
+          {current: curMhz, min: minMhz, max: maxMhz, governor: d.governor || ''});
+      }
+    } catch(e) {}
+  }
+
+  window.saveCpuFreq = async function() {
+    var gov = document.getElementById('cf_gov').value;
+    var minF = document.getElementById('cf_min').value;
+    var maxF = document.getElementById('cf_max').value;
+
+    if (parseInt(minF) > parseInt(maxF)) {
+      cardStatus('cpufreq', 'err', '最低频率不能大于最高频率');
+      return;
+    }
+
+    try {
+      var r = await authFetch('/api/cpu_freq', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'governor=' + encodeURIComponent(gov) +
+              '&min_freq=' + encodeURIComponent(minF) +
+              '&max_freq=' + encodeURIComponent(maxF)
+      });
+      if (r.ok) {
+        cardStatus('cpufreq', 'ok', '✓ 已保存');
+        setTimeout(loadCpuFreq, 500);
+      } else {
+        cardStatus('cpufreq', 'err', '保存失败 ({status})', {status: 'HTTP ' + r.status});
+      }
+    } catch(e) {
+      cardStatus('cpufreq', 'err', '请求失败');
+    }
+  };
+
+  /* ---- 网络测试 ---- */
+  var ntLatest = {};
+  function ntError(error) {
+    var message = t(String(error || ''));
+    if (getLang() === 'en' && /[\u3400-\u9fff]/.test(message)) message = t('网络测试失败');
+    var span = document.createElement('span');
+    span.textContent = message;
+    return span.innerHTML;
+  }
+  var ntSpeedSel = document.getElementById('nt_speed_target');
+  var ntSpeedCustom = document.getElementById('nt_speed_custom');
+  if (ntSpeedSel) {
+    ntSpeedSel.addEventListener('change', function() {
+      ntSpeedCustom.style.display = this.value === 'custom' ? '' : 'none';
+    });
+  }
+
+  function ntResultEl(type) {
+    return document.getElementById(type === 'ping' ? 'nt_ping_result' :
+                                   type === 'speed' ? 'nt_speed_result' :
+                                   'nt_reach_result');
+  }
+
+  function ntTarget(type) {
+    if (type === 'ping') return document.getElementById('nt_ping_target').value.trim();
+    if (type === 'speed') {
+      var sel = document.getElementById('nt_speed_target');
+      if (sel.value === 'custom') return document.getElementById('nt_speed_custom').value.trim();
+      return sel.value;
+    }
+    if (type === 'reach') return document.getElementById('nt_reach_target').value.trim();
+    return '';
+  }
+
+  function ntRenderPing(el, data) {
+    if (!data || !data.result) return;
+    var r = data.result;
+    if (r.reachable) {
+      var html = '<span class="nt-ok">' + t('✓ 可达') + '</span>';
+      if (r.packet_loss >= 0) html += ' &nbsp;' + t('丢包') + ' <span class="nt-val">' + r.packet_loss + '%</span>';
+      if (r.rtt_avg >= 0) html += ' &nbsp;' + t('延迟') + ' <span class="nt-val">' + r.rtt_avg.toFixed(1) + ' ms</span>';
+      if (r.rtt_min >= 0 && r.rtt_max >= 0) html += ' &nbsp;(min ' + r.rtt_min.toFixed(1) + ' / max ' + r.rtt_max.toFixed(1) + ')';
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = '<span class="nt-fail">' + t('✗ 不可达') + '</span>' + (data.error ? ' <span class="nt-fail">' + ntError(data.error) + '</span>' : '');
+    }
+  }
+
+  function ntRenderSpeed(el, data) {
+    if (!data || !data.result) return;
+    var r = data.result;
+    if (r.speed_mbps !== undefined) {
+      var mbps = r.speed_mbps;
+      var label = mbps >= 1 ? mbps.toFixed(2) + ' Mbps' : (mbps * 1000).toFixed(1) + ' Kbps';
+      el.innerHTML = '<span class="nt-ok">' + t('✓ 下载速度') + '</span> <span class="nt-val">' + label + '</span>'
+        + ' &nbsp;(' + (r.size_bytes / 1048576).toFixed(1) + ' MB / ' + r.time_sec.toFixed(1) + 's)';
+    } else {
+      el.innerHTML = '<span class="nt-fail">' + t('✗ 测速失败') + '</span>' + (data.error ? ' <span class="nt-fail">' + ntError(data.error) + '</span>' : '');
+    }
+  }
+
+  function ntRenderReach(el, data) {
+    if (!data || !data.result) return;
+    var r = data.result;
+    if (r.reachable) {
+      var html = '<span class="nt-ok">' + t('✓ 网站可达') + '</span>';
+      if (r.rtt_avg >= 0) html += ' &nbsp;' + t('延迟') + ' <span class="nt-val">' + r.rtt_avg.toFixed(1) + ' ms</span>';
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = '<span class="nt-fail">' + t('✗ 网站不可达') + '</span>' + (data.error ? ' <span class="nt-fail">' + ntError(data.error) + '</span>' : '');
+    }
+  }
+
+  function ntRender(type, data) {
+    ntLatest[type] = data;
+    var el = ntResultEl(type);
+    if (!el) return;
+    if (data.status === 'starting' || data.status === 'pending' || data.status === 'running') {
+      el.className = 'nt-result testing';
+      el.textContent = t(data.status === 'starting' ? '⏳ 启动测试...' : '⏳ 测试中...');
+      return;
+    }
+    el.className = 'nt-result';
+    if (data.status === 'timedout' || data.status === 'failed') {
+      el.innerHTML = '<span class="nt-fail">' + (data.status === 'timedout' ? t('测试超时') :
+        t('请求失败') + (data.httpStatus ? ' (HTTP ' + data.httpStatus + ')' : '')) + '</span>';
+      return;
+    }
+    if (data.error && !data.result) {
+      el.innerHTML = '<span class="nt-fail">✗ ' + ntError(data.error) + '</span>';
+      return;
+    }
+    if (type === 'ping' || type === 'reach') ntRenderPing(el, data);
+    else if (type === 'speed') ntRenderSpeed(el, data);
+  }
+
+  async function ntPoll(type, testId) {
+    var maxAttempts = 30;
+    for (var i = 0; i < maxAttempts; i++) {
+      await new Promise(function(r) { setTimeout(r, 1000); });
+      try {
+        var r = await fetch('/api/nettest/result?id=' + testId);
+        if (!r.ok) continue;
+        var data = await r.json();
+        ntRender(type, data);
+        if (data.status === 'done') return;
+      } catch(e) {}
+    }
+    ntRender(type, {status: 'timedout'});
+  }
+
+  window.runNetTest = async function(type) {
+    var target = ntTarget(type);
+    if (!target) {
+      cardStatus('nettest', 'err', '请输入目标地址');
+      return;
+    }
+
+    /* 可达性测试复用 ping 后端，从 URL 提取主机名 */
+    var apiType = type;
+    var apiTarget = target;
+    if (type === 'reach') {
+      apiType = 'ping';
+      try {
+        var u = new URL(target);
+        apiTarget = u.hostname;
+      } catch(e) {
+        apiTarget = target.replace(/^https?:\/\//, '').split('/')[0];
+      }
+    }
+
+    var el = ntResultEl(type);
+    ntRender(type, {status: 'starting'});
+
+    try {
+      var r = await authFetch('/api/nettest', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'type=' + encodeURIComponent(apiType) + '&target=' + encodeURIComponent(apiTarget)
+      });
+      if (!r.ok) {
+        ntRender(type, {status: 'failed', httpStatus: r.status});
+        return;
+      }
+      var data = await r.json();
+      if (data.test_id) ntPoll(type, data.test_id);
+    } catch(e) {
+      ntRender(type, {status: 'failed'});
+    }
+  };
+
+  document.addEventListener('languagechange', function() {
+    Object.keys(ntLatest).forEach(function(type) { ntRender(type, ntLatest[type]); });
+  });
+
 })();

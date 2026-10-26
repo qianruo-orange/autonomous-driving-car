@@ -1,11 +1,24 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>边缘智能网关</title>
+<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="边缘智能网关">边缘智能网关</title>
 <link rel="stylesheet" href="/css/common.css">
 <link rel="stylesheet" href="/css/monitor.css">
 <script src="/js/theme.js"></script>
+<script src="/js/i18n.js"></script>
 <script src="/js/auth.js"></script>
 </head><body>
-<div class="top-bar"><div class="tb-left"><h1>边缘智能网关</h1><div class="nav"><a href="/dbc">📡 DBC解析</a><a href="/config">⚙ 配置</a><a href="/logs">📁 文件下载</a></div></div><span class="tb-gap"></span><div class="tb-right"><span id="datetime"></span><a href="#" onclick="reboot()" class="pwr pwr-reboot"> 重启</a><a href="#" onclick="shutdown()" class="pwr pwr-shutdown"> 关机</a><button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换主题">🌙 主题</button></div></div>
+<div class="top-bar">
+  <div class="tb-left"><h1>📶 <span data-i18n="边缘智能网关">边缘智能网关</span></h1></div>
+  <div class="tb-right">
+    <span id="datetime"></span>
+    <a href="/dbc" class="btn btn-back">📡 <span data-i18n="DBC解析">DBC解析</span></a>
+    <a href="/config" class="btn btn-back">⚙ <span data-i18n="配置">配置</span></a>
+    <a href="/logs" class="btn btn-back"> <span data-i18n="文件下载">文件下载</span></a>
+    <button id="langBtn" class="theme-btn" onclick="toggleLang()" data-i18n-title="切换语言">EN</button>
+    <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" data-i18n-title="切换主题"></button>
+    <a href="#" onclick="reboot()" class="pwr pwr-reboot"> <span data-i18n="重启">重启</span></a>
+    <a href="#" onclick="shutdown()" class="pwr pwr-shutdown"> <span data-i18n="关机">关机</span></a>
+  </div>
+</div>
 
 <div class="grid">
   <div class="monitor-grid">
@@ -23,25 +36,24 @@
         <div class="val-row"><span class="val" id="cpu_val">--%</span><span class="temp" id="temp">-°C</span></div>
         <div class="bar cpu-bar"><div class="green" id="cpu_bar" style="width:0%"></div></div>
         <div class="core-bars" id="cpu_cores"></div>
+        <div class="label-left" id="cpu_freq" style="margin-top:6px"></div>
       </div>
       <div class="card">
-        <div class="sec"><h4>内存</h4>
-        <div class="hdr-row"><span class="label-left">占用：<b id="mem_used">-</b></span><span class="label-left">总量：<b id="mem_total">-</b></span></div>
+        <div class="sec"><h4 data-i18n="内存">内存</h4>
+        <div class="hdr-row"><span class="label-left"><span data-i18n="占用：">占用：</span><b id="mem_used">-</b></span><span class="label-left"><span data-i18n="总量：">总量：</span><b id="mem_total">-</b></span></div>
         <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div><span class="bar-pct" id="mem_val">--%</span></div></div>
-        <div class="sec"><h4>磁盘</h4>
-        <div class="hdr-row"><span class="label-left">占用：<b id="disk_used">-</b></span><span class="label-left">总量：<b id="disk_total">-</b></span></div>
+        <div class="sec"><h4 data-i18n="磁盘">磁盘</h4>
+        <div class="hdr-row"><span class="label-left"><span data-i18n="占用：">占用：</span><b id="disk_used">-</b></span><span class="label-left"><span data-i18n="总量：">总量：</span><b id="disk_total">-</b></span></div>
         <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div><span class="bar-pct" id="disk_val">--%</span></div></div>
       </div>
       <div class="card">
-        <div class="sec"><h4>NPU</h4>
-        <div class="core-bars" id="npu_cores"></div></div>
+        <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
         <div class="sec"><h4>GPU</h4>
         <div class="val" id="gpu_val">--%</div>
-        <div class="bar gpu-bar"><div class="blue" id="gpu_bar" style="width:0%"></div></div></div>
+        <div class="bar gpu-bar"><div class="blue" id="gpu_bar" style="width:0%"></div></div>
+        <div class="label-left" id="gpu_freq" style="margin-top:4px"></div></div>
       </div>
-      <div class="card"><h3>网络速度</h3>
-        <div id="net_speed"></div>
-      </div>
+      <div class="card"><h3 data-i18n="网络速度">网络速度</h3><div id="net_speed"></div></div>
     </div>
   </div>
 </div>

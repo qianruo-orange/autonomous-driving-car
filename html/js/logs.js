@@ -12,10 +12,10 @@
 
   /* 轻量提示（替代 alert） */
   var toastTimer = null;
-  function toast(msg, ok) {
+  function toast(msg, ok, values) {
     var t = document.getElementById('toast');
-    if (!t) { alert(msg); return; }
-    t.textContent = msg;
+    if (!t) { alert(window.t(msg, values)); return; }
+    setI18nText(t, msg, values);
     t.className = 'toast show ' + (ok ? 'toast-ok' : 'toast-err');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function() { t.className = 'toast'; }, 2500);
@@ -51,13 +51,14 @@
     var dl = document.createElement('a');
     dl.className = 'dl';
     dl.href = dlUrl + encodeURIComponent(f.name);
-    dl.textContent = '下载';
+    setI18nText(dl, '下载');
     var del = document.createElement('button');
     del.className = 'del';
-    del.textContent = active ? '录制中' : '删除';
+    setI18nText(del, active ? '录制中' : '删除');
     if (active) {
       del.disabled = true;   /* 后端对正在录制的文件返回 409 */
-      del.title = '正在录制的文件无法删除';
+      del.title = t('正在录制的文件无法删除');
+      del.setAttribute('data-i18n-title', '正在录制的文件无法删除');
     }
     del.addEventListener('click', delFn);
     tdOp.appendChild(dl);
@@ -76,7 +77,12 @@
      del = {url, method, reload}，activeFile 为"录制中"文件名（可空）。 */
   async function loadFileList(apiUrl, tbodyId, emptyMsg, dlBase, del, activeFile) {
     var tbody = document.getElementById(tbodyId);
-    tbody.innerHTML = '<tr><td colspan="5" class="loading">加载中…</td></tr>';
+    function message(key, cls) {
+      tbody.innerHTML = '<tr><td colspan="5"></td></tr>';
+      tbody.firstChild.firstChild.className = cls;
+      setI18nText(tbody.firstChild.firstChild, key);
+    }
+    message('加载中…', 'loading');
     var files;
     try {
       var r = await fetch(apiUrl);
@@ -85,25 +91,25 @@
       var data = await r.json();
       files = (data.files || data.logs) || [];   /* 录像接口返回 files，日志接口返回 logs */
     } catch (e) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">加载失败（需管理员权限）</td></tr>';
+      message('加载失败（需管理员权限）', 'empty');
       return;
     }
     if (files.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">' + emptyMsg + '</td></tr>';
+      message(emptyMsg, 'empty');
       return;
     }
     tbody.innerHTML = '';
     files.forEach(function(f) {
       addRow(tbody, f, dlBase, del ? function() {
-        if (!confirm('删除文件 ' + f.name + '？')) return;
+        if (!confirm(t('删除文件 ') + f.name + t('？'))) return;
         var opt = { method: del.method };
         if (del.bodyName) opt.body = f.name;   /* 录像删除：文件名放请求体 */
         authFetch(del.makeUrl(f.name), opt)    /* 日志删除：文件名放 URL 路径 */
           .then(function(r) {
-            if (r.ok) { toast('已删除 ' + f.name, true); del.reload(); }
+            if (r.ok) { toast('已删除 {file}', true, {file: f.name}); del.reload(); }
             else if (r.status === 401) toast('需要管理员权限（root 或 sudo 用户）', false);
             else if (r.status === 409) toast('该文件正在录制中，无法删除', false);
-            else toast('删除失败 (' + r.status + ')', false);
+            else toast('删除失败 ({status})', false, {status: r.status});
           })
           .catch(function() {});
       } : null, activeFile === f.name);
@@ -114,8 +120,7 @@
   function bindPack(btn, url, filename) {
     btn.addEventListener('click', function(ev) {
       ev.preventDefault();
-      var label = btn.textContent;
-      btn.textContent = '打包中…';
+      setI18nText(btn, '打包中…');
       authFetch(url)
         .then(function(r) {
           if (!r.ok) throw new Error('pack ' + r.status);
@@ -127,11 +132,11 @@
           a.download = filename;
           a.click();
           URL.revokeObjectURL(a.href);
-          btn.textContent = label;
+          setI18nText(btn, '📦 打包下载');
           toast('打包完成，开始下载', true);
         })
         .catch(function() {
-          btn.textContent = label;
+          setI18nText(btn, '📦 打包下载');
           toast('打包失败或已取消', false);
         });
     });
@@ -157,22 +162,24 @@
   }
 
   /* ---- 一键清空（清空录像时保留正在录制的文件） ---- */
-  function bindClear(btn, url, label, reload) {
+  function bindClear(btn, url, confirmMsg, resultKey, reload) {
     btn.addEventListener('click', function() {
-      if (!confirm('确定清空全部' + label + '？此操作不可恢复')) return;
+      if (!confirm(t(confirmMsg))) return;
       authFetch(url, { method: 'POST' })
         .then(function(r) {
           if (r.ok) {
-            r.json().then(function(j) { toast('已清空 ' + (j.deleted || 0) + ' 个' + label + '文件', true); });
+            r.json().then(function(j) { toast(resultKey, true, {count: j.deleted || 0}); });
             reload();
           } else if (r.status === 401) toast('需要管理员权限（root 或 sudo 用户）', false);
-          else toast('清空失败 (' + r.status + ')', false);
+          else toast('清空失败 ({status})', false, {status: r.status});
         })
         .catch(function() {});
     });
   }
-  bindClear(document.getElementById('clear_btn'), '/api/logs/clear', '日志', loadLogs);
-  bindClear(document.getElementById('clear_rec_btn'), '/api/rec/clear', '录像', loadRec);
+  bindClear(document.getElementById('clear_btn'), '/api/logs/clear',
+    '确定清空全部日志？此操作不可恢复', '已清空 {count} 个日志文件', loadLogs);
+  bindClear(document.getElementById('clear_rec_btn'), '/api/rec/clear',
+    '确定清空全部录像？此操作不可恢复', '已清空 {count} 个录像文件', loadRec);
 
   /* ---- Tab 切换 ---- */
   function switchTab(tab) {

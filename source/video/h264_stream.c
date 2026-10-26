@@ -82,7 +82,8 @@ typedef struct {
     uint32_t epoch;          /* 本连接所属会话 */
     uint32_t mfhd_seq;       /* 片段序号（每连接独立，从 1 起） */
     uint32_t origin_ms;      /* 时间轴原点 = 接合 IDR 帧 ts（tfdt 归零） */
-    uint32_t last_fts;       /* 上一消费帧采集 ts（样本时长取真实帧间隔） */
+    uint32_t last_fts;       /* 上一有效 VCL 样本的源 ts（无 VCL 的帧不推进） */
+    uint64_t next_dts90;     /* 下个样本的连续解码时间；仅成功构建片段后推进 */
     uint64_t join_wall_ms;   /* 接合时刻墙钟（实时节流基准） */
     time_t   last_write;
     int      oom;            /* 片段缓冲分配失败（致命，断连） */
@@ -737,6 +738,7 @@ static void *h264_stream_client_task(void *arg)
     /* 样本时长兜底（首帧/间隔异常时用）：实测 fps 与源速率可能不符
        （相机各次启动帧率不同），正常路径取相邻帧真实间隔 */
     uint32_t dur90_def = fps > 0 ? (uint32_t)(90000u / (unsigned)fps) : 3000u;
+    if (dur90_def == 0) dur90_def = 1;
 
     /* 5) 主循环：按序逐帧组片段（锁内）→ 网络写（锁外）→ 实时节流 */
     while (1) {
@@ -768,21 +770,27 @@ static void *h264_stream_client_task(void *arg)
             if (expected <= g_h264s.next_seq - 1) {
                 const h264s_entry_t *e =
                     &g_h264s.ring[(g_h264s.head + (size_t)(expected - oldest)) % H264S_RING_N];
-                /* 样本时长取相邻帧真实间隔（源速率与实测 fps 不符时时间轴仍正确）；
-                   首帧/间隔异常（>500ms）回退实测 fps */
+                /* 样本时长参考相邻有效 VCL 的真实间隔；首帧/零间隔/
+                   异常间隔（>=500ms）回退实测 fps。DTS 必须独立连续累加：
+                   若直接用当前源 ts 作为 tfdt，却用上一间隔作当前 duration，
+                   变帧间隔会产生空洞/重叠，导致 MSE 播放卡顿。源 ts 仍用于
+                   下方网络节流，不与媒体时间轴混用。 */
                 uint32_t d90 = 0;
-                if (c->last_fts) {
+                if (c->mfhd_seq > 0) {
                     uint32_t gap = (uint32_t)(e->ts_ms - c->last_fts);
                     if (gap > 0 && gap < 500u) d90 = gap * 90u;
                 }
                 if (d90 == 0) d90 = dur90_def;
                 flen = h264s_build_fragment(c, e->data, e->len, e->keyframe,
                                             c->mfhd_seq + 1,
-                                            (uint64_t)(e->ts_ms - c->origin_ms) * 90u,
+                                            c->next_dts90,
                                             d90);
-                if (flen > 0) c->mfhd_seq++;
+                if (flen > 0) {
+                    c->mfhd_seq++;
+                    c->next_dts90 += d90;
+                    c->last_fts = e->ts_ms;
+                }
                 fts = e->ts_ms;
-                c->last_fts = e->ts_ms;   /* 跳过帧也推进：下一帧时长跨真实间隔 */
                 have = 1;
             }
         }

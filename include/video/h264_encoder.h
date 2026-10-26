@@ -29,7 +29,14 @@ int h264_encoder_probe(char *dev, size_t dev_size);
    @param fps          期望帧率（用于设置 GOP 与时间戳换算，不写死）
    @param bitrate_bps  目标码率（如 4000000）
    @return 非 NULL 成功；NULL 表示设备不可用（无编码器/参数不支持） */
-h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps);
+/* Encode backend: software (libx264, default) or hardware (RKMPP / rkVENC).
+   The hardware path is kept as a selectable option behind this interface. */
+typedef enum {
+    H264_CODEC_SOFTWARE = 0,
+    H264_CODEC_HARDWARE = 1
+} h264_codec_t;
+
+h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps, h264_codec_t codec);
 
 /* 释放编码器（STREAMOFF + 关闭） */
 void h264_encoder_destroy(h264_encoder_t *e);

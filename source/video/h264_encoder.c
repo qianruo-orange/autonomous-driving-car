@@ -284,6 +284,55 @@ static int ff_encoder_open(h264_encoder_t *e, int fps, int bitrate_bps)
     return 0;
 }
 
+/* Open FFmpeg libx264 software encoder (CPU-based H.264). Used when the
+   configured backend is "software". Reuses the same AVCodecContext machinery
+   as the hardware rkmpp path; only the encoder name and options differ. */
+static int ff_encoder_open_sw(h264_encoder_t *e, int fps, int bitrate_bps)
+{
+    const AVCodec *codec = avcodec_find_encoder_by_name("libx264");
+    if (!codec) return -1;                       /* libx264 unavailable */
+
+    AVCodecContext *ctx = avcodec_alloc_context3(codec);
+    if (!ctx) return -1;
+    ctx->width       = e->w;
+    ctx->height      = e->h;
+    ctx->pix_fmt     = AV_PIX_FMT_NV12;
+    ctx->time_base   = (AVRational){ 1, fps > 0 ? fps : 30 };
+    ctx->framerate   = (AVRational){ fps > 0 ? fps : 30, 1 };
+    ctx->bit_rate    = bitrate_bps;
+    ctx->rc_max_rate = (int64_t)bitrate_bps * 5 / 4;
+    ctx->gop_size    = (fps > 0 ? fps : 30) * 2;  /* GOP = 2s */
+    ctx->max_b_frames = 0;
+    ctx->flags      |= AV_CODEC_FLAG_LOW_DELAY;
+    /* SPS/PPS inlined with every IDR (no GLOBAL_HEADER) so the downstream
+       Annex-B / avcC path matches the hardware backend. */
+    av_opt_set(ctx->priv_data, "preset", "veryfast", 0);
+    av_opt_set(ctx->priv_data, "tune",   "zerolatency", 0);
+    if (avcodec_open2(ctx, codec, NULL) < 0) {
+        avcodec_free_context(&ctx);
+        return -1;
+    }
+
+    e->frame = av_frame_alloc();
+    e->pkt   = av_packet_alloc();
+    if (!e->frame || !e->pkt) {
+        if (e->frame) av_frame_free(&e->frame);
+        if (e->pkt)   av_packet_free(&e->pkt);
+        avcodec_free_context(&ctx);
+        return -1;
+    }
+    e->frame->format      = AV_PIX_FMT_NV12;
+    e->frame->width       = e->w;
+    e->frame->height      = e->h;
+    e->frame->linesize[0] = e->w;
+    e->frame->linesize[1] = e->w;
+
+    e->avctx = ctx;
+    e->pts = 0;
+    e->using_ff = 1;
+    return 0;
+}
+
 #endif /* HAVE_AVCODEC */
 
 /* ---- 设备控制 ---- */
@@ -353,7 +402,7 @@ static int enc_reqbufs(h264_encoder_t *e, uint32_t type, void **bufs)
     return (int)req.count;
 }
 
-h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps)
+h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps, h264_codec_t codec)
 {
     if (w <= 0 || h <= 0 || (w & 1) || (h & 1)) return NULL;
 
@@ -363,11 +412,20 @@ h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps)
     e->w = w; e->h = h;
 
 #ifdef HAVE_AVCODEC
-    /* 优先 FFmpeg h264_rkmpp（Rockchip MPP 硬件编码） */
-    if (ff_encoder_open(e, fps, bitrate_bps) == 0) {
-        LOG_INFO("h264: FFmpeg rkmpp encoder ready %dx%d fps=%d bitrate=%d",
-                 w, h, fps, bitrate_bps);
-        return e;
+    /* software backend first when requested, else hardware (rkmpp / rkvenc) */
+    if (codec == H264_CODEC_SOFTWARE) {
+        if (ff_encoder_open_sw(e, fps, bitrate_bps) == 0) {
+            LOG_INFO("h264: software(libx264) encoder ready %dx%d fps=%d bitrate=%d",
+                     w, h, fps, bitrate_bps);
+            return e;
+        }
+        LOG_ERROR("h264: libx264 open failed, falling back to hardware backend");
+    } else {
+        if (ff_encoder_open(e, fps, bitrate_bps) == 0) {
+            LOG_INFO("h264: FFmpeg rkmpp encoder ready %dx%d fps=%d bitrate=%d",
+                     w, h, fps, bitrate_bps);
+            return e;
+        }
     }
 #endif
 

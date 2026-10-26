@@ -34,6 +34,8 @@
 int rknn_yolo_init(void *arg);
 void rknn_yolo_destroy(void *arg);
 int rknn_yolo_enabled(void);
+/* 返回平台 NPU 核心数（RK3588=3 / RK3576=2 / 其余单核），供配置层按实际核数派发推理线程 */
+int npu_core_count(void);
 
 /* 热重载推理池（停止 → 重读配置 → 重建）；返回 0 = 新池可用，-1 = 未运行/降级 */
 int rknn_yolo_reload(void);

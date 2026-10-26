@@ -49,8 +49,13 @@ void http_reboot(app_ctx_t *app, int fd);
 void http_shutdown(app_ctx_t *app, int fd);
 void http_network_api(app_ctx_t *app, int fd);
 void http_network_ifaces(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
+void http_nettest_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req);
+void http_nettest_result(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req);
+void http_cpufreq_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req);
+void http_cpufreq_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req);
 void http_video_devices(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_video_caps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
+void http_video_codeccaps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 

@@ -1,70 +1,125 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>配置</title>
+<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="配置">配置</title>
 <link rel="stylesheet" href="/css/common.css">
 <link rel="stylesheet" href="/css/config.css">
 <script src="/js/theme.js"></script>
+<script src="/js/i18n.js"></script>
 <script src="/js/auth.js"></script>
 </head><body>
-<div class="top"><h1> 配置</h1><div class="nav"><a href="/">📊 仪表盘</a><a href="/dbc">📡 DBC解析</a><a href="/logs">📁 文件下载</a></div><button type="button" class="btn btn-back" onclick="exportCfg()">📤 导出配置</button><button type="button" class="btn btn-back" onclick="loadCfg()">🔄 查询</button><button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换主题">🌙 主题</button></div>
+<div class="top-bar">
+  <div class="tb-left">
+    <h1>⚙ <span data-i18n="配置">配置</span></h1>
+    <button type="button" class="btn btn-back" onclick="exportCfg()"> <span data-i18n="导出配置">导出配置</span></button>
+    <span class="card-status" id="status_export"></span>
+    <button type="button" class="btn btn-back" onclick="loadCfg()">🔄 <span data-i18n="查询">查询</span></button>
+  </div>
+  <div class="tb-right">
+    <a href="/" class="btn btn-back"> <span data-i18n="仪表盘">仪表盘</span></a>
+    <a href="/dbc" class="btn btn-back">📡 <span data-i18n="DBC解析">DBC解析</span></a>
+    <a href="/logs" class="btn btn-back">📁 <span data-i18n="文件下载">文件下载</span></a>
+    <button id="langBtn" class="theme-btn" onclick="toggleLang()" data-i18n-title="切换语言">EN</button>
+    <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" data-i18n-title="切换主题">🌙</button>
+  </div>
+</div>
 
 <form id="f">
 <div class="can-grid">
-<div class="card" id="card_ai"><h3>AI 检测 <button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveAi()">💾 保存</button></h3>
+<div class="card" id="card_ai"><h3><span data-i18n="AI 检测">AI 检测</span><span class="card-status" id="status_ai"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveAi()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="ai-split">
 <div class="ai-col">
-<div class="grp-t">推理参数</div>
+<div class="grp-t" data-i18n="推理参数">推理参数</div>
 <div class="cfg-grid ai-basic">
-<div class="row"><label>推理线程数</label><select id="ai_th"><option value="3">3（每核 1 个）</option><option value="6">6（每核 2 个）</option><option value="9">9（每核 3 个）</option><option value="12">12（每核 4 个）</option><option value="15">15（每核 5 个）</option></select></div>
-<div class="row"><label>置信度</label><input id="ai_cf" type="number" min="1" max="100" step="1"><span class="unit">%</span></div>
+<div class="row"><label data-i18n="推理线程数">推理线程数</label><select id="ai_th"></select><span class="unit" id="ai_th_hint"></span></div>
+<div class="row"><label data-i18n="置信度">置信度</label><input id="ai_cf" type="number" min="1" max="100" step="1"><span class="unit">%</span></div>
 <div class="row"><label>NMS IoU</label><input id="ai_nm" type="number" min="1" max="100" step="1"><span class="unit">%</span></div>
-<div class="row"><label>推理间隔</label><input id="ai_iv" type="number" min="10" max="5000"><span class="unit">ms</span></div>
+<div class="row"><label data-i18n="推理间隔">推理间隔</label><input id="ai_iv" type="number" min="10" max="5000"><span class="unit">ms</span></div>
 </div>
 </div>
 <div class="ai-col">
-<div class="grp-t">模型文件</div>
+<div class="grp-t" data-i18n="模型文件">模型文件</div>
 <div class="cfg-grid ai-upload">
-<div class="row"><label>上传模型</label><input type="file" id="ai_model_f" accept=".rknn" style="flex:1;max-width:none"><button type="button" class="add-btn" onclick="uploadAi('model')">上传</button></div>
-<div class="row"><label>上传标签</label><input type="file" id="ai_names_f" accept=".names,.txt" style="flex:1;max-width:none"><button type="button" class="add-btn" onclick="uploadAi('names')">上传</button></div>
+<div class="row"><label data-i18n="上传模型">上传模型</label><input type="file" id="ai_model_f" accept=".rknn" hidden><button type="button" class="add-btn" data-file-picker="ai_model_f" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="ai_model_f" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadAi('model')" data-i18n="上传">上传</button></div>
+<div class="row"><label data-i18n="上传标签">上传标签</label><input type="file" id="ai_names_f" accept=".names,.txt" hidden><button type="button" class="add-btn" data-file-picker="ai_names_f" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="ai_names_f" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadAi('names')" data-i18n="上传">上传</button></div>
 </div>
 </div>
 </div>
 </div>
 
-<div class="card" id="card_can"><h3><select id="canSel" onchange="onCanSel()"></select> <span id="st"></span> <label class="toggle"><input type="checkbox" id="tg" onchange="toggleCan(this.checked)"><span class="slider"></span></label><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveCan()">💾 保存</button></h3>
+<div class="card" id="card_can"><h3><select id="canSel" onchange="onCanSel()"></select> <span id="st"></span> <label class="toggle"><input type="checkbox" id="tg" onchange="toggleCan(this.checked)"><span class="slider"></span></label><span class="card-status" id="status_can"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveCan()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div id="cfg">
 <div class="cfg-grid can-basic">
-<div class="row"><label>波特率</label><input name="br" id="br" type="number"><span class="unit">bps</span></div>
-<div class="row"><label>DBC 文件</label><input type="file" id="dbc" accept=".dbc" style="flex:1"><button type="button" class="add-btn" onclick="uploadDbc()">上传</button></div>
+<div class="row"><label data-i18n="波特率">波特率</label><input name="br" id="br" type="number"><span class="unit">bps</span></div>
+<div class="row"><label data-i18n="DBC 文件">DBC 文件</label><input type="file" id="dbc" accept=".dbc" hidden><button type="button" class="add-btn" data-file-picker="dbc" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="dbc" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadDbc()" data-i18n="上传">上传</button></div>
 <div class="row"><label>CAN FD</label><select name="fd" id="fd" onchange="chkFd()"><option value="on">on</option><option value="off">off</option></select></div>
-<div class="row" id="dbr"><label>FD波特率</label><input name="db" id="db" type="number"><span class="unit">bps</span></div>
+<div class="row" id="dbr"><label data-i18n="FD波特率">FD波特率</label><input name="db" id="db" type="number"><span class="unit">bps</span></div>
 </div>
 <div class="filters">
-<h4><span>CAN-ID 过滤器</span><button type="button" class="add-btn" onclick="addFilter()">+ 添加</button></h4>
+<h4><span data-i18n="CAN-ID 过滤器">CAN-ID 过滤器</span><button type="button" class="add-btn" onclick="addFilter()" data-i18n="+ 添加">+ 添加</button></h4>
 <div id="fil"></div>
 </div>
-</div><div class="hint" id="hint">接口已关闭，开启后可配置</div></div>
+</div><div class="hint" id="hint" data-i18n="接口已关闭，开启后可配置">接口已关闭，开启后可配置</div></div>
 
-<div class="card" id="card_net"><h3>网络设置 <button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveNet()">💾 保存</button></h3>
+<div class="card" id="card_net"><h3><span data-i18n="网络设置">网络设置</span><span class="card-status" id="status_net"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveNet()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="cfg-grid net2">
-<div class="row"><label>绑定网卡</label><select name="bind" id="bind"><option value="">所有网卡</option></select></div>
-<div class="row"><label>TCP端口</label><input name="tp" id="tp" type="number"></div>
-<div class="row"><label>最大客户端数</label><input name="mc" id="mc" type="number"></div>
-<div class="row"><label>IP 模式</label><select id="ip_mode" onchange="chkIpMode()"><option value="">关闭（不管理）</option><option value="static">静态</option><option value="dhcp">DHCP</option></select></div>
-<div class="row" id="ip_a_row"><label>IP 地址</label><input id="ip_a" type="text" placeholder="192.168.1.100"></div>
-<div class="row" id="ip_m_row"><label>子网掩码</label><input id="ip_m" type="text" placeholder="255.255.255.0"></div>
-<div class="row" id="ip_g_row"><label>网关</label><input id="ip_g" type="text" placeholder="192.168.1.1"></div>
+<div class="row"><label data-i18n="绑定网卡">绑定网卡</label><select name="bind" id="bind"><option value="" data-i18n="所有网卡">所有网卡</option></select></div>
+<div class="row"><label data-i18n="TCP端口">TCP端口</label><input name="tp" id="tp" type="number"></div>
+<div class="row"><label data-i18n="最大客户端数">最大客户端数</label><input name="mc" id="mc" type="number"></div>
+<div class="row"><label data-i18n="IP 模式">IP 模式</label><select id="ip_mode" onchange="chkIpMode()"><option value="" data-i18n="关闭（不管理）">关闭（不管理）</option><option value="static" data-i18n="静态">静态</option><option value="dhcp">DHCP</option></select></div>
+<div class="row" id="ip_a_row"><label data-i18n="IP 地址">IP 地址</label><input id="ip_a" type="text" placeholder="192.168.1.100"></div>
+<div class="row" id="ip_m_row"><label data-i18n="子网掩码">子网掩码</label><input id="ip_m" type="text" placeholder="255.255.255.0"></div>
+<div class="row" id="ip_g_row"><label data-i18n="网关">网关</label><input id="ip_g" type="text" placeholder="192.168.1.1"></div>
 </div>
-<div class="ip-cur" id="ip_cur">当前未读取</div>
+<div class="ip-cur" id="ip_cur" data-i18n="当前未读取">当前未读取</div>
 </div>
 
-<div class="card" id="card_video"><h3>视频 <button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveVideo()">💾 保存</button></h3>
+<div class="card" id="card_video"><h3><span data-i18n="视频">视频</span><span class="card-status" id="status_video"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveVideo()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="cfg-grid vid2">
-<div class="row"><label>设备</label><select name="vd" id="vd" onchange="queryCaps()"><option value="">-- 扫描中 --</option></select></div>
-<div class="row"><label>格式 / 分辨率 / 帧率</label><select name="vr" id="vr" onchange="onResChange()"><option value="">-- 请选择设备 --</option></select></div>
-<div class="row"><label>码率系数</label><input name="vbp" id="vbp" type="number" min="50" max="800" step="5" oninput="onBpxChange()"><span class="unit" id="vbp_hint"></span></div>
+<div class="row full"><label data-i18n="设备">设备</label><select name="vd" id="vd" onchange="queryCaps()"><option value="" data-i18n="-- 扫描中 --">-- 扫描中 --</option></select></div>
+<div class="row"><label data-i18n="编码器">编码器</label><select id="vc" onchange="onCodecChange()"><option value="software">Software (libx264)</option><option value="hardware">Hardware (RKMPP/VENC)</option></select></div>
+<div class="row"><label data-i18n="解码器">解码器</label><select id="vdec" onchange="onDecoderChange()"><option value="software">Software</option><option value="hardware">Hardware (RKMPP)</option></select></div>
+<div class="row full"><label data-i18n="格式 / 分辨率 / 帧率">格式 / 分辨率 / 帧率</label><select name="vr" id="vr" onchange="onResChange()"><option value="" data-i18n="-- 请选择设备 --">-- 请选择设备 --</option></select></div>
 </div>
-<div class="tip" id="vbp_tip">码率 = 宽 × 高 × 系数 ÷ 100（bps）。录像与直播共用同一编码器，调高会同时提高两者码率；超出网络承载会丢帧导致画面横向条纹。默认 175</div>
 <input type="hidden" id="vw"><input type="hidden" id="vh">
+</div>
+
+<div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveCpuFreq()">💾 <span data-i18n="保存">保存</span></button></h3>
+<div class="cfg-grid vid2">
+<div class="row"><label data-i18n="调度策略">调度策略</label><select id="cf_gov"></select></div>
+<div class="row"><label data-i18n="最低频率">最低频率</label><select id="cf_min"></select><span class="unit">kHz</span></div>
+<div class="row"><label data-i18n="最高频率">最高频率</label><select id="cf_max"></select><span class="unit">kHz</span></div>
+</div>
+<div class="ip-cur" id="cf_cur" data-i18n="当前未读取">当前未读取</div>
+</div>
+
+<div class="card" id="card_nettest"><h3><span data-i18n="网络测试">网络测试</span><span class="card-status" id="status_nettest"></span><span class="nt-result" id="nt_ping_result"></span><span class="nt-result" id="nt_speed_result"></span><span class="nt-result" id="nt_reach_result"></span></h3>
+<div class="nt-section">
+<div class="nt-row">
+<label data-i18n="Ping 测试">Ping 测试</label>
+<div class="nt-input-group">
+<input type="text" id="nt_ping_target" data-i18n-ph="IP / 域名" placeholder="IP / 域名" value="192.168.1.1">
+</div>
+<button type="button" class="btn btn-back nt-go" onclick="runNetTest('ping')" data-i18n="测试">测试</button>
+</div>
+<div class="nt-row">
+<label data-i18n="网速测试">网速测试</label>
+<div class="nt-input-group">
+<select id="nt_speed_target">
+<option value="https://speed.cloudflare.com/__down?bytes=5000000" data-i18n="Cloudflare CDN">Cloudflare CDN</option>
+<option value="https://proof.ovh.net/files/1Mb.dat" data-i18n="OVH (欧洲)">OVH (欧洲)</option>
+<option value="custom" data-i18n="自定义地址">自定义地址</option>
+</select>
+<input type="text" id="nt_speed_custom" placeholder="https://..." style="display:none">
+</div>
+<button type="button" class="btn btn-back nt-go" onclick="runNetTest('speed')" data-i18n="测速">测速</button>
+</div>
+<div class="nt-row">
+<label data-i18n="网站可达性">网站可达性</label>
+<div class="nt-input-group">
+<input type="text" id="nt_reach_target" placeholder="https://example.com">
+</div>
+<button type="button" class="btn btn-back nt-go" onclick="runNetTest('reach')" data-i18n="检测">检测</button>
+</div>
+</div>
 </div>
 
 </div>

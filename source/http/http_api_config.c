@@ -59,10 +59,9 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
         ip_if, cur_addr, cur_mask, cur_gw);
 
     if (cfg->video_device[0]) JSON_ADD(json, off, ",\"video_device\":\"%s\"", cfg->video_device);
-    JSON_ADD(json, off, ",\"video_width\":%d,\"video_height\":%d,\"video_fps\":%d,"
-             "\"video_bitrate_ppx\":%d",
-             cfg->video_width, cfg->video_height, cfg->video_fps,
-             cfg->video_bitrate_ppx > 0 ? cfg->video_bitrate_ppx : 175);
+    JSON_ADD(json, off, ",\"video_width\":%d,\"video_height\":%d,\"video_fps\":%d",
+             cfg->video_width, cfg->video_height, cfg->video_fps);
+    JSON_ADD(json, off, ",\"video_codec\":\"%s\"", cfg->video_codec);
     /* AI 检测配置（必要流程：推理不可关停，前端默认展示画框流） */
     JSON_ADD(json, off, ",\"ai_model\":\"%s\",\"ai_names\":\"%s\",\"ai_input_size\":%d,"
         "\"ai_conf\":%.2f,\"ai_nms\":%.2f,\"ai_interval_ms\":%d,\"ai_threads\":%d",
@@ -277,11 +276,15 @@ static int apply_video(app_ctx_t *app, const http_form_field_t *fields, int coun
         int nf = parse_int_clamped(v, 0, 120, 0);   /* 0/空 = 驱动默认帧率 */
         if (nf != cfg->video_fps) { changed |= APPLY_VIDEO_CAPTURE; cfg->video_fps = nf; }
     }
-    v = http_form_find(fields, count, "video_bitrate_ppx");
+
+    v = http_form_find(fields, count, "video_codec");
     if (v) {
-        int np = parse_int_clamped(v, 50, 800, cfg->video_bitrate_ppx > 0 ? cfg->video_bitrate_ppx : 175);
-        /* 只滚会话不重启采集：码率只影响编码器，重启采集会白白中断画面 */
-        if (np != cfg->video_bitrate_ppx) { changed |= APPLY_VIDEO_ENCODER; cfg->video_bitrate_ppx = np; }
+        if (strcmp(v, "hardware") == 0 || strcmp(v, "software") == 0) {
+            if (strcmp(v, cfg->video_codec) != 0) {
+                changed |= APPLY_VIDEO_ENCODER;
+                safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), v);
+            }
+        }
     }
     return changed;
 }
@@ -294,8 +297,9 @@ static int apply_ai(app_ctx_t *app, const http_form_field_t *fields, int count)
 
     const char *v = http_form_find(fields, count, "ai_threads");
     if (v) {
-        int t = parse_int_clamped(v, 3, 15, 3);
-        t -= t % 3;   /* 必须是 3 的倍数（3~15）：每个 NPU 核等量 worker */
+        int cores = npu_core_count(); if (cores < 1) cores = 1;
+        int t = parse_int_clamped(v, cores, 15, cores);
+        t = (t / cores) * cores;   /* 取整为 NPU 核数的整数倍，各核等量 worker */
         if (t != cfg->ai_threads) { cfg->ai_threads = t; changed = 1; }
     }
     v = http_form_find(fields, count, "ai_conf");

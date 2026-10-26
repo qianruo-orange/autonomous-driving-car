@@ -2,46 +2,46 @@
 /* common.css — 全局共享样式 毛玻璃水滴风（支持深/浅主题） */
 *{margin:0;padding:0;box-sizing:border-box}
 
-/* ---- 主题变量：默认深色 ---- */
+/* ---- theme variables: dark by default ---- */
 :root{
-  --bg:linear-gradient(135deg,#0b1021 0%,#0f1b33 50%,#0b1628 100%);
-  --text:#c8d6e5;
+  --bg:linear-gradient(135deg,#0a0e1a 0%,#101a30 50%,#0a1424 100%);
+  --text:#cdd9e8;
   --text-strong:#ffffff;
-  --muted:#8b9ec4;
-  --muted-2:#5b6b85;
-  --accent:#78c0f0;
-  --accent-hover:#a0d4f8;
-  --card-bg:rgba(16,29,51,.55);
-  --card-border:rgba(108,180,238,.12);
-  --card-border2:rgba(108,180,238,.25);
+  --muted:#8798b8;
+  --muted-2:#586a88;
+  --accent:#5ec2f0;
+  --accent-hover:#8fd6f7;
+  --card-bg:rgba(18,30,52,.58);
+  --card-border:rgba(94,194,240,.14);
+  --card-border2:rgba(94,194,240,.28);
   --input-bg:rgba(10,17,32,.6);
-  --track:rgba(255,255,255,.06);
+  --track:rgba(255,255,255,.07);
   --btn-bg:rgba(255,255,255,.06);
-  --hover:rgba(108,180,238,.1);
-  --glow:rgba(108,180,238,.3);
-  --shadow:0 4px 24px rgba(0,0,0,.25);
-  --knob:#8b9ec4;
+  --hover:rgba(94,194,240,.10);
+  --glow:rgba(94,194,240,.32);
+  --shadow:0 6px 28px rgba(0,0,0,.30);
+  --knob:#8798b8;
   --name:#4ce0b0;
-  --inset-shadow:rgba(0,0,0,.3);
+  --inset-shadow:rgba(0,0,0,.32);
 }
-/* ---- 浅色主题 ---- */
+/* ---- light theme ---- */
 html[data-theme="light"]{
-  --bg:linear-gradient(135deg,#f2f6fb 0%,#fbfdff 50%,#eef3f9 100%);
+  --bg:linear-gradient(135deg,#eef3fb 0%,#fbfdff 50%,#e9f0f8 100%);
   --text:#33465c;
-  --text-strong:#1b2a3f;
+  --text-strong:#16263c;
   --muted:#5f7391;
-  --muted-2:#92a1b8;
-  --accent:#2563a8;
-  --accent-hover:#1a4f8a;
-  --card-bg:rgba(255,255,255,.72);
-  --card-border:rgba(70,110,160,.14);
-  --card-border2:rgba(70,110,160,.28);
+  --muted-2:#90a0b8;
+  --accent:#1f6fb8;
+  --accent-hover:#185a99;
+  --card-bg:rgba(255,255,255,.74);
+  --card-border:rgba(40,90,150,.16);
+  --card-border2:rgba(40,90,150,.30);
   --input-bg:#ffffff;
-  --track:rgba(51,70,92,.08);
-  --btn-bg:rgba(37,99,168,.05);
-  --hover:rgba(37,99,168,.09);
-  --glow:rgba(37,99,168,.14);
-  --shadow:0 4px 20px rgba(43,64,92,.1);
+  --track:rgba(51,70,92,.09);
+  --btn-bg:rgba(31,111,184,.06);
+  --hover:rgba(31,111,184,.10);
+  --glow:rgba(31,111,184,.15);
+  --shadow:0 6px 22px rgba(43,64,92,.12);
   --knob:#5f7391;
   --name:#14805e;
   --inset-shadow:rgba(51,70,92,.08);
@@ -49,17 +49,26 @@ html[data-theme="light"]{
 
 body{font-family:Segoe UI,sans-serif;background:var(--bg);color:var(--text);padding:24px;min-height:100vh;transition:background .3s,color .3s}
 h1{color:var(--accent);font-size:20px;margin-bottom:4px;text-shadow:0 0 20px var(--glow)}
-.card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;padding:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
-.card h3{font-size:14px;color:var(--muted);margin-bottom:10px}
+.card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;padding:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight);transition:border-color .25s,box-shadow .25s}
+.card:hover{border-color:var(--card-border2)}
+.card h3{font-size:14px;color:var(--accent);margin-bottom:10px;padding-left:10px;border-left:3px solid var(--accent);border-radius:0 4px 4px 0}
 a{color:var(--accent);text-decoration:none;transition:color .2s}
 a:hover{color:var(--accent-hover)}
 .bar{height:8px;background:var(--track);border-radius:10px;margin:4px 0;overflow:hidden;box-shadow:inset 0 1px 3px var(--inset-shadow)}
 .bar div{height:100%;border-radius:10px;transition:width .5s;box-shadow:0 0 8px rgba(255,255,255,.1)}
-.green{background:linear-gradient(90deg,#3dcca0,#4ce0b0);box-shadow:0 0 10px rgba(76,201,160,.3)}
-.yellow{background:linear-gradient(90deg,#e8b84a,#f5cc60);box-shadow:0 0 10px rgba(240,192,96,.3)}
-.red{background:linear-gradient(90deg,#d44a5e,#e86878);box-shadow:0 0 10px rgba(224,85,106,.3)}
-.blue{background:linear-gradient(90deg,#5b9ad5,#78c0f0);box-shadow:0 0 10px rgba(108,180,238,.3)}
+.green{background:linear-gradient(90deg,#34d399,#5eead4);box-shadow:0 0 10px rgba(52,211,153,.35)}
+.yellow{background:linear-gradient(90deg,#fbbf24,#fde047);box-shadow:0 0 10px rgba(251,191,36,.35)}
+.red{background:linear-gradient(90deg,#f87171,#fb7185);box-shadow:0 0 10px rgba(248,113,113,.35)}
+.blue{background:linear-gradient(90deg,#38bdf8,#22d3ee);box-shadow:0 0 10px rgba(56,189,248,.35)}
+.indigo{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 10px rgba(129,140,248,.35)}
 
 /* ---- 主题切换按钮（右上角悬浮） ---- */
-.theme-btn{position:fixed;top:12px;right:12px;z-index:999;padding:6px 14px;border-radius:20px;border:1px solid var(--card-border2);background:var(--btn-bg);color:var(--accent);cursor:pointer;font-size:14px;font-weight:600;backdrop-filter:blur(8px);box-shadow:var(--shadow);transition:background .2s}
-.theme-btn:hover{background:var(--hover)}
+.theme-btn{position:fixed;top:12px;right:12px;z-index:999;padding:6px 14px;border-radius:20px;border:1px solid var(--card-border2);background:linear-gradient(135deg,rgba(94,194,240,.1),rgba(94,194,240,.04));color:var(--accent);cursor:pointer;font-size:14px;font-weight:600;backdrop-filter:blur(8px);box-shadow:var(--shadow);transition:all .25s}
+.theme-btn:hover{background:linear-gradient(135deg,rgba(94,194,240,.2),rgba(94,194,240,.1));transform:translateY(-1px);box-shadow:0 4px 16px rgba(94,194,240,.25)}
+
+/* ---- 通用按钮样式 ---- */
+.btn{padding:8px 18px;border-radius:10px;border:none;cursor:pointer;font-size:13px;margin:4px;transition:all .25s;display:inline-flex;align-items:center;gap:4px;font-weight:500}
+.btn-back{background:linear-gradient(135deg,rgba(94,194,240,.08),rgba(94,194,240,.04));color:var(--text);border:1px solid var(--card-border);backdrop-filter:blur(8px);text-decoration:none;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.btn-back:hover{background:linear-gradient(135deg,rgba(94,194,240,.18),rgba(94,194,240,.1));border-color:var(--accent);color:var(--accent);box-shadow:0 4px 16px rgba(94,194,240,.2);transform:translateY(-1px)}
+.btn-save{background:linear-gradient(135deg,#236e4a,#2d8a5c);color:#fff;box-shadow:0 2px 12px rgba(35,110,74,.3);border:none}
+.btn-save:hover{box-shadow:0 4px 20px rgba(35,110,74,.5);transform:translateY(-1px)}

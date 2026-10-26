@@ -1,0 +1,41 @@
+# Video playback checks
+
+The dashboard uses one H.264/fMP4 connection through Media Source Extensions
+(MSE), with MJPEG as the fallback when MSE is unavailable.
+
+The H.264 stream emits a continuous decode timeline. For every adjacent pair of
+samples, the next sample's `tfdt` equals the previous sample's `tfdt + duration`.
+Source timestamps still control network pacing; they are not mixed with the
+accumulated media decode timestamps.
+
+The browser reads and appends data in one asynchronous chain. Each SourceBuffer
+operation finishes at `updateend` before another network chunk is appended.
+Played media is removed on the same chain. Playback that falls behind catches up
+inside its existing buffer; an ordinary backlog does not reopen the connection.
+Callbacks from an aborted connection cannot stop a newer connection.
+
+The FPS badge reports displayed frames when playback-quality counters are
+available. Hover over the badge to compare displayed and received frame rates.
+`window.getGatewayVideoDiagnostics()` returns read-only playback counters,
+buffer lead, decoder frame drops, reconnect count, and the most recent error.
+These counters are local to the browser and are not uploaded.
+
+## Regression checks
+
+On the development board:
+
+```sh
+bash scripts/build.sh -R
+ctest --test-dir build --output-on-failure
+```
+
+On any machine with Node.js:
+
+```sh
+node tests/video_player_test.cjs
+```
+
+The C test runs the production stream client against a local socketpair and
+checks MP4 metadata for variable intervals, non-VCL frames, zero intervals,
+large gaps, and source-clock wraparound. The JavaScript test uses a simulated
+SourceBuffer and network reader; browser playback still requires a live check.

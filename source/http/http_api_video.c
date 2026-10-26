@@ -282,3 +282,64 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
         st.raw_pinned, st.pool_rgb, st.pool_nv12, st.pool_jpeg);
     http_ok_json(fd, json, (size_t)off);
 }
+
+/* ---- /api/video/codeccaps —— codec-driven resolution/fps capability.
+   The camera option list in the config UI is driven by the ACTIVE codec's
+   real capability (not the camera device): software (libx264) accepts any
+   common resolution/fps; hardware (rkVENC/RKMPP) is more constrained. */
+void http_video_codeccaps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf)
+{
+    (void)app; (void)method; (void)req_buf;
+    const char *codec = "software";
+    const char *q = strchr(uri, '?');
+    if (q) {
+        const char *c = strstr(q + 1, "codec=");
+        if (c) {
+            const char *val = c + 6;
+            const char *p = val;
+            while (*p && *p != '&') p++;
+            size_t len = (size_t)(p - val);
+            if (len > 0 && len < 16) {
+                static char buf[16];
+                memcpy(buf, val, len); buf[len] = '\0';
+                codec = buf;
+            }
+        }
+    }
+
+    static const int kFps[] = { 60, 50, 30, 25, 20, 15, 10, 5 };
+#define KFPSN ((int)(sizeof(kFps)/sizeof(kFps[0])))
+
+    /* software: flexible (libx264 handles arbitrary resolutions) */
+    static const struct { int w, h; const char *label; } sw[] = {
+        { 320,240,"QVGA"},{ 640,480,"VGA"},{ 800,600,"SVGA"},{1024,768,"XGA"},
+        {1280,720,"HD"},{1920,1080,"FHD"},{2560,1440,"2K"},{3840,2160,"4K"}
+    };
+    /* hardware: constrained (rkvenc typical limits) */
+    static const struct { int w, h; const char *label; } hw[] = {
+        { 640,480,"VGA"},{ 800,600,"SVGA"},{1024,768,"XGA"},
+        {1280,720,"HD"},{1920,1080,"FHD"},{2560,1440,"2K"},{3840,2160,"4K"}
+    };
+#define SWN ((int)(sizeof(sw)/sizeof(sw[0])))
+#define HWN ((int)(sizeof(hw)/sizeof(hw[0])))
+
+    const int n = (strcmp(codec, "hardware") == 0) ? HWN : SWN;
+    char json[4096]; int off = 0;
+    JSON_ADD(json, off, "{\"codec\":\"%s\",\"caps\":[", codec);
+    for (int i = 0; i < n; i++) {
+        int w = (strcmp(codec, "hardware") == 0) ? hw[i].w : sw[i].w;
+        int h = (strcmp(codec, "hardware") == 0) ? hw[i].h : sw[i].h;
+        const char *label = (strcmp(codec, "hardware") == 0) ? hw[i].label : sw[i].label;
+        char fps_str[128]; int foff = 0;
+        for (int k = 0; k < KFPSN; k++)
+            foff += snprintf(fps_str + foff, sizeof(fps_str) - (size_t)foff,
+                             "%s%d", k > 0 ? "," : "", kFps[k]);
+        JSON_ADD(json, off, "%s{\"w\":%d,\"h\":%d,\"label\":\"%s\",\"fps\":[%s]}",
+                 i > 0 ? "," : "", w, h, label, fps_str);
+    }
+    JSON_ADD(json, off, "]}");
+    http_ok_json(fd, json, (size_t)off);
+#undef KFPSN
+#undef SWN
+#undef HWN
+}

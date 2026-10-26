@@ -13,20 +13,28 @@
   /* 视频流：单条 fetch 连接同时喂 <img>（blob URL 逐帧）并扫描 SOI(FF D8) 计数。
      旧方案是 <img src> 显示 + 独立 fetch 计数双路下载同一流（流量×2），
      浏览器/无线吃紧时会间歇掉速；单路方案显示与计数天然一致 */
-  var fpsCnt = 0, fpsWin = Date.now(), fpsVal = 0;
+  var fpsCnt = 0, fpsWin = Date.now(), fpsVal = 0, shownCnt = 0;
+  var lastPresented = null, receivedFps = 0;
   var streamUrl = '', streamAbort = null, streamRunning = false;
   var imgEl = null, lastBlobUrl = null;
   var imgBusy = false;      /* 上一帧还在解码：不覆盖 src（覆盖会取消其加载） */
   var pendingBlob = null;   /* 解码期间收到的最新帧，仅保留最后一张，解码完立即补显 */
 
-  function resetFps() { fpsCnt = 0; fpsWin = Date.now(); fpsVal = 0; }
+  function resetFps() {
+    fpsCnt = 0; shownCnt = 0; fpsWin = Date.now(); fpsVal = 0;
+    lastPresented = null; receivedFps = 0;
+  }
 
   /* 显示一帧：仅在上一次 onload/onerror 之后调用，上一帧 URL 此时已被完整消费，
      可安全回收；onload 前就 revoke 会中断在途解码，弱设备上永远看不到画面 */
   function showFrame(blob) {
+    var target = imgEl, session = streamAbort;
+    if (!target || !session) return;
     var u = URL.createObjectURL(blob);
     imgBusy = true;
-    imgEl.onload = imgEl.onerror = function() {
+    target.onload = target.onerror = function(event) {
+      if (streamAbort !== session || imgEl !== target) return;
+      if (event.type === 'load') shownCnt++;
       imgBusy = false;
       if (pendingBlob) {          /* 解码慢于码流时丢弃中间帧，只补最新一帧 */
         var pb = pendingBlob;
@@ -34,7 +42,7 @@
         showFrame(pb);
       }
     };
-    imgEl.src = u;
+    target.src = u;
     if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
     lastBlobUrl = u;
   }
@@ -58,10 +66,12 @@
     var buf = new Uint8Array(0);
 
     fetch(url, {signal: ac.signal}).then(function(r) {
+      if (streamAbort !== ac) return;
       if (!r.ok || !r.body) { streamRunning = false; return; }
       var rd = r.body.getReader();
       (function pump() {
         rd.read().then(function(c) {
+          if (streamAbort !== ac) return;
           if (c.done) { streamRunning = false; streamAbort = null; return; }
           var b = c.value;
           var nb = new Uint8Array(buf.length + b.length);
@@ -85,11 +95,17 @@
           }
           /* 丢弃已消费数据，仅保留未完成帧的尾部 */
           if (p > 0) buf = buf.subarray(p);
-          else if (buf.length > 65536) buf = buf.subarray(buf.length - 65536);  /* 无帧头垃圾上限 */
+          /* A partial JPEG may legitimately exceed 64 KiB. Keep its SOI until
+             EOI arrives; discard a corrupt/unbounded frame by reconnecting. */
+          else if (buf.length > 16 * 1024 * 1024) throw new Error('MJPEG frame exceeds 16 MiB');
           pump();
-        }).catch(function() { streamRunning = false; streamAbort = null; });  /* 流中断：下次 update 自动重连 */
+        }).catch(function() {
+          if (streamAbort === ac) { ac.abort(); streamRunning = false; streamAbort = null; }
+        });
       })();
-    }).catch(function() { streamRunning = false; streamAbort = null; });
+    }).catch(function() {
+      if (streamAbort === ac) { ac.abort(); streamRunning = false; streamAbort = null; }
+    });
   }
 
   /* ---- H.264 fMP4 / MSE 播放器（默认 /video/stream） ----
@@ -99,6 +115,8 @@
   var mseMs = null, mseSb = null, mseAbort = null, mseReader = null;
   var mseRunning = false, mseUrl = '', mseLastData = 0, mseLastFail = 0;
   var mseTail = new Uint8Array(3);   /* 跨块 'moof' 签名续接尾巴 */
+  var mseGeneration = 0, mseCancelUpdate = null, mseLastTrim = 0;
+  var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0, lastError: '' };
 
   function mseSupported() {
     if (!window.MediaSource || !MediaSource.isTypeSupported) return false;
@@ -109,7 +127,16 @@
   }
 
   function mseStop() {
-    if (mseReader) { try { mseReader.cancel(); } catch(e) {} mseReader = null; }
+    var hadMse = mseRunning || mseMs || mseUrl;
+    /* Invalidate callbacks before aborting the old session. Its rejected read
+       must never stop the replacement stream. */
+    mseGeneration++;
+    mseRunning = false;
+    if (mseCancelUpdate) mseCancelUpdate();
+    if (mseReader) {
+      try { var cancelled = mseReader.cancel(); if (cancelled) cancelled.catch(function() {}); } catch(e) {}
+      mseReader = null;
+    }
     if (mseAbort) { mseAbort.abort(); mseAbort = null; }
     if (mseMs) {
       try {
@@ -118,30 +145,79 @@
       mseMs = null;
     }
     mseSb = null;
-    mseRunning = false;
     mseUrl = '';
     mseTail[0] = mseTail[1] = mseTail[2] = 0;
     var vid = document.getElementById('stream_video');
-    if (vid) {
+    if (vid && hadMse) {
       if (vid.src && vid.src.indexOf('blob:') === 0) URL.revokeObjectURL(vid.src);
       vid.removeAttribute('src');
       vid.load();                          /* 清空播放器（readyState 归零） */
     }
   }
 
-  function mseAppend(sb, chunk, tries) {
-    if (!mseRunning || mseSb !== sb) return;
-    if (sb.updating) {                     /* appendBuffer 未完成：稍后重试（16ms 步进，时序 FIFO） */
-      if (tries > 50) { mseLastFail = Date.now(); mseStop(); return; }
-      setTimeout(function() { mseAppend(sb, chunk, tries + 1); }, 16);
-      return;
+  function mseFail(generation, error) {
+    if (generation !== mseGeneration || !mseRunning) return;
+    mseDiag.lastError = error && error.message ? error.message : String(error);
+    mseDiag.reconnects++;
+    mseLastFail = Date.now();
+    mseStop();
+  }
+
+  /* One mutation at a time, completed by updateend. The fetch pump awaits this
+     promise, so network chunks cannot overtake earlier bytes in the MP4 stream. */
+  function mseUpdate(sb, action, generation) {
+    return new Promise(function(resolve, reject) {
+      if (!mseRunning || mseSb !== sb || generation !== mseGeneration) {
+        reject(new Error('Video session ended')); return;
+      }
+      function finish(error) {
+        clearTimeout(timer);
+        sb.removeEventListener('updateend', complete);
+        sb.removeEventListener('error', failed);
+        sb.removeEventListener('abort', aborted);
+        if (mseCancelUpdate === cancel) mseCancelUpdate = null;
+        if (error) reject(error); else resolve();
+      }
+      function complete() { finish(); }
+      function failed() { mseDiag.appendErrors++; finish(new Error('Media buffer error')); }
+      function aborted() { finish(new Error('Media buffer aborted')); }
+      function cancel() { finish(new Error('Video session ended')); }
+      var timer = setTimeout(function() { finish(new Error('Media buffer update timed out')); }, 5000);
+      mseCancelUpdate = cancel;
+      sb.addEventListener('updateend', complete);
+      sb.addEventListener('error', failed);
+      sb.addEventListener('abort', aborted);
+      try { action(); } catch(e) { mseDiag.appendErrors++; finish(e); }
+    });
+  }
+
+  async function mseAppend(sb, chunk, generation) {
+    var vid = document.getElementById('stream_video');
+    /* Evict already played media on the same serial pipeline, preventing an
+       ever-growing buffer and eventual QuotaExceeded reconnects. */
+    if (Date.now() - mseLastTrim > 5000 && sb.buffered.length &&
+        vid.currentTime - sb.buffered.start(0) > 20) {
+      var removeEnd = vid.currentTime - 10;
+      await mseUpdate(sb, function() { sb.remove(0, removeEnd); }, generation);
+      mseLastTrim = Date.now();
     }
+    await mseUpdate(sb, function() { sb.appendBuffer(chunk); }, generation);
+    if (generation === mseGeneration) mseCatchUp();
+  }
+
+  function mseCatchUp() {
+    if (!mseRunning || !mseSb || document.hidden) return;
+    var vid = document.getElementById('stream_video');
+    if (!vid || vid.paused || vid.seeking) return;
     try {
-      sb.appendBuffer(chunk);
-    } catch(e) {                           /* QuotaExceeded/NotSupported 等 */
-      mseLastFail = Date.now();
-      mseStop();
-    }
+      var b = mseSb.buffered;
+      if (!b.length) return;
+      var end = b.end(b.length - 1), start = b.start(b.length - 1);
+      if (end - vid.currentTime > 1.5 || vid.currentTime < start) {
+        vid.currentTime = Math.max(start, end - 0.35);
+        mseDiag.catchups++;
+      }
+    } catch(e) {}
   }
 
   function mseScanMoof(chunk) {
@@ -164,14 +240,17 @@
     mseUrl = url;
     mseRunning = true;
     mseLastData = Date.now();
+    mseLastTrim = Date.now();
+    mseDiag.starts++;
+    var generation = mseGeneration;
     resetFps();
     var ac = new AbortController();
     mseAbort = ac;
 
     fetch(url, {signal: ac.signal}).then(function(r) {
+      if (generation !== mseGeneration) return;
       if (!r.ok || !r.body) {                        /* 503（无编码会话）：节流重试 */
-        mseLastFail = Date.now();
-        mseStop();
+        mseFail(generation, new Error('Video HTTP ' + r.status));
         return;
       }
       var codec = r.headers.get('X-Codec') || 'avc1.4d401f';
@@ -183,35 +262,53 @@
       mseReader = rd;
 
       ms.addEventListener('sourceopen', function() {
-        if (mseMs !== ms) return;                    /* 期间已被 mseStop：丢弃 */
+        if (mseMs !== ms || generation !== mseGeneration) return;
         var sb;
         try {
           sb = ms.addSourceBuffer('video/mp4; codecs="' + codec + '"');
         } catch(e) {
-          mseLastFail = Date.now();
-          mseStop();
+          mseFail(generation, e);
           return;
         }
         mseSb = sb;
-        sb.addEventListener('error', function() { mseStop(); });
+        sb.addEventListener('error', function() { mseFail(generation, new Error('Media decoding failed')); });
         var p = vid.play();
         if (p && p.catch) p.catch(function(){});     /* muted+autoplay 正常应成功 */
 
-        (function pump() {
-          rd.read().then(function(c) {
-            if (c.done) { mseStop(); return; }       /* 服务端断连（会话轮转）：立即重连 */
-            mseLastData = Date.now();
-            mseScanMoof(c.value);
-            mseAppend(sb, c.value, 0);
-            pump();
-          }).catch(function() { mseStop(); });
+        (async function pump() {
+          try {
+            while (generation === mseGeneration && mseRunning) {
+              var c = await rd.read();
+              if (generation !== mseGeneration) return;
+              if (c.done) { mseStop(); return; }
+              mseLastData = Date.now();
+              mseScanMoof(c.value);
+              await mseAppend(sb, c.value, generation);
+            }
+          } catch(e) { mseFail(generation, e); }
         })();
       });
-    }).catch(function() {                            /* 网络失败/中断：节流重连 */
-      mseLastFail = Date.now();
-      mseStop();
-    });
+    }).catch(function(e) { mseFail(generation, e); });
   }
+
+  /* Read-only diagnostics for distinguishing network delivery from rendering. */
+  window.getGatewayVideoDiagnostics = function() {
+    var vid = document.getElementById('stream_video');
+    var result = Object.assign({}, mseDiag, {
+      transport: mseRunning ? 'H.264/MSE' : streamRunning ? 'MJPEG' : 'idle',
+      receivedFps: receivedFps, displayedFps: fpsVal, bufferAheadSeconds: 0,
+      readyState: vid ? vid.readyState : 0
+    });
+    if (vid && vid.getVideoPlaybackQuality) {
+      var q = vid.getVideoPlaybackQuality();
+      result.totalVideoFrames = q.totalVideoFrames;
+      result.droppedVideoFrames = q.droppedVideoFrames;
+    }
+    if (vid && mseSb && mseSb.buffered.length) {
+      result.bufferAheadSeconds = Math.max(0, mseSb.buffered.end(mseSb.buffered.length - 1) - vid.currentTime);
+    }
+    return result;
+  };
 
   function barColor(p) { return p < 60 ? 'green' : p < 85 ? 'yellow' : 'red'; }
 
@@ -233,7 +330,7 @@
     var h = '';
     var ifaces = [{id:'eth0',name:'有线'},{id:'wlan0',name:'无线'}];
     for (var i = 0; i < ifaces.length; i++) {
-      h += '<div class="net-iface"><h4>' + ifaces[i].name
+      h += '<div class="net-iface"><h4><span data-i18n="' + ifaces[i].name + '">' + t(ifaces[i].name) + '</span>'
         + '<span class="if-status" id="ns_' + ifaces[i].id + '_st">--</span></h4>';
       h += '<div class="net-row"><span class="net-dir">↓</span>'
         + '<span class="net-val" id="ns_' + ifaces[i].id + '_rx">--</span>'
@@ -261,7 +358,7 @@
 
         /* 状态 */
         var stEl = document.getElementById('ns_' + id + '_st');
-        stEl.textContent = active ? '已连接' : '未连接';
+        stEl.textContent = active ? t('已连接') : t('未连接');
         stEl.className = 'if-status ' + (active ? 'if-up' : 'if-down');
 
         if (active && prev.ts > 0) {
@@ -300,7 +397,7 @@
     var day = ('0' + d.getDate()).slice(-2);
     var h = ('0' + d.getHours()).slice(-2);
     var min = ('0' + d.getMinutes()).slice(-2);
-    return y + '_' + m + '_' + day + ' 星期' + wk[d.getDay()] + ' ' + h + ':' + min;
+    return y + '_' + m + '_' + day + ' ' + t('星期' + wk[d.getDay()]) + ' ' + h + ':' + min;
   }
 
   async function update() {
@@ -336,7 +433,8 @@
           var c = d.cpu_cores[i], l = lastCores[i];
           var du2 = c.u + c.s - l.u - l.s, di = c.i - l.i, dt2 = du2 + di;
           var p = dt2 > 0 ? Math.round(du2 * 100 / dt2) : 0;
-          document.getElementById('cpu_cores_pct' + i).textContent = p + '%';
+          var freqText = (d.cpu_freqs && d.cpu_freqs[i]) ? ' <small>' + (d.cpu_freqs[i] / 1000).toFixed(2) + 'GHz</small>' : '';
+          document.getElementById('cpu_cores_pct' + i).innerHTML = p + '%' + freqText;
           var b = document.getElementById('cpu_cores_bar' + i);
           b.style.width = p + '%'; b.className = barColor(p);
         }
@@ -365,7 +463,7 @@
           if (!pctEl) continue;
           pctEl.textContent = (p2 >= 0 ? p2 + '%' : 'N/A');
           var b2 = document.getElementById('npu_cores_bar' + i);
-          b2.style.width = (p2 >= 0 ? p2 : 0) + '%'; b2.className = 'blue';
+          b2.style.width = (p2 >= 0 ? p2 : 0) + '%'; b2.className = 'indigo';
         }
       }
 
@@ -375,9 +473,23 @@
       var mb = document.getElementById('mem_bar');
       mb.style.width = d.mem_pct + '%'; mb.className = d.mem_pct < 60 ? 'green' : d.mem_pct < 85 ? 'yellow' : 'red';
 
-      document.getElementById('gpu_val').textContent = (d.gpu >= 0 ? d.gpu + '%' : 'N/A');
+      /* GPU：优先显示负载%；RK356x/RK3576 驱动未暴露 load 时显示当前频率(MHz) */
+      var gpuEl = document.getElementById('gpu_val');
       var gb = document.getElementById('gpu_bar');
-      gb.style.width = (d.gpu >= 0 ? d.gpu : 0) + '%'; gb.className = 'blue';
+      var gf = document.getElementById('gpu_freq');
+      if (d.gpu >= 0) {
+        gpuEl.textContent = d.gpu + '%';
+        gb.style.width = d.gpu + '%'; gb.className = 'blue';
+        if (gf) gf.textContent = '';
+      } else if (d.gpu_freq >= 0) {
+        gpuEl.textContent = d.gpu_freq + ' MHz';
+        gb.style.width = '0%';
+        if (gf) gf.textContent = '';
+      } else {
+        gpuEl.textContent = 'N/A';
+        gb.style.width = '0%';
+        if (gf) gf.textContent = '';
+      }
 
       var dp = Math.round(100 - d.disk_avail * 100 / d.disk_total);
       document.getElementById('disk_val').textContent = dp + '%';
@@ -439,8 +551,10 @@
     updateNet();
   }
 
-  update();
-  setInterval(update, 200);
+  /* Do not overlap API polls while a slow response is still in flight. */
+  (function poll() {
+    update().then(function() { setTimeout(poll, 1000); }, function() { setTimeout(poll, 1000); });
+  })();
 
   /* 每秒刷新视频流 FPS 徽标：窗口内无新帧则显示 --（流停滞） */
   setInterval(function() {
@@ -448,32 +562,32 @@
     if (!el) return;
     var now = Date.now();
     if (now > fpsWin) {
-      if (fpsCnt > 0) {
-        fpsVal = fpsCnt * 1000 / (now - fpsWin);
-        fpsCnt = 0; fpsWin = now;
+      var elapsed = now - fpsWin;
+      receivedFps = fpsCnt * 1000 / elapsed;
+      var vid = document.getElementById('stream_video');
+      if (mseRunning && vid && vid.getVideoPlaybackQuality) {
+        var quality = vid.getVideoPlaybackQuality();
+        var presented = quality.totalVideoFrames - quality.droppedVideoFrames;
+        fpsVal = lastPresented === null ? 0 : Math.max(0, presented - lastPresented) * 1000 / elapsed;
+        lastPresented = presented;
       } else {
-        fpsVal = 0;
+        fpsVal = streamRunning ? shownCnt * 1000 / elapsed : receivedFps;
       }
+      fpsCnt = 0; shownCnt = 0; fpsWin = now;
     }
     el.textContent = fpsVal > 0 ? Math.round(fpsVal) + ' FPS' : '-- FPS';
+    el.title = 'Displayed: ' + Math.round(fpsVal) + ' FPS; received: ' + Math.round(receivedFps) + ' FPS';
   }, 1000);
 
-  /* MSE 延迟看门狗：缓冲超前 >3s（播放落后于实时）或 5s 无数据 → 重连接合最新 IDR。
-     页面隐藏时跳过：后台标签浏览器暂停视频解码，currentTime 不再推进而数据仍在
-     入缓冲，缓冲超前必然突破 3s，会每秒误杀重连一次（WebRTC 版曾在 journal 里
-     刷出成片的短命会话，同一个坑）。隐藏期间顺带把无数据计时基准推后，
-     切回前台时从当前时刻重新计。 */
+  /* Catch up inside the current buffer. Reopen the stream only when transport
+     stops; reconnecting to another GOP for ordinary playback lag adds stalls. */
   setInterval(function() {
     if (!mseRunning || !mseSb || !mseMs) return;
-    if (document.hidden) { mseLastData = Date.now(); return; }
-    var vid = document.getElementById('stream_video');
-    try {
-      var b = mseSb.buffered;
-      if (b.length > 0 && b.end(b.length - 1) - vid.currentTime > 3) { mseStop(); return; }
-    } catch(e) {}
-    if (vid.readyState === 0 && Date.now() - mseLastData > 5000) mseStop();
+    if (document.hidden) return;
+    mseCatchUp();
+    if (Date.now() - mseLastData > 5000) mseFail(mseGeneration, new Error('No video data for 5 seconds'));
   }, 1000);
 
-  window.reboot = function() { if (!confirm('确定要重启设备吗？')) return; authFetch('/api/reboot').catch(function(){}); };
-  window.shutdown = function() { if (!confirm('确定要关闭设备吗？')) return; authFetch('/api/shutdown').catch(function(){}); };
+  window.reboot = function() { if (!confirm(t('确定要重启设备吗？'))) return; authFetch('/api/reboot').catch(function(){}); };
+  window.shutdown = function() { if (!confirm(t('确定要关闭设备吗？'))) return; authFetch('/api/shutdown').catch(function(){}); };
 })();

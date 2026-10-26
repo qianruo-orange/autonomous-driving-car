@@ -567,7 +567,7 @@ static int load_model_file(const char *path, unsigned char **buf_out, size_t *le
  * "unavailable core mask found for current platform" 报错，全系兼容。
  * 未识别 SoC 默认 1 核（CORE_0 始终合法），保证不报错、可启动；
  * 新增平台只需在此表追加一行。结果缓存，仅首次读取。 */
-static int npu_core_count(void)
+int npu_core_count(void)
 {
     static int n = 0;
     if (n) return n;

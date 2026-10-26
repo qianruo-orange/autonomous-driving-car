@@ -59,16 +59,16 @@
     overlay.id = 'auth-overlay';
     overlay.innerHTML =
       '<div id="auth-box">' +
-      '<h3>需要管理员权限</h3>' +
-      '<div class="auth-sub">请输入 root 或 sudo 组成员账号</div>' +
-      '<label for="auth-user">用户名</label>' +
+      '<h3 data-i18n="需要管理员权限">' + t('需要管理员权限') + '</h3>' +
+      '<div class="auth-sub" data-i18n="请输入 root 或 sudo 组成员账号">' + t('请输入 root 或 sudo 组成员账号') + '</div>' +
+      '<label for="auth-user" data-i18n="用户名">' + t('用户名') + '</label>' +
       '<input id="auth-user" autocomplete="username" spellcheck="false">' +
-      '<label for="auth-pass">密码</label>' +
+      '<label for="auth-pass" data-i18n="密码">' + t('密码') + '</label>' +
       '<input id="auth-pass" type="password" autocomplete="current-password">' +
       '<div class="auth-err" id="auth-err"></div>' +
       '<div class="auth-btns">' +
-      '<button type="button" id="auth-cancel">取消</button>' +
-      '<button type="button" id="auth-ok" class="primary">确定</button>' +
+      '<button type="button" id="auth-cancel" data-i18n="取消">' + t('取消') + '</button>' +
+      '<button type="button" id="auth-ok" class="primary" data-i18n="确定">' + t('确定') + '</button>' +
       '</div></div>';
     (document.body || document.documentElement).appendChild(overlay);
     var user = overlay.querySelector('#auth-user');
@@ -83,7 +83,8 @@
       if (r) r(result);
     }
     function showErr(msg) {
-      err.textContent = msg;
+      err.setAttribute('data-i18n', msg);
+      err.textContent = t(msg);
       err.classList.add('show');
     }
     function submit() {
@@ -114,7 +115,8 @@
      errMsg 非空时在框内显示错误提示（401 后重试场景）。 */
   function promptLogin(errMsg) {
     var box = ensureLoginBox();
-    box.err.textContent = errMsg || '';
+    box.err.setAttribute('data-i18n', errMsg || '');
+    box.err.textContent = t(errMsg || '');
     box.err.classList.toggle('show', !!errMsg);
     box.user.value = lastUser;
     box.pass.value = '';

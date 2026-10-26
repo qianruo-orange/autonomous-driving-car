@@ -68,12 +68,8 @@ struct app_config_t {
     char          video_device[128];
     int           video_width;
     int           video_height;
-    int           video_fps;       /* 期望帧率；0 = 驱动默认 */
-    /* 码率系数（每像素 bit/s ×100，即 175 = 1.75bps/px）。
-       录像与直播共用同一编码器，故此值同时决定两者码率：
-       bitrate = 宽 × 高 × 系数/100，VBR 上限为其 1.25 倍。
-       上调超出网络承载会让直播持续滞后/断流重连（详见 video_rec.c） */
-    int           video_bitrate_ppx;
+    int           video_fps;       /* expected frame rate; 0 = driver default */
+    char          video_codec[16]; /* encode backend: "software" (libx264, default) or "hardware" (RKMPP/rkVENC); switchable */
 
     /* ---- RKNN AI 检测（YOLO26，必要流程）---- */
     char          ai_model[256];    /* .rknn 模型文件路径 */
@@ -82,7 +78,7 @@ struct app_config_t {
     float         ai_conf;          /* 置信度阈值 */
     float         ai_nms;           /* NMS IoU 阈值 */
     int           ai_interval_ms;   /* 推理节流间隔（ms），默认 10（每帧推理） */
-    int           ai_threads;       /* 推理工作线程数（3 的倍数：3~15，默认 3），每线程独立 rknn context，按 i%3 绑定 NPU 核 */
+    int           ai_threads;       /* 推理工作线程数（NPU 核数的整数倍，范围 cores~15，默认每核 1 个），每线程独立 rknn context，按 i%实际核数 绑定 NPU 核 */
 };
 
 int  config_load(struct app_config_t *cfg);
