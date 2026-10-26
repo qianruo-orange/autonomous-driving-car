@@ -130,121 +130,6 @@
     } catch(e) { cardStatus('can', 'err', '上传失败'); }
   };
 
-  var capsData = null;
-  var camDevs = [];   /* 系统枚举到的摄像头列表 [{path,card},...] */
-  var cfgVideoFps = 0;   /* configured frame rate (0=auto), used to reselect on load */
-  var codecCaps = null;  /* codec-driven resolution/fps capability */
-  var selVidFps = 0;     /* 当前选中项（格式/分辨率/帧率合一）的帧率，保存时提交 */
-
-  /* 页面加载时扫描可用摄像头 */
-  async function loadDevices() {
-    var sel = document.getElementById('vd');
-    try {
-      var r = await fetch('/api/video/devices');
-      if (!r.ok) return;
-      camDevs = await r.json();
-      sel.innerHTML = '';
-      for (var i = 0; i < camDevs.length; i++)
-        sel.innerHTML += '<option value="' + camDevs[i].path + '">' + camDevs[i].path + ' - ' + camDevs[i].card + '</option>';
-      if (camDevs.length === 0)
-        sel.innerHTML = '<option value="" data-i18n="无可用摄像头">' + t('无可用摄像头') + '</option>';
-    } catch(e) { sel.innerHTML = '<option value="" data-i18n="扫描失败">' + t('扫描失败') + '</option>'; }
-  }
-
-  window.queryCaps = async function() {
-    var dev = document.getElementById('vd').value;
-    var sel = document.getElementById('vr');
-    if (!dev) { sel.innerHTML = '<option value="">-- select device --</option>'; return; }
-    sel.innerHTML = '<option value="">querying...</option>';
-    try {
-      var r = await fetch('/api/video/caps?device=' + encodeURIComponent(dev));
-      if (!r.ok) { sel.innerHTML = '<option value="">device unavailable</option>'; return; }
-      capsData = await r.json();
-      rebuildResOptions();
-    } catch(e) { sel.innerHTML = '<option value="">query failed</option>'; }
-  };
-
-  window.onResChange = function() {
-    var sel = document.getElementById('vr');
-    var val = sel.value;
-    if (!val) return;
-    var p = val.split('_');
-    var w = parseInt(p[0], 10), h = parseInt(p[1], 10);
-    var fps = parseInt(p[2], 10) || 0;
-    document.getElementById('vw').value = w;
-    document.getElementById('vh').value = h;
-    selVidFps = fps;                 /* frame rate saved together with the option */
-    onBpxChange();                  /* resolution changed -> actual bitrate changes */
-  };
-
-  /* Load codec-driven capability (resolution/fps) for the given backend. */
-  async function loadCodecCaps(codec) {
-    try {
-      var r = await fetch('/api/video/codeccaps?codec=' + encodeURIComponent(codec));
-      if (!r.ok) return;
-      codecCaps = await r.json();
-    } catch(e) {}
-  }
-
-  /* Rebuild the resolution/fps dropdown from the ACTIVE codec's capability.
-     Optionally intersected with the selected camera's real caps so we never
-     offer a resolution the camera cannot produce. */
-  function rebuildResOptions() {
-    var sel = document.getElementById('vr');
-    if (!codecCaps || !codecCaps.caps) return;
-    var curW = parseInt(document.getElementById('vw').value) || 0;
-    var curH = parseInt(document.getElementById('vh').value) || 0;
-    var matchVal = '', matchSize = '';
-    sel.innerHTML = '';
-    for (var i = 0; i < codecCaps.caps.length; i++) {
-      var s = codecCaps.caps[i];
-      if (capsData && capsData.formats) {
-        var ok = false;
-        for (var fi = 0; fi < capsData.formats.length && !ok; fi++) {
-          var fmt = capsData.formats[fi];
-          for (var si = 0; si < fmt.sizes.length; si++)
-            if (fmt.sizes[si].w === s.w && fmt.sizes[si].h === s.h) { ok = true; break; }
-        }
-        if (!ok) continue;   /* camera cannot produce this size */
-      }
-      var fps = (s.fps && s.fps.length) ? s.fps : [30,25,20,15,10,5];
-      for (var k = 0; k < fps.length; k++) {
-        var val = s.w + '_' + s.h + '_' + fps[k];
-        var txt = s.w + 'x' + s.h + (s.label ? ' (' + s.label + ')' : '') + ' @ ' + fps[k] + ' FPS';
-        sel.innerHTML += '<option value="' + val + '">' + txt + '</option>';
-        if (s.w === curW && s.h === curH) {
-          if (!matchSize) matchSize = val;
-          if (cfgVideoFps > 0 && fps[k] === cfgVideoFps) matchVal = val;
-        }
-      }
-    }
-    if (matchVal) sel.value = matchVal;
-    else if (matchSize) sel.value = matchSize;
-    else if (sel.options.length > 0) sel.selectedIndex = 0;
-    onResChange();
-  }
-
-  /* Codec switch: reload capability and rebuild the resolution list. */
-  window.onCodecChange = async function() {
-    await loadCodecCaps(document.getElementById('vc').value);
-    rebuildResOptions();
-  };
-
-  /* 码率系数 → 实际码率提示：与后端同式 bitrate = 宽×高×系数/100（bps） */
-  window.onBpxChange = function() {
-    var hint = document.getElementById('vbp_hint');
-    if (!hint) return;
-    var vbp = document.getElementById('vbp'); if (!vbp) return;
-    var ppx = parseInt(vbp.value, 10);
-    var w = parseInt(document.getElementById('vw').value, 10);
-    var h = parseInt(document.getElementById('vh').value, 10);
-    if (!ppx || !w || !h) { hint.textContent = ''; return; }
-    var bps = w * h * ppx / 100;
-    if (bps < 300000) bps = 300000;            /* 后端同样的上下限钳位 */
-    if (bps > 16000000) bps = 16000000;
-    hint.textContent = '≈ ' + (bps / 1000000).toFixed(2) + ' Mbps';
-  };
-
   window.addFilter = function() {
     var el = document.getElementById('fil');
     if (el.children.length >= 16) return;
@@ -280,68 +165,16 @@
     } catch(e) {}
   }
 
-  function buildAiThreadSelect(npu) {
-    var cores = (npu && npu > 0) ? npu : 1;
-    var sel = document.getElementById('ai_th');
-    if (!sel) return;
-    sel.innerHTML = '';
-    for (var k = 1; k * cores <= 15; k++) {
-      var val = k * cores;
-      var option = document.createElement('option');
-      option.value = String(val);
-      setI18nText(option, '{threads}（每核 {perCore} 个）', {threads: val, perCore: k});
-      sel.appendChild(option);
-    }
-    var hint = document.getElementById('ai_th_hint');
-    setI18nText(hint, '（NPU {cores} 核）', {cores: cores});
-  }
-
   async function loadCfg() {
     try {
       var cfg = await (await fetch('/api/config')).json();
-      var sys = null;
-      try { sys = await (await fetch('/api/system')).json(); } catch(e) {}
       document.getElementById('tp').value = cfg.tcp_port || '';
       document.getElementById('mc').value = cfg.max_clients || '';
       document.getElementById('bind').value = cfg.tcp_bind || '';
 
-      /* 视频设备：配置值必须在系统枚举列表中才使用，否则选择第一个真实设备；
-         没有摄像头时保持为空 */
-      var vd = document.getElementById('vd');
-      var cfgDev = cfg.video_device || '';
-      var devInList = false;
-      for (var di = 0; di < camDevs.length; di++)
-        if (camDevs[di].path === cfgDev) { devInList = true; break; }
-      vd.value = devInList ? cfgDev : (camDevs.length ? camDevs[0].path : '');
-      if (vd.value) setTimeout(queryCaps, 500);
-      var vcEl = document.getElementById('vc');
-      if (vcEl) {
-        vcEl.value = (cfg.video_codec === 'hardware') ? 'hardware' : 'software';
-        await loadCodecCaps(vcEl.value);
-        rebuildResOptions();
-      }
-      var vcEl = document.getElementById('vc');
-      if (vcEl) {
-        vcEl.value = (cfg.video_codec === 'hardware') ? 'hardware' : 'software';
-        await loadCodecCaps(vcEl.value);
-        rebuildResOptions();
-      }
-
-      /* 分辨率由设备实际能力（/api/video/caps）决定：
-         配置中有有效值则匹配选中，否则默认取第一个支持的分辨率 */
-      document.getElementById('vw').value = cfg.video_width > 0 ? cfg.video_width : '';
-      document.getElementById('vh').value = cfg.video_height > 0 ? cfg.video_height : '';
-      cfgVideoFps = cfg.video_fps || 0;
-      var vbp = document.getElementById('vbp'); if (vbp) vbp.value = cfg.video_bitrate_ppx || 175;
-      onBpxChange();
-
-      /* AI 检测配置（必要流程；线程数下拉框按平台 NPU 核数动态生成；置信度/NMS 显示为百分比） */
-      buildAiThreadSelect(sys ? sys.npu_count : (cfg.npu_count || 1));
-      var el = document.getElementById('ai_th');
-      if (el) el.value = String(cfg.ai_threads || (sys && sys.npu_count) || 1);
+      /* AI thresholds are percentages; concurrency and pacing are automatic. */
       document.getElementById('ai_cf').value = Math.round((cfg.ai_conf || 0.25) * 100);
       document.getElementById('ai_nm').value = Math.round((cfg.ai_nms || 0.45) * 100);
-      document.getElementById('ai_iv').value = cfg.ai_interval_ms || 10;
       /* IP 设置：IP 即 TCP 绑定网卡的 IP；回填保存配置 + 当前运行时地址 */
       document.getElementById('ip_mode').value = cfg.ip_mode || '';
       document.getElementById('ip_a').value = cfg.ip_addr || '';
@@ -486,34 +319,12 @@
     document.getElementById('ip_g_row').style.display = show ? 'flex' : 'none';
   };
 
-  /* Save video config and restart the video stream. */
-  window.saveVideo = async function() {
-    await postConfig({
-      target: 'video',
-      video_device: document.getElementById('vd').value,
-      video_width: document.getElementById('vw').value,
-      video_height: document.getElementById('vh').value,
-      video_fps: selVidFps,
-      video_bitrate_ppx: (document.getElementById('vbp') || {}).value || 175,
-      video_codec: document.getElementById('vc').value
-    }, 'video');
-  };
-
-  /* 保存 AI 配置并热重载推理池（线程数取 3 的倍数） */
+  /* Save thresholds; inference concurrency and pacing are automatic. */
   window.saveAi = async function() {
-    var th = parseInt(document.getElementById('ai_th').value, 10);
-    if (!th || th < 1) th = 1;   /* 后端会自动取整为 NPU 核数的整数倍 */
-    await postConfig({
-      target: 'ai',
-      ai_threads: th,
-      ai_conf: document.getElementById('ai_cf').value,
-      ai_nms: document.getElementById('ai_nm').value,
-      ai_interval_ms: document.getElementById('ai_iv').value
-    }, 'ai');
-    setTimeout(loadCfg, 1200);   /* 重载完成后刷新显示 */
+    await postConfig({target:'ai', ai_conf:document.getElementById('ai_cf').value,
+      ai_nms:document.getElementById('ai_nm').value}, 'ai');
   };
 
-  /* 上传 AI 文件（模型 .rknn / 类别标签 .names）并热重载 */
   window.uploadAi = async function(type) {
     var input = document.getElementById(type === 'model' ? 'ai_model_f' : 'ai_names_f');
     var file = input.files && input.files[0];
@@ -568,7 +379,7 @@
   };
 
   /* 先扫描设备列表、CAN 接口与网卡列表，再加载配置 */
-  loadDevices().then(loadCanIfaces).then(loadIfaces).then(loadCfg).then(loadCpuFreq);
+  loadCanIfaces().then(loadIfaces).then(loadCfg).then(loadCpuFreq);
 
   /* ---- CPU 频率配置 ---- */
   async function loadCpuFreq() {

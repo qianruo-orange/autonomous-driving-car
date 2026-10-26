@@ -29,7 +29,7 @@
 #include "core/common.h"
 #include "video/video_stream.h"
 #include "video/video_rec.h"
-#include "ai/rknn_yolo.h"
+#include "yolo/rknn_yolo.h"
 #include "tcp/net_ip.h"
 
 /* 模块生命周期函数 */

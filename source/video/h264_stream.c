@@ -32,7 +32,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 
-#include "ai/rknn_yolo.h"
+#include "yolo/rknn_yolo.h"
 #include "core/common.h"
 #include "core/log.h"
 #include "video/h264_stream.h"

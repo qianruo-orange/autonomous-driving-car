@@ -4,10 +4,10 @@
 
 #include <stddef.h>
 
-#include "ai/yolo_types.h"
+#include "yolo/yolo_types.h"
 
 /**
- * ai/yolo_draw.h — 检测框渲染模块：RGB 画框 + 类别标签 + JPEG 编码。
+ * yolo/yolo_draw.h — 检测框渲染模块：RGB 画框 + 类别标签 + JPEG 编码。
  * 纯函数，无全局状态，可被任意线程并发调用。
  */
 

@@ -14,6 +14,7 @@
     <button type="button" class="btn btn-back" onclick="loadCfg()">🔄 <span data-i18n="查询">查询</span></button>
   </div>
   <div class="tb-right">
+    <a href="/camera" class="btn btn-back">📷 <span data-i18n="相机">相机</span></a>
     <a href="/" class="btn btn-back"> <span data-i18n="仪表盘">仪表盘</span></a>
     <a href="/dbc" class="btn btn-back">📡 <span data-i18n="DBC解析">DBC解析</span></a>
     <a href="/logs" class="btn btn-back">📁 <span data-i18n="文件下载">文件下载</span></a>
@@ -29,10 +30,8 @@
 <div class="ai-col">
 <div class="grp-t" data-i18n="推理参数">推理参数</div>
 <div class="cfg-grid ai-basic">
-<div class="row"><label data-i18n="推理线程数">推理线程数</label><select id="ai_th"></select><span class="unit" id="ai_th_hint"></span></div>
 <div class="row"><label data-i18n="置信度">置信度</label><input id="ai_cf" type="number" min="1" max="100" step="1"><span class="unit">%</span></div>
 <div class="row"><label>NMS IoU</label><input id="ai_nm" type="number" min="1" max="100" step="1"><span class="unit">%</span></div>
-<div class="row"><label data-i18n="推理间隔">推理间隔</label><input id="ai_iv" type="number" min="10" max="5000"><span class="unit">ms</span></div>
 </div>
 </div>
 <div class="ai-col">
@@ -70,16 +69,6 @@
 <div class="row" id="ip_g_row"><label data-i18n="网关">网关</label><input id="ip_g" type="text" placeholder="192.168.1.1"></div>
 </div>
 <div class="ip-cur" id="ip_cur" data-i18n="当前未读取">当前未读取</div>
-</div>
-
-<div class="card" id="card_video"><h3><span data-i18n="视频">视频</span><span class="card-status" id="status_video"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveVideo()">💾 <span data-i18n="保存">保存</span></button></h3>
-<div class="cfg-grid vid2">
-<div class="row full"><label data-i18n="设备">设备</label><select name="vd" id="vd" onchange="queryCaps()"><option value="" data-i18n="-- 扫描中 --">-- 扫描中 --</option></select></div>
-<div class="row"><label data-i18n="编码器">编码器</label><select id="vc" onchange="onCodecChange()"><option value="software">Software (libx264)</option><option value="hardware">Hardware (RKMPP/VENC)</option></select></div>
-<div class="row"><label data-i18n="解码器">解码器</label><select id="vdec" onchange="onDecoderChange()"><option value="software">Software</option><option value="hardware">Hardware (RKMPP)</option></select></div>
-<div class="row full"><label data-i18n="格式 / 分辨率 / 帧率">格式 / 分辨率 / 帧率</label><select name="vr" id="vr" onchange="onResChange()"><option value="" data-i18n="-- 请选择设备 --">-- 请选择设备 --</option></select></div>
-</div>
-<input type="hidden" id="vw"><input type="hidden" id="vh">
 </div>
 
 <div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveCpuFreq()">💾 <span data-i18n="保存">保存</span></button></h3>

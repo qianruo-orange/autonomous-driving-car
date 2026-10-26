@@ -12,7 +12,7 @@
 #include <math.h>
 #include <string.h>
 
-#include "ai/yolo_postprocess.h"
+#include "yolo/yolo_postprocess.h"
 
 /* NCHW 快速路径的逐锚点临时缓冲容量（覆盖 640 输入的 8400 锚点） */
 #define YOLO_MAX_ANCHORS 16384

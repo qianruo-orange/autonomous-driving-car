@@ -4,11 +4,11 @@
 
 #include <stdint.h>
 
-#include "ai/rknn_api.h"
-#include "ai/yolo_types.h"
+#include "yolo/rknn_api.h"
+#include "yolo/yolo_types.h"
 
 /**
- * ai/yolo_postprocess.h — YOLO26 单输出模式后处理（官方 ultralytics rknn 导出格式）。
+ * yolo/yolo_postprocess.h — YOLO26 单输出模式后处理（官方 ultralytics rknn 导出格式）。
  * 纯函数，无全局状态，可被任意线程并发调用。
  */
 

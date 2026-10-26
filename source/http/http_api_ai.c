@@ -16,8 +16,8 @@
 #include <string.h>
 
 #include "http/http_internal.h"
-#include "ai/rknn_yolo.h"
-#include "ai/yolo_draw.h"     /* yolo_classes_t / YOLO_MAX_CLASSES / YOLO_CLASS_NAME_LEN */
+#include "yolo/rknn_yolo.h"
+#include "yolo/yolo_draw.h"     /* yolo_classes_t / YOLO_MAX_CLASSES / YOLO_CLASS_NAME_LEN */
 #include "core/common.h"      /* safe_strncpy */
 
 #define AI_MODEL_MAX_SIZE  (64 * 1024 * 1024)   /* 模型文件上限 64MB */

@@ -4,12 +4,12 @@
 
 #include <stddef.h>
 
-#include "ai/yolo_types.h"
+#include "yolo/yolo_types.h"
 
 /**
- * ai/rknn_yolo.h — RKNN + YOLO26 检测框架（主模块：模型管理 + 多线程推理池）。
+ * yolo/rknn_yolo.h — RKNN + YOLO26 检测框架（主模块：模型管理 + 多线程推理池）。
  *
- * 模块组成（见 source/ai/ 下各文件）：
+ * 模块组成（见 source/yolo/ 下各文件）：
  *  - yolo_image.c      图像处理（JPEG 编解码 / YUYV→RGB / 缩放）
  *  - yolo_postprocess.c YOLO26 单输出模式后处理（sigmoid + stride + NMS）
  *  - yolo_draw.c       画框 + 标签 + JPEG 编码
@@ -17,12 +17,13 @@
  *                      任务队列、结果队列（NMS 后处理结果：目标名称 + 置信度 +
  *                      标注框四点坐标）、渲染 composer、结果/画框帧快照
  *
- * 多线程推理：ai_threads 个推理工作线程（3 的倍数 3~15，各绑定 NPU 核 i%3），
- * 独立 rknn context 并行推理。推理后数据流分两路：rgb 写槽（画框显示链路），
+ * 多线程推理：按输入帧率和实测服务耗时自适应调整活跃 worker 数，
+ * 按实际 NPU 核数均匀分配，独立 rknn context 并行推理。
+ * 推理后数据流分两路：rgb 写槽（画框显示链路），
  * NMS 结果入结果队列；composer 消费队列最新结果（乱序完成的旧结果丢弃），
  * 按 seq 严格递增做 EMA 平滑 + 渲染，每个视频帧都会产出标注画面。
  *
- * 热重载：rknn_yolo_reload() 停池 → 重读配置（模型/标签/线程数/阈值等）→ 重建。
+ * 热重载：rknn_yolo_reload() 停池 → 重读配置（模型/标签/阈值等）→ 重建。
  *
  * 必要流程：AI 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
  * 启动路径整体失败退出；运行期热重载失败由 HTTP 接口报告，画框流返回 503。
@@ -34,8 +35,10 @@
 int rknn_yolo_init(void *arg);
 void rknn_yolo_destroy(void *arg);
 int rknn_yolo_enabled(void);
-/* 返回平台 NPU 核心数（RK3588=3 / RK3576=2 / 其余单核），供配置层按实际核数派发推理线程 */
+/* 返回平台 NPU 核心数（RK3588=3 / RK3576=2 / 其余单核）。 */
 int npu_core_count(void);
+/* 当前自适应启用的推理 worker 数；推理池不可用时返回 0。 */
+int rknn_yolo_active_workers(void);
 
 /* 热重载推理池（停止 → 重读配置 → 重建）；返回 0 = 新池可用，-1 = 未运行/降级 */
 int rknn_yolo_reload(void);

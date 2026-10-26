@@ -5,8 +5,8 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 extern "C" {
-#include "ai/yolo_draw.h"
-#include "ai/yolo_image.h"
+#include "yolo/yolo_draw.h"
+#include "yolo/yolo_image.h"
 }
 
 int main()

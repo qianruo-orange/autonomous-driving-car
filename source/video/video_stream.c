@@ -21,7 +21,7 @@
 #include "core/cpu_affinity.h"
 #include "core/epoll_util.h"
 #include "watchdog/watchdog.h"
-#include "ai/rknn_yolo.h"
+#include "yolo/rknn_yolo.h"
 
 /* 推流客户端空闲超时（秒）：客户端不读 / 网络黑洞时释放连接与线程 */
 #define VIDEO_CLIENT_IDLE_TIMEOUT 30

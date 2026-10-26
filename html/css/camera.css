@@ -1,0 +1,29 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+.camera-grid{display:grid;grid-template-columns:minmax(320px,1.2fr) minmax(280px,1fr);gap:18px;max-width:1200px;margin:0 auto;align-items:start}
+.camera-page .card{max-width:none;width:100%;margin-bottom:0}
+.camera-page .top-bar{gap:12px;flex-wrap:wrap}
+.camera-page .tb-right{flex-wrap:wrap}
+.camera-fields{display:grid;gap:8px;margin:16px 0}
+.camera-fields .row{margin:0}
+.camera-fields .row label{width:120px;flex:none}
+.camera-fields .row select{max-width:none;min-width:0}
+.camera-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:14px}
+.camera-status,.focus-status{min-height:1.4em;color:var(--muted);font-size:12px;line-height:1.5;margin-top:10px;overflow-wrap:anywhere}
+.camera-status.err,.focus-status.err{color:#e0556a}
+.camera-page button:disabled,.camera-focus-card button:disabled,.camera-focus-card input:disabled{opacity:.5;cursor:default}
+.focus-auto{display:flex;align-items:center;gap:9px;font-size:14px;margin:12px 0;color:var(--text)}
+.focus-auto input{accent-color:var(--accent);width:17px;height:17px}
+.focus-manual{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.focus-manual label{flex:none}
+.focus-manual input[type=range]{flex:1;min-width:100px;accent-color:var(--accent)}
+.focus-manual output{min-width:3em;font-variant-numeric:tabular-nums;text-align:right;color:var(--text)}
+.focus-manual .btn{flex:none;margin:0;padding:6px 12px}
+.video-column .camera-focus-card{flex:none;margin-top:12px}
+.video-wrapper{position:relative}
+.video-fullscreen{position:absolute;right:12px;bottom:12px;border:1px solid rgba(255,255,255,.3);border-radius:8px;background:rgba(0,0,0,.65);color:#fff;padding:6px 12px;cursor:pointer;font-size:12px;z-index:5}
+.video-fullscreen:hover{background:rgba(0,0,0,.9)}
+.video-fullscreen:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.video-wrapper:fullscreen{display:flex;align-items:center;justify-content:center;background:#000;border-radius:0;width:100vw;height:100vh}
+.video-wrapper:fullscreen video,.video-wrapper:fullscreen img{width:100%;height:100%;object-fit:contain}
+@media(max-width:850px){.camera-grid{grid-template-columns:1fr}.camera-page .top-bar{align-items:flex-start}.camera-page .tb-right{gap:2px}.camera-page .tb-right .btn{padding:6px 10px}}
+@media(max-width:640px){.camera-fields .row{flex-direction:column;align-items:stretch;gap:5px}.camera-fields .row label{width:auto}.camera-fields .row .unit{display:none}.focus-manual{gap:8px}.focus-manual label{width:100%}.camera-grid{gap:14px}}

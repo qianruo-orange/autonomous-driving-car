@@ -14,7 +14,7 @@
 #include "tcp/tcp_server.h"
 #include "core/log.h"
 #include "core/version.h"
-#include "ai/rknn_yolo.h"
+#include "yolo/rknn_yolo.h"
 
 #define CONFIG_PATH PATH_CONFIG
 

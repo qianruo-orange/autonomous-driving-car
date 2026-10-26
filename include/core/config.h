@@ -77,8 +77,8 @@ struct app_config_t {
     int           ai_input_size;    /* 模型输入边长（动态模型用；静态模型以模型实际尺寸为准） */
     float         ai_conf;          /* 置信度阈值 */
     float         ai_nms;           /* NMS IoU 阈值 */
-    int           ai_interval_ms;   /* 推理节流间隔（ms），默认 10（每帧推理） */
-    int           ai_threads;       /* 推理工作线程数（NPU 核数的整数倍，范围 cores~15，默认每核 1 个），每线程独立 rknn context，按 i%实际核数 绑定 NPU 核 */
+    int           ai_interval_ms;   /* Legacy file compatibility; automatic pacing ignores this value. */
+    int           ai_threads;       /* Legacy file compatibility; the pool selects active workers adaptively. */
 };
 
 int  config_load(struct app_config_t *cfg);

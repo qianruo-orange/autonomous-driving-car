@@ -10,7 +10,7 @@
 #include "video/video_rec.h"
 #include "watchdog/watchdog.h"
 #include "tcp/net_ip.h"
-#include "ai/rknn_yolo.h"
+#include "yolo/rknn_yolo.h"
 #include <sys/epoll.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -64,9 +64,9 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
     JSON_ADD(json, off, ",\"video_codec\":\"%s\"", cfg->video_codec);
     /* AI 检测配置（必要流程：推理不可关停，前端默认展示画框流） */
     JSON_ADD(json, off, ",\"ai_model\":\"%s\",\"ai_names\":\"%s\",\"ai_input_size\":%d,"
-        "\"ai_conf\":%.2f,\"ai_nms\":%.2f,\"ai_interval_ms\":%d,\"ai_threads\":%d",
+        "\"ai_conf\":%.2f,\"ai_nms\":%.2f,\"ai_interval_ms\":0,\"ai_threads\":%d,\"ai_threads_auto\":true",
         cfg->ai_model, cfg->ai_names, cfg->ai_input_size,
-        cfg->ai_conf, cfg->ai_nms, cfg->ai_interval_ms, cfg->ai_threads);
+        cfg->ai_conf, cfg->ai_nms, rknn_yolo_active_workers());
     JSON_ADD(json, off, "}");
 
     http_ok_json(fd, json, (size_t)off);
@@ -289,20 +289,13 @@ static int apply_video(app_ctx_t *app, const http_form_field_t *fields, int coun
     return changed;
 }
 
-/* AI：解析参数（ai_threads 必须是 3 的倍数），任一变化则热重载推理池 */
+/* Confidence/NMS changes reload the inference pool; concurrency is adaptive. */
 static int apply_ai(app_ctx_t *app, const http_form_field_t *fields, int count)
 {
     struct app_config_t *cfg = app->cfg;
     int changed = 0;
 
-    const char *v = http_form_find(fields, count, "ai_threads");
-    if (v) {
-        int cores = npu_core_count(); if (cores < 1) cores = 1;
-        int t = parse_int_clamped(v, cores, 15, cores);
-        t = (t / cores) * cores;   /* 取整为 NPU 核数的整数倍，各核等量 worker */
-        if (t != cfg->ai_threads) { cfg->ai_threads = t; changed = 1; }
-    }
-    v = http_form_find(fields, count, "ai_conf");
+    const char *v = http_form_find(fields, count, "ai_conf");
     if (v) {
         float f = parse_int_clamped(v, 1, 100, 25) / 100.0f;
         if (f != cfg->ai_conf) { cfg->ai_conf = f; changed = 1; }
@@ -311,11 +304,6 @@ static int apply_ai(app_ctx_t *app, const http_form_field_t *fields, int count)
     if (v) {
         float f = parse_int_clamped(v, 1, 100, 45) / 100.0f;
         if (f != cfg->ai_nms) { cfg->ai_nms = f; changed = 1; }
-    }
-    v = http_form_find(fields, count, "ai_interval_ms");
-    if (v) {
-        int n = parse_int_clamped(v, 10, 5000, 10);
-        if (n != cfg->ai_interval_ms) { cfg->ai_interval_ms = n; changed = 1; }
     }
     return changed;
 }

@@ -38,7 +38,7 @@
 #include "video/h264_stream.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
-#include "ai/rknn_yolo.h"
+#include "yolo/rknn_yolo.h"
 #include "core/common.h"
 #include "core/cpu_affinity.h"
 #include "core/log.h"

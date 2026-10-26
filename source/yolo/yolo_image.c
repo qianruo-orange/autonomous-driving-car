@@ -11,7 +11,7 @@
 #include <jpeglib.h>
 #include <jerror.h>   /* ERREXIT 宏（自定义输出管理器报错用） */
 
-#include "ai/yolo_image.h"
+#include "yolo/yolo_image.h"
 
 #define YOLO_JPEG_QUALITY 95   /* 高画质档（~101KB @720p）；单连接拉流后码流压力已减半，卡顿根因不在体积 */
 

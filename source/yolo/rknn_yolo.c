@@ -2,12 +2,12 @@
 /**
  * rknn_yolo.c — RKNN + YOLO26 检测主模块：模型管理 + 多线程推理池 + 按序渲染。
  *
- * 数据流（ai_task 采集线程 + 3 的倍数个推理 worker + 1 渲染 composer）：
+ * 数据流（ai_task 采集线程 + 自适应推理 worker + 1 渲染 composer）：
  *   ai_task:  事件驱动等新帧（环条件变量，2s 超时仅用于退出检查）→ 按序
  *             claim 槽 raw（零拷贝引用 V4L2 mmap）→ 锁外解码 RGB24 进池缓冲 →
  *             投递任务队列。claim 随任务移交 worker：任务在途期间槽位被
  *             claims 钉住，不会被采集复用/退让清空
- *   worker i: 出队 → 双线性缩放 → NPU 推理（独立 context，绑定 NPU 核 i%3）→
+ *   worker i: 出队 → 双线性缩放 → NPU 推理（独立 context，按实际 NPU 核数轮流绑定）→
  *             单输出后处理（NMS）→ rgb 写槽（rgb_done=1）→ unclaim；
  *             NMS 最终结果（目标名称 + 置信度 + 标注框四点坐标）入结果队列
  *   composer: 事件驱动消费结果队列，排空只留最新（seq 严格递增，绝不回退；
@@ -25,7 +25,7 @@
  *
  * 热重载：rknn_yolo_reload() 停止推理池（pool_running=0 → 线程退出/join，
  * 在途任务 rgb 回池 + 摘除槽 claim）→ 释放模型与 context → 重读配置
- * （ai_model/ai_names/ai_threads/ai_conf/ai_nms/ai_interval_ms）
+ * （ai_model/ai_names/ai_conf/ai_nms；并发度按帧率和实测耗时自动调整）
  * → 重建池。由前端上传模型/标签文件与 AI 参数保存触发。
  *
  * 必要流程：AI 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
@@ -47,14 +47,16 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <time.h>
+#include <math.h>
+#include <stdatomic.h>
 
-#include "ai/rknn_api.h"
+#include "yolo/rknn_api.h"
 #include "video/video_stream.h"
 
-#include "ai/rknn_yolo.h"
-#include "ai/yolo_image.h"
-#include "ai/yolo_postprocess.h"
-#include "ai/yolo_draw.h"
+#include "yolo/rknn_yolo.h"
+#include "yolo/yolo_image.h"
+#include "yolo/yolo_postprocess.h"
+#include "yolo/yolo_draw.h"
 #include "core/common.h"
 #include "core/cpu_affinity.h"
 #include "core/log.h"
@@ -98,13 +100,16 @@ typedef struct {
 
 /* 模块全局上下文 */
 static struct {
-    int            enabled;                  /* 推理池可用（画框流可用） */
-    int            running;                  /* 模块生命周期（destroy 置 0） */
-    int            pool_running;             /* 推理池生命周期（reload 置 0 停池） */
+    _Atomic int    enabled;                  /* 推理池可用（画框流可用） */
+    _Atomic int    running;                  /* 模块生命周期（destroy 置 0） */
+    _Atomic int    pool_running;             /* 推理池生命周期（reload 置 0 停池） */
     app_ctx_t     *app;
     float          conf, nms;
-    int            interval_ms;
     int            nthreads;                 /* Workers evenly assigned to detected NPU cores. */
+    int            active_workers, core_count, decrease_votes;
+    unsigned       timing_samples;
+    double         service_ema_us;
+    unsigned long long last_tune_us;
 
     unsigned char *model;                    /* 模型文件内存（共享给所有 worker init） */
     size_t         model_len;
@@ -156,6 +161,64 @@ static unsigned long long ai_now_us(void)
     return (unsigned long long)ts.tv_sec * 1000000u + (unsigned long long)ts.tv_nsec / 1000u;
 }
 
+static int adaptive_worker_target(int cores, int capacity, double fps, double service_us)
+{
+    if (cores < 1) cores = 1;
+    if (fps <= 0) fps = 30;
+    int needed = service_us > 0 ? (int)ceil(fps * service_us * 1.15 / 1000000.0) : cores * 2;
+    if (needed < cores) needed = cores;
+    needed = ((needed + cores - 1) / cores) * cores;
+    return needed > capacity ? capacity : needed;
+}
+
+/* Scale up immediately; scale down only after three consecutive quiet
+   evaluations (six seconds at the two-second sampling period). */
+static int adaptive_worker_vote(int target, int current, int queued, int *votes)
+{
+    if (queued > 1 && target < current) target = current;
+    if (target < current) {
+        if (++*votes < 3) return current;
+    }
+    *votes = 0;
+    return target;
+}
+
+static void ai_adapt_workers(unsigned long long service_us)
+{
+    frame_ring_t *ring = video_stream_get_ring();
+    double fps = 30;
+    if (ring) {
+        frame_ring_lock(ring);
+        if (ring->capture_fps_den) fps = (double)ring->capture_fps_num / ring->capture_fps_den;
+        frame_ring_unlock(ring);
+    }
+    unsigned long long now = ai_now_us();
+    int changed = 0, selected = 0;
+    pthread_mutex_lock(&g_ai.q_lock);
+    g_ai.service_ema_us = g_ai.timing_samples ? g_ai.service_ema_us * .9 + service_us * .1 : service_us;
+    g_ai.timing_samples++;
+    if (g_ai.timing_samples >= 24 && now - g_ai.last_tune_us >= 2000000u) {
+        g_ai.last_tune_us = now;
+        int current = __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED);
+        int target = adaptive_worker_target(g_ai.core_count, g_ai.nthreads, fps, g_ai.service_ema_us);
+        target = adaptive_worker_vote(target, current, g_ai.q_count, &g_ai.decrease_votes);
+        if (target != current) {
+            __atomic_store_n(&g_ai.active_workers, target, __ATOMIC_RELAXED);
+            g_ai.decrease_votes = 0;
+            selected = target;
+            changed = 1;
+            pthread_cond_broadcast(&g_ai.q_not_empty);
+        }
+    }
+    pthread_mutex_unlock(&g_ai.q_lock);
+    if (changed) LOG_INFO("yolo: adaptive inference workers -> %d/%d", selected, g_ai.nthreads);
+}
+
+int rknn_yolo_active_workers(void)
+{
+    return g_ai.enabled ? __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED) : 0;
+}
+
 /* ---- 环形队列访问 ---- */
 
 /* 环句柄：video 模块先于 ai 初始化，正常非 NULL；防御性判空由调用方处理 */
@@ -198,17 +261,19 @@ static int yolo_queue_push(const yolo_job_t *job)
     g_ai.jobs[g_ai.q_tail] = *job;
     g_ai.q_tail = (g_ai.q_tail + 1) % AI_QUEUE_CAP;
     g_ai.q_count++;
-    pthread_cond_signal(&g_ai.q_not_empty);
+    /* Parked and active workers share this condition. A signal may select a
+       parked worker, leaving the queued frame asleep until another arrives. */
+    pthread_cond_broadcast(&g_ai.q_not_empty);
     pthread_mutex_unlock(&g_ai.q_lock);
     return 0;
 }
 
-static int yolo_queue_pop(yolo_job_t *job)
+static int yolo_queue_pop(yolo_job_t *job, int worker_index)
 {
     pthread_mutex_lock(&g_ai.q_lock);
-    while (g_ai.q_count == 0 && g_ai.running && g_ai.pool_running)
+    while ((g_ai.q_count == 0 || worker_index >= __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED)) && g_ai.running && g_ai.pool_running)
         pthread_cond_wait(&g_ai.q_not_empty, &g_ai.q_lock);
-    if (g_ai.q_count == 0) {   /* 退出/停池且队列空 */
+    if (g_ai.q_count == 0 || !g_ai.running || !g_ai.pool_running) {
         pthread_mutex_unlock(&g_ai.q_lock);
         return -1;
     }
@@ -352,7 +417,7 @@ static void *yolo_worker_task(void *arg)
         if (!ring) { usleep(200000); continue; }   /* 防御：video 未初始化 */
 
         yolo_job_t job;
-        if (yolo_queue_pop(&job) < 0) break;      /* 停池/退出且队列空 */
+        if (yolo_queue_pop(&job, idx) < 0) break;
         if (!g_ai.running || !g_ai.pool_running) { yolo_job_abandon(&job); break; }
         unsigned long long worker_us = ai_now_us();
 
@@ -393,6 +458,7 @@ static void *yolo_worker_task(void *arg)
                                      lb_scale, lb_pad_x, lb_pad_y, job.w, job.h,
                                      res.dets, YOLO_MAX_DETS, g_ai.conf, g_ai.nms, NULL);
         rknn_outputs_release(wk->ctx, 1, &output);
+        ai_adapt_workers(ai_now_us() - worker_us);
         if (idx == 0) {
             static unsigned long long last_timing_us;
             unsigned long long finished_us = ai_now_us();
@@ -698,17 +764,22 @@ static void ai_free_workers(void)
 static void ai_stop_pool(void)
 {
     frame_ring_t *ring = ai_ring();
+    pthread_mutex_lock(&g_ai.q_lock);
     g_ai.pool_running = 0;
+    pthread_cond_broadcast(&g_ai.q_not_empty);
+    pthread_cond_broadcast(&g_ai.q_not_full);
+    pthread_mutex_unlock(&g_ai.q_lock);
     /* raw 释放规则切回编码路径（ai_active=0），并唤醒等待中的
        ai_task（wait_new）与 composer（wait_render） */
     if (ring) {
         frame_ring_set_ai_active(ring, 0);
         frame_ring_signal(ring);
     }
-    pthread_cond_broadcast(&g_ai.q_not_empty);
-    pthread_cond_broadcast(&g_ai.q_not_full);
+    /* Pair shutdown with the waiters' mutexes to close the check/wait window. */
+    pthread_mutex_lock(&g_ai.r_lock);
     pthread_cond_broadcast(&g_ai.r_not_empty);
     pthread_cond_broadcast(&g_ai.r_not_full);
+    pthread_mutex_unlock(&g_ai.r_lock);
 
     for (int i = 0; i < g_ai.n_created; i++)
         pthread_join(g_ai.w_tid[i], NULL);
@@ -753,13 +824,21 @@ static int ai_start_pool(void)
     /* 重读运行时配置（支持热重载） */
     g_ai.conf = cfg->ai_conf > 0 ? cfg->ai_conf : 0.25f;
     g_ai.nms  = cfg->ai_nms  > 0 ? cfg->ai_nms  : 0.45f;
-    g_ai.interval_ms = cfg->ai_interval_ms > 0 ? cfg->ai_interval_ms : 10;
     int cores = npu_core_count();
     if (cores < 1) cores = 1;
-    int t = cfg->ai_threads > 0 ? cfg->ai_threads : cores;
-    if (t > AI_MAX_WORKERS) t = AI_MAX_WORKERS;
-    if (t < cores) t = cores;
-    g_ai.nthreads = t - (t % cores);
+    int capacity = cores * 3;
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    if (cpus > 0 && capacity > cpus) capacity = (int)cpus;
+    if (capacity > AI_MAX_WORKERS) capacity = AI_MAX_WORKERS;
+    capacity = (capacity / cores) * cores;
+    if (capacity < cores) capacity = cores;
+    g_ai.nthreads = capacity;
+    g_ai.core_count = cores;
+    __atomic_store_n(&g_ai.active_workers, adaptive_worker_target(cores, capacity, 30, 0), __ATOMIC_RELAXED);
+    g_ai.service_ema_us = 0;
+    g_ai.timing_samples = 0;
+    g_ai.decrease_votes = 0;
+    g_ai.last_tune_us = ai_now_us();
 
     safe_strncpy(g_ai.names_path, sizeof(g_ai.names_path),
                  cfg->ai_names[0] ? cfg->ai_names : "config/coco.names");
@@ -837,21 +916,24 @@ static int ai_start_pool(void)
         if (pthread_create(&g_ai.w_tid[i], NULL, yolo_worker_task,
                            (void *)(intptr_t)i) != 0) {
             LOG_ERROR("ai: worker thread %d create failed", i);
-            break;
+            ai_stop_pool();
+            return -1;
         }
         g_ai.n_created = i + 1;
     }
     if (pthread_create(&g_ai.render_tid, NULL, yolo_render_task, NULL) != 0) {
         LOG_ERROR("ai: render thread create failed (annotated stream stalled)");
         g_ai.render_tid = 0;
+        ai_stop_pool();
+        return -1;
     }
     g_ai.enabled = 1;
     /* 环内 raw 释放规则切回推理路径（infer_done 门槛） */
     if (ai_ring()) frame_ring_set_ai_active(ai_ring(), 1);
     LOG_INFO("ai: model '%s' loaded, classes '%s' (%d), input %dx%d, "
-             "single output, threads %d (NPU core i%%%d), conf %.2f nms %.2f",
+             "single output, adaptive threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
              model_path, g_ai.names_path, ncls, g_ai.in_w, g_ai.in_h,
-             g_ai.nthreads, cores, g_ai.conf, g_ai.nms);
+             rknn_yolo_active_workers(), g_ai.nthreads, cores, g_ai.conf, g_ai.nms);
     return 0;
 }
 
@@ -1013,7 +1095,7 @@ void *rknn_ai_task(void *arg)
                 frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
             frame_ring_infer_unclaim_locked(ring, s, 0);   /* 解码失败：infer_dropped++ */
             frame_ring_unlock(ring);
-            usleep(g_ai.interval_ms * 1000);   /* 坏帧退避，避免忙转 */
+            usleep(1000);   /* 坏帧退避，避免忙转 */
             continue;
         }
 
@@ -1023,9 +1105,7 @@ void *rknn_ai_task(void *arg)
         if (yolo_queue_push(&job) != 0)
             yolo_job_abandon(&job);   /* 停池/退出中：claim 摘除 + rgb 回池 */
 
-        /* 帧间隔下限（ai_interval_ms 语义）：事件驱动下默认 10ms 无感，
-           调大即可限制推理帧率，不再与相机帧率耦合 */
-        usleep(g_ai.interval_ms * 1000);
+        /* The frame condition variable supplies pacing; no extra interval. */
     }
     return NULL;
 }

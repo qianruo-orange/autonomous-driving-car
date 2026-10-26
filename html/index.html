@@ -2,6 +2,7 @@
 <!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="边缘智能网关">边缘智能网关</title>
 <link rel="stylesheet" href="/css/common.css">
 <link rel="stylesheet" href="/css/monitor.css">
+<link rel="stylesheet" href="/css/camera.css">
 <script src="/js/theme.js"></script>
 <script src="/js/i18n.js"></script>
 <script src="/js/auth.js"></script>
@@ -9,6 +10,7 @@
 <div class="top-bar">
   <div class="tb-left"><h1>📶 <span data-i18n="边缘智能网关">边缘智能网关</span></h1></div>
   <div class="tb-right">
+    <a href="/camera" class="btn btn-back">📷 <span data-i18n="相机">相机</span></a>
     <span id="datetime"></span>
     <a href="/dbc" class="btn btn-back">📡 <span data-i18n="DBC解析">DBC解析</span></a>
     <a href="/config" class="btn btn-back">⚙ <span data-i18n="配置">配置</span></a>
@@ -26,11 +28,13 @@
       <div class="card video-card">
         <div class="video-fps" id="video_fps">-- FPS</div>
         <div class="video-wrapper">
-          <video id="stream_video" autoplay muted playsinline controls></video>
+          <video id="stream_video" autoplay muted playsinline></video>
           <img id="stream_img" style="display:none" alt="stream">
+          <button class="video-fullscreen" type="button" onclick="toggleGatewayFullscreen()" data-i18n="全屏">全屏</button>
         </div>
         <div class="video-stats" id="video_stats" aria-live="off"></div>
       </div>
+      <div class="card camera-focus-card"><h3><span data-i18n="相机调焦">相机调焦</span></h3><div data-camera-focus></div></div>
     </div>
     <div class="status-column">
       <div class="card"><h3>CPU</h3>
@@ -59,4 +63,5 @@
   </div>
 </div>
 <script src="/js/monitor.js"></script>
+<script src="/js/camera-focus.js"></script>
 </body></html>

@@ -197,8 +197,8 @@ Transmit: tcp_tx_packet() --> txq --> eventfd wakes tcp_task --> client socket
 
 NPU scheduling and hardware displays adapt to the actual platform:
 
-- **NPU masks:** at startup, `source/ai/rknn_yolo.c` reads `/proc/device-tree/compatible`. RK3588 / RK3588S use three cores, RK3576 / RK3576M use two, and supported RK356x / RV1126 / RV110x / RK3399PRO / RK1808 devices use one. Unknown platforms fall back to one core. Workers use `1u << (idx % cores)` to select legal single-core masks and distribute work.
-- **Inference workers:** `ai_threads` is rounded to a multiple of the NPU core count, from `cores` to 15, with one worker per core by default. Each core receives the same number of workers.
+- **NPU masks:** at startup, `source/yolo/rknn_yolo.c` reads `/proc/device-tree/compatible`. RK3588 / RK3588S use three cores, RK3576 / RK3576M use two, and supported RK356x / RV1126 / RV110x / RK3399PRO / RK1808 devices use one. Unknown platforms fall back to one core. Workers use `1u << (idx % cores)` to select legal single-core masks and distribute work.
+- **Inference workers:** the active count adapts to the negotiated camera frame rate and measured per-frame inference time. Workers are balanced across the detected NPU cores; a small reserve pool avoids model reloads when demand changes. Downward changes require sustained evidence, and inference has no additional sleep interval. Every displayed frame retains its own AI result.
 - **CPU / NPU indicators:** the dashboard uses `cpu_cores.length` / `npu_count` to build and size core indicators dynamically, wrapping them when needed.
 - **GPU metrics:** use `gpu` when available and `gpu_freq` otherwise, as described above.
 - **Model selection:** before compilation, `build.sh` selects or converts a model for the platform detected through `/proc/device-tree/compatible`, or explicitly selected with `-P`. For example, a cached RK3576 model is stored at `config/models/rk3576/yolo26.rknn`.
@@ -238,7 +238,7 @@ rockchip-smart-gateway/
 │   │   ├── h264_encoder.h         # software / Rockchip H.264 encoder wrapper
 │   │   ├── h264_stream.h          # shared H.264 fan-out and fMP4 stream API
 │   │   └── rec_mp4.h              # MP4 (avc1) muxer API
-│   ├── ai/
+│   ├── yolo/
 │   │   ├── rknn_yolo.h            # RKNN YOLO entry point and npu_core_count
 │   │   ├── yolo_types.h           # detection result structures
 │   │   ├── yolo_image.h           # JPEG / YUYV / letterbox processing
@@ -255,7 +255,7 @@ rockchip-smart-gateway/
 │   │              # logs / reboot / cpufreq / nettest
 │   ├── video/     video_stream.c / frame_ring.c / video_rec.c / h264_encoder.c /
 │   │              # h264_stream.c / rec_mp4.c
-│   ├── ai/        rknn_yolo.c / yolo_image.c / yolo_postprocess.c / yolo_draw.cpp
+│   ├── yolo/        rknn_yolo.c / yolo_image.c / yolo_postprocess.c / yolo_draw.cpp
 │   └── watchdog/  watchdog.c
 ├── tests/        frame_ring_test.c
 ├── html/         index.html / config.html / dbc.html / logs.html + css/ + js/
@@ -386,8 +386,7 @@ Web configuration changes are saved to `config/config.txt` and applied to the ru
 | `ai_input_size` | `<n>` | Model input side length, 32-2048; default 640. |
 | `ai_conf` | `<n>` | Confidence threshold as an integer percentage, 1-100; default 25 (0.25). |
 | `ai_nms` | `<n>` | NMS IoU threshold as an integer percentage, 1-100; default 45 (0.45). |
-| `ai_interval_ms` | `<n>` | Inference interval, 10-5000 ms; default 10. |
-| `ai_threads` | `<n>` | Rounded to a multiple of the NPU core count, between `cores` and 15, with one worker per core by default. Each worker owns an RKNN context; worker `i` is bound by `i % cores`. The configuration dropdown adapts to the NPU, for example 2/4/6/8/10/12/14 workers on a two-core device, with a per-core count label. |
+| `ai_interval_ms` / `ai_threads` | Legacy | Older files may retain these keys. The runtime uses adaptive worker selection and camera-paced inference instead; the Web UI no longer exposes manual controls. |
 
 Without a configuration file, defaults are applied to CAN interfaces discovered through netlink with `kind=="can"`. If no CAN interfaces are discovered, the application can run with zero CAN channels; it does not invent unavailable interfaces.
 
@@ -404,14 +403,15 @@ The parser recognizes `BO_` message lines and `SG_` signal lines. Other lines, i
 
 The HTTP server listens on port 80 by default:
 
-- `/`: dashboard, including live video, displayed FPS, CPU utilization and per-core indicators, per-core NPU load, GPU load or frequency, memory, disk, and network rates.
+- `/`: dashboard, including live video without a seek bar, a fullscreen button, live autofocus/manual focus controls, displayed FPS, CPU utilization and per-core indicators, per-core NPU load, GPU load or frequency, memory, disk, and network rates.
 - `/dbc`: receive-side and transmit-side DBC signal views.
-- `/config`: runtime configuration, including camera format / resolution / frame rate, encoder selection, AI parameters and uploads, CAN settings and DBC upload, network addressing, CPU frequency controls, network tests, and configuration export. Use each card's Save button to apply its settings.
+- `/camera`: a dedicated camera module for device, resolution, frame rate, encoder selection, and live lens focus. Frame-rate choices intersect camera and encoder capabilities. Focus support and limits come from the active V4L2 device; changing focus does not restart the stream. Lens positions are device values and are not distances in millimeters.
+- `/config`: runtime configuration for AI confidence/NMS and model uploads, CAN settings and DBC upload, network addressing, CPU frequency controls, network tests, and configuration export. Use each card's Save button to apply its settings.
 - `/logs`: file downloads with separate Logs and Recordings tabs.
 
 In **Files → Recordings**, **Split recording** saves the active MP4 and continues into a new file at the next keyframe, normally within one GOP. The encoder and live-stream connection remain active. The list refreshes after completion; the saved segment becomes downloadable and the new segment remains marked Recording. Downloads of the unfinished active MP4 are disabled until it is saved. The split operation requires administrator access and rejects stale filenames or duplicate pending requests.
 
-AI is required and has no disable switch. The inference controls and model uploads are arranged separately; the worker dropdown reflects the actual NPU core count. The CAN card displays bitrate, DBC, CAN FD, and FD bitrate controls, with FD capability shown in the channel selector. Static IP fields are visible only in static mode. Export Config packages the config directory, including configuration, DBC files, class labels, and the RKNN model.
+AI is required and has no disable switch. Inference concurrency is automatic; confidence/NMS and model uploads remain configurable. The CAN card displays bitrate, DBC, CAN FD, and FD bitrate controls, with FD capability shown in the channel selector. Static IP fields are visible only in static mode. Export Config packages the config directory, including configuration, DBC files, class labels, and the RKNN model.
 
 The language button switches between English and Chinese; in English mode it is labeled `ZH` and in Chinese mode it is labeled `EN`. Theme switching is independent of language.
 
@@ -454,6 +454,8 @@ Authentication below follows the route definitions in `source/http/http.c`.
 | GET | `/api/video/codeccaps` | None | Encoder resolution and frame-rate capabilities. |
 | GET | `/api/video/stats` | None | Frame-ring per-stage counters. |
 | GET | `/api/video/devices` | None | Available video devices. |
+| GET | `/api/camera` | None | Current lens controls, limits, and hardware encoder availability. |
+| POST | `/api/camera/focus` | Administrator | Set autofocus (`auto=0` or `1`) and optionally a validated manual lens position (`focus=<n>`, with `auto=0`). |
 | GET | `/video/stream` | None | H.264 fragmented MP4 live stream for MSE. |
 | GET | `/video/mjpeg` | None | Raw MJPEG stream. |
 | GET | `/video/mjpeg_ai` | None | AI-annotated MJPEG stream. |

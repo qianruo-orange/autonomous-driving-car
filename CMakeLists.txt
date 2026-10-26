@@ -155,8 +155,15 @@ set_property(TARGET recording_split_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl
 target_link_libraries(recording_split_test PRIVATE pthread)
 add_test(NAME recording_split COMMAND recording_split_test)
 
-add_executable(color_conversion_test tests/color_conversion_test.cpp source/ai/yolo_draw.cpp source/ai/yolo_image.c)
+add_executable(color_conversion_test tests/color_conversion_test.cpp source/yolo/yolo_draw.cpp source/yolo/yolo_image.c)
 target_include_directories(color_conversion_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_compile_options(color_conversion_test PRIVATE -UNDEBUG)
 target_link_libraries(color_conversion_test PRIVATE ${OpenCV_LIBS} ${LIBJPEG})
 add_test(NAME color_conversion COMMAND color_conversion_test)
+
+add_executable(camera_focus_test tests/camera_focus_test.c source/http/http_util.c)
+target_include_directories(camera_focus_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(camera_focus_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+set_property(TARGET camera_focus_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+target_link_libraries(camera_focus_test PRIVATE pthread)
+add_test(NAME camera_focus COMMAND camera_focus_test)

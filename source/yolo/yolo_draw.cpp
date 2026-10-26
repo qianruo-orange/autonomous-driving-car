@@ -18,8 +18,8 @@
 #include <string.h>
 
 extern "C" {
-#include "ai/yolo_draw.h"
-#include "ai/yolo_image.h"
+#include "yolo/yolo_draw.h"
+#include "yolo/yolo_image.h"
 }
 
 #include <opencv2/core.hpp>
