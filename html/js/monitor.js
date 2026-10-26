@@ -15,6 +15,8 @@
      浏览器/无线吃紧时会间歇掉速；单路方案显示与计数天然一致 */
   var fpsCnt = 0, fpsWin = Date.now(), fpsVal = 0, shownCnt = 0;
   var lastPresented = null, receivedFps = 0;
+  var lastDropped = null, droppedPerSecond = 0;
+  var cameraFps = 0, processingAgeMs = 0, sourceDrops = 0, videoStatsBusy = false;
   var streamUrl = '', streamAbort = null, streamRunning = false;
   var imgEl = null, lastBlobUrl = null;
   var imgBusy = false;      /* 上一帧还在解码：不覆盖 src（覆盖会取消其加载） */
@@ -23,6 +25,7 @@
   function resetFps() {
     fpsCnt = 0; shownCnt = 0; fpsWin = Date.now(); fpsVal = 0;
     lastPresented = null; receivedFps = 0;
+    lastDropped = null; droppedPerSecond = 0;
   }
 
   /* 显示一帧：仅在上一次 onload/onerror 之后调用，上一帧 URL 此时已被完整消费，
@@ -318,6 +321,8 @@
     var result = Object.assign({}, mseDiag, {
       transport: mseRunning ? 'H.264/MSE' : streamRunning ? 'MJPEG' : 'idle',
       receivedFps: receivedFps, displayedFps: fpsVal, bufferAheadSeconds: 0,
+      droppedFramesPerSecond: droppedPerSecond, cameraFps: cameraFps,
+      processingAgeMs: processingAgeMs, sourceDroppedFrames: sourceDrops,
       estimatedStreamDelayMs: null, buffered: [],
       readyState: vid ? vid.readyState : 0, currentTime: vid ? vid.currentTime : 0,
       paused: vid ? vid.paused : true, seeking: vid ? vid.seeking : false,
@@ -360,6 +365,19 @@
   }
 
   function barColor(p) { return p < 60 ? 'green' : p < 85 ? 'yellow' : 'red'; }
+
+  async function updateVideoStats() {
+    if (videoStatsBusy) return;
+    videoStatsBusy = true;
+    try {
+      var response = await fetch('/api/video/stats');
+      if (!response.ok) return;
+      var stats = await response.json();
+      cameraFps = stats.capture_fps || 0;
+      processingAgeMs = stats.processing_age_ms || 0;
+      sourceDrops = (stats.capture_dropped || 0) + (stats.driver_dropped || 0) + (stats.infer_dropped || 0);
+    } catch(e) {} finally { videoStatsBusy = false; }
+  }
 
   function fmtSpeed(bytesPerSec) {
     if (bytesPerSec < 0) return '--';
@@ -598,6 +616,7 @@
       } catch(e) {}
     } catch(e) {}
     updateNet();
+    updateVideoStats();
   }
 
   /* Do not overlap API polls while a slow response is still in flight. */
@@ -619,6 +638,8 @@
         var presented = quality.totalVideoFrames - quality.droppedVideoFrames;
         fpsVal = lastPresented === null ? 0 : Math.max(0, presented - lastPresented) * 1000 / elapsed;
         lastPresented = presented;
+        droppedPerSecond = lastDropped === null ? 0 : Math.max(0, quality.droppedVideoFrames - lastDropped) * 1000 / elapsed;
+        lastDropped = quality.droppedVideoFrames;
       } else {
         fpsVal = streamRunning ? shownCnt * 1000 / elapsed : receivedFps;
       }
@@ -629,10 +650,11 @@
     var stats = document.getElementById('video_stats');
     if (stats) {
       var d = window.getGatewayVideoDiagnostics();
-      stats.textContent = t('接收 {received} FPS · 缓冲 {buffer} ms · 推流延迟约 {delay} ms · 丢帧 {dropped}', {
+      stats.textContent = t('摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 推流延迟约 {delay} ms · 当前丢帧 {dropped}/s', {
+        camera: d.cameraFps ? Math.round(d.cameraFps) : '--', processing: Math.round(d.processingAgeMs),
         received: Math.round(d.receivedFps), buffer: Math.round(d.bufferAheadSeconds * 1000),
         delay: d.estimatedStreamDelayMs === null ? '--' : Math.round(d.estimatedStreamDelayMs),
-        dropped: d.droppedVideoFrames || 0
+        dropped: Math.round(d.droppedFramesPerSecond)
       });
     }
   }, 1000);

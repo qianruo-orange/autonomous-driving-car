@@ -2,6 +2,9 @@
 /* logs.css — 日志文件页面样式 毛玻璃水滴风（主题变量化） */
 .top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
 .tb-left{display:flex;align-items:center;gap:8px}
+.top-bar,.tb-left{flex-wrap:wrap;gap:8px}
+.btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
+.dl[aria-disabled="true"]{color:var(--muted);pointer-events:none;text-decoration:none}
 .tb-right{display:flex;align-items:center;gap:6px}
 .tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
 .top-bar .theme-btn{position:static;margin-left:0;flex:none}

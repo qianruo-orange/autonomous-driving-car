@@ -103,6 +103,8 @@ The dashboard uses H.264 fMP4 / MSE when supported, with MJPEG as the compatibil
 
 The status line below the video shows received FPS, buffer lead, estimated stream delay, and decoder frame drops, without opening developer tools. The stream-delay estimate measures from the encoder-output timestamp to the current browser playback position. It excludes camera capture, AI processing, and encoding time, and is approximate because it uses the response age plus local elapsed time.
 
+The line also shows the frame rate actually negotiated with the camera and the latest capture-to-render processing age. Requested FPS can exceed camera capability: a device may accept a 60 FPS request but negotiate 30 FPS. Decoder drops on the status line are a per-second rate; cumulative decoder counts remain available in diagnostics. Parallel inference results are coalesced by their highest capture sequence, so an older worker finishing last cannot replace a newer result.
+
 For additional details, read the current browser-side state in the browser developer console:
 
 ```javascript
@@ -121,8 +123,12 @@ window.getGatewayVideoDiagnostics()
 | `totalVideoFrames` / `droppedVideoFrames` | Browser playback-quality counters, when supported. |
 | `starts` / `reconnects` / `catchups` | MSE session starts, error-driven reconnects, and in-buffer catch-up operations. |
 | `appendErrors` / `lastError` | SourceBuffer errors and the latest recorded MSE error. |
+| `cameraFps` / `processingAgeMs` | Negotiated camera rate and latest capture-to-render processing age from the device. |
+| `droppedFramesPerSecond` / `sourceDroppedFrames` | Current decoder-drop rate and cumulative capture / driver / inference failures; intentional latest-frame replacement is counted separately by the device. |
 
 Compare these values with `GET /api/video/stats` over the same time interval. Growing capture or render drop counts point to an upstream stage; a healthy received rate with low displayed FPS or increasing browser drop counts points to playback work. Buffer growth with adequate incoming data indicates that playback is falling behind. Use service logs to correlate AI stalls, encoder errors, or session rotation.
+
+Device video statistics include `capture_fps`, `display_seq`, `displayed_frames`, `encoded_frames`, `encode_replaced`, and current / maximum `processing_age_ms`. Compare counter differences over time; cumulative counts alone do not describe current playback. `render_skipped` and `encode_replaced` include intentional latest-frame selection and should not be confused with corrupt frames or camera-driver loss.
 
 ### CAN
 
@@ -400,6 +406,8 @@ The HTTP server listens on port 80 by default:
 - `/config`: runtime configuration, including camera format / resolution / frame rate, encoder selection, AI parameters and uploads, CAN settings and DBC upload, network addressing, CPU frequency controls, network tests, and configuration export. Use each card's Save button to apply its settings.
 - `/logs`: file downloads with separate Logs and Recordings tabs.
 
+In **Files → Recordings**, **Split recording** saves the active MP4 and continues into a new file at the next keyframe, normally within one GOP. The encoder and live-stream connection remain active. The list refreshes after completion; the saved segment becomes downloadable and the new segment remains marked Recording. Downloads of the unfinished active MP4 are disabled until it is saved. The split operation requires administrator access and rejects stale filenames or duplicate pending requests.
+
 AI is required and has no disable switch. The inference controls and model uploads are arranged separately; the worker dropdown reflects the actual NPU core count. The CAN card displays bitrate, DBC, CAN FD, and FD bitrate controls, with FD capability shown in the channel selector. Static IP fields are visible only in static mode. Export Config packages the config directory, including configuration, DBC files, class labels, and the RKNN model.
 
 The language button switches between English and Chinese; in English mode it is labeled `ZH` and in Chinese mode it is labeled `EN`. Theme switching is independent of language.
@@ -451,6 +459,7 @@ Authentication below follows the route definitions in `source/http/http.c`.
 | GET | `/recfile/<date/filename>` | Administrator | Download an individual recording. |
 | GET | `/api/rec/pack` | Administrator | Download a recording archive. |
 | POST | `/api/rec/start` / `/api/rec/stop` | Administrator | Recording control; automatic recording is enabled by default. |
+| POST | `/api/rec/split` | Administrator | Queue a keyframe-aligned file split; body is the current relative recording filename. Continues with the same encoder and stream session. |
 | POST | `/api/rec/delete` | Administrator | Delete a recording; the active recording is protected. |
 | POST | `/api/rec/clear` | Administrator | Clear recordings while retaining the active file. |
 | GET | `/api/logs` | Administrator | List log files. |

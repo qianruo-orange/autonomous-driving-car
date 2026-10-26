@@ -60,10 +60,12 @@ static void serve_rec_status(int fd)
     video_rec_status(&st);
     off = snprintf(json, sizeof(json),
         "{\"recording\":%d,\"file\":\"%s\",\"start_ms\":%llu,"
-        "\"frames\":%llu,\"bytes\":%llu,\"fps\":%.1f}",
+        "\"frames\":%llu,\"bytes\":%llu,\"fps\":%.1f,"
+        "\"split_pending\":%d,\"split_error\":%d}",
         st.recording, st.file[0] ? st.file : "",
         (unsigned long long)st.start_ms,
-        (unsigned long long)st.frames, (unsigned long long)st.bytes, st.fps);
+        (unsigned long long)st.frames, (unsigned long long)st.bytes, st.fps,
+        st.split_pending, st.split_error);
     http_ok_json(fd, json, (size_t)off);
 }
 
@@ -302,6 +304,17 @@ void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *ur
             http_err(fd, 409, "Conflict", "not recording");
         else
             http_ok_text(fd, "stopped");
+    } else if (strcmp(uri, "/api/rec/split") == 0) {
+        if (strcmp(method, "POST") != 0) { http_err(fd, 405, "Method Not Allowed", NULL); return; }
+        const char *file = http_body_start(req_buf);
+        char subdir[64], name[256];
+        if (!file || rec_resolve_rel(file, subdir, sizeof(subdir), name, sizeof(name)) != 0) {
+            http_err(fd, 400, "Bad Request", "expected recording filename required");
+            return;
+        }
+        int rc = video_rec_split(file);
+        if (rc != 0) http_err(fd, 409, "Conflict", rc == -2 ? "recording changed" : "not recording or split pending");
+        else http_ok_text(fd, "split queued");
     } else if (strcmp(uri, "/api/rec/pack") == 0) {
         serve_rec_pack(fd);
     } else if (strcmp(uri, "/api/rec/delete") == 0) {

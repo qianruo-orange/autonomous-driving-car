@@ -63,6 +63,7 @@ typedef struct pool_item {
 
 typedef struct {
     unsigned long long seq;   /* 帧绝对序号（u64 单调递增，永不回绕） */
+    unsigned long long capture_ms;
     int w, h, fmt;            /* fmt: FRAME_RING_FMT_* */
 
     /* ---- 采集阶段 ---- */
@@ -90,6 +91,9 @@ typedef struct frame_ring {
     frame_slot_t slots[FRAME_RING_N];
     unsigned long long produce_seq;   /* 最新已发布 seq（0 = 尚无帧） */
     unsigned long long display_seq;   /* 最新已渲染 seq（钉住最新显示帧，维护规则用） */
+    unsigned long long displayed_frames, encoded_frames, encode_replaced;
+    unsigned long long processing_age_ms, processing_age_max_ms;
+    unsigned capture_fps_num, capture_fps_den;
 
     /* 运行模式（消费者侧在锁内更新，维护释放规则用） */
     int ai_active;            /* AI 池运行中（停用时 infer_done 不再推进） */
@@ -118,6 +122,9 @@ typedef struct frame_ring {
 
 typedef struct {
     unsigned long long produce_seq;
+    unsigned long long display_seq, displayed_frames, encoded_frames, encode_replaced;
+    unsigned long long processing_age_ms, processing_age_max_ms;
+    double capture_fps;
     unsigned long long capture_dropped, driver_dropped, capture_stall_ms;
     unsigned long long infer_dropped, render_skipped, encode_skipped;
     int raw_pinned;            /* 当前被 raw 占用的槽数 */

@@ -25,6 +25,8 @@ typedef struct {
     unsigned long long frames;      /* 已写入帧数 */
     unsigned long long bytes;       /* 已写入数据字节数 */
     double             fps;         /* 实时平均帧率（最后若干帧） */
+    int                split_pending;
+    int                split_error;
 } video_rec_status_t;
 
 struct app_config_t;
@@ -38,6 +40,11 @@ void *video_rec_task(void *arg);
    @return 0 成功，-1 失败（已在录制 / 未在录制 / 参数错误） */
 int video_rec_start(void);
 int video_rec_stop(void);
+
+/* Queue a keyframe-aligned file split while keeping the encoder/live stream.
+   expected_file prevents a stale page from splitting a different recording.
+   Returns 0 when queued, -1 when inactive/busy, -2 for a stale filename. */
+int video_rec_split(const char *expected_file);
 
 /* 结束当前录制段，让线程按最新配置续录下一段（不改变自动续录开关）。
    编码器随会话创建，码率系数等编码参数变更后须调用本函数才会生效；

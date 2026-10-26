@@ -15,6 +15,13 @@ static frame_slot_t *slot_of(frame_ring_t *r, unsigned long long seq)
     return &r->slots[seq & (FRAME_RING_N - 1)];
 }
 
+static unsigned long long ring_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000u + (unsigned long long)ts.tv_nsec / 1000000u;
+}
+
 void frame_ring_init(frame_ring_t *r)
 {
     memset(r, 0, sizeof(*r));
@@ -170,6 +177,7 @@ frame_slot_t *frame_ring_produce_slot_locked(frame_ring_t *r)
 void frame_ring_produce_commit_locked(frame_ring_t *r)
 {
     frame_slot_t *s = slot_of(r, r->produce_seq + 1);
+    s->capture_ms = ring_now_ms();
     r->produce_seq = s->seq;
     frame_ring_maintain_locked(r);
     pthread_cond_broadcast(&r->cond);
@@ -225,6 +233,12 @@ frame_slot_t *frame_ring_display_pick_locked(frame_ring_t *r,
 void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
 {
     s->display_done = 1;
+    r->displayed_frames++;
+    if (s->capture_ms) {
+        r->processing_age_ms = ring_now_ms() - s->capture_ms;
+        if (r->processing_age_ms > r->processing_age_max_ms)
+            r->processing_age_max_ms = r->processing_age_ms;
+    }
     /* 最新结果优先：本帧与上次渲染之间被跳过的帧 */
     if (s->seq > r->display_seq + 1 && s->seq > r->display_seq)
         r->render_skipped += s->seq - r->display_seq - 1;
@@ -252,6 +266,8 @@ static void encode_mark_consumed_locked(frame_ring_t *r, frame_slot_t *s)
 {
     for (int i = 0; i < FRAME_RING_N; i++) {
         frame_slot_t *t = &r->slots[i];
+        if (t->seq && t->seq < s->seq && t->display_done && !t->encode_done)
+            r->encode_replaced++;
         if (t->seq && t->seq <= s->seq && !t->encode_done) t->encode_done = 1;
     }
     frame_ring_maintain_locked(r);
@@ -259,6 +275,7 @@ static void encode_mark_consumed_locked(frame_ring_t *r, frame_slot_t *s)
 
 void frame_ring_encode_advance_locked(frame_ring_t *r, frame_slot_t *s)
 {
+    r->encoded_frames++;
     encode_mark_consumed_locked(r, s);
 }
 
@@ -406,6 +423,13 @@ void frame_ring_stats(frame_ring_t *r, frame_ring_stats_t *out)
     memset(out, 0, sizeof(*out));
     frame_ring_lock(r);
     out->produce_seq      = r->produce_seq;
+    out->display_seq      = r->display_seq;
+    out->displayed_frames = r->displayed_frames;
+    out->encoded_frames  = r->encoded_frames;
+    out->encode_replaced = r->encode_replaced;
+    out->processing_age_ms = r->processing_age_ms;
+    out->processing_age_max_ms = r->processing_age_max_ms;
+    out->capture_fps = r->capture_fps_den ? (double)r->capture_fps_num / r->capture_fps_den : 0;
     out->capture_dropped  = r->capture_dropped;
     out->driver_dropped   = r->driver_dropped;
     out->capture_stall_ms = r->capture_stall_ms;

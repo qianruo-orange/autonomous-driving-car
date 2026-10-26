@@ -60,6 +60,7 @@ static struct {
     char file[128];               /* 当前录制文件名 */
     uint64_t start_ms, frames, bytes;
     uint64_t last_frame_ts;       /* 最近一帧单调时钟，用于实时 fps */
+    int split_pending, split_error;
 } g_rec;
 
 static uint64_t now_ms(void)
@@ -115,13 +116,16 @@ static int rec_take_raw_frame(frame_ring_t *ring, unsigned char **out, size_t *l
     unsigned char *raw = malloc(s->raw.len ? s->raw.len : 1);
     if (!raw) { frame_ring_unlock(ring); return -1; }
     memcpy(raw, s->raw.buf, s->raw.len);
+    unsigned long long seq = s->seq;
+    size_t raw_len = s->raw.len;
+    int raw_fmt = s->fmt, raw_w = s->w, raw_h = s->h;
     frame_ring_unlock(ring);
-    g_raw_seq = s->seq;
+    g_raw_seq = seq;
     *out = raw;
-    *len = s->raw.len;
-    if (fmt) *fmt = s->fmt;
-    if (w) *w = s->w;
-    if (h) *h = s->h;
+    *len = raw_len;
+    if (fmt) *fmt = raw_fmt;
+    if (w) *w = raw_w;
+    if (h) *h = raw_h;
     return 0;
 }
 
@@ -280,6 +284,8 @@ void *video_rec_task(void *arg)
             g_rec.frames = 0;
             g_rec.bytes = 0;
             g_rec.last_frame_ts = 0;
+            g_rec.split_pending = 0;
+            g_rec.split_error = 0;
             safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
             pthread_mutex_unlock(&g_rec.lock);
 
@@ -333,13 +339,48 @@ void *video_rec_task(void *arg)
                 frame_ring_unlock(ring);
 
                 uint64_t ts = now_ms();
+                /* Live delivery must not wait for MP4 metadata/finalization. */
+                h264_stream_push_frame(h264, hlen, keyframe, ts);
+                pthread_mutex_lock(&g_rec.lock);
+                int split = g_rec.split_pending && keyframe && g_rec.recording;
+                pthread_mutex_unlock(&g_rec.lock);
+                if (split) {
+                    /* Begin the new file at an IDR with inline SPS/PPS. Keep the
+                       same encoder and stream epoch, so viewers stay connected. */
+                    char next_name[128] = "", next_day[16], next_dir[512];
+                    time_t split_time = time(NULL);
+                    struct tm split_tm;
+                    localtime_r(&split_time, &split_tm);
+                    strftime(next_day, sizeof(next_day), "%Y%m%d", &split_tm);
+                    snprintf(next_dir, sizeof(next_dir), "%s/%s", REC_DIR, next_day);
+                    rec_mp4_t *next = rec_mp4_create(next_dir, "rec", pw, ph,
+                                                    next_name, sizeof(next_name));
+                    if (next) {
+                        int finalized = rec_mp4_finalize(s);
+                        s = next;
+                        snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
+                        pthread_mutex_lock(&g_rec.lock);
+                        safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
+                        g_rec.start_ms = rec_mp4_start_ms(s);
+                        g_rec.frames = g_rec.bytes = 0;
+                        g_rec.last_frame_ts = 0;
+                        g_rec.split_pending = 0;
+                        g_rec.split_error = finalized == 0 ? 0 : 2;
+                        pthread_mutex_unlock(&g_rec.lock);
+                        LOG_INFO("rec: file split, continuing -> %s (same encoder)", rel);
+                    } else {
+                        pthread_mutex_lock(&g_rec.lock);
+                        g_rec.split_pending = 0;
+                        g_rec.split_error = 1;
+                        pthread_mutex_unlock(&g_rec.lock);
+                        LOG_ERROR("rec: split file creation failed; continuing current recording");
+                    }
+                }
                 if (rec_mp4_write_frame(s, h264, hlen, keyframe, ts) != 0) {
                     free(h264);
                     done = 1;   /* 达上限或写失败：结束本段（自动续录下一段） */
                     break;
                 }
-                /* 直播扇出：MP4 写成功后同一编码帧入推流环（此时无锁持有，叶子锁安全） */
-                h264_stream_push_frame(h264, hlen, keyframe, ts);
                 free(h264);
 
                 pthread_mutex_lock(&g_rec.lock);
@@ -358,6 +399,7 @@ void *video_rec_task(void *arg)
             h264_stream_push_end();   /* 直播扇出：会话结束断流（新连接 503，同 mjpeg_ai 无 AI 行为） */
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
+            g_rec.split_pending = 0;
             g_rec.start_fail = 0;
             g_rec.file[0] = '\0';
             pthread_mutex_unlock(&g_rec.lock);
@@ -402,6 +444,23 @@ int video_rec_stop(void)
     return 0;
 }
 
+int video_rec_split(const char *expected_file)
+{
+    pthread_mutex_lock(&g_rec.lock);
+    int result = 0;
+    if (!g_rec.recording || !g_rec.file[0] || !g_rec.frames || g_rec.split_pending ||
+        g_rec.cmd == REC_CMD_STOP)
+        result = -1;
+    else if (!expected_file || strcmp(expected_file, g_rec.file) != 0)
+        result = -2;
+    else {
+        g_rec.split_pending = 1;
+        g_rec.split_error = 0;
+    }
+    pthread_mutex_unlock(&g_rec.lock);
+    return result;
+}
+
 void video_rec_cycle_session(void)
 {
     /* 直接清 recording 而不下发 REC_CMD_STOP：STOP 会同时关掉 auto_rec（视为
@@ -421,6 +480,8 @@ int video_rec_status(video_rec_status_t *out)
     out->start_ms  = g_rec.start_ms;
     out->frames    = g_rec.frames;
     out->bytes     = g_rec.bytes;
+    out->split_pending = g_rec.split_pending;
+    out->split_error = g_rec.split_error;
     safe_strncpy(out->file, sizeof(out->file),
                  g_rec.file[0] ? g_rec.file : "");
     /* 实时帧率：最近一帧与前若干帧的间隔由调用方按 start_ms 粗估 */

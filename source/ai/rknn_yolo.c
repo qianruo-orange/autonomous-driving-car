@@ -63,7 +63,7 @@
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 
-#define AI_MAX_WORKERS 15    /* 推理工作线程上限（3 的倍数 3~15，每核 1~5 个） */
+#define AI_MAX_WORKERS 15    /* Actual count is a multiple of detected NPU cores. */
 #define AI_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
 #define AI_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，composer 消费渲染 */
 
@@ -103,7 +103,7 @@ static struct {
     app_ctx_t     *app;
     float          conf, nms;
     int            interval_ms;
-    int            nthreads;                 /* 推理线程数（3 的倍数 3~15） */
+    int            nthreads;                 /* Workers evenly assigned to detected NPU cores. */
 
     unsigned char *model;                    /* 模型文件内存（共享给所有 worker init） */
     size_t         model_len;
@@ -276,6 +276,17 @@ static int yolo_result_pop(yolo_result_item_t *item, int timeout_ms)
     return 0;
 }
 
+/* Worker completion order is not capture order. Keep the largest sequence,
+   rather than the last arrival, when coalescing a burst of ready results. */
+static int yolo_result_pop_latest(yolo_result_item_t *item, int timeout_ms)
+{
+    if (yolo_result_pop(item, timeout_ms) != 0) return -1;
+    yolo_result_item_t newer;
+    while (yolo_result_try_pop(&newer) == 0)
+        if (newer.seq > item->seq) *item = newer;
+    return 0;
+}
+
 /* ---- 结果快照（composer 按序更新，单调递增） ---- */
 
 static void snap_result(const yolo_result_t *res)
@@ -438,11 +449,7 @@ static void *yolo_render_task(void *arg)
 
         /* 事件驱动：等推理结果入队（40ms 超时仅用于退出检查） */
         yolo_result_item_t item;
-        if (yolo_result_pop(&item, 40) != 0) continue;
-
-        /* 最新结果优先：排空队列只留最新（旧结果条目直接丢弃） */
-        yolo_result_item_t newer;
-        while (yolo_result_try_pop(&newer) == 0) item = newer;
+        if (yolo_result_pop_latest(&item, 40) != 0) continue;
         /* 结果须晚于已渲染 seq（渲染 seq 严格递增，绝不回退） */
         if (item.seq <= g_ai.next_seq) continue;
 
@@ -727,10 +734,12 @@ static int ai_start_pool(void)
     g_ai.conf = cfg->ai_conf > 0 ? cfg->ai_conf : 0.25f;
     g_ai.nms  = cfg->ai_nms  > 0 ? cfg->ai_nms  : 0.45f;
     g_ai.interval_ms = cfg->ai_interval_ms > 0 ? cfg->ai_interval_ms : 10;
-    int t = cfg->ai_threads > 0 ? cfg->ai_threads : 3;
+    int cores = npu_core_count();
+    if (cores < 1) cores = 1;
+    int t = cfg->ai_threads > 0 ? cfg->ai_threads : cores;
     if (t > AI_MAX_WORKERS) t = AI_MAX_WORKERS;
-    if (t < 3) t = 3;
-    g_ai.nthreads = t - (t % 3);   /* 必须是 3 的倍数：3~15，每核 1~5 个 worker */
+    if (t < cores) t = cores;
+    g_ai.nthreads = t - (t % cores);
 
     safe_strncpy(g_ai.names_path, sizeof(g_ai.names_path),
                  cfg->ai_names[0] ? cfg->ai_names : "config/coco.names");
@@ -820,9 +829,9 @@ static int ai_start_pool(void)
     /* 环内 raw 释放规则切回推理路径（infer_done 门槛） */
     if (ai_ring()) frame_ring_set_ai_active(ai_ring(), 1);
     LOG_INFO("ai: model '%s' loaded, classes '%s' (%d), input %dx%d, "
-             "single output, threads %d (NPU core i%%3), conf %.2f nms %.2f",
+             "single output, threads %d (NPU core i%%%d), conf %.2f nms %.2f",
              model_path, g_ai.names_path, ncls, g_ai.in_w, g_ai.in_h,
-             g_ai.nthreads, g_ai.conf, g_ai.nms);
+             g_ai.nthreads, cores, g_ai.conf, g_ai.nms);
     return 0;
 }
 

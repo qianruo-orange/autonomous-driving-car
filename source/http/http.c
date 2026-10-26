@@ -689,6 +689,7 @@ static void http_process_request(http_conn_t *c)
         { "/api/video/devices",0,NULL, http_video_devices,NULL },
         { "/api/rec/start",0, "POST", http_rec_handler,  http_check_auth_root },
         { "/api/rec/stop", 0, "POST", http_rec_handler,  http_check_auth_root },
+        { "/api/rec/split",0,"POST", http_rec_handler,  http_check_auth_root },
         { "/api/rec/delete",0,"POST", http_rec_handler,  http_check_auth_root },
         { "/api/rec/clear", 0,"POST", http_rec_handler,  http_check_auth_root },
         { "/api/rec/status",0, NULL,  http_rec_handler,  NULL },

@@ -124,11 +124,22 @@ static int init_video_device(video_ctx_t *vs, int verbose)
         sp.parm.capture.timeperframe.numerator = 1;
         sp.parm.capture.timeperframe.denominator = vs->app->cfg->video_fps;
         if (ioctl(vs->fd, VIDIOC_S_PARM, &sp) == 0) {
-            LOG_INFO("video_stream: fps set to %d", vs->app->cfg->video_fps);
+            LOG_INFO("video_stream: requested fps=%d, negotiated fps=%u/%u",
+                     vs->app->cfg->video_fps, sp.parm.capture.timeperframe.denominator,
+                     sp.parm.capture.timeperframe.numerator);
         } else {
             LOG_ERROR("video_stream: S_PARM fps=%d failed, keeping driver default",
                       vs->app->cfg->video_fps);
         }
+    }
+
+    struct v4l2_streamparm actual = {0};
+    actual.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ioctl(vs->fd, VIDIOC_G_PARM, &actual) == 0) {
+        frame_ring_lock(&vs->ring);
+        vs->ring.capture_fps_num = actual.parm.capture.timeperframe.denominator;
+        vs->ring.capture_fps_den = actual.parm.capture.timeperframe.numerator;
+        frame_ring_unlock(&vs->ring);
     }
 
     struct v4l2_requestbuffers req = {0};

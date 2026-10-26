@@ -3,6 +3,15 @@
  * 日志与录像共用 loadFileList/delFile（复用同一套渲染与删除流程）；
  * 打包下载统一走 authFetch（避免 <a> 直连未登录时弹浏览器原生认证框）。 */
 (function() {
+  var splitBusy = false;
+  var splitButton = document.getElementById('split_rec_btn');
+
+  function updateSplitButton(status) {
+    if (!splitButton) return;
+    var pending = splitBusy || !!(status && status.split_pending);
+    splitButton.disabled = pending || !status || !status.recording || !status.frames;
+    setI18nText(splitButton, pending ? '正在截断...' : '截断并续录');
+  }
 
   function fmtSize(bytes) {
     var k = bytes / 1024;
@@ -52,6 +61,12 @@
     dl.className = 'dl';
     dl.href = dlUrl + encodeURIComponent(f.name);
     setI18nText(dl, '下载');
+    if (active) {
+      dl.removeAttribute('href');
+      dl.setAttribute('aria-disabled', 'true');
+      dl.setAttribute('data-i18n-title', '当前录像需先截断保存后下载');
+      dl.title = t('当前录像需先截断保存后下载');
+    }
     var del = document.createElement('button');
     del.className = 'del';
     setI18nText(del, active ? '录制中' : '删除');
@@ -154,12 +169,51 @@
     var activeFile = '';
     try {
       var st = await (await fetch('/api/rec/status')).json();
+      updateSplitButton(st);
       if (st.recording) activeFile = st.file;   /* 格式与列表项 name 一致 */
-    } catch (e) {}
+    } catch (e) { updateSplitButton(null); }
     return loadFileList('/api/rec/list', 'rows_rec', '暂无录像文件', '/recfile/',
       { makeUrl: function() { return '/api/rec/delete'; },
         method: 'POST', bodyName: true, reload: loadRec }, activeFile);
   }
+
+  if (splitButton) splitButton.addEventListener('click', async function() {
+    if (splitBusy) return;
+    splitBusy = true;
+    updateSplitButton(null);
+    try {
+      var status = await (await fetch('/api/rec/status')).json();
+      if (!status.recording || !status.file) {
+        toast('当前没有正在录制的视频', false); return;
+      }
+      var previousFile = status.file;
+      var response = await authFetch('/api/rec/split', {
+        method: 'POST', headers: {'Content-Type': 'text/plain;charset=UTF-8'}, body: previousFile
+      });
+      if (!response.ok) {
+        toast(response.status === 409 ? '录像状态已变化，请刷新后重试' : '截断失败 ({status})', false, {status: response.status});
+        return;
+      }
+      for (var attempt = 0; attempt < 50; attempt++) {
+        await new Promise(function(resolve) { setTimeout(resolve, 200); });
+        status = await (await fetch('/api/rec/status')).json();
+        if (status.split_error) { toast('录像分段保存失败，请检查磁盘与日志', false); return; }
+        if (status.recording && status.file && status.file !== previousFile && !status.split_pending && status.frames > 0) {
+          toast('已保存 {file}，正在继续录制', true, {file: previousFile});
+          return;
+        }
+        if (!status.recording && !status.split_pending) {
+          toast('录像已停止，请检查设备状态', false); return;
+        }
+      }
+      toast('分段请求已提交，正在等待关键帧', true);
+    } catch(e) {
+      if (e.message !== 'auth cancelled') toast('截断请求失败', false);
+    } finally {
+      splitBusy = false;
+      await loadRec();
+    }
+  });
 
   /* ---- 一键清空（清空录像时保留正在录制的文件） ---- */
   function bindClear(btn, url, confirmMsg, resultKey, reload) {
@@ -190,6 +244,7 @@
     document.getElementById('pack_rec_btn').style.display = isRec ? '' : 'none';
     document.getElementById('clear_btn').style.display = isRec ? 'none' : '';
     document.getElementById('clear_rec_btn').style.display = isRec ? '' : 'none';
+    if (splitButton) splitButton.style.display = isRec ? '' : 'none';
     var btns = document.querySelectorAll('.tab-btn');
     for (var i = 0; i < btns.length; i++)
       btns[i].classList.toggle('tab-on', btns[i].getAttribute('data-tab') === tab);
