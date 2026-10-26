@@ -116,6 +116,7 @@
   var mseRunning = false, mseUrl = '', mseLastData = 0, mseLastFail = 0;
   var mseTail = new Uint8Array(3);   /* 跨块 'moof' 签名续接尾巴 */
   var mseGeneration = 0, mseCancelUpdate = null, mseLastTrim = 0;
+  var msePrimed = false, mseClockAgeMs = null, mseClockAt = 0;
   var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0, lastError: '' };
 
   function mseSupported() {
@@ -149,6 +150,7 @@
     mseTail[0] = mseTail[1] = mseTail[2] = 0;
     var vid = document.getElementById('stream_video');
     if (vid && hadMse) {
+      vid.playbackRate = 1;
       if (vid.src && vid.src.indexOf('blob:') === 0) URL.revokeObjectURL(vid.src);
       vid.removeAttribute('src');
       vid.load();                          /* 清空播放器（readyState 归零） */
@@ -213,9 +215,19 @@
       var b = mseSb.buffered;
       if (!b.length) return;
       var end = b.end(b.length - 1), start = b.start(b.length - 1);
-      if (end - vid.currentTime > 1.5 || vid.currentTime < start) {
-        vid.currentTime = Math.max(start, end - 0.35);
+      var ahead = end - vid.currentTime;
+      /* Prime close to the live edge after enough media arrives. A small,
+         bounded buffer absorbs frame jitter without retaining a historical GOP. */
+      if ((!msePrimed && end - start >= 0.2 && ahead > 0.23) ||
+          ahead > 0.7 || vid.currentTime < start) {
+        vid.currentTime = Math.max(start, end - 0.2);
         mseDiag.catchups++;
+        msePrimed = true;
+        vid.playbackRate = 1;
+      } else if (ahead > 0.3) {
+        vid.playbackRate = 1.05;
+      } else if (ahead < 0.22) {
+        vid.playbackRate = 1;
       }
     } catch(e) {}
   }
@@ -241,6 +253,9 @@
     mseRunning = true;
     mseLastData = Date.now();
     mseLastTrim = Date.now();
+    msePrimed = false;
+    mseClockAgeMs = null;
+    mseClockAt = 0;
     mseDiag.starts++;
     var generation = mseGeneration;
     resetFps();
@@ -254,6 +269,12 @@
         return;
       }
       var codec = r.headers.get('X-Codec') || 'avc1.4d401f';
+      var ageHeader = r.headers.get('X-Stream-Age-Ms');
+      var age = ageHeader == null ? NaN : Number(ageHeader);
+      if (isFinite(age) && age >= 0 && age <= 30000) {
+        mseClockAgeMs = age;
+        mseClockAt = Date.now();
+      }
       var ms = new MediaSource();
       mseMs = ms;
       var vid = document.getElementById('stream_video');
@@ -297,7 +318,11 @@
     var result = Object.assign({}, mseDiag, {
       transport: mseRunning ? 'H.264/MSE' : streamRunning ? 'MJPEG' : 'idle',
       receivedFps: receivedFps, displayedFps: fpsVal, bufferAheadSeconds: 0,
-      readyState: vid ? vid.readyState : 0
+      estimatedStreamDelayMs: null, buffered: [],
+      readyState: vid ? vid.readyState : 0, currentTime: vid ? vid.currentTime : 0,
+      paused: vid ? vid.paused : true, seeking: vid ? vid.seeking : false,
+      playbackRate: vid ? vid.playbackRate : 1,
+      decoderError: vid && vid.error ? vid.error.code : null
     });
     if (vid && vid.getVideoPlaybackQuality) {
       var q = vid.getVideoPlaybackQuality();
@@ -306,9 +331,33 @@
     }
     if (vid && mseSb && mseSb.buffered.length) {
       result.bufferAheadSeconds = Math.max(0, mseSb.buffered.end(mseSb.buffered.length - 1) - vid.currentTime);
+      for (var i = 0; i < mseSb.buffered.length; i++)
+        result.buffered.push([mseSb.buffered.start(i), mseSb.buffered.end(i)]);
+    }
+    if (mseRunning && vid && mseClockAgeMs !== null) {
+      result.estimatedStreamDelayMs = Math.max(0, mseClockAgeMs + Date.now() - mseClockAt - vid.currentTime * 1000);
     }
     return result;
   };
+
+  function mseWatchdog() {
+    if (!mseRunning || document.hidden) return;
+    /* Include connection setup: a stalled fetch/sourceopen has no buffer yet. */
+    if (Date.now() - mseLastData > 5000) {
+      mseFail(mseGeneration, new Error('No video data for 5 seconds'));
+      return;
+    }
+    if (mseSb && mseMs) mseCatchUp();
+  }
+
+  var playerVideo = document.getElementById('stream_video');
+  if (playerVideo && playerVideo.addEventListener) {
+    playerVideo.addEventListener('error', function() {
+      if (mseRunning && playerVideo.error)
+        mseFail(mseGeneration, new Error('Video decoder error ' + playerVideo.error.code));
+    });
+    playerVideo.addEventListener('seeked', function() { mseCatchUp(); });
+  }
 
   function barColor(p) { return p < 60 ? 'green' : p < 85 ? 'yellow' : 'red'; }
 
@@ -577,16 +626,20 @@
     }
     el.textContent = fpsVal > 0 ? Math.round(fpsVal) + ' FPS' : '-- FPS';
     el.title = 'Displayed: ' + Math.round(fpsVal) + ' FPS; received: ' + Math.round(receivedFps) + ' FPS';
+    var stats = document.getElementById('video_stats');
+    if (stats) {
+      var d = window.getGatewayVideoDiagnostics();
+      stats.textContent = t('接收 {received} FPS · 缓冲 {buffer} ms · 推流延迟约 {delay} ms · 丢帧 {dropped}', {
+        received: Math.round(d.receivedFps), buffer: Math.round(d.bufferAheadSeconds * 1000),
+        delay: d.estimatedStreamDelayMs === null ? '--' : Math.round(d.estimatedStreamDelayMs),
+        dropped: d.droppedVideoFrames || 0
+      });
+    }
   }, 1000);
 
   /* Catch up inside the current buffer. Reopen the stream only when transport
      stops; reconnecting to another GOP for ordinary playback lag adds stalls. */
-  setInterval(function() {
-    if (!mseRunning || !mseSb || !mseMs) return;
-    if (document.hidden) return;
-    mseCatchUp();
-    if (Date.now() - mseLastData > 5000) mseFail(mseGeneration, new Error('No video data for 5 seconds'));
-  }, 1000);
+  setInterval(mseWatchdog, 1000);
 
   window.reboot = function() { if (!confirm(t('确定要重启设备吗？'))) return; authFetch('/api/reboot').catch(function(){}); };
   window.shutdown = function() { if (!confirm(t('确定要关闭设备吗？'))) return; authFetch('/api/shutdown').catch(function(){}); };

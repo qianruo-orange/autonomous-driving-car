@@ -48,6 +48,7 @@
     '无线': 'Wireless',
     '已连接': 'Connected',
     '未连接': 'Disconnected',
+    '接收 {received} FPS · 缓冲 {buffer} ms · 推流延迟约 {delay} ms · 丢帧 {dropped}': 'Received {received} FPS · Buffer {buffer} ms · Stream delay ~{delay} ms · Dropped {dropped}',
     '星期日': 'Sunday', '星期一': 'Monday', '星期二': 'Tuesday',
     '星期三': 'Wednesday', '星期四': 'Thursday', '星期五': 'Friday', '星期六': 'Saturday',
     '确定要重启设备吗？': 'Are you sure you want to reboot the device?',

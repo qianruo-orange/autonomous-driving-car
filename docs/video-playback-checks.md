@@ -14,11 +14,19 @@ Played media is removed on the same chain. Playback that falls behind catches up
 inside its existing buffer; an ordinary backlog does not reopen the connection.
 Callbacks from an aborted connection cannot stop a newer connection.
 
+Connection pacing starts at the newest encoded frame. Historical GOP samples
+are sent immediately in decode order, followed by normal live pacing. The player
+primes near the live edge with a 200 ms buffer target, catches larger backlogs
+by seeking, and drains small backlogs at 1.05x playback speed.
+
 The FPS badge reports displayed frames when playback-quality counters are
 available. Hover over the badge to compare displayed and received frame rates.
 `window.getGatewayVideoDiagnostics()` returns read-only playback counters,
 buffer lead, decoder frame drops, reconnect count, and the most recent error.
 These counters are local to the browser and are not uploaded.
+The status line below the video shows the essential values without developer
+tools. Stream delay is an approximate encoder-output-to-playback measure; it
+excludes camera capture, AI processing, and encoding time.
 
 ## Regression checks
 
@@ -37,5 +45,6 @@ node tests/video_player_test.cjs
 
 The C test runs the production stream client against a local socketpair and
 checks MP4 metadata for variable intervals, non-VCL frames, zero intervals,
-large gaps, and source-clock wraparound. The JavaScript test uses a simulated
+large gaps, source-clock wraparound, immediate historical-GOP catch-up, and
+interruptible live pacing. The JavaScript test uses a simulated
 SourceBuffer and network reader; browser playback still requires a live check.

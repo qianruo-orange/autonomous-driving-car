@@ -84,7 +84,8 @@ typedef struct {
     uint32_t origin_ms;      /* 时间轴原点 = 接合 IDR 帧 ts（tfdt 归零） */
     uint32_t last_fts;       /* 上一有效 VCL 样本的源 ts（无 VCL 的帧不推进） */
     uint64_t next_dts90;     /* 下个样本的连续解码时间；仅成功构建片段后推进 */
-    uint64_t join_wall_ms;   /* 接合时刻墙钟（实时节流基准） */
+    uint32_t pace_source_ms; /* 接合时最新已编码帧的源 ts；追上后逐帧重基 */
+    uint64_t pace_wall_ms;   /* pace_source_ms 对应的 monotonic 墙钟 */
     time_t   last_write;
     int      oom;            /* 片段缓冲分配失败（致命，断连） */
 
@@ -110,6 +111,25 @@ static int h264s_cond_timedwait_ms(unsigned ms)
     ts.tv_nsec += (long)(ms % 1000) * 1000000L;
     if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
     return pthread_cond_timedwait(&g_h264s.cond, &g_h264s.lock, &ts);
+}
+
+/* 新帧广播可能提前唤醒等待，须重查目标时刻；stop/epoch 变更则立即退出。
+   不持锁做网络 IO，也不依赖源时钟的 32 位绝对值。 */
+static int h264s_wait_until(const h264s_client_t *c, uint64_t target)
+{
+    pthread_mutex_lock(&g_h264s.lock);
+    while (!g_h264s.stop && g_h264s.epoch == c->epoch) {
+        uint64_t now = h264s_now_ms();
+        if (now >= target) {
+            pthread_mutex_unlock(&g_h264s.lock);
+            return 0;
+        }
+        uint64_t remaining = target - now;
+        unsigned delay = remaining > H264S_POLL_MS ? H264S_POLL_MS : (unsigned)remaining;
+        h264s_cond_timedwait_ms(delay);
+    }
+    pthread_mutex_unlock(&g_h264s.lock);
+    return -1;
 }
 
 /* ---- 字节缓冲写入器（全大端；oom 后全部变 no-op） ---- */
@@ -699,7 +719,10 @@ static void *h264_stream_client_task(void *arg)
             if (e->keyframe) {
                 c->cursor = e->seq - 1;
                 c->origin_ms = e->ts_ms;
-                c->join_wall_ms = h264s_now_ms();
+                const h264s_entry_t *latest = &g_h264s.ring[
+                    (g_h264s.head + g_h264s.count - 1) % H264S_RING_N];
+                c->pace_source_ms = latest->ts_ms;
+                c->pace_wall_ms = h264s_now_ms();
                 ok = 1;
                 break;
             }
@@ -719,13 +742,22 @@ static void *h264_stream_client_task(void *arg)
     /* 4) 响应头 + 初始化段（close-delimited；X-Codec 给前端精确 codec 串） */
     char codec[32];
     h264s_codec_string(codec, sizeof(codec), sps, sl);
-    char hdr[256];
+    /* The first media sample starts at the joined IDR. Its age at response time
+       lets the player estimate source-to-display latency without clock sync.
+       Omit invalid/stale ages rather than reporting a wrapped 49-day value. */
+    char age_header[64] = "";
+    uint32_t age_ms = (uint32_t)((uint32_t)h264s_now_ms() - c->origin_ms);
+    if (age_ms <= H264S_CLIENT_IDLE_TIMEOUT * 1000u)
+        snprintf(age_header, sizeof(age_header), "X-Stream-Age-Ms: %u\r\n", age_ms);
+    char hdr[384];
     int hl = snprintf(hdr, sizeof(hdr),
                       "HTTP/1.1 200 OK\r\n"
                       "Content-Type: video/mp4\r\n"
                       "Cache-Control: no-cache\r\n"
                       "X-Codec: %s\r\n"
-                      "Connection: close\r\n\r\n", codec);
+                      "X-Stream-Epoch: %u\r\n"
+                      "%s"
+                      "Connection: close\r\n\r\n", codec, c->epoch, age_header);
     if (fd_write_all_blocking(fd, hdr, (size_t)hl) < 0 ||
         fd_write_all_blocking(fd, c->init, c->init_len) < 0) {
         on_close(fd);
@@ -810,19 +842,21 @@ static void *h264_stream_client_task(void *arg)
             continue;
         }
 
+        /* 最新已编码帧对应接合墙钟，历史 GOP 立即完整发送以追上实时，
+           不能以 IDR 对应接合墙钟逐帧重播，否则永久保留关键帧年龄延迟。
+           差值在相邻帧/短 GOP 范围内，int32 差运算跨源时钟回绕安全；
+           追上后逐帧重基，长期连接不积累 32 位偏移。网络拥塞恢复后，
+           已落后目标墙钟的帧也立即追赶，不跳过任何依赖帧。 */
+        int32_t source_offset = (int32_t)(fts - c->pace_source_ms);
+        uint64_t target = source_offset >= 0
+                        ? c->pace_wall_ms + (uint32_t)source_offset : 0;
+        if (h264s_wait_until(c, target) != 0) break;
         if (fd_write_all_blocking(fd, c->frag, flen) < 0) break;
         c->cursor = expected;
         c->last_write = time(NULL);
-
-        /* 实时节流：目标墙钟 = 接合时刻 + (帧采集时间 − 接合帧时间)。
-           落后（接合滞后 ≤2s / 拥塞恢复）时连续追赶，随后自动回归实时 */
-        uint64_t target = c->join_wall_ms + (uint64_t)(fts - c->origin_ms);
-        uint64_t now = h264s_now_ms();
-        if (target > now) {
-            pthread_mutex_lock(&g_h264s.lock);
-            if (!g_h264s.stop && g_h264s.epoch == c->epoch)
-                h264s_cond_timedwait_ms((unsigned)(target - now));
-            pthread_mutex_unlock(&g_h264s.lock);
+        if (source_offset >= 0) {
+            c->pace_source_ms = fts;
+            c->pace_wall_ms = target;
         }
     }
 

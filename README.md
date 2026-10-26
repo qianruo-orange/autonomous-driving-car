@@ -1,382 +1,465 @@
 # rockchip-smart-gateway
 
-基于 epoll 的 CAN / CAN FD 数据采集、DBC 信号解析与 TCP/IP 通信解决方案，内置 Web 管理界面、视频流、AI 目标检测（RKNN + YOLO26）、网络录像与 systemd 看门狗。**全面适配 Rockchip 全系 RKNPU 平台**（RK3588 / RK3576 / RK356x / RV1126 / RV110x / RK3399PRO / RK1808 等），NPU / CPU / GPU 等硬件资源的核数与负载均按平台真实情况自动识别与展示。适用于 Rockchip（如 Radxa Rock 4D、Orange Pi 5 系列）等运行 Linux 的边缘设备，使用 C11 实现。
+An epoll-based solution for CAN / CAN FD acquisition, DBC signal decoding, and TCP/IP communication, with a Web management interface, live video, AI object detection (RKNN + YOLO26), network recording, and a systemd watchdog. Implemented in C11 for Linux edge devices such as the Radxa Rock 4D and Orange Pi 5 series. **Adapts to Rockchip RKNPU platforms**, including RK3588 / RK3576 / RK356x / RV1126 / RV110x / RK3399PRO / RK1808. CPU and NPU core counts, utilization, and available GPU metrics are detected from the running platform.
 
-## 功能特性
+## Features
 
-- CAN 数据采集：支持经典 CAN 与 CAN FD，多接口管理，自动识别系统 CAN 接口
-- DBC 信号解析：解析 DBC 数据库，将 CAN 帧解码为物理量信号（接收 / 发送双方向）
-- TCP/IP 通信：TCP 服务监听，端口与绑定网卡均可配置
-- Web 管理界面：数据监控、配置修改、日志查看与重启 / 关机控制
-- 视频流服务：通过 V4L2 接入摄像头并输出 MJPEG 视频流
-- 视频帧环形队列：采集 / 推理 / 显示 / 编码四游标 + 分阶段缓冲池复用，V4L2 mmap 指针零拷贝入环（整帧只移动指针），内置分阶段丢帧计数器，仅凭计数器即可定位丢帧环节
-- AI 目标检测：RKNN + YOLO26（官方 ultralytics rknn 单输出格式），多线程推理池并行加速，检测结果实时画框推流
-- **平台自适应 NPU 调度（Rockchip 全系）**：按 SoC 实际 NPU 核心数自动选择合法核掩码，RKNN `rknn_set_core_mask` 不再报 `unavailable core mask`，多核自动分摊推理负载（RK3588 三核 / RK3576 双核 / RK356x 等单核平台均兼容）
-- **前端 NPU / CPU 核数自适应**：仪表盘按后端上报的真实核数动态渲染核格 —— 数量随平台变化、尺寸随数量自动缩放（核少大格、核多自动换行）
-- **GPU 监控自适应**：优先读取 GPU 负载（RK3588 等暴露 `load` 的驱动）；RK3576 / RK356x 等驱动未暴露 `load` 时，自动回退显示 GPU 当前运行频率，保证 GPU 卡片在所有平台都有真实信息
-- 网络录像：默认自动开启录屏（按天分目录 `recordings/YYYYMMDD/`），Rockchip 硬件编码为 H.264 并封装 MP4(avc1) 文件，分辨率取自摄像头配置
-- systemd 看门狗：监控关键线程心跳，防止异常卡死
-- 热更新配置：Web 页面修改后立即生效
-- 运行维护：日志按日期与大小自动轮转（按天分目录）、清理脚本、部署脚本
-- 数据注入 / 提取：REST API 提供 CAN 报文注入（`/api/can/send`）、DBC 上传热加载、配置写入，以及视频流 / CAN 原始帧与 DBC 解码信号 / 录像 / 日志等数据提取
+- CAN acquisition: classic CAN and CAN FD, multiple interfaces, and automatic discovery of system CAN interfaces.
+- DBC decoding: convert received and transmitted CAN frames into physical signal values using DBC databases.
+- TCP/IP communication: configurable listening port, network interface binding, and client limit.
+- Web management: monitor data, edit configuration, inspect logs, and reboot or shut down the device.
+- Live video: V4L2 camera capture, raw and AI-annotated MJPEG, and H.264 fragmented MP4 playback through browser Media Source Extensions (MSE).
+- Video frame ring: separate capture / inference / display / encoding cursors, reusable buffer pools, and per-stage drop counters. V4L2 mmap buffers enter the ring by pointer, avoiding a full-frame copy at capture.
+- AI detection: RKNN + YOLO26 using the official Ultralytics RKNN single-output format, a parallel inference worker pool, and live detection overlays.
+- **Platform-aware NPU scheduling**: choose valid single-core masks from the detected SoC core count, avoiding `rknn_set_core_mask: unavailable core mask`. Workers are distributed across RK3588 three-core, RK3576 two-core, and supported single-core NPUs.
+- **Adaptive CPU / NPU displays**: render the actual number of cores reported by the backend, resizing and wrapping indicators as needed.
+- **Adaptive GPU monitoring**: use GPU utilization when the driver exposes `load`; otherwise display the current GPU frequency, as on some RK3576 / RK356x drivers.
+- Network recording: automatically record AI-annotated video into MP4 (`avc1`) files under `recordings/YYYYMMDD/`, using the configured resolution and H.264 encoder backend. Software encoding uses libx264; hardware encoding uses RKMPP or V4L2 rkvenc when available.
+- Shared encoding: recordings and the H.264 live stream consume the same encoder output.
+- systemd watchdog: monitor critical thread heartbeats and recover from failures.
+- Configuration updates: apply changes through the Web interface without a full service restart where the affected module supports it.
+- Operations: date- and size-based log rotation, daily log directories, cleanup scripts, and deployment scripts.
+- Data injection and extraction: REST endpoints for CAN transmission, DBC upload and reload, configuration writes, video, raw CAN frames, decoded signals, recordings, and logs.
+- English / Chinese interface: English mode covers navigation, forms, dynamic status messages, authentication dialogs, and file controls. Language changes preserve unsaved form values.
 
-## 系统架构
+## System Architecture
 
-单进程多线程架构，所有线程由 `source/core/main.c` 的模块总表 `g_modules[]` 统一注册并拉起：
-
-```text
-        ┌─► can_recv_task ──► SocketCAN 收帧 ──► 入 rxq（原始帧）+ 接收方向 DBC 解码
- main ──┼─► can_send_task ──► 排空 txq（原始帧）写 socket + 发送方向 DBC 解码
-        ├─► tcp_task      ──► TCP 监听 / 收发
-        ├─► http_task     ──► Web 管理 + REST API + MJPEG 推流
-        ├─► video_task    ──► V4L2 采集（mmap 零拷贝入环形队列）
-        ├─► ai_task       ──► 事件驱动消费环槽 → 推理队列（多线程池并行推理）→ rgb 写槽 + NMS 结果入结果队列
-        ├─► rec_task      ──► 网络录像（零拷贝取显示帧 NV12，AI 停摆直接宕机）→ H.264 硬件编码 → MP4(avc1)
-        └─► watchdog_task ──► 心跳监控 + sd_notify
-```
-
-| 线程 | 职责 |
-| --- | --- |
-| `main` | 初始化、配置加载、DBC 加载、退出编排、喂狗 |
-| `can_recv` | CAN 帧接收、入 rxq（原始帧）、接收方向 DBC 解码 |
-| `can_send` | 排空 txq（原始帧）写 socket、发送方向 DBC 解码 |
-| `tcp` | TCP 监听、连接管理与数据收发 |
-| `http` | HTTP 管理服务主循环、REST API、MJPEG 推流 |
-| `video` | V4L2 采集：mmap 指针零拷贝入环形队列，推进 produce 游标 |
-| `ai` | 事件驱动消费环槽（infer 游标）、推理任务投递；模型加载与多线程推理池（每线程独立 rknn context，按 `i % 实际NPU核数` 绑定核）；推理后分两路：rgb 写槽走显示链路，NMS 结果（名称+置信度+坐标）入结果队列供 composer 消费 |
-| `rec` | 网络录像：从环取显示帧 NV12 直接编码（encode 游标；AI 停摆 >1s 置 fatal 整体宕机）→ H.264 硬件编码 → MP4(avc1) 封装落盘 |
-| `watchdog` | 线程心跳监控与 `sd_notify` |
-
-> 注：`signal` 模块仅注册信号处理（`init`），`task` 为空，不创建线程。
-
-## 数据流向与接口
-
-### 视频流向
+A single process runs multiple threads. The module table `g_modules[]` in `source/core/main.c` registers modules and starts their tasks:
 
 ```text
-V4L2 摄像头（MJPEG / YUYV）
-  └► video_task 采集：mmap 指针零拷贝入环 ──► produce 游标推进
-        └► ai_task 事件驱动取槽（infer 游标）─► worker×N 并行推理（RKNN）─► rgb 写槽
-                    ├► NMS 结果（名称+置信度+坐标）入结果队列 ─► composer 消费最新结果画框（display 游标）
-                    ├► http 逐连接推流 ─► /video/mjpeg_ai（AI 必要流程，不可用返回 503）
-                    └► rec_task 取显示帧 NV12（encode 游标）─► H.264 硬件编码 ─► MP4(avc1) 落盘
-原始流 /video/mjpeg 由 http 直接从最新采集槽拷贝推流（与推理链路并行）
+        +--> can_recv_task --> SocketCAN RX --> raw rxq + receive-side DBC decoding
+ main --+--> can_send_task --> drain raw txq --> socket + transmit-side DBC decoding
+        +--> tcp_task      --> TCP listening, connections, and I/O
+        +--> http_task     --> Web management, REST API, and stream dispatch
+        +--> video_task    --> V4L2 capture; mmap buffer pointers enter the frame ring
+        +--> ai_task       --> event-driven ring consumption --> inference workers
+        |                     --> RGB ring buffers + NMS metadata result queue
+        +--> rec_task      --> consume displayed NV12 frames --> H.264 --> MP4 (avc1)
+        |                     --> shared H.264 live-stream output
+        +--> watchdog_task --> heartbeat monitoring + sd_notify
 ```
 
-- 帧环形队列：32 槽 × 四阶段缓冲（raw / rgb / nv12 / jpeg），四游标（produce / infer / display / encode）单调推进；缓冲按需分配、游标越过后回池复用——整帧只移动指针，无逐帧 malloc / memcpy
-- 采集：`video_task` V4L2 mmap 缓冲 DQBUF 后指针直接进槽（延迟 QBUF 至消费完成，真正零拷贝），环满才丢弃（capture_dropped）；优先 MJPEG，失败回退 YUYV；分辨率取 `video_width` / `video_height`
-- 推理：`ai_task` 阻塞等待 produce 游标（事件驱动），取槽随任务投递 worker（任务存续期间钉住 raw 槽，采集不回收），解码 RGB 写入槽；推理后数据流分两路——rgb 写槽走显示链路，NMS 后处理结果（目标名称 + 置信度 + 标注框四点坐标）入结果队列（纯元数据，不携带缓冲）
-- 显示：composer 事件驱动消费结果队列（排空只留最新，旧结果丢弃计 render_skipped），按 seq 定位 rgb_done 槽画框写 nv12 / jpeg 进槽；每个 `/video/mjpeg*` 连接一个独立线程各自拷贝最新 JPEG 推流（multipart/x-mixed-replace），慢客户端不钉槽、不阻塞其他连接
-- 编码：`rec_task` 从 encode 游标零拷贝窃取显示帧 NV12（用毕归还缓冲池）；与编码器分辨率不符时跳过（encode_skipped）
-- AI 必要流程：模型缺失 / NPU 不可用时启动直接失败退出（systemd failed），`/video/mjpeg_ai` 返回 503，不回退原始帧；运行期 AI 停摆 >1s（无新标注帧）不回退原始帧，直接整体宕机（退出码 1 → systemd Restart=on-failure 拉起）
-
-视频数据提取接口：
-
-| 接口 | 说明 |
+| Thread | Responsibilities |
 | --- | --- |
-| `GET /video/mjpeg` | 原始 MJPEG 视频流（浏览器 `<img src>` 或 ffplay 播放） |
-| `GET /video/mjpeg_ai` | AI 画框视频流（检测结果实时叠加） |
-| `GET /api/video/caps` | 摄像头能力（分辨率 / 格式） |
-| `GET /api/video/stats` | 环形队列分阶段计数器（produce_seq / 各阶段丢帧 / 缓冲池占用），回答"摄像头 vs 推理"丢帧问题 |
-| `GET /api/video/devices` | 可用视频设备列表 |
+| `main` | Initialization, configuration and DBC loading, coordinated shutdown, and watchdog notifications. |
+| `can_recv` | Receive CAN frames, append raw frames to rxq, and decode receive-side DBC signals. |
+| `can_send` | Drain raw txq into the socket and decode transmit-side DBC signals. |
+| `tcp` | TCP listening, connection management, and data transfer. |
+| `http` | HTTP management event loop, REST API, and stream connection dispatch. |
+| `video` | Capture V4L2 frames into the ring through mmap pointers and advance the produce cursor. |
+| `ai` | Consume ring slots through the infer cursor, submit work to the inference pool, and manage models. Each worker has its own RKNN context and is bound by `i % cores`. RGB buffers enter the display path; NMS metadata (names, confidence, and coordinates) enters the composer result queue. |
+| `rec` | Consume displayed NV12 frames through the encode cursor, encode H.264, write MP4 files, and publish the same encoded output for live streaming. A sustained AI stall is fatal. |
+| `watchdog` | Monitor module heartbeats and issue `sd_notify` notifications. |
 
-### CAN 数据流向
+The `signal` module only registers signal handlers during `init`; its `task` is empty and does not create a thread.
+
+## Data Flow and Interfaces
+
+### Video
 
 ```text
-接收：SocketCAN 帧 ─► can_recv_task（epoll 非阻塞读）
-        ├► 原始帧入 rxq（供业务 pop 消费）
-        ├► http_can_record_rx ─► /api/can/frames（最近 32 帧）
-        └► 接收方向 DBC 解码 ─► /api/can/decoded（最近信号值）
-
-发送：can_tx_frame() 压入 txq ─► eventfd 唤醒 can_send_task ─► 排空写 socket
-        ├► 发送方向 DBC 解码 ─► /api/can/decoded/tx
-        └► 写失败（EAGAIN）回队尾，队列满记录丢帧
+V4L2 camera (MJPEG / YUYV)
+  +--> video_task: mmap pointers enter ring --> advance produce cursor
+        +--> ai_task: consume infer cursor --> N parallel RKNN workers --> RGB slots
+              +--> NMS metadata result queue
+              |     +--> composer: latest result + bounding boxes --> display cursor
+              |            +--> /video/mjpeg_ai: annotated MJPEG
+              |            +--> rec_task: consume NV12 through encode cursor
+              |                   +--> H.264 encoder --> MP4 (avc1) recording
+              |                         +--> /video/stream: fragmented MP4 for MSE
+              +--> raw capture path --> /video/mjpeg (independent of inference)
 ```
 
-- 队列：每接口独立 rxq / txq（原始 `canfd_frame`），DBC 解码与原始帧缓存相互独立
-- 故障恢复：读错误自动重建 socket 并重新绑定过滤器；接口断开不阻塞整体启动
+- **Frame ring:** 32 slots with raw / RGB / NV12 / JPEG buffers and monotonically advancing produce / infer / display / encode cursors. Buffers are allocated as needed and returned to stage-specific pools when consumers release them. Ownership is transferred by pointer where supported.
+- **Capture:** after V4L2 DQBUF, the mmap buffer pointer enters a ring slot; QBUF is delayed until consumers release it. A full ring increments `capture_dropped`. Capture prefers MJPEG and falls back to YUYV. Resolution comes from `video_width` / `video_height`.
+- **Inference:** `ai_task` waits for the produce cursor, pins the raw slot while workers use it, and decodes to RGB. RGB output follows the display path; NMS output contains metadata only, including class names, confidence, and bounding-box coordinates.
+- **Display:** the event-driven composer drains its result queue and keeps the latest result, incrementing `render_skipped` for discarded results. It finds the matching RGB slot by sequence, draws overlays, and writes NV12 / JPEG buffers. Each MJPEG connection has an independent streaming thread that copies the latest JPEG; slow clients do not pin frame slots or block other clients.
+- **Encoding:** `rec_task` takes ownership of displayed NV12 buffers and returns them to the pool after encoding. Frames with a resolution different from the encoder are skipped and counted in `encode_skipped`.
+- **Mandatory AI:** missing models or an unavailable NPU cause startup failure. The annotated stream does not substitute raw frames when AI is unavailable. A running AI pipeline that produces no new annotated frame for more than one second sets a fatal condition and exits with status 1; systemd `Restart=on-failure` restarts the service.
+- **H.264 fan-out:** the live stream reuses recording encoder output. A client joins at an IDR frame and receives an `ftyp` / `moov` initialization segment followed by `moof` / `mdat` fragments. Recording-session changes require a new initialization segment and reconnect the client.
 
-CAN 数据注入接口（写数据到总线）：
-
-| 接口 | 说明 |
+| Endpoint | Description |
 | --- | --- |
-| `POST /api/can/send` | 注入一帧 CAN/CAN FD 报文（body：`ifname=can0&id=0x123&data=01 02 03`，支持 0x 前缀、空格/逗号/连字符分隔） |
-| `POST /api/can/toggle` | 控制接口 up / down（body：`ifname=can0&action=up`） |
-| `POST /api/can/dbc` | 上传 DBC 数据库（`?ifname=can0`，body 为 DBC 文本，校验通过后热加载并落盘） |
-| `POST /api/config` | 写入配置（body 带 `target` 指定模块：`can` / `net` / `video` / `ai`，只应用该模块参数并重启对应模块；缺省为全量） |
+| `GET /video/stream` | H.264 fragmented MP4 live stream for browser MSE. An active encoded session and AI output are required; an unavailable session returns 503. |
+| `GET /video/mjpeg` | Raw MJPEG stream for a browser `<img src>` or ffplay. |
+| `GET /video/mjpeg_ai` | MJPEG stream with live AI detection overlays. |
+| `GET /api/video/caps` | Camera formats, resolutions, and frame-rate capabilities. |
+| `GET /api/video/codeccaps` | Encoder backend resolution and frame-rate capabilities. |
+| `GET /api/video/stats` | Frame-ring sequences, per-stage drop counters, and buffer-pool usage. |
+| `GET /api/video/devices` | Available video devices. |
 
-CAN 数据提取接口（从总线读数据）：
+### Browser Playback and Stall Diagnostics
 
-| 接口 | 说明 |
+The dashboard uses H.264 fMP4 / MSE when supported, with MJPEG as the compatibility path. Playback aims to keep up with live video while avoiding unnecessary reconnects; actual delay depends on capture, inference, encoding, transport, and browser decoding.
+
+- The fMP4 writer advances a continuous decode timeline using the previous sample's duration. Fragment decode times and sample durations stay consistent, avoiding gaps between browser buffer ranges.
+- The browser serializes SourceBuffer mutations. Each append or eviction waits for `updateend` before the next operation, so later network chunks cannot overtake earlier MP4 bytes.
+- Session generations prevent callbacks from an old aborted stream from stopping a replacement stream. Errors and transport stalls trigger controlled reconnection.
+- Already played data is periodically evicted from the MSE buffer. Ordinary playback lag is corrected within the available buffer instead of immediately reconnecting to another GOP.
+- At connection time, the server sends the historical GOP up to the newest encoded frame immediately, in decode order. Live pacing is anchored to that newest frame, rather than replaying the old GOP in real time and permanently retaining its age as delay.
+- The player primes near the live edge with approximately 200 ms of buffered media. It catches larger backlogs by seeking within the current buffer and drains smaller backlogs using slight playback acceleration. The target is a buffer setting, not a guaranteed end-to-end latency.
+- The MJPEG path uses one fetch connection for both receipt counting and display. It retains only the latest pending frame while image decoding is busy, and keeps incomplete JPEG frames across network chunks.
+- The FPS badge reports displayed frames when browser playback-quality counters are available; its tooltip distinguishes displayed FPS from received FPS. Receipt counts alone do not prove that the browser is displaying smoothly.
+
+The status line below the video shows received FPS, buffer lead, estimated stream delay, and decoder frame drops, without opening developer tools. The stream-delay estimate measures from the encoder-output timestamp to the current browser playback position. It excludes camera capture, AI processing, and encoding time, and is approximate because it uses the response age plus local elapsed time.
+
+For additional details, read the current browser-side state in the browser developer console:
+
+```javascript
+window.getGatewayVideoDiagnostics()
+```
+
+| Diagnostic | Meaning |
 | --- | --- |
-| `GET /api/can` | CAN 接口状态（up / 波特率 / FD） |
-| `GET /api/can/ifaces` | 系统 CAN 接口枚举（含 FD 能力） |
-| `GET /api/can/frames` | 最近原始接收帧（id / len / data / 标志） |
-| `GET /api/can/decoded` | 接收方向 DBC 解码信号记录 |
-| `GET /api/can/decoded/tx` | 发送方向 DBC 解码信号记录 |
+| `transport` | Current transport: `H.264/MSE`, `MJPEG`, or `idle`. |
+| `receivedFps` / `displayedFps` | Received stream rate and displayed-frame rate. MSE receipt counting uses fragment signatures as an approximation. |
+| `bufferAheadSeconds` | Buffered media ahead of the current playback position; this is a playback-buffer measure, not a measurement of end-to-end camera latency. |
+| `estimatedStreamDelayMs` | Approximate encoder-output-to-playback delay, or `null` when the stream-age header is unavailable. It excludes capture, inference, and encoding time. |
+| `paused` / `seeking` / `currentTime` / `buffered` | Playback state, position, and available media ranges. |
+| `playbackRate` / `decoderError` | Current catch-up rate and any HTML media error code. |
+| `readyState` | The video element's HTML media readiness state. |
+| `totalVideoFrames` / `droppedVideoFrames` | Browser playback-quality counters, when supported. |
+| `starts` / `reconnects` / `catchups` | MSE session starts, error-driven reconnects, and in-buffer catch-up operations. |
+| `appendErrors` / `lastError` | SourceBuffer errors and the latest recorded MSE error. |
 
-### TCP 数据流向
+Compare these values with `GET /api/video/stats` over the same time interval. Growing capture or render drop counts point to an upstream stage; a healthy received rate with low displayed FPS or increasing browser drop counts points to playback work. Buffer growth with adequate incoming data indicates that playback is falling behind. Use service logs to correlate AI stalls, encoder errors, or session rotation.
+
+### CAN
 
 ```text
-监听：tcp_task 监听配置端口（tcp_port，可选绑定网卡 tcp_bind）
-        ├► accept 新连接 ─► 注册 epoll（每客户端独立读写状态）
-接收：客户端数据 recv 读取（当前版本读取后丢弃，不注入 CAN 总线）
-发送：业务线程压入 txq（tcp_tx_packet） ─► eventfd 唤醒 tcp_task ─► 写客户端 socket
-        └► 支持定向发送（client_idx）与广播（client_idx < 0）；慢客户端由每客户端 wbuf 暂存
+RX: SocketCAN frame --> can_recv_task (nonblocking epoll)
+       +--> raw rxq for application consumers
+       +--> http_can_record_rx --> /api/can/frames (latest 32 frames)
+       +--> receive-side DBC decoding --> /api/can/decoded
+
+TX: can_tx_frame() --> txq --> eventfd wakes can_send_task --> drain into socket
+       +--> transmit-side DBC decoding --> /api/can/decoded/tx
+       +--> EAGAIN: requeue; a full queue increments the drop count
 ```
 
-- TCP 服务面向外部客户端：连接数上限 `max_clients`（默认 16），非阻塞 + epoll 管理，部分写由 wbuf 续发
-- 发送链路（TX 队列 + eventfd + 广播/定向分发）已就绪，供后续业务注入（如 CAN 帧转发到 TCP 客户端）；当前版本 TCP 接收方向不转发数据
+- Each interface has independent rxq / txq queues of raw `canfd_frame` values. DBC decoding and the raw-frame cache are independent.
+- Read failures rebuild the socket and reapply filters. A disconnected interface does not block the entire application from starting.
 
-### 系统监控接口
+Data injection endpoints:
 
-`GET /api/system` 返回 CPU / 内存 / 磁盘 / 温度 / 网络速度 / NPU / GPU 等实时数据：
-
-| 字段 | 说明 |
+| Endpoint | Description |
 | --- | --- |
-| `cpu_cores` | 每个 CPU 核心的累计使用率（数组，长度 = 真实核心数） |
-| `npu_count` / `npu_cores` | NPU 核心数及各核负载（%，-1 表示缺失）；核数由内核 `debugfs` 实际解析，自动匹配 RK3588 三核 / RK3576 双核 / 单核 |
-| `gpu` | GPU 负载百分比（%）。**仅 RK3588 等暴露 `load` 的驱动可用**，其余平台为 -1 |
-| `gpu_freq` | GPU 当前运行频率（MHz）。当驱动未暴露 `load` 时（如 RK3576 / RK356x），以此作为 GPU 卡片的真实指标回退显示 |
+| `POST /api/can/send` | Transmit one CAN / CAN FD frame. Example body: `ifname=can0&id=0x123&data=01 02 03`. Accepts a `0x` prefix and space, comma, or hyphen separators. |
+| `POST /api/can/toggle` | Set an interface up or down. Example body: `ifname=can0&action=up`. |
+| `POST /api/can/dbc` | Upload DBC text with `?ifname=can0`; validate, reload, and save it. |
+| `POST /api/config` | Apply configuration for `target=can`, `net`, `ip`, `video`, or `ai`, restarting the affected module where needed. An omitted target applies all supported groups. |
 
-## 平台适配（Rockchip 全系 RKNPU）
+Data extraction endpoints:
 
-本项目的 NPU 调度与硬件展示均**按平台实际情况自适应**，无需针对具体 SoC 改代码：
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/can` | CAN interface state, bitrate, and FD status. |
+| `GET /api/can/ifaces` | Enumerate system CAN interfaces and FD support. |
+| `GET /api/can/frames` | Recent raw received frames: ID, length, data, and flags. |
+| `GET /api/can/decoded` | Recently decoded receive-side signals. |
+| `GET /api/can/decoded/tx` | Recently decoded transmit-side signals. |
 
-- **NPU 核掩码自动适配**：`source/ai/rknn_yolo.c` 启动时读 `/proc/device-tree/compatible` 推断 NPU 核心数（RK3588/3588S=3、RK3576/3576M=2、RK356x / RV1126 / RV110x / RK3399PRO / RK1808=1，未知安全回退单核），仅使用 ≤ 合法上限的单核掩码（`1u << (idx % cores)`），根除 `rknn_set_core_mask: unavailable core mask` 运行时报错，并保留多核分摊。
-- **AI 推理线程数按 NPU 核数自适应**：`ai_threads` 配置项会被取整为「NPU 核数的整数倍」（范围 `cores~15`，默认每核 1 个），各核等量分配 worker；不再写死为 3 的倍数（旧版仅适配 RK3588 三核）。
-- **前端 NPU / CPU 核格自适应**：仪表盘按 `npu_count` / `cpu_cores.length` 动态生成核格，数量随平台变化、尺寸随数量缩放（核少单排大格、核多自动换行）。
-- **GPU 监控自适应**：见上 `gpu` / `gpu_freq` 说明。
-- **模型按平台同步**：`build.sh` 在编译前自动按平台（`/proc/device-tree/compatible` 或 `-P` 指定）选取/转换对应 RKNN 模型（如 `config/models/rk3576/yolo26.rknn`），详见下文「构建」。
+### TCP
 
-## 目录结构
+```text
+Listen: tcp_task --> configured tcp_port, optionally bound to tcp_bind
+          +--> accept client --> epoll registration and per-client I/O state
+Receive: recv client data --> currently discarded; not injected into CAN
+Transmit: tcp_tx_packet() --> txq --> eventfd wakes tcp_task --> client socket
+            +--> selected client_idx or broadcast when client_idx < 0
+            +--> per-client wbuf retains unsent bytes for slow clients
+```
+
+- The external TCP server uses nonblocking sockets and epoll. `max_clients` defaults to 16; a per-client write buffer handles partial writes.
+- The TX queue, eventfd notification, and targeted / broadcast dispatch are available for application integration, such as CAN-to-TCP forwarding. The current TCP receive path does not forward data to the CAN bus.
+
+### System Monitoring
+
+`GET /api/system` returns live CPU, memory, disk, temperature, network, NPU, and GPU data:
+
+| Field | Description |
+| --- | --- |
+| `cpu_cores` | Per-core cumulative CPU accounting values; the array length is the actual core count, and the dashboard calculates utilization from successive samples. |
+| `npu_count` / `npu_cores` | NPU core count and per-core load in percent; -1 indicates an unavailable metric. Core information is derived from kernel `debugfs` data for three-core, two-core, and single-core platforms. |
+| `gpu` | GPU utilization in percent when the driver exposes `load`; otherwise -1. |
+| `gpu_freq` | Current GPU frequency in MHz, used as the displayed metric when utilization is unavailable. |
+
+## Rockchip RKNPU Platform Adaptation
+
+NPU scheduling and hardware displays adapt to the actual platform:
+
+- **NPU masks:** at startup, `source/ai/rknn_yolo.c` reads `/proc/device-tree/compatible`. RK3588 / RK3588S use three cores, RK3576 / RK3576M use two, and supported RK356x / RV1126 / RV110x / RK3399PRO / RK1808 devices use one. Unknown platforms fall back to one core. Workers use `1u << (idx % cores)` to select legal single-core masks and distribute work.
+- **Inference workers:** `ai_threads` is rounded to a multiple of the NPU core count, from `cores` to 15, with one worker per core by default. Each core receives the same number of workers.
+- **CPU / NPU indicators:** the dashboard uses `cpu_cores.length` / `npu_count` to build and size core indicators dynamically, wrapping them when needed.
+- **GPU metrics:** use `gpu` when available and `gpu_freq` otherwise, as described above.
+- **Model selection:** before compilation, `build.sh` selects or converts a model for the platform detected through `/proc/device-tree/compatible`, or explicitly selected with `-P`. For example, a cached RK3576 model is stored at `config/models/rk3576/yolo26.rknn`.
+
+## Directory Layout
 
 ```text
 rockchip-smart-gateway/
 ├── CMakeLists.txt
 ├── README.md
-├── rockchip-smart-gateway.service  # systemd 服务单元
-├── include/                          # 头文件
+├── rockchip-smart-gateway.service  # systemd service unit
+├── include/                       # headers
 │   ├── core/
-│   │   ├── common.h                  # 应用上下文与公共工具
-│   │   ├── config.h                  # 配置结构
-│   │   ├── log.h                     # 日志接口
-│   │   ├── ring.h                    # 无锁环形队列
-│   │   ├── epoll_util.h              # epoll 辅助工具
-│   │   └── version.h                 # 版本宏（CMake 生成，gitignore）
+│   │   ├── common.h               # application context and shared utilities
+│   │   ├── config.h               # configuration structures
+│   │   ├── log.h                  # logging API
+│   │   ├── ring.h                 # lock-free queue
+│   │   ├── epoll_util.h           # epoll helpers
+│   │   └── version.h              # generated version macros; gitignored
 │   ├── can/
-│   │   ├── can_queue.h               # CAN 收发队列
-│   │   ├── can_socket.h              # SocketCAN 接口
-│   │   └── dbc_parser.h              # DBC 解析接口
+│   │   ├── can_queue.h            # CAN RX / TX queues
+│   │   ├── can_socket.h           # SocketCAN API
+│   │   └── dbc_parser.h           # DBC parser API
 │   ├── tcp/
-│   │   ├── tcp_server.h              # TCP 服务接口
-│   │   └── tcp_queue.h               # TCP 发送队列
+│   │   ├── tcp_server.h           # TCP server API
+│   │   └── tcp_queue.h            # TCP TX queue
 │   ├── http/
-│   │   ├── http.h                    # HTTP 服务接口
-│   │   ├── http_internal.h           # HTTP 内部定义
-│   │   ├── http_util.h               # HTTP 表单/URL 解析工具
-│   │   ├── http_api_can.h            # CAN API 接口声明
-│   │   └── http_api_dbc.h            # DBC API 接口声明
+│   │   ├── http.h                 # HTTP server API
+│   │   ├── http_internal.h        # internal definitions
+│   │   ├── http_util.h            # HTTP form / URL helpers
+│   │   ├── http_api_can.h         # CAN API declarations
+│   │   └── http_api_dbc.h         # DBC API declarations
 │   ├── video/
-│   │   ├── video_stream.h            # V4L2 视频流接口
-│   │   ├── frame_ring.h              # 视频帧环形队列（四游标零拷贝 + 分阶段丢帧计数）
-│   │   ├── video_rec.h               # 网络录像模块接口
-│   │   ├── h264_encoder.h            # Rockchip 硬件 H.264 编码器封装接口（V4L2 M2M rkvenc）
-│   │   └── rec_mp4.h                 # MP4(avc1) 封装器接口
+│   │   ├── video_stream.h         # V4L2 streaming API
+│   │   ├── frame_ring.h           # four-cursor frame ring and stage counters
+│   │   ├── video_rec.h            # recording API
+│   │   ├── h264_encoder.h         # software / Rockchip H.264 encoder wrapper
+│   │   ├── h264_stream.h          # shared H.264 fan-out and fMP4 stream API
+│   │   └── rec_mp4.h              # MP4 (avc1) muxer API
 │   ├── ai/
-│   │   ├── rknn_yolo.h               # RKNN YOLO 框架入口（含 npu_core_count 声明）
-│   │   ├── yolo_types.h              # 检测结果结构定义
-│   │   ├── yolo_image.h              # 图像处理接口（JPEG / YUYV / letterbox）
-│   │   ├── yolo_postprocess.h        # 单输出后处理接口
-│   │   └── yolo_draw.h               # 画框接口
+│   │   ├── rknn_yolo.h            # RKNN YOLO entry point and npu_core_count
+│   │   ├── yolo_types.h           # detection result structures
+│   │   ├── yolo_image.h           # JPEG / YUYV / letterbox processing
+│   │   ├── yolo_postprocess.h     # single-output model postprocessing
+│   │   └── yolo_draw.h            # detection overlay API
 │   └── watchdog/
-│       └── watchdog.h                # 看门狗接口
-├── source/                           # 源代码
+│       └── watchdog.h             # watchdog API
+├── source/                        # source code
 │   ├── core/      main.c / config.c / log.c
 │   ├── can/       can_queue.c / can_socket.c / dbc_parser.c
 │   ├── tcp/       tcp_server.c / tcp_queue.c
-│   ├── http/      http.c / http_util.c / http_api_*.c（can/dbc/config/network/system/video/rec/ai/logs/reboot）
-│   ├── video/     video_stream.c / frame_ring.c / video_rec.c / h264_encoder.c / rec_mp4.c
+│   ├── http/      http.c / http_util.c / http_api_*.c
+│   │              # can / dbc / config / network / system / video / rec / ai /
+│   │              # logs / reboot / cpufreq / nettest
+│   ├── video/     video_stream.c / frame_ring.c / video_rec.c / h264_encoder.c /
+│   │              # h264_stream.c / rec_mp4.c
 │   ├── ai/        rknn_yolo.c / yolo_image.c / yolo_postprocess.c / yolo_draw.cpp
 │   └── watchdog/  watchdog.c
 ├── tests/        frame_ring_test.c
 ├── html/         index.html / config.html / dbc.html / logs.html + css/ + js/
-├── config/       运行时配置（config.txt 为设备专属，已 gitignore；另含 can0.dbc / can1.dbc 模板）
-├── docs/         文档与截图
-├── scripts/     build.sh / deploy.sh
-├── bin/         可执行输出（构建生成，gitignore）
-├── build/       CMake 构建目录（构建生成，gitignore）
-├── logs/        运行日志（运行生成，gitignore）
-├── recordings/  网络录像输出（运行生成，gitignore）
+├── config/       runtime configuration, RKNN model, labels, and DBC templates
+│                 # config.txt is device-specific and gitignored
+├── docs/         documentation and screenshots
+├── scripts/      build.sh / deploy.sh
+├── bin/          generated executable; gitignored
+├── build/        generated CMake build directory; gitignored
+├── logs/         runtime logs; gitignored
+├── recordings/   runtime recording output; gitignored
 └── .gitignore
 ```
 
-## 依赖要求
+## Requirements
 
-- gcc / g++（C11 / C++11，检测框渲染模块为 C++ 并直接调用 OpenCV）
-- cmake ≥ 3.10
-- libsystemd
-- libnl-3 / libnl-route-3
-- librknnrt（板载 RKNN 运行时，模型由 rknn-toolkit2 转换，支持板端或 PC）
-- libjpeg（JPEG 解码与 AI 画框用）
-- OpenCV 4（core + imgproc，检测框画框与标签文字渲染）
-- Rockchip 硬件编码器 `/dev/video-enc0`（rkvenc，Linux V4L2 M2M 驱动，录像 H.264 编码用）
-- Linux SocketCAN 支持
+- gcc / g++ with C11 / C++11 support. Detection overlay rendering uses C++ and OpenCV.
+- CMake >= 3.10.
+- libsystemd.
+- libnl-3 / libnl-route-3.
+- librknnrt for the board's RKNN runtime. Models are converted with rknn-toolkit2 on a supported board or PC.
+- libjpeg for JPEG decoding and AI overlays.
+- OpenCV 4 core + imgproc for bounding boxes and label text.
+- Linux SocketCAN support.
+- An available H.264 encoder backend: FFmpeg libx264 for software encoding, or a compatible Rockchip hardware backend. The V4L2 M2M rkvenc path uses an encoder device such as `/dev/video-enc0`; the optional FFmpeg backend can provide `h264_rkmpp`.
 
-安装示例：
+Example dependency installation:
 
 ```bash
 apt install build-essential cmake libsystemd-dev libnl-3-dev libnl-route-3-dev libjpeg62-turbo-dev libopencv-dev
 ```
 
-## 构建
+## Build
 
 ```bash
 cd /home/qianruo/rockchip-smart-gateway
-./scripts/build.sh            # Release（默认），自动辨识当前板卡 RKNPU 平台
+./scripts/build.sh            # Release by default; detect the board's RKNPU platform
 ./scripts/build.sh -D         # Debug
-./scripts/build.sh -P rk3576  # 显式指定目标平台（覆盖自动辨识，如交叉部署场景）
-./scripts/build.sh -C         # 清理构建产物与 logs
+./scripts/build.sh -P rk3576  # Explicit target platform, for example for cross-deployment
+./scripts/build.sh -C         # Remove build output and logs
 ```
 
-`build.sh` 构建前会自动检查依赖（工具链 + 开发库 + librknnrt），缺失时打印具体缺项与安装命令并中止。
+`build.sh` checks the toolchain, development libraries, and librknnrt before building. Missing dependencies are reported with installation commands, and the build stops.
 
-**平台辨识与模型同步**（RKNPU 全系兼容）：
-- 平台默认从 `/proc/device-tree/compatible` 自动辨识（如 `rockchip,rk3576` → `rk3576`），`-P` 可显式覆盖
-- 编译前自动同步 `config/yolo26.rknn`：优先部署 `config/models/<平台>/yolo26.rknn`；运行模型平台不匹配或缺失时调用 ultralytics 官方 CLI（`yolo export model=<权重> format=rknn name=<平台>`）在板端自动转换，转换产物按平台存入 `config/models/` 复用
+Platform detection and model synchronization:
 
-构建产物：`./bin/rockchip-smart-gateway`
+- The default platform is derived from `/proc/device-tree/compatible`, for example `rockchip,rk3576` -> `rk3576`. Use `-P` to override it.
+- Before compilation, synchronize `config/yolo26.rknn`. Prefer a cached model at `config/models/<platform>/yolo26.rknn`. If the active model is missing or targets another platform, invoke the official Ultralytics CLI, `yolo export model=<weights> format=rknn name=<platform>`, to convert it on the board. Cache the converted model under `config/models/` for reuse.
 
-版本信息由 CMake 在配置阶段生成到 `include/core/version.h`（含 `APP_NAME` / `APP_VERSION` / `APP_GIT_COMMIT` / `APP_GIT_BRANCH` / `APP_GIT_DIRTY` / `APP_BUILD_TYPE` / `APP_BUILD_DATE`），该文件为生成物，已加入 `.gitignore`。
+Build output: `./bin/rockchip-smart-gateway`.
 
-## 运行方式
+At configuration time, CMake generates `include/core/version.h` with `APP_NAME`, `APP_VERSION`, `APP_GIT_COMMIT`, `APP_GIT_BRANCH`, `APP_GIT_DIRTY`, `APP_BUILD_TYPE`, and `APP_BUILD_DATE`. This generated file is listed in `.gitignore`.
+
+## Run
 
 ```bash
 cd /home/qianruo/rockchip-smart-gateway
 ./bin/rockchip-smart-gateway
 ```
 
-> 请在项目根目录运行，确保 `config/`、`html/` 和 `logs/` 目录可用。
+Run from the project root so that `config/`, `html/`, and `logs/` are available.
 
-## systemd 部署
+## systemd Deployment
 
-前置条件：已通过 `./scripts/build.sh` 生成可执行文件。
+First build the executable with `./scripts/build.sh`.
 
 ```bash
-sudo ./scripts/deploy.sh        # 安装并启动（默认动作，等同 -i）
-sudo ./scripts/deploy.sh -i     # 安装并启动
-sudo ./scripts/deploy.sh -u     # 卸载（停止服务、删除 systemd 文件与安装目录）
-sudo ./scripts/deploy.sh -r     # 重装（卸载后重新安装）
-sudo ./scripts/deploy.sh -h     # 查看帮助
+sudo ./scripts/deploy.sh        # Install and start; the default action, equivalent to -i
+sudo ./scripts/deploy.sh -i     # Install and start
+sudo ./scripts/deploy.sh -u     # Uninstall: stop service and remove unit and installation directory
+sudo ./scripts/deploy.sh -r     # Reinstall: uninstall, then install
+sudo ./scripts/deploy.sh -h     # Show help
 ```
 
-`deploy.sh` 需 root 权限，安装目录为 `/opt/rockchip-smart-gateway/`，部署内容如下：
+`deploy.sh` requires root privileges and installs into `/opt/rockchip-smart-gateway/`:
 
-| 源 | 目标 |
+| Source | Destination |
 | --- | --- |
-| `bin/<可执行文件>` | `/opt/.../bin/` |
+| `bin/<executable>` | `/opt/.../bin/` |
 | `html/` | `/opt/.../html/` |
-| `config/`（含 config.txt 与 DBC 模板） | `/opt/.../config/`（部署前先回拉设备端 config.txt，避免网页修改丢失） |
-| systemd 服务单元 | `/etc/systemd/system/` |
+| `config/`, including config.txt and DBC templates | `/opt/.../config/`; first pull back the deployed config.txt to preserve Web configuration changes. |
+| systemd service unit | `/etc/systemd/system/` |
 
-> 注：`config/config.txt` 为设备专属运行配置（如 `video_device` 因板卡而异），已加入 `.gitignore`；`include/core/version.h` 为编译生成物，同样 gitignore。二者均不纳入版本库，避免每次构建/部署产生改动噪音。
+`config/config.txt` is device-specific runtime configuration, including the camera device path. It is gitignored, as is the generated `include/core/version.h`, so normal configuration and build activity do not add these files to version control.
 
-服务名称：`rockchip-smart-gateway`
+Service name: `rockchip-smart-gateway`.
 
-查看服务状态：
+Inspect service state and logs:
 
 ```bash
 systemctl status rockchip-smart-gateway
 journalctl -u rockchip-smart-gateway -f
 ```
 
-部署要点：
+Service settings include:
 
-- `Type=notify`
-- `WatchdogSec=10`
-- `Restart=on-failure`（失败自动重启，间隔 5s）
-- `AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW`
-- `ProtectSystem=strict`（文件系统只读，仅 `config/`、`logs/`、`recordings/` 可写，`html/` 只读）
+- `Type=notify`.
+- `WatchdogSec=10`.
+- `Restart=on-failure` with a five-second restart delay.
+- `AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW`.
+- `ProtectSystem=strict`, with explicit writable installation paths for `config/`, `logs/`, and `recordings/`; `html/` remains read-only.
 
-## 配置说明
+## Configuration
 
-`config/config.txt` 由 Web 页面保存，并在运行时生效。
+Web configuration changes are saved to `config/config.txt` and applied to the running application.
 
-| 键 | 格式 | 说明 |
+| Key | Format | Description |
 | --- | --- | --- |
-| `can_ifname` | `<name>` | CAN 接口名称，可重复；未提供时自动从系统枚举实际存在的 CAN 接口 |
-| `can_bitrate` | `<name> <bps>` | 比特率，默认 500000 |
-| `can_dbitrate` | `<name> <bps>` | FD 数据比特率，默认 2000000 |
-| `can_fd` | `<name> on\|off` | CAN FD 开关 |
-| `can_up` | `<name> on\|off` | 启动时 bring up |
-| `can_filter` | `<name> <id> <mask>` | 按 CAN 通道设置接收过滤器（16 进制 id / mask，可重复添加） |
-| `tcp_port` | `<port>` | TCP 端口，默认 6666 |
-| `max_clients` | `<n>` | 最大客户端数，默认 16 |
-| `tcp_bind` | `<ifname>` | TCP 监听绑定网卡名，留空表示绑定所有网卡（`INADDR_ANY`） |
-| `video_device` | `<path>` | 视频设备，默认 `/dev/video0` |
-| `video_width` / `video_height` | `<n>` | 分辨率，默认 640×480 |
-| `video_fps` | `<n>` | 期望帧率（1~120，V4L2 S_PARM 设置驱动帧间隔）；0 = 驱动默认 |
-| `can_dbc` | `<name> <path>` | 按 CAN 通道配置 DBC 数据库文件路径，留空则不启用该通道信号解码 |
-| `ai_model` | `<path>` | YOLO26 官方单输出 `.rknn` 模型路径，默认 `config/yolo26.rknn`（AI 推理为必要流程，始终启用；模型缺失/NPU 失败时启动直接失败退出） |
-| `ai_names` | `<path>` | 类别标签文件路径（COCO 格式，每行一个类名），默认 `config/coco.names` |
-| `ai_input_size` | `<n>` | 模型输入边长（32~2048），默认 640 |
-| `ai_conf` | `<n>` | 置信度阈值百分比（1~100），默认 25（0.25） |
-| `ai_nms` | `<n>` | NMS IoU 阈值百分比（1~100），默认 45（0.45） |
-| `ai_interval_ms` | `<n>` | 推理节流间隔（10~5000ms），默认 10（每帧推理） |
-| `ai_threads` | `<n>` | 推理工作线程数，**自动取整为 NPU 核数的整数倍（范围 `cores`~15，默认每核 1 个）**；每线程独立 rknn context，worker `i` 按 `i % 实际NPU核数` 绑定 NPU 核。配置页下拉框随平台 NPU 核数动态生成（如双核平台为 2/4/6/8/10/12/14，各标注「每核 N 个」） |
+| `can_ifname` | `<name>` | CAN interface name; repeatable. When no configuration file exists, discover the system's actual CAN interfaces. |
+| `can_bitrate` | `<name> <bps>` | Bitrate; default 500000. |
+| `can_dbitrate` | `<name> <bps>` | CAN FD data bitrate; default 2000000. |
+| `can_fd` | `<name> on\|off` | Enable or disable CAN FD. |
+| `can_up` | `<name> on\|off` | Bring the interface up at startup. |
+| `can_filter` | `<name> <id> <mask>` | Receive filter with hexadecimal ID / mask; repeatable per interface. |
+| `tcp_port` | `<port>` | TCP port; default 6666. |
+| `max_clients` | `<n>` | Maximum TCP clients; default 16. |
+| `tcp_bind` | `<ifname>` | Bind TCP listening to this interface; empty means all interfaces (`INADDR_ANY`). |
+| `ip_ifname` | `<ifname>` | Interface whose IP configuration is managed; defaults to the selected TCP interface when applicable. |
+| `ip_mode` | `static` / `dhcp` / empty | Static address, DHCP, or unmanaged mode. |
+| `ip_addr` / `ip_mask` / `ip_gw` | `<IPv4-address>` | Static IPv4 address, subnet mask, and optional gateway. |
+| `video_device` | `<path>` | Video device; default `/dev/video0`. |
+| `video_width` / `video_height` | `<n>` | Resolution; default 640 x 480. |
+| `video_fps` | `<n>` | Requested frame rate, 1-120, applied using V4L2 S_PARM; 0 uses the driver default. |
+| `video_codec` | `software` / `hardware` | H.264 encoder backend: libx264 or supported Rockchip hardware. The default is `software`; backend availability determines whether fallback is possible. |
+| `can_dbc` | `<name> <path>` | Per-interface DBC path; empty disables decoding for that interface. |
+| `ai_model` | `<path>` | Official YOLO26 single-output RKNN model; default `config/yolo26.rknn`. AI is mandatory; missing models or NPU initialization failure abort startup. |
+| `ai_names` | `<path>` | Class labels, one class name per line in COCO format; default `config/coco.names`. |
+| `ai_input_size` | `<n>` | Model input side length, 32-2048; default 640. |
+| `ai_conf` | `<n>` | Confidence threshold as an integer percentage, 1-100; default 25 (0.25). |
+| `ai_nms` | `<n>` | NMS IoU threshold as an integer percentage, 1-100; default 45 (0.45). |
+| `ai_interval_ms` | `<n>` | Inference interval, 10-5000 ms; default 10. |
+| `ai_threads` | `<n>` | Rounded to a multiple of the NPU core count, between `cores` and 15, with one worker per core by default. Each worker owns an RKNN context; worker `i` is bound by `i % cores`. The configuration dropdown adapts to the NPU, for example 2/4/6/8/10/12/14 workers on a two-core device, with a per-core count label. |
 
-未提供配置文件时，将从系统枚举实际存在的 CAN 接口（netlink 路由，`kind=="can"`）并套用默认参数；若系统无法枚举到接口，则回退到 `can0` / `can1`。
+Without a configuration file, defaults are applied to CAN interfaces discovered through netlink with `kind=="can"`. If no CAN interfaces are discovered, the application can run with zero CAN channels; it does not invent unavailable interfaces.
 
-### DBC 模板
+### DBC Templates
 
-`config/` 下提供两个 CAN 通道的 DBC 模板文件，可通过 `can_dbc <通道名> <路径>` 启用（或在 Web 配置页上传）：
+`config/` contains two CAN channel templates. Enable them with `can_dbc <interface> <path>`, or upload a DBC file through the Web configuration page:
 
-- `config/can0.dbc`：动力 / 电池类（`EngineData`、`BatteryStatus`）
-- `config/can1.dbc`：底盘 / 位置类（`Status` 含 Motorola 大端信号、`VehiclePos` 扩展帧）
+- `config/can0.dbc`: powertrain / battery examples, including `EngineData` and `BatteryStatus`.
+- `config/can1.dbc`: chassis / position examples, including a `Status` message with Motorola big-endian signals and an extended-ID `VehiclePos` message.
 
-> 解析器只识别 `BO_`（报文）与 `SG_`（信号）两类行，其余（含 `//` 注释）均忽略。ID 为十进制；扩展帧需在 29 位 ID 上置 bit31（如 `0x18FF50E5` → `2566869221`）。
+The parser recognizes `BO_` message lines and `SG_` signal lines. Other lines, including `//` comments, are ignored. IDs are decimal; extended-frame IDs set bit 31 on the 29-bit ID, for example `0x18FF50E5` -> `2566869221`.
 
-## Web 管理界面
+## Web Management
 
-服务默认监听 HTTP 端口 80，提供以下入口：
+The HTTP server listens on port 80 by default:
 
-- `/`：仪表盘（视频流下方实时显示客户端实测帧率徽标）
-  - **CPU 卡片**：总体使用率 + 逐核核格（数量/尺寸随平台自适应）
-  - **NPU 卡片**：逐核负载核格（`npu_count` 个，数量/尺寸随平台自适应）
-  - **GPU 卡片**：优先显示负载百分比；驱动未暴露 `load` 时显示当前运行频率（MHz）并标注「负载不可用」
-- `/dbc`：DBC 信号解析
-- `/config`：运行配置
-  - 视频卡：格式 / 分辨率 / 帧率合并为单一下拉框，按相机真实能力枚举（`/api/video/caps`），选择即保存并立即生效
-  - AI 卡：推理参数 2×2 网格排列（无启用开关——AI 为必要流程），与模型文件上传左右分栏；**「推理线程数」下拉框按平台 NPU 核数动态生成**（如双核平台为 2/4/6/8/10/12/14，各标注「每核 N 个」），保存时后端自动取整为核数整数倍
-  - CAN 卡：波特率 / DBC 上传 / CAN FD / FD 波特率一行配置，通道下拉框标注 FD 能力
-  - 网络卡：IP 模式（关闭 / 静态 / DHCP），仅「静态」模式显示 IP / 掩码 / 网关输入框
-  - 顶部「导出配置」：一键打包下载整个 config 目录（config.txt / DBC / 标签 / RKNN 模型），便于备份与移植
-- `/logs`：文件下载（日志 / 录像双 TAB）
+- `/`: dashboard, including live video, displayed FPS, CPU utilization and per-core indicators, per-core NPU load, GPU load or frequency, memory, disk, and network rates.
+- `/dbc`: receive-side and transmit-side DBC signal views.
+- `/config`: runtime configuration, including camera format / resolution / frame rate, encoder selection, AI parameters and uploads, CAN settings and DBC upload, network addressing, CPU frequency controls, network tests, and configuration export. Use each card's Save button to apply its settings.
+- `/logs`: file downloads with separate Logs and Recordings tabs.
+
+AI is required and has no disable switch. The inference controls and model uploads are arranged separately; the worker dropdown reflects the actual NPU core count. The CAN card displays bitrate, DBC, CAN FD, and FD bitrate controls, with FD capability shown in the channel selector. Static IP fields are visible only in static mode. Export Config packages the config directory, including configuration, DBC files, class labels, and the RKNN model.
+
+The language button switches between English and Chinese; in English mode it is labeled `ZH` and in Chinese mode it is labeled `EN`. Theme switching is independent of language.
+
+### Authentication
+
+The server uses HTTP Basic authentication against local Linux account credentials:
+
+- **User:** an existing local account with a valid password. Required for the dashboard (`/` and `/index.html`) and DBC pages (`/dbc` and `/dbc.html`).
+- **Administrator:** a valid local `root` account, or a valid local account belonging to the `sudo` group. Required for the configuration page, Logs page, protected downloads, and management writes listed below. A board with a locked root password can use its existing sudo-group administrator account.
+- **None:** the handler does not enforce authentication. This applies to the read-only API and video routes marked below; authenticating the dashboard page does not make all related API routes private.
+
+The frontend prompts for administrator credentials for protected requests and keeps its Basic credential value in session storage for the current browser session. Server-side authentication still checks every protected request.
 
 ### REST API
 
-| 方法 | 路径 | 认证 | 说明 |
+Authentication below follows the route definitions in `source/http/http.c`.
+
+| Method | Path | Authentication | Description |
 | --- | --- | --- | --- |
-| GET | `/api/system` | 无 | 系统监控数据（含 `cpu_cores` / `npu_count` / `npu_cores` / `gpu` / `gpu_freq` 等） |
-| GET | `/api/can` | 无 | CAN 接口状态 |
-| GET | `/api/can/ifaces` | 无 | 系统 CAN 接口枚举（含 FD 能力） |
-| GET | `/api/can/frames` | 无 | 最近原始接收帧 |
-| GET | `/api/can/decoded` | 无 | 接收方向 DBC 解码信号 |
-| GET | `/api/can/decoded/tx` | 无 | 发送方向 DBC 解码信号 |
-| POST | `/api/can/send` | 无 | 注入 CAN/CAN FD 报文 |
-| POST | `/api/can/toggle` | 无 | 控制接口 up/down |
-| POST | `/api/can/dbc` | 无 | 上传 DBC（热加载） |
-| POST | `/api/config` | 无 | 写入配置（`target` 指定模块） |
-| GET | `/api/video/caps` | 无 | 摄像头能力 |
-| GET | `/api/video/stats` | 无 | 环形队列分阶段计数器 |
-| GET | `/api/video/devices` | 无 | 可用视频设备 |
-| GET | `/video/mjpeg` | 无 | 原始 MJPEG 流 |
-| GET | `/video/mjpeg_ai` | 无 | AI 画框 MJPEG 流 |
-| GET | `/api/rec/list` / `GET /recfile/<日期/文件名>` / `GET /api/rec/pack` | 无 | 录像列表 / 单文件 / 打包下载 |
-| GET | `/api/logs` / `GET /logfile/<日期/文件名>` / `GET /logs/pack` | 无 | 日志查看 / 下载 / 打包 |
-| POST | `/api/rec/start` / `POST /api/rec/stop` | root | 录像控制（默认已自动开启） |
-| POST | `/api/reboot` / `POST /api/shutdown` | root | 设备控制 |
+| GET | `/api/system` | None | System monitoring, including `cpu_cores`, `npu_count`, `npu_cores`, `gpu`, and `gpu_freq`. |
+| GET | `/api/can` | None | CAN interface state. |
+| GET | `/api/can/ifaces` | None | CAN interface discovery and FD capabilities. |
+| GET | `/api/can/frames` | None | Recent raw received CAN frames. |
+| GET | `/api/can/decoded` | None | Receive-side decoded signals. |
+| GET | `/api/can/decoded/tx` | None | Transmit-side decoded signals. |
+| POST | `/api/can/send` | Administrator | Transmit a CAN / CAN FD frame. |
+| POST | `/api/can/toggle` | Administrator | Set a CAN interface up or down. |
+| POST | `/api/can/dbc` | Administrator | Upload and reload a DBC file. |
+| GET | `/api/config` | None | Read runtime configuration. |
+| POST | `/api/config` | Administrator | Write configuration for the selected `target`. |
+| GET | `/api/config/export` | Administrator | Download a config directory archive. |
+| POST | `/api/ai/upload` | Administrator | Upload an RKNN model or class labels. |
+| GET | `/api/network` | None | Network state. |
+| GET | `/api/network/ifaces` | None | Available network interfaces. |
+| POST | `/api/nettest` | Administrator | Start an asynchronous ping or download-speed test. |
+| GET | `/api/nettest/result?id=<id>` | None | Read an asynchronous test's status and result. |
+| GET | `/api/cpu_freq` | None | CPU frequency, available frequencies, and governors. |
+| POST | `/api/cpu_freq` | Administrator | Update CPU governor and frequency limits. |
+| GET | `/api/video/caps` | None | Camera capabilities. |
+| GET | `/api/video/codeccaps` | None | Encoder resolution and frame-rate capabilities. |
+| GET | `/api/video/stats` | None | Frame-ring per-stage counters. |
+| GET | `/api/video/devices` | None | Available video devices. |
+| GET | `/video/stream` | None | H.264 fragmented MP4 live stream for MSE. |
+| GET | `/video/mjpeg` | None | Raw MJPEG stream. |
+| GET | `/video/mjpeg_ai` | None | AI-annotated MJPEG stream. |
+| GET | `/api/rec/status` | None | Recording state and current file. |
+| GET | `/api/rec/list` | None | Recording list. |
+| GET | `/recfile/<date/filename>` | Administrator | Download an individual recording. |
+| GET | `/api/rec/pack` | Administrator | Download a recording archive. |
+| POST | `/api/rec/start` / `/api/rec/stop` | Administrator | Recording control; automatic recording is enabled by default. |
+| POST | `/api/rec/delete` | Administrator | Delete a recording; the active recording is protected. |
+| POST | `/api/rec/clear` | Administrator | Clear recordings while retaining the active file. |
+| GET | `/api/logs` | Administrator | List log files. |
+| GET | `/logfile/<date/filename>` | Administrator | Download an individual log. |
+| DELETE | `/logfile/<date/filename>` | Administrator | Delete a log. |
+| GET | `/logs/pack` | Administrator | Download a log archive. |
+| POST | `/api/logs/clear` | Administrator | Clear log files. |
+| GET or POST | `/api/reboot` / `/api/shutdown` | Administrator | Reboot or shut down the device. |
 
-## 许可
+## License
 
-GPL-3.0-or-later。
+GPL-3.0-or-later.

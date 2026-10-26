@@ -9,11 +9,13 @@ const prefix = source.slice(0, source.indexOf('  function barColor('));
 assert(prefix.includes('async function mseAppend('));
 const exposure = `
   globalThis.api = {
-    mseStart, mseStop, mseAppend, mseUpdate, mseCatchUp, mseFail,
+    mseStart, mseStop, mseAppend, mseUpdate, mseCatchUp, mseFail, mseWatchdog,
+    diagnostics: window.getGatewayVideoDiagnostics,
     streamStart, streamStop,
     setImage: function(value) { imgEl = value; },
     state: function() { return { mseRunning, mseGeneration, mseCancelUpdate,
       mseSb, mseMs, mseReader, mseAbort, mseLastTrim, mseLastFail, mseDiag,
+      msePrimed, mseClockAgeMs, mseClockAt,
       streamRunning, streamAbort, fpsCnt, shownCnt, imgBusy, pendingBlob }; }
   };
 })();`;
@@ -57,13 +59,14 @@ function makeHarness() {
   const timers = new Map();
   let now = 10000, timerId = 0;
   const sources = [], requests = [], revoked = [];
-  const video = {
+  const video = Object.assign(new Target(), {
     src: '', currentTime: 0, paused: false, seeking: false, readyState: 3,
+    playbackRate: 1, error: null,
     loadCalls: 0, playCalls: 0,
-    load() { this.loadCalls++; this.currentTime = 0; },
+    load() { this.loadCalls++; this.currentTime = 0; this.error = null; },
     play() { this.playCalls++; return Promise.resolve(); },
     removeAttribute(name) { if (name === 'src') this.src = ''; }
-  };
+  });
   class Buffer extends Target {
     constructor() { super(); this.updating = false; this.operations = []; this.ranges = []; }
     get buffered() {
@@ -116,14 +119,16 @@ function makeHarness() {
       }
       now = target; await flush();
     },
-    async start(chunks = []) {
+    async start(chunks = [], { open = true, ageHeader = null } = {}) {
       const reader = new Reader(); chunks.forEach(chunk => reader.push(chunk));
       const requestCount = requests.length;
       context.api.mseStart('/video/stream?test=' + requestCount);
       assert.equal(requests.length, requestCount + 1);
-      requests.at(-1).resolve({ ok: true, headers: { get: () => null }, body: { getReader: () => reader } });
+      requests.at(-1).resolve({ ok: true,
+        headers: { get: name => name === 'X-Stream-Age-Ms' ? ageHeader : null },
+        body: { getReader: () => reader } });
       await flush();
-      const media = sources.at(-1); media.open(); await flush();
+      const media = sources.at(-1); if (open) media.open(); await flush();
       return { reader, media, buffer: media.buffer, generation: context.api.state().mseGeneration };
     }
   };
@@ -192,7 +197,7 @@ test('buffer trim completes before next append and clears old media', async () =
 test('catch-up seeks near live edge without restarting or disconnecting', async () => {
   const h = makeHarness(); const s = await h.start(); s.buffer.ranges = [[5, 10]]; h.video.currentTime = 6;
   const generation = s.generation, loads = h.video.loadCalls;
-  h.api.mseCatchUp(); assert.equal(h.video.currentTime, 9.65);
+  h.api.mseCatchUp(); assert.equal(h.video.currentTime, 9.8);
   assert.equal(h.api.state().mseGeneration, generation); assert.equal(h.video.loadCalls, loads);
   assert.equal(s.reader.cancelled, 0); assert.equal(h.api.state().mseDiag.catchups, 1);
   h.api.mseStop(); await flush();
@@ -234,6 +239,98 @@ test('MJPEG frame larger than 64 KiB survives repeated network chunk boundaries'
   assert.equal(h.api.state().fpsCnt, 1); assert.match(image.src, /^blob:/);
   image.onload({ type: 'load' }); assert.equal(h.api.state().shownCnt, 1);
   h.api.streamStop(); await flush();
+});
+
+test('startup and subsequent GOP bursts seek to a 200 ms live buffer', async () => {
+  const h = makeHarness(); const s = await h.start();
+  s.buffer.ranges = [[0, 0.6]];
+  h.api.mseCatchUp();
+  assert.ok(Math.abs(h.video.currentTime - 0.4) < 0.00001);
+  assert.equal(h.api.state().msePrimed, true);
+  s.buffer.ranges = [[0, 1.6]];
+  h.api.mseCatchUp();
+  assert.ok(Math.abs(h.video.currentTime - 1.4) < 0.00001);
+  assert.equal(s.reader.cancelled, 0);
+  h.api.mseStop(); await flush();
+});
+
+test('small backlog is drained by gentle playback acceleration and resets at target', async () => {
+  const h = makeHarness(); const s = await h.start();
+  s.buffer.ranges = [[0, 0.4]]; h.api.mseCatchUp();
+  s.buffer.ranges = [[0, 0.6]]; h.video.currentTime = 0.2;
+  const before = h.api.state().mseDiag.catchups;
+  h.api.mseCatchUp();
+  assert.equal(h.video.playbackRate, 1.05);
+  assert.equal(h.video.currentTime, 0.2);
+  assert.equal(h.api.state().mseDiag.catchups, before);
+  h.video.currentTime = 0.42; h.api.mseCatchUp();
+  assert.equal(h.video.playbackRate, 1);
+  h.video.playbackRate = 1.05; h.api.mseStop();
+  assert.equal(h.video.playbackRate, 1); await flush();
+});
+
+test('stream-age header estimates delay using local elapsed time and playback position', async () => {
+  const h = makeHarness(); const s = await h.start([], { ageHeader: '1500' });
+  h.video.currentTime = 1.3; s.buffer.ranges = [[0, 1.5]];
+  assert.equal(h.api.diagnostics().estimatedStreamDelayMs, 200);
+  await h.advance(500); h.video.currentTime = 1.8;
+  assert.equal(h.api.diagnostics().estimatedStreamDelayMs, 200);
+  assert.ok(Math.abs(h.api.diagnostics().bufferAheadSeconds) < 0.00001);
+  assert.equal(h.api.diagnostics().paused, false);
+  h.api.mseStop(); await flush();
+  assert.equal(h.api.diagnostics().estimatedStreamDelayMs, null);
+});
+
+test('missing, malformed, negative and stale age headers do not invent latency', async () => {
+  for (const ageHeader of [null, 'bad', '-1', '30001']) {
+    const h = makeHarness(); await h.start([], { ageHeader });
+    assert.equal(h.api.diagnostics().estimatedStreamDelayMs, null);
+    h.api.mseStop(); await flush();
+  }
+});
+
+test('watchdog also recovers when response headers have never arrived', async () => {
+  const h = makeHarness(); h.api.mseStart('/no-response');
+  await h.advance(5001); h.api.mseWatchdog();
+  assert.equal(h.api.state().mseRunning, false);
+  assert.equal(h.api.state().mseDiag.reconnects, 1);
+  assert.equal(h.requests[0].options.signal.aborted, true);
+});
+
+test('watchdog recovers when MediaSource sourceopen never arrives', async () => {
+  const h = makeHarness(); const s = await h.start([], { open: false });
+  assert.equal(s.buffer, null);
+  await h.advance(5001); h.api.mseWatchdog();
+  assert.equal(h.api.state().mseRunning, false);
+  assert.equal(s.reader.cancelled, 1);
+  assert.equal(h.api.state().mseDiag.reconnects, 1);
+});
+
+test('decoder failure triggers one recovery and late empty error events are ignored', async () => {
+  const h = makeHarness(); const s = await h.start();
+  h.video.error = { code: 3 }; h.video.emit('error'); await flush();
+  assert.equal(h.api.state().mseRunning, false);
+  assert.equal(h.api.state().mseDiag.reconnects, 1);
+  assert.match(h.api.state().mseDiag.lastError, /decoder error 3/);
+  assert.equal(s.reader.cancelled, 1);
+  await h.advance(1001); await h.start();
+  h.video.error = null; h.video.emit('error');
+  assert.equal(h.api.state().mseRunning, true);
+  assert.equal(h.api.state().mseDiag.reconnects, 1);
+  h.api.mseStop(); await flush();
+});
+
+test('oversized incomplete MJPEG input aborts the old fetch before reconnecting', async () => {
+  const h = makeHarness(); h.api.setImage({ src: '' });
+  const reader = new Reader(); h.api.streamStart('/video/mjpeg_ai');
+  const request = h.requests.at(-1);
+  request.resolve({ ok: true, body: { getReader: () => reader } }); await flush();
+  const oversized = new Uint8Array(16 * 1024 * 1024 + 1);
+  oversized[0] = 0xff; oversized[1] = 0xd8;
+  reader.push(oversized); await flush();
+  assert.equal(request.options.signal.aborted, true);
+  assert.equal(h.api.state().streamRunning, false);
+  assert.equal(h.api.state().streamAbort, null);
 });
 
 (async () => {
