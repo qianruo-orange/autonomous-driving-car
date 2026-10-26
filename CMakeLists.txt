@@ -167,3 +167,10 @@ target_compile_options(camera_focus_test PRIVATE -UNDEBUG -ffunction-sections -f
 set_property(TARGET camera_focus_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
 target_link_libraries(camera_focus_test PRIVATE pthread)
 add_test(NAME camera_focus COMMAND camera_focus_test)
+
+add_executable(render_ownership_test tests/render_ownership_test.c source/video/frame_ring.c)
+target_include_directories(render_ownership_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(render_ownership_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+set_property(TARGET render_ownership_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+target_link_libraries(render_ownership_test PRIVATE pthread m)
+add_test(NAME render_ownership COMMAND render_ownership_test)

@@ -98,6 +98,23 @@ typedef struct {
     rknn_tensor_attr out_attr;              /* 单输出张量属性 */
 } yolo_worker_t;
 
+typedef struct {
+    double fps, camera_fps, latency_ms;
+} adaptive_observation_t;
+
+enum { ADAPT_BASELINE, ADAPT_TRIAL, ADAPT_HOLD };
+typedef struct {
+    int cores, capacity, best_workers, trial_workers, phase, unstable_votes;
+    unsigned tested;
+    unsigned long long hold_until_us;
+    adaptive_observation_t best;
+} adaptive_controller_t;
+
+typedef struct {
+    unsigned long long started_us, collect_after_us, last_sample_seq;
+    unsigned long long captured, rendered, encoded, samples, latency_sum_ms;
+} adaptive_window_t;
+
 /* 模块全局上下文 */
 static struct {
     _Atomic int    enabled;                  /* 推理池可用（画框流可用） */
@@ -106,10 +123,9 @@ static struct {
     app_ctx_t     *app;
     float          conf, nms;
     int            nthreads;                 /* Workers evenly assigned to detected NPU cores. */
-    int            active_workers, core_count, decrease_votes;
-    unsigned       timing_samples;
-    double         service_ema_us;
-    unsigned long long last_tune_us;
+    int            active_workers;
+    adaptive_controller_t adaptive;
+    adaptive_window_t adaptive_window;
 
     unsigned char *model;                    /* 模型文件内存（共享给所有 worker init） */
     size_t         model_len;
@@ -161,57 +177,154 @@ static unsigned long long ai_now_us(void)
     return (unsigned long long)ts.tv_sec * 1000000u + (unsigned long long)ts.tv_nsec / 1000u;
 }
 
-static int adaptive_worker_target(int cores, int capacity, double fps, double service_us)
+static unsigned adaptive_worker_bit(const adaptive_controller_t *control, int workers)
 {
-    if (cores < 1) cores = 1;
-    if (fps <= 0) fps = 30;
-    int needed = service_us > 0 ? (int)ceil(fps * service_us * 1.15 / 1000000.0) : cores * 2;
-    if (needed < cores) needed = cores;
-    needed = ((needed + cores - 1) / cores) * cores;
-    return needed > capacity ? capacity : needed;
+    return 1u << (workers / control->cores - 1);
 }
 
-/* Scale up immediately; scale down only after three consecutive quiet
-   evaluations (six seconds at the two-second sampling period). */
-static int adaptive_worker_vote(int target, int current, int queued, int *votes)
+static int adaptive_controller_init(adaptive_controller_t *control, int cores, int capacity)
 {
-    if (queued > 1 && target < current) target = current;
-    if (target < current) {
-        if (++*votes < 3) return current;
+    memset(control, 0, sizeof(*control));
+    control->cores = cores;
+    control->capacity = capacity;
+    control->best_workers = cores * 2 > capacity ? capacity : cores * 2;
+    control->tested = adaptive_worker_bit(control, control->best_workers);
+    return control->best_workers;
+}
+
+/* Compare delivered frames, not RKNN service time: NPU contention increases
+   service time, so using it to request more workers creates positive feedback.
+   Preserve throughput first; among equivalent rates prefer lower frame age,
+   then fewer workers. Reject large latency regressions even for a small FPS gain. */
+static int adaptive_observation_better(const adaptive_observation_t *candidate,
+                                      const adaptive_observation_t *baseline,
+                                      int candidate_workers, int baseline_workers)
+{
+    double tolerance = fmax(.75, baseline->camera_fps * .025);
+    if (candidate->fps < baseline->fps - tolerance) return 0;
+    if (baseline->latency_ms > 0 && candidate->latency_ms > baseline->latency_ms * 1.35 + 15) return 0;
+    if (candidate->fps > baseline->fps + tolerance) return 1;
+    if (candidate->latency_ms < baseline->latency_ms - 5) return 1;
+    if (candidate->latency_ms > baseline->latency_ms + 5) return 0;
+    return candidate_workers < baseline_workers;
+}
+
+static int adaptive_next_trial(const adaptive_controller_t *control)
+{
+    for (int workers = control->cores; workers <= control->capacity; workers += control->cores)
+        if (!(control->tested & adaptive_worker_bit(control, workers))) return workers;
+    return 0;
+}
+
+/* Called only for complete measurement windows. Every failed trial returns to
+   the measured best count; a fresh baseline precedes the next trial. Once all
+   core groups have been compared, hold the result for three minutes. Sustained
+   input/load changes can request an earlier new comparison. */
+static int adaptive_controller_observe(adaptive_controller_t *control,
+                                      unsigned long long now,
+                                      const adaptive_observation_t *observation)
+{
+    if (control->phase == ADAPT_HOLD) {
+        int changed = fabs(observation->camera_fps - control->best.camera_fps) >
+                          fmax(1, control->best.camera_fps * .1) ||
+                      observation->fps < control->best.fps * .9 ||
+                      observation->latency_ms > control->best.latency_ms * 1.35 + 15;
+        control->unstable_votes = changed ? control->unstable_votes + 1 : 0;
+        if (now < control->hold_until_us && control->unstable_votes < 2) return control->best_workers;
+        control->tested = adaptive_worker_bit(control, control->best_workers);
+        control->unstable_votes = 0;
+        control->phase = ADAPT_BASELINE;
     }
-    *votes = 0;
-    return target;
+    if (control->phase == ADAPT_TRIAL) {
+        if (adaptive_observation_better(observation, &control->best,
+                                        control->trial_workers, control->best_workers)) {
+            control->best_workers = control->trial_workers;
+            control->best = *observation;
+        }
+        control->trial_workers = 0;
+        if (adaptive_next_trial(control)) control->phase = ADAPT_BASELINE;
+        else {
+            control->phase = ADAPT_HOLD;
+            control->hold_until_us = now + 180000000u;
+        }
+        return control->best_workers;
+    }
+    control->best = *observation;
+    int next = adaptive_next_trial(control);
+    if (!next) {
+        control->phase = ADAPT_HOLD;
+        control->hold_until_us = now + 180000000u;
+        return control->best_workers;
+    }
+    control->trial_workers = next;
+    control->tested |= adaptive_worker_bit(control, next);
+    control->phase = ADAPT_TRIAL;
+    return next;
 }
 
-static void ai_adapt_workers(unsigned long long service_us)
+static void ai_adapt_workers(void)
 {
     frame_ring_t *ring = video_stream_get_ring();
-    double fps = 30;
-    if (ring) {
-        frame_ring_lock(ring);
-        if (ring->capture_fps_den) fps = (double)ring->capture_fps_num / ring->capture_fps_den;
-        frame_ring_unlock(ring);
-    }
+    if (!ring) return;
+    /* Serialize the snapshot and controller together so out-of-order workers
+       cannot move a measurement window back to an older counter snapshot. */
+    pthread_mutex_lock(&g_ai.q_lock);
+    frame_ring_lock(ring);
+    unsigned long long captured = ring->produce_seq, rendered = ring->displayed_frames;
+    unsigned long long encoded = ring->encoded_frames;
+    int encoding = ring->rec_active;
+    unsigned long long sample_seq = encoding ? encoded : rendered;
+    unsigned long long age = encoding ? ring->capture_to_encode_ms : ring->processing_age_ms;
+    frame_ring_unlock(ring);
     unsigned long long now = ai_now_us();
     int changed = 0, selected = 0;
-    pthread_mutex_lock(&g_ai.q_lock);
-    g_ai.service_ema_us = g_ai.timing_samples ? g_ai.service_ema_us * .9 + service_us * .1 : service_us;
-    g_ai.timing_samples++;
-    if (g_ai.timing_samples >= 24 && now - g_ai.last_tune_us >= 2000000u) {
-        g_ai.last_tune_us = now;
+    double measured_fps = 0, measured_age = 0;
+    int phase = 0;
+    adaptive_window_t *window = &g_ai.adaptive_window;
+    if (now < window->collect_after_us) {
+        pthread_mutex_unlock(&g_ai.q_lock);
+        return;
+    }
+    if (!window->started_us || captured < window->captured || rendered < window->rendered || encoded < window->encoded) {
+        window->started_us = now;
+        window->captured = captured;
+        window->rendered = rendered;
+        window->encoded = encoded;
+        window->last_sample_seq = sample_seq;
+        window->samples = window->latency_sum_ms = 0;
+    }
+    if (sample_seq != window->last_sample_seq && age) {
+        window->last_sample_seq = sample_seq;
+        window->latency_sum_ms += age;
+        window->samples++;
+    }
+    if (now - window->started_us >= 4000000u && window->samples) {
+        double seconds = (double)(now - window->started_us) / 1000000.0;
+        double delivered = (double)(rendered - window->rendered) / seconds;
+        if (encoding) delivered = fmin(delivered, (double)(encoded - window->encoded) / seconds);
+        adaptive_observation_t observation = {
+            .fps = delivered,
+            .camera_fps = (double)(captured - window->captured) / seconds,
+            .latency_ms = (double)window->latency_sum_ms / window->samples
+        };
         int current = __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED);
-        int target = adaptive_worker_target(g_ai.core_count, g_ai.nthreads, fps, g_ai.service_ema_us);
-        target = adaptive_worker_vote(target, current, g_ai.q_count, &g_ai.decrease_votes);
+        int target = adaptive_controller_observe(&g_ai.adaptive, now, &observation);
+        window->started_us = 0;
         if (target != current) {
             __atomic_store_n(&g_ai.active_workers, target, __ATOMIC_RELAXED);
-            g_ai.decrease_votes = 0;
+            window->collect_after_us = now + 1500000u;
             selected = target;
             changed = 1;
+            measured_fps = observation.fps;
+            measured_age = observation.latency_ms;
+            phase = g_ai.adaptive.phase;
             pthread_cond_broadcast(&g_ai.q_not_empty);
         }
     }
     pthread_mutex_unlock(&g_ai.q_lock);
-    if (changed) LOG_INFO("yolo: adaptive inference workers -> %d/%d", selected, g_ai.nthreads);
+    if (changed) LOG_INFO("yolo: adaptive workers -> %d/%d (%s; previous %.2f fps, %.1f ms)",
+                          selected, g_ai.nthreads, phase == ADAPT_TRIAL ? "trial" : "selected",
+                          measured_fps, measured_age);
 }
 
 int rknn_yolo_active_workers(void)
@@ -458,7 +571,7 @@ static void *yolo_worker_task(void *arg)
                                      lb_scale, lb_pad_x, lb_pad_y, job.w, job.h,
                                      res.dets, YOLO_MAX_DETS, g_ai.conf, g_ai.nms, NULL);
         rknn_outputs_release(wk->ctx, 1, &output);
-        ai_adapt_workers(ai_now_us() - worker_us);
+        ai_adapt_workers();
         if (idx == 0) {
             static unsigned long long last_timing_us;
             unsigned long long finished_us = ai_now_us();
@@ -533,6 +646,21 @@ static int yolo_class_index(const char *name)
     return 0;
 }
 
+/* Move ownership out of the slot before unlocking. Camera quiesce may clear
+ * every slot while rendering; it must never recycle an in-flight RGB buffer. */
+static int yolo_render_take_rgb_locked(frame_ring_t *ring, unsigned long long seq,
+                                      ring_buf_t *rgb, int *w, int *h)
+{
+    frame_slot_t *slot = ai_slot(ring, seq);
+    if (ring->quiescing || slot->seq != seq || !slot->rgb_done || !slot->rgb.buf)
+        return -1;
+    *w = slot->w;
+    *h = slot->h;
+    *rgb = slot->rgb;
+    memset(&slot->rgb, 0, sizeof(slot->rgb));
+    return 0;
+}
+
 static void *yolo_render_task(void *arg)
 {
     (void)arg;
@@ -549,20 +677,18 @@ static void *yolo_render_task(void *arg)
 
         unsigned long long seq = item.seq;
         int w = 0, h = 0;
-        ring_buf_t nv12b = { 0 }, jpegb = { 0 };
+        ring_buf_t rgbb = { 0 }, nv12b = { 0 }, jpegb = { 0 };
         /* 无 MJPEG 观看者时跳过 JPEG 编码与池占用（省 CPU） */
         int want_jpeg = video_stream_client_count() > 0;
         frame_ring_lock(ring);
-        /* rgb_done 钉住槽位（维护规则在显示推进后才释放 rgb）；
-           防御分支防退让强制清空的迟到渲染 */
+        /* Rendering owns RGB until it explicitly returns the buffer below.
+           The slot may be cleared or reused during a camera restart. */
         frame_slot_t *s = ai_slot(ring, seq);
-        if (s->seq != seq || !s->rgb_done || !s->rgb.buf) {
+        if (yolo_render_take_rgb_locked(ring, seq, &rgbb, &w, &h) != 0) {
             frame_ring_unlock(ring);
             continue;
         }
-        w = s->w; h = s->h;
-        /* 渲染输出缓冲：池内 NV12（供录像窃取）与 JPEG（供推流拷贝）。
-           s->rgb 由 rgb_done && seq > display_seq 钉住，锁外渲染期间无人释放 */
+        /* Local output buffers are also owned independently of the slot. */
         frame_ring_buf_take_locked(ring, FRAME_RING_POOL_NV12, (size_t)w * h * 3 / 2, &nv12b);
         if (want_jpeg)
             frame_ring_buf_take_locked(ring, FRAME_RING_POOL_JPEG, 64 * 1024, &jpegb);
@@ -591,13 +717,13 @@ static void *yolo_render_task(void *arg)
         unsigned char *jbuf = jpegb.buf;
         size_t jcap = jpegb.cap, jlen = 0;
         int ok = (nv12b.buf &&
-                  yolo_render_annotated(s->rgb.buf, w, h, &disp, &g_ai.classes,
+                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_ai.classes,
                                         want_jpeg ? &jbuf : NULL,
                                         want_jpeg ? &jcap : NULL,
                                         want_jpeg ? &jlen : NULL) == 0);
         jpegb.buf = jbuf; jpegb.cap = jcap;   /* realloc 可能更换指针 */
         if (ok) {
-            yolo_rgb_to_nv12_fast(s->rgb.buf, w, h, nv12b.buf);
+            yolo_rgb_to_nv12_fast(rgbb.buf, w, h, nv12b.buf);
             jpegb.len = jlen;
             g_ai.prev = disp;
             snap_result(&disp);
@@ -605,7 +731,7 @@ static void *yolo_render_task(void *arg)
 
         frame_ring_lock(ring);
         /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，否则缓冲回池 */
-        if (s->seq == seq && s->rgb_done && s->rgb.buf) {
+        if (!ring->quiescing && s->seq == seq && s->rgb_done) {
             if (ok) {
                 s->nv12     = nv12b;
                 s->nv12.len = (size_t)w * h * 3 / 2;
@@ -621,6 +747,7 @@ static void *yolo_render_task(void *arg)
             frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12b.buf, nv12b.cap);
             frame_ring_buf_put_locked(ring, FRAME_RING_POOL_JPEG, jpegb.buf, jpegb.cap);
         }
+        frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
 
         /* Capture and the bounded result queue already pace this consumer.
@@ -833,12 +960,8 @@ static int ai_start_pool(void)
     capacity = (capacity / cores) * cores;
     if (capacity < cores) capacity = cores;
     g_ai.nthreads = capacity;
-    g_ai.core_count = cores;
-    __atomic_store_n(&g_ai.active_workers, adaptive_worker_target(cores, capacity, 30, 0), __ATOMIC_RELAXED);
-    g_ai.service_ema_us = 0;
-    g_ai.timing_samples = 0;
-    g_ai.decrease_votes = 0;
-    g_ai.last_tune_us = ai_now_us();
+    __atomic_store_n(&g_ai.active_workers, adaptive_controller_init(&g_ai.adaptive, cores, capacity), __ATOMIC_RELAXED);
+    memset(&g_ai.adaptive_window, 0, sizeof(g_ai.adaptive_window));
 
     safe_strncpy(g_ai.names_path, sizeof(g_ai.names_path),
                  cfg->ai_names[0] ? cfg->ai_names : "config/coco.names");
@@ -927,6 +1050,7 @@ static int ai_start_pool(void)
         ai_stop_pool();
         return -1;
     }
+    g_ai.adaptive_window.collect_after_us = ai_now_us() + 8000000u;
     g_ai.enabled = 1;
     /* 环内 raw 释放规则切回推理路径（infer_done 门槛） */
     if (ai_ring()) frame_ring_set_ai_active(ai_ring(), 1);

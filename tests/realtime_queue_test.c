@@ -55,23 +55,50 @@ static void destroy_waiter(queue_waiter_t *waiter)
 
 static void check_adaptive_policy(void)
 {
-    assert(adaptive_worker_target(2, 6, 30, 0) == 4);
-    assert(adaptive_worker_target(2, 6, 30, 20000) == 2);
-    assert(adaptive_worker_target(2, 6, 30, 70000) == 4);
-    assert(adaptive_worker_target(2, 6, 30, 150000) == 6);
-    assert(adaptive_worker_target(2, 6, 30, 900000) == 6);
-    assert(adaptive_worker_target(3, 9, 60, 60000) == 6);
-    assert(adaptive_worker_target(1, 3, 30, 1000) == 1);
-    assert(adaptive_worker_target(2, 6, 0, 70000) == 4);
-    int votes = 0;
-    assert(adaptive_worker_vote(2, 4, 0, &votes) == 4 && votes == 1);
-    assert(adaptive_worker_vote(2, 4, 0, &votes) == 4 && votes == 2);
-    assert(adaptive_worker_vote(2, 4, 0, &votes) == 2 && votes == 0);
-    assert(adaptive_worker_vote(2, 4, 0, &votes) == 4 && votes == 1);
-    assert(adaptive_worker_vote(2, 4, 2, &votes) == 4 && votes == 0);
-    assert(adaptive_worker_vote(6, 4, 3, &votes) == 6 && votes == 0);
-    assert(adaptive_worker_vote(4, 4, 0, &votes) == 4 && votes == 0);
-    puts("PASS: adaptive workers follow frame rate and measured service time within core-aligned limits");
+    adaptive_controller_t control;
+    adaptive_observation_t good = {.fps = 29.1, .camera_fps = 30, .latency_ms = 134};
+    adaptive_observation_t too_few = {.fps = 26.5, .camera_fps = 30, .latency_ms = 172};
+    adaptive_observation_t contention = {.fps = 25.67, .camera_fps = 30, .latency_ms = 220};
+    assert(adaptive_controller_init(&control, 2, 6) == 4);
+    assert(adaptive_controller_observe(&control, 12000000u, &good) == 2);
+    assert(control.phase == ADAPT_TRIAL);
+    assert(adaptive_controller_observe(&control, 17500000u, &too_few) == 4);
+    assert(control.phase == ADAPT_BASELINE);
+    assert(adaptive_controller_observe(&control, 23000000u, &good) == 6);
+    assert(adaptive_controller_observe(&control, 28500000u, &contention) == 4);
+    assert(control.phase == ADAPT_HOLD);
+    assert(adaptive_controller_observe(&control, 33000000u, &good) == 4);
+    assert(control.phase == ADAPT_HOLD);
+    adaptive_observation_t changed = {.fps = 20, .camera_fps = 30, .latency_ms = 210};
+    assert(adaptive_controller_observe(&control, 38000000u, &changed) == 4);
+    assert(adaptive_controller_observe(&control, 43000000u, &changed) == 2);
+    assert(control.phase == ADAPT_TRIAL);
+
+    /* A faster/light model can retain the lower count; it is not fixed at 4. */
+    adaptive_observation_t light = {.fps = 30, .camera_fps = 30, .latency_ms = 70};
+    adaptive_observation_t light_lower = {.fps = 30, .camera_fps = 30, .latency_ms = 60};
+    assert(adaptive_controller_init(&control, 2, 6) == 4);
+    assert(adaptive_controller_observe(&control, 12000000u, &light) == 2);
+    assert(adaptive_controller_observe(&control, 17500000u, &light_lower) == 2);
+    assert(adaptive_controller_observe(&control, 23000000u, &light_lower) == 6);
+    assert(adaptive_controller_observe(&control, 28500000u, &light_lower) == 2);
+    assert(control.phase == ADAPT_HOLD);
+    assert(adaptive_controller_observe(&control, 220000000u, &light_lower) == 4);
+    assert(control.phase == ADAPT_TRIAL);
+
+    /* A useful throughput improvement can select the larger count. */
+    adaptive_observation_t limited = {.fps = 20, .camera_fps = 30, .latency_ms = 140};
+    adaptive_observation_t improved = {.fps = 28, .camera_fps = 30, .latency_ms = 150};
+    assert(adaptive_controller_init(&control, 2, 6) == 4);
+    assert(adaptive_controller_observe(&control, 12000000u, &limited) == 2);
+    assert(adaptive_controller_observe(&control, 17500000u, &too_few) == 2);
+    assert(adaptive_controller_observe(&control, 23000000u, &too_few) == 6);
+    assert(adaptive_controller_observe(&control, 28500000u, &improved) == 6);
+    assert(control.phase == ADAPT_HOLD);
+    assert(adaptive_controller_init(&control, 1, 1) == 1);
+    assert(adaptive_controller_observe(&control, 12000000u, &light) == 1);
+    assert(control.phase == ADAPT_HOLD);
+    puts("PASS: measured adaptive trials roll back contention, select useful concurrency and hold without oscillation");
 }
 
 static void check_adaptive_queue(void)
