@@ -20,7 +20,7 @@
       var f = state && state.focus_absolute || {};
       auto.disabled = busy || !a.supported || a.read_only || a.active === false;
       if (!busy) auto.checked = !!a.value;
-      slider.disabled = busy || !f.supported || f.read_only || auto.checked;
+      slider.disabled = busy || !f.supported || f.read_only || f.active === false || auto.checked;
       if (f.supported) {
         slider.min = f.min; slider.max = f.max; slider.step = f.step || 1;
         if (!dirty) slider.value = f.value;
