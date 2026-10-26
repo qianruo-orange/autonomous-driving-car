@@ -74,6 +74,7 @@ typedef struct {
     size_t            rgb_cap;
     int               w, h;
     unsigned long long seq;
+    unsigned long long capture_ms, decode_start_us, decode_end_us;
 } yolo_job_t;
 
 /* 推理结果队列条目：NMS 后处理的最终检测结果，只携带目标名称、置信度与
@@ -147,6 +148,13 @@ static struct {
 } g_ai;
 
 static pthread_mutex_t g_reload_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static unsigned long long ai_now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000000u + (unsigned long long)ts.tv_nsec / 1000u;
+}
 
 /* ---- 环形队列访问 ---- */
 
@@ -346,11 +354,13 @@ static void *yolo_worker_task(void *arg)
         yolo_job_t job;
         if (yolo_queue_pop(&job) < 0) break;      /* 停池/退出且队列空 */
         if (!g_ai.running || !g_ai.pool_running) { yolo_job_abandon(&job); break; }
+        unsigned long long worker_us = ai_now_us();
 
         /* letterbox+padding 预处理（等比例 + 114 灰边）；几何参数供后处理逆映射 */
         float lb_scale; int lb_pad_x, lb_pad_y;
         yolo_rgb_letterbox(job.rgb, job.w, job.h, wk->in_buf, g_ai.in_w, g_ai.in_h,
                            &lb_scale, &lb_pad_x, &lb_pad_y);
+        unsigned long long prepared_us = ai_now_us();
 
         rknn_input in;
         memset(&in, 0, sizeof(in));
@@ -360,7 +370,9 @@ static void *yolo_worker_task(void *arg)
         in.size  = (uint32_t)(g_ai.in_w * g_ai.in_h * 3);
         in.buf   = wk->in_buf;
         if (rknn_inputs_set(wk->ctx, 1, &in) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
+        unsigned long long inputs_us = ai_now_us();
         if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
+        unsigned long long inference_us = ai_now_us();
 
         rknn_output output;
         memset(&output, 0, sizeof(output));
@@ -369,6 +381,7 @@ static void *yolo_worker_task(void *arg)
             yolo_job_abandon(&job);
             continue;
         }
+        unsigned long long outputs_us = ai_now_us();
 
         const float *out_buf[1] = { (const float *)output.buf };
         yolo_result_t res;
@@ -380,6 +393,22 @@ static void *yolo_worker_task(void *arg)
                                      lb_scale, lb_pad_x, lb_pad_y, job.w, job.h,
                                      res.dets, YOLO_MAX_DETS, g_ai.conf, g_ai.nms, NULL);
         rknn_outputs_release(wk->ctx, 1, &output);
+        if (idx == 0) {
+            static unsigned long long last_timing_us;
+            unsigned long long finished_us = ai_now_us();
+            if (finished_us - last_timing_us >= 10000000u) {
+                last_timing_us = finished_us;
+                LOG_INFO("ai timing ms: capture_to_decode=%llu decode=%llu queue=%llu resize=%llu inputs=%llu run=%llu outputs=%llu post=%llu",
+                         job.decode_start_us / 1000u - job.capture_ms,
+                         (job.decode_end_us - job.decode_start_us) / 1000u,
+                         (worker_us - job.decode_end_us) / 1000u,
+                         (prepared_us - worker_us) / 1000u,
+                         (inputs_us - prepared_us) / 1000u,
+                         (inference_us - inputs_us) / 1000u,
+                         (outputs_us - inference_us) / 1000u,
+                         (finished_us - outputs_us) / 1000u);
+            }
+        }
 
         /* 停池竞态：推理期间 pool_running 被清 → 作废任务（不写槽，
            避免停池后槽内滞留 rgb 阻碍该槽复用） */
@@ -959,6 +988,7 @@ void *rknn_ai_task(void *arg)
         }
         if (!s) { frame_ring_unlock(ring); continue; }
         unsigned long long seq = s->seq;
+        unsigned long long capture_ms = s->capture_ms;
         int fmt = s->fmt, w = s->w, h = s->h;
         unsigned char *raw = s->raw.buf;
         size_t raw_len = s->raw.len;
@@ -969,6 +999,7 @@ void *rknn_ai_task(void *arg)
 
         /* 锁外解码：槽 raw 由 claim 保护（零拷贝读 mmap，不再整帧拷贝） */
         int decode_ok = 0;
+        unsigned long long decode_start_us = ai_now_us();
         if (raw && rgbb.buf && w > 0 && h > 0) {
             if (fmt == FRAME_RING_FMT_MJPEG)
                 decode_ok = yolo_jpeg_to_rgb_buf(raw, raw_len, rgbb.buf, w, h) == 0;
@@ -987,7 +1018,8 @@ void *rknn_ai_task(void *arg)
         }
 
         yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap,
-                           .w = w, .h = h, .seq = seq };
+                           .w = w, .h = h, .seq = seq, .capture_ms = capture_ms,
+                           .decode_start_us = decode_start_us, .decode_end_us = ai_now_us() };
         if (yolo_queue_push(&job) != 0)
             yolo_job_abandon(&job);   /* 停池/退出中：claim 摘除 + rgb 回池 */
 
