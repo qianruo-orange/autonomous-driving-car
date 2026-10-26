@@ -722,7 +722,10 @@ static void *h264_stream_client_task(void *arg)
                 const h264s_entry_t *latest = &g_h264s.ring[
                     (g_h264s.head + g_h264s.count - 1) % H264S_RING_N];
                 c->pace_source_ms = latest->ts_ms;
-                c->pace_wall_ms = h264s_now_ms();
+                uint64_t join_now = h264s_now_ms();
+                uint32_t latest_age = (uint32_t)((uint32_t)join_now - latest->ts_ms);
+                c->pace_wall_ms = latest_age <= H264S_CLIENT_IDLE_TIMEOUT * 1000u
+                                ? join_now - latest_age : join_now;
                 ok = 1;
                 break;
             }

@@ -80,7 +80,7 @@ static uint64_t g_last_ai_ms = 0;         /* 最近取到标注帧时刻（停�
    成功后 *out 为池内缓冲，用毕 frame_ring_buf_put_locked 回池（勿 free）；
    无新帧或与编码器分辨率不符返回 -1（尺寸不符走 encode_skip，encode_skipped++） */
 static int rec_take_ai_frame(frame_ring_t *ring, unsigned char **out, size_t *len,
-                             size_t *cap, int *w, int *h, int pw, int ph)
+                             size_t *cap, int *w, int *h, int pw, int ph, uint64_t *capture_ms)
 {
     if (!ring || !rknn_yolo_enabled()) return -1;
     frame_ring_lock(ring);
@@ -97,6 +97,7 @@ static int rec_take_ai_frame(frame_ring_t *ring, unsigned char **out, size_t *le
     *cap = s->nv12.cap;
     if (w) *w = s->w;
     if (h) *h = s->h;
+    if (capture_ms) *capture_ms = s->capture_ms;
     s->nv12.buf = NULL;
     s->nv12.len = s->nv12.cap = 0;
     frame_ring_encode_advance_locked(ring, s);
@@ -304,8 +305,9 @@ void *video_rec_task(void *arg)
                 unsigned char *nv12 = NULL;
                 size_t nlen = 0, ncap = 0;
                 int fw = 0, fh = 0;
+                uint64_t frame_capture_ms = 0;
                 if (rec_take_ai_frame(ring, &nv12, &nlen, &ncap, &fw, &fh,
-                                      pw, ph) == 0) {
+                                      pw, ph, &frame_capture_ms) == 0) {
                     g_last_ai_ms = now_ms();
                 } else {
                     /* AI 必要流程：停摆 >1s（无新标注帧）直接宕机——置 fatal
@@ -319,7 +321,8 @@ void *video_rec_task(void *arg)
                         done = 1;
                         break;
                     }
-                    usleep(10000);
+                    if (ring) frame_ring_wait_encode(ring, g_ai_seq, 50);
+                    else usleep(10000);
                     continue;
                 }
 
@@ -336,6 +339,7 @@ void *video_rec_task(void *arg)
                 /* AI 窃取的池内缓冲：用毕回池复用 */
                 frame_ring_lock(ring);
                 frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12, ncap);
+                if (frame_capture_ms) ring->capture_to_encode_ms = now_ms() - frame_capture_ms;
                 frame_ring_unlock(ring);
 
                 uint64_t ts = now_ms();

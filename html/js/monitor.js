@@ -120,6 +120,10 @@
   var mseTail = new Uint8Array(3);   /* 跨块 'moof' 签名续接尾巴 */
   var mseGeneration = 0, mseCancelUpdate = null, mseLastTrim = 0;
   var msePrimed = false, mseClockAgeMs = null, mseClockAt = 0;
+  var chromePlayback = typeof navigator !== 'undefined' && /(?:Chrome|Chromium)\//.test(navigator.userAgent || '');
+  var mseTargetLead = chromePlayback ? 0.04 : 0.2;
+  var mseMaxLead = chromePlayback ? 0.12 : 0.7;
+  var mseFrameCallback = null, msePresentedMediaTime = null, mseDecodeMs = null;
   var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0, lastError: '' };
 
   function mseSupported() {
@@ -132,6 +136,11 @@
 
   function mseStop() {
     var hadMse = mseRunning || mseMs || mseUrl;
+    var vid = document.getElementById('stream_video');
+    if (mseFrameCallback !== null && vid && vid.cancelVideoFrameCallback)
+      vid.cancelVideoFrameCallback(mseFrameCallback);
+    mseFrameCallback = null;
+    msePresentedMediaTime = null;
     /* Invalidate callbacks before aborting the old session. Its rejected read
        must never stop the replacement stream. */
     mseGeneration++;
@@ -151,7 +160,6 @@
     mseSb = null;
     mseUrl = '';
     mseTail[0] = mseTail[1] = mseTail[2] = 0;
-    var vid = document.getElementById('stream_video');
     if (vid && hadMse) {
       vid.playbackRate = 1;
       if (vid.src && vid.src.indexOf('blob:') === 0) URL.revokeObjectURL(vid.src);
@@ -221,15 +229,16 @@
       var ahead = end - vid.currentTime;
       /* Prime close to the live edge after enough media arrives. A small,
          bounded buffer absorbs frame jitter without retaining a historical GOP. */
-      if ((!msePrimed && end - start >= 0.2 && ahead > 0.23) ||
-          ahead > 0.7 || vid.currentTime < start) {
-        vid.currentTime = Math.max(start, end - 0.2);
+      var primeSpan = chromePlayback ? 0.08 : 0.2;
+      if ((!msePrimed && end - start >= primeSpan && ahead > mseTargetLead + 0.03) ||
+          ahead > mseMaxLead || vid.currentTime < start) {
+        vid.currentTime = Math.max(start, end - mseTargetLead);
         mseDiag.catchups++;
         msePrimed = true;
         vid.playbackRate = 1;
-      } else if (ahead > 0.3) {
+      } else if (ahead > mseTargetLead + (chromePlayback ? 0.03 : 0.1)) {
         vid.playbackRate = 1.05;
-      } else if (ahead < 0.22) {
+      } else if (ahead < mseTargetLead + (chromePlayback ? 0.01 : 0.02)) {
         vid.playbackRate = 1;
       }
     } catch(e) {}
@@ -259,6 +268,8 @@
     msePrimed = false;
     mseClockAgeMs = null;
     mseClockAt = 0;
+    msePresentedMediaTime = null;
+    mseDecodeMs = null;
     mseDiag.starts++;
     var generation = mseGeneration;
     resetFps();
@@ -295,6 +306,7 @@
           return;
         }
         mseSb = sb;
+        mseTrackPresentedFrames(vid, generation);
         sb.addEventListener('error', function() { mseFail(generation, new Error('Media decoding failed')); });
         var p = vid.play();
         if (p && p.catch) p.catch(function(){});     /* muted+autoplay 正常应成功 */
@@ -315,6 +327,17 @@
     }).catch(function(e) { mseFail(generation, e); });
   }
 
+  function mseTrackPresentedFrames(vid, generation) {
+    if (!vid.requestVideoFrameCallback) return;
+    function presented(now, metadata) {
+      if (!mseRunning || generation !== mseGeneration) return;
+      msePresentedMediaTime = metadata.mediaTime;
+      if (typeof metadata.processingDuration === 'number') mseDecodeMs = metadata.processingDuration * 1000;
+      mseFrameCallback = vid.requestVideoFrameCallback(presented);
+    }
+    mseFrameCallback = vid.requestVideoFrameCallback(presented);
+  }
+
   /* Read-only diagnostics for distinguishing network delivery from rendering. */
   window.getGatewayVideoDiagnostics = function() {
     var vid = document.getElementById('stream_video');
@@ -327,6 +350,8 @@
       readyState: vid ? vid.readyState : 0, currentTime: vid ? vid.currentTime : 0,
       paused: vid ? vid.paused : true, seeking: vid ? vid.seeking : false,
       playbackRate: vid ? vid.playbackRate : 1,
+      playbackProfile: chromePlayback ? 'Chrome low latency' : 'Compatible',
+      targetBufferMs: mseTargetLead * 1000, browserDecodeMs: mseDecodeMs,
       decoderError: vid && vid.error ? vid.error.code : null
     });
     if (vid && vid.getVideoPlaybackQuality) {
@@ -340,8 +365,10 @@
         result.buffered.push([mseSb.buffered.start(i), mseSb.buffered.end(i)]);
     }
     if (mseRunning && vid && mseClockAgeMs !== null) {
-      result.estimatedStreamDelayMs = Math.max(0, mseClockAgeMs + Date.now() - mseClockAt - vid.currentTime * 1000);
+      var mediaTime = msePresentedMediaTime === null ? vid.currentTime : msePresentedMediaTime;
+      result.estimatedStreamDelayMs = Math.max(0, mseClockAgeMs + Date.now() - mseClockAt - mediaTime * 1000);
     }
+    result.estimatedTotalDelayMs = result.estimatedStreamDelayMs === null ? null : result.estimatedStreamDelayMs + processingAgeMs;
     return result;
   };
 
@@ -374,7 +401,7 @@
       if (!response.ok) return;
       var stats = await response.json();
       cameraFps = stats.capture_fps || 0;
-      processingAgeMs = stats.processing_age_ms || 0;
+      processingAgeMs = stats.capture_to_encode_ms || stats.processing_age_ms || 0;
       sourceDrops = (stats.capture_dropped || 0) + (stats.driver_dropped || 0) + (stats.infer_dropped || 0);
     } catch(e) {} finally { videoStatsBusy = false; }
   }
@@ -650,10 +677,10 @@
     var stats = document.getElementById('video_stats');
     if (stats) {
       var d = window.getGatewayVideoDiagnostics();
-      stats.textContent = t('摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 推流延迟约 {delay} ms · 当前丢帧 {dropped}/s', {
+      stats.textContent = t('摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 总延迟约 {delay} ms · 当前丢帧 {dropped}/s', {
         camera: d.cameraFps ? Math.round(d.cameraFps) : '--', processing: Math.round(d.processingAgeMs),
         received: Math.round(d.receivedFps), buffer: Math.round(d.bufferAheadSeconds * 1000),
-        delay: d.estimatedStreamDelayMs === null ? '--' : Math.round(d.estimatedStreamDelayMs),
+        delay: d.estimatedTotalDelayMs === null ? '--' : Math.round(d.estimatedTotalDelayMs),
         dropped: Math.round(d.droppedFramesPerSecond)
       });
     }

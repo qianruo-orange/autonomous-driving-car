@@ -54,10 +54,14 @@ int main(void)
         frame_ring_buf_take_locked(&ring, FRAME_RING_POOL_NV12, 16, &slot->nv12);
         frame_ring_display_commit_locked(&ring, slot);
     }
+    frame_ring_unlock(&ring);
+    assert(frame_ring_wait_encode(&ring, 0, 2) == 1);
+    frame_ring_lock(&ring);
     frame_slot_t *encoded = frame_ring_encode_pick_locked(&ring, 0);
     assert(encoded && encoded->seq == 2);
     frame_ring_encode_advance_locked(&ring, encoded);
     frame_ring_unlock(&ring);
+    assert(frame_ring_wait_encode(&ring, 2, 2) == 0);
     frame_ring_stats_t stats;
     frame_ring_stats(&ring, &stats);
     assert(stats.capture_fps == 30);

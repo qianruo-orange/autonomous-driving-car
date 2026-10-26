@@ -48,6 +48,7 @@
     '无线': 'Wireless',
     '已连接': 'Connected',
     '未连接': 'Disconnected',
+    '摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 总延迟约 {delay} ms · 当前丢帧 {dropped}/s': 'Camera {camera} FPS · Processing {processing} ms · Received {received} FPS · Buffer {buffer} ms · Total delay ~{delay} ms · Dropped {dropped}/s',
     '摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 推流延迟约 {delay} ms · 当前丢帧 {dropped}/s': 'Camera {camera} FPS · Processing {processing} ms · Received {received} FPS · Buffer {buffer} ms · Stream delay ~{delay} ms · Dropped {dropped}/s',
     '接收 {received} FPS · 缓冲 {buffer} ms · 推流延迟约 {delay} ms · 丢帧 {dropped}': 'Received {received} FPS · Buffer {buffer} ms · Stream delay ~{delay} ms · Dropped {dropped}',
     '星期日': 'Sunday', '星期一': 'Monday', '星期二': 'Tuesday',

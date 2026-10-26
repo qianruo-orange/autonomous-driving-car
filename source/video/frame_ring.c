@@ -177,7 +177,7 @@ frame_slot_t *frame_ring_produce_slot_locked(frame_ring_t *r)
 void frame_ring_produce_commit_locked(frame_ring_t *r)
 {
     frame_slot_t *s = slot_of(r, r->produce_seq + 1);
-    s->capture_ms = ring_now_ms();
+    if (!s->capture_ms) s->capture_ms = ring_now_ms();
     r->produce_seq = s->seq;
     frame_ring_maintain_locked(r);
     pthread_cond_broadcast(&r->cond);
@@ -244,6 +244,7 @@ void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
         r->render_skipped += s->seq - r->display_seq - 1;
     r->display_seq = s->seq;
     frame_ring_maintain_locked(r);     /* 释放被跳过槽的 rgb、旧 jpeg 与可回收 nv12 */
+    pthread_cond_broadcast(&r->cond);
 }
 
 /* ---- 编码 ---- */
@@ -364,6 +365,22 @@ int frame_ring_wait_render(frame_ring_t *r, unsigned long long next_seq, int tim
     }
 }
 
+int frame_ring_wait_encode(frame_ring_t *r, unsigned long long next_seq, int timeout_ms)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    timespec_add_ms(&deadline, timeout_ms);
+    frame_ring_lock(r);
+    while (!frame_ring_encode_pick_locked(r, next_seq)) {
+        if (pthread_cond_timedwait(&r->cond, &r->lock, &deadline) != 0) {
+            frame_ring_unlock(r);
+            return 0;
+        }
+    }
+    frame_ring_unlock(r);
+    return 1;
+}
+
 /* ---- 相机重启退让 ---- */
 
 void frame_ring_quiesce_begin(frame_ring_t *r)
@@ -429,6 +446,7 @@ void frame_ring_stats(frame_ring_t *r, frame_ring_stats_t *out)
     out->encode_replaced = r->encode_replaced;
     out->processing_age_ms = r->processing_age_ms;
     out->processing_age_max_ms = r->processing_age_max_ms;
+    out->capture_to_encode_ms = r->capture_to_encode_ms;
     out->capture_fps = r->capture_fps_den ? (double)r->capture_fps_num / r->capture_fps_den : 0;
     out->capture_dropped  = r->capture_dropped;
     out->driver_dropped   = r->driver_dropped;

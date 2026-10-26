@@ -386,6 +386,14 @@ void *video_stream_task(void *arg)
             s->raw_present    = 1;
             s->raw_is_mmap    = 1;
             s->raw_vbuf_index = buf.index;
+            if ((buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
+                struct timespec captured_now;
+                clock_gettime(CLOCK_MONOTONIC, &captured_now);
+                unsigned long long now_ms = (unsigned long long)captured_now.tv_sec * 1000u + captured_now.tv_nsec / 1000000u;
+                unsigned long long capture_ms = (unsigned long long)buf.timestamp.tv_sec * 1000u + buf.timestamp.tv_usec / 1000u;
+                if (capture_ms && capture_ms <= now_ms && now_ms - capture_ms < 5000)
+                    s->capture_ms = capture_ms;
+            }
             s->w = vs->width;
             s->h = vs->height;
             s->fmt = (vs->pixfmt == V4L2_PIX_FMT_MJPEG) ? FRAME_RING_FMT_MJPEG

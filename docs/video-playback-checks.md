@@ -16,7 +16,8 @@ Callbacks from an aborted connection cannot stop a newer connection.
 
 Connection pacing starts at the newest encoded frame. Historical GOP samples
 are sent immediately in decode order, followed by normal live pacing. The player
-primes near the live edge with a 200 ms buffer target, catches larger backlogs
+primes near the live edge with a 40 ms Chrome buffer target (200 ms for other
+browsers), catches larger backlogs
 by seeking, and drains small backlogs at 1.05x playback speed.
 
 The FPS badge reports displayed frames when playback-quality counters are
@@ -25,8 +26,11 @@ available. Hover over the badge to compare displayed and received frame rates.
 buffer lead, decoder frame drops, reconnect count, and the most recent error.
 These counters are local to the browser and are not uploaded.
 The status line below the video shows the essential values without developer
-tools. Stream delay is an approximate encoder-output-to-playback measure; it
-excludes camera capture, AI processing, and encoding time.
+tools. The lower-level stream delay measures encoder output to presentation;
+the displayed total estimate adds device capture-to-encoder processing time.
+Chrome frame callbacks are used to observe submitted frames rather than merely
+the media element's advanced playhead. This remains an estimate, not proof of a
+100 ms physical camera-to-screen bound.
 
 ## Regression checks
 

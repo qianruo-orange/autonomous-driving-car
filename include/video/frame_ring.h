@@ -93,6 +93,7 @@ typedef struct frame_ring {
     unsigned long long display_seq;   /* 最新已渲染 seq（钉住最新显示帧，维护规则用） */
     unsigned long long displayed_frames, encoded_frames, encode_replaced;
     unsigned long long processing_age_ms, processing_age_max_ms;
+    unsigned long long capture_to_encode_ms;
     unsigned capture_fps_num, capture_fps_den;
 
     /* 运行模式（消费者侧在锁内更新，维护释放规则用） */
@@ -124,6 +125,7 @@ typedef struct {
     unsigned long long produce_seq;
     unsigned long long display_seq, displayed_frames, encoded_frames, encode_replaced;
     unsigned long long processing_age_ms, processing_age_max_ms;
+    unsigned long long capture_to_encode_ms;
     double capture_fps;
     unsigned long long capture_dropped, driver_dropped, capture_stall_ms;
     unsigned long long infer_dropped, render_skipped, encode_skipped;
@@ -185,6 +187,7 @@ void frame_ring_set_rec_active(frame_ring_t *r, int on);
 /* ---- 事件等待（内部加锁；超时返回 0） ---- */
 int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeout_ms);
 int frame_ring_wait_render(frame_ring_t *r, unsigned long long next_seq, int timeout_ms);
+int frame_ring_wait_encode(frame_ring_t *r, unsigned long long next_seq, int timeout_ms);
 
 /* ---- 缓冲池（须持锁） ---- */
 /* 取容量 >= min_cap 的池内缓冲（不足时 malloc），回写 ring_buf_t（cap 为实际容量） */

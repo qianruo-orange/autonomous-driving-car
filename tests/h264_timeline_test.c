@@ -143,10 +143,10 @@ static void test_catchup_and_live_pacing(void) {
     assert(pthread_create(&wakes,NULL,spurious_wakes,NULL) == 0);
     assert(read_sample(&test,47,&next_dts) == 7200);
     uint64_t first_ms = h264s_now_ms()-start;
-    assert(first_ms >= 65 && first_ms < 250);
+    assert(first_ms >= 50 && first_ms < 250);
     assert(read_sample(&test,48,&next_dts) == 7200);
     uint64_t second_ms = h264s_now_ms()-start;
-    assert(second_ms >= 145 && second_ms < 330);
+    assert(second_ms >= 130 && second_ms < 330);
     assert(pthread_join(wakes,NULL) == 0);
     push(latest+1160,0);
     usleep(20000);

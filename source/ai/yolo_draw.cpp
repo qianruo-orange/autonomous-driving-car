@@ -126,8 +126,12 @@ void yolo_rgb_to_nv12_fast(const unsigned char *rgb, int w, int h, unsigned char
        曾按"色度 Mat 行 h+k = [U 行 k | V 行 k] 并排"交错——探针结论有误：
        该布局下上半场 Cb/Cr 全取自 U 平面、下半场全取自 V 平面，
        画面上半泛绿、下半泛品红且色度纵向压扁（2026-08-30 直播实锤）。 */
-    unsigned char *tmp = (unsigned char *)malloc((size_t)w * h * 3 / 2);
-    if (!tmp) { yolo_rgb_to_nv12(rgb, w, h, nv12); return; }   /* 兜底：标量实现 */
+    /* Reuse per-thread scratch storage instead of mmap/free of a full I420
+       image every frame. Keep the planes separate from the NV12 destination. */
+    static thread_local cv::Mat scratch;
+    try { scratch.create(h * 3 / 2, w, CV_8UC1); }
+    catch (const cv::Exception &) { yolo_rgb_to_nv12(rgb, w, h, nv12); return; }
+    unsigned char *tmp = scratch.data;
     cv::Mat src(h, w, CV_8UC3, (void *)rgb);
     cv::Mat i420(h * 3 / 2, w, CV_8UC1, tmp);
     cv::cvtColor(src, i420, cv::COLOR_RGB2YUV_I420);
@@ -142,7 +146,6 @@ void yolo_rgb_to_nv12_fast(const unsigned char *rgb, int w, int h, unsigned char
         unsigned char *o = nv12 + (size_t)w * h + (size_t)w * r;
         for (int c = 0; c < hw; c++) { o[2 * c] = up[c]; o[2 * c + 1] = vp[c]; }
     }
-    free(tmp);
 }
 
 /* ---- OpenCV cv2.putText 风格标签 ---- */

@@ -55,10 +55,11 @@ class Reader {
   }
   cancel() { this.cancelled++; this.reject(new Error('Reader cancelled')); return Promise.resolve(); }
 }
-function makeHarness() {
+function makeHarness({ userAgent = '', frameCallbacks = false } = {}) {
   const timers = new Map();
   let now = 10000, timerId = 0;
   const sources = [], requests = [], revoked = [];
+  const callbacks = new Map(); let callbackId = 0;
   const video = Object.assign(new Target(), {
     src: '', currentTime: 0, paused: false, seeking: false, readyState: 3,
     playbackRate: 1, error: null,
@@ -67,6 +68,10 @@ function makeHarness() {
     play() { this.playCalls++; return Promise.resolve(); },
     removeAttribute(name) { if (name === 'src') this.src = ''; }
   });
+  if (frameCallbacks) {
+    video.requestVideoFrameCallback = callback => { const id = ++callbackId; callbacks.set(id, callback); return id; };
+    video.cancelVideoFrameCallback = id => callbacks.delete(id);
+  }
   class Buffer extends Target {
     constructor() { super(); this.updating = false; this.operations = []; this.ranges = []; }
     get buffered() {
@@ -98,7 +103,7 @@ function makeHarness() {
   }
   const document = { hidden: false, getElementById(id) { return id === 'stream_video' ? video : null; } };
   const context = {
-    window: {}, document, MediaSource, AbortController, Blob, Uint8Array,
+    window: {}, document, MediaSource, AbortController, Blob, Uint8Array, navigator: { userAgent },
     Date: { now: () => now },
     URL: { createObjectURL: () => 'blob:mock-' + (sources.length + requests.length), revokeObjectURL: url => revoked.push(url) },
     setTimeout(callback, delay) { const id = ++timerId; timers.set(id, { at: now + delay, callback }); return id; },
@@ -109,7 +114,11 @@ function makeHarness() {
   vm.createContext(context);
   vm.runInContext(prefix + exposure, context, { filename: sourcePath });
   return {
-    api: context.api, video, document, sources, requests, revoked, timers, Buffer,
+    api: context.api, video, document, sources, requests, revoked, timers, Buffer, callbacks,
+    present(metadata) {
+      const [id, callback] = callbacks.entries().next().value;
+      callbacks.delete(id); callback(now, metadata);
+    },
     async advance(ms) {
       const target = now + ms;
       while (true) {
@@ -331,6 +340,32 @@ test('oversized incomplete MJPEG input aborts the old fetch before reconnecting'
   assert.equal(request.options.signal.aborted, true);
   assert.equal(h.api.state().streamRunning, false);
   assert.equal(h.api.state().streamAbort, null);
+});
+
+test('Chrome profile primes at 40 ms and bounds latency without reopening the connection', async () => {
+  const h = makeHarness({ userAgent: 'Mozilla/5.0 Chrome/147.0.0.0 Safari/537.36' });
+  const s = await h.start(); s.buffer.ranges = [[0, 0.1]];
+  h.api.mseCatchUp(); assert.ok(Math.abs(h.video.currentTime - 0.06) < 1e-8);
+  assert.equal(h.api.diagnostics().targetBufferMs, 40);
+  s.buffer.ranges = [[0, 0.15]]; h.api.mseCatchUp();
+  assert.equal(h.video.playbackRate, 1.05);
+  h.video.currentTime = 0.11; h.api.mseCatchUp(); assert.equal(h.video.playbackRate, 1);
+  s.buffer.ranges = [[0, 0.4]]; h.api.mseCatchUp();
+  assert.ok(Math.abs(h.video.currentTime - 0.36) < 1e-8);
+  assert.equal(s.reader.cancelled, 0);
+  h.api.mseStop(); await flush();
+});
+
+test('frame-presentation metadata measures visible media instead of the advanced playhead', async () => {
+  const h = makeHarness({ frameCallbacks: true }); await h.start([], { ageHeader: '1500' });
+  h.video.currentTime = 1.5;
+  h.present({ mediaTime: 1.3, processingDuration: 0.006 });
+  assert.equal(h.api.diagnostics().estimatedStreamDelayMs, 200);
+  assert.equal(h.api.diagnostics().browserDecodeMs, 6);
+  await h.advance(100); h.video.currentTime = 1.6;
+  assert.equal(h.api.diagnostics().estimatedStreamDelayMs, 300);
+  assert.equal(h.callbacks.size, 1);
+  h.api.mseStop(); assert.equal(h.callbacks.size, 0); await flush();
 });
 
 (async () => {

@@ -97,11 +97,13 @@ The dashboard uses H.264 fMP4 / MSE when supported, with MJPEG as the compatibil
 - Session generations prevent callbacks from an old aborted stream from stopping a replacement stream. Errors and transport stalls trigger controlled reconnection.
 - Already played data is periodically evicted from the MSE buffer. Ordinary playback lag is corrected within the available buffer instead of immediately reconnecting to another GOP.
 - At connection time, the server sends the historical GOP up to the newest encoded frame immediately, in decode order. Live pacing is anchored to that newest frame, rather than replaying the old GOP in real time and permanently retaining its age as delay.
-- The player primes near the live edge with approximately 200 ms of buffered media. It catches larger backlogs by seeking within the current buffer and drains smaller backlogs using slight playback acceleration. The target is a buffer setting, not a guaranteed end-to-end latency.
+- In Chrome / Chromium, the player targets approximately 40 ms of buffered media and catches backlog above 120 ms. The compatibility profile retains a 200 ms target. These are playback buffer settings, not guaranteed end-to-end latency. Both paths preserve the original frame-to-AI-result association.
 - The MJPEG path uses one fetch connection for both receipt counting and display. It retains only the latest pending frame while image decoding is busy, and keeps incomplete JPEG frames across network chunks.
 - The FPS badge reports displayed frames when browser playback-quality counters are available; its tooltip distinguishes displayed FPS from received FPS. Receipt counts alone do not prove that the browser is displaying smoothly.
 
-The status line below the video shows received FPS, buffer lead, estimated stream delay, and decoder frame drops, without opening developer tools. The stream-delay estimate measures from the encoder-output timestamp to the current browser playback position. It excludes camera capture, AI processing, and encoding time, and is approximate because it uses the response age plus local elapsed time.
+The status line below the video shows received FPS, buffer lead, estimated total delay, and decoder frame drops, without developer tools. The total estimate combines the device's capture-to-encoder age and the estimated encoder-to-browser presentation delay. A valid monotonic V4L2 capture timestamp is preferred; otherwise the device uses capture dequeue time. Exposure, timestamp accuracy, network jitter, and compositor timing limit this estimate, so a 100 ms target is not a verified camera-to-screen guarantee.
+
+Chrome's `requestVideoFrameCallback` supplies the presented frame's media time and decoder processing time when available. The lower-level `estimatedStreamDelayMs` remains an encoder-output-to-presentation estimate. See the [frame callback specification](https://wicg.github.io/video-rvfc/) for the presentation metadata semantics.
 
 The line also shows the frame rate actually negotiated with the camera and the latest capture-to-render processing age. Requested FPS can exceed camera capability: a device may accept a 60 FPS request but negotiate 30 FPS. Decoder drops on the status line are a per-second rate; cumulative decoder counts remain available in diagnostics. Parallel inference results are coalesced by their highest capture sequence, so an older worker finishing last cannot replace a newer result.
 
@@ -116,7 +118,8 @@ window.getGatewayVideoDiagnostics()
 | `transport` | Current transport: `H.264/MSE`, `MJPEG`, or `idle`. |
 | `receivedFps` / `displayedFps` | Received stream rate and displayed-frame rate. MSE receipt counting uses fragment signatures as an approximation. |
 | `bufferAheadSeconds` | Buffered media ahead of the current playback position; this is a playback-buffer measure, not a measurement of end-to-end camera latency. |
-| `estimatedStreamDelayMs` | Approximate encoder-output-to-playback delay, or `null` when the stream-age header is unavailable. It excludes capture, inference, and encoding time. |
+| `estimatedStreamDelayMs` / `estimatedTotalDelayMs` | Approximate encoder-output-to-presentation delay and total delay including device processing, or `null` without timing headers. |
+| `playbackProfile` / `targetBufferMs` / `browserDecodeMs` | Active browser profile, buffer target, and decoder processing time when frame callbacks provide it. |
 | `paused` / `seeking` / `currentTime` / `buffered` | Playback state, position, and available media ranges. |
 | `playbackRate` / `decoderError` | Current catch-up rate and any HTML media error code. |
 | `readyState` | The video element's HTML media readiness state. |

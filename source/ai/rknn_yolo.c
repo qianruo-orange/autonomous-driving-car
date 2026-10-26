@@ -443,7 +443,6 @@ static void *yolo_render_task(void *arg)
     (void)arg;
     cpu_bind_big();
     frame_ring_t *ring = ai_ring();
-    struct timespec last_render = { 0, 0 };
     while (g_ai.running && g_ai.pool_running) {
         if (!ring) { usleep(200000); continue; }   /* 防御：video 未初始化 */
 
@@ -529,16 +528,8 @@ static void *yolo_render_task(void *arg)
         }
         frame_ring_unlock(ring);
 
-        /* 渲染节拍 ~30fps：超出部分在下一次渲染前补眠，平滑帧间隔 */
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        long elapsed_ms = (now.tv_sec - last_render.tv_sec) * 1000 +
-                          (now.tv_nsec - last_render.tv_nsec) / 1000000;
-        if (last_render.tv_sec && elapsed_ms < 33) {
-            struct timespec slp = { 0, (33 - elapsed_ms) * 1000000L };
-            nanosleep(&slp, NULL);
-        }
-        clock_gettime(CLOCK_MONOTONIC, &last_render);
+        /* Capture and the bounded result queue already pace this consumer.
+           Do not hold a completed frame behind an additional 33 ms timer. */
     }
     return NULL;
 }
