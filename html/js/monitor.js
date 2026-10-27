@@ -124,8 +124,58 @@
   var mseTargetLead = chromePlayback ? 0.08 : 0.2;
   var mseMaxLead = chromePlayback ? 0.25 : 0.7;
   var mseOverLeadSince = null;
+  var mseStableSince = 0, mseRateLastAt = 0, mseRateLastMedia = 0;
+  var mseWaitingAt = null, mseStartedAt = 0;
   var mseFrameCallback = null, msePresentedMediaTime = null, mseDecodeMs = null;
-  var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0, lastError: '' };
+  var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0,
+    bufferReductions: 0, bufferRecoveries: 0, lastError: '' };
+
+  function mseProfileReset() {
+    mseTargetLead = chromePlayback ? 0.08 : 0.2;
+    mseStableSince = mseRateLastAt = mseRateLastMedia = 0;
+    mseWaitingAt = null;
+  }
+
+  function mseObservePlayback(vid, ahead) {
+    if (!chromePlayback || !msePrimed) return;
+    var now = Date.now();
+    if (vid.readyState < 3) {
+      mseStableSince = mseRateLastAt = 0;
+      if (mseWaitingAt === null && now - mseStartedAt >= 3000) mseWaitingAt = now;
+      return;
+    }
+    if (mseWaitingAt !== null) {
+      if (now - mseWaitingAt >= 120) {
+        mseTargetLead = Math.min(0.12, Math.max(0.08, mseTargetLead + 0.02));
+        mseDiag.bufferRecoveries++;
+      }
+      mseWaitingAt = null;
+      mseStableSince = mseRateLastAt = 0;
+    }
+    /* Only lower after sustained playback progress and recent delivery.
+       Elapsed wall time alone (pause, hidden tab, stale fetch) is insufficient. */
+    if (now - mseLastData > 350 || ahead < 0.025 || ahead > mseMaxLead) {
+      mseStableSince = mseRateLastAt = 0;
+      return;
+    }
+    if (!mseStableSince) {
+      mseStableSince = mseRateLastAt = now;
+      mseRateLastMedia = vid.currentTime;
+      return;
+    }
+    if (now - mseRateLastAt >= 1000) {
+      var seconds = (now - mseRateLastAt) / 1000;
+      var advance = vid.currentTime - mseRateLastMedia;
+      if (advance < seconds * 0.7 || advance > seconds * 1.4) mseStableSince = now;
+      mseRateLastAt = now;
+      mseRateLastMedia = vid.currentTime;
+    }
+    if (now - mseStableSince >= 20000 && mseTargetLead > 0.05) {
+      mseTargetLead = Math.max(0.05, Math.round((mseTargetLead - 0.01) * 100) / 100);
+      mseStableSince = now;
+      mseDiag.bufferReductions++;
+    }
+  }
 
   function mseSupported() {
     if (!window.MediaSource || !MediaSource.isTypeSupported) return false;
@@ -143,6 +193,8 @@
     mseFrameCallback = null;
     msePresentedMediaTime = null;
     mseOverLeadSince = null;
+    mseStableSince = mseRateLastAt = 0;
+    mseWaitingAt = null;
     /* Invalidate callbacks before aborting the old session. Its rejected read
        must never stop the replacement stream. */
     mseGeneration++;
@@ -225,14 +277,17 @@
     var vid = document.getElementById('stream_video');
     if (!vid || document.hidden || vid.paused || vid.seeking) {
       mseOverLeadSince = null;
+      mseStableSince = mseRateLastAt = 0;
+      mseWaitingAt = null;
       if (vid) vid.playbackRate = 1;
       return;
     }
     try {
       var b = mseSb.buffered;
-      if (!b.length) { mseOverLeadSince = null; return; }
+      if (!b.length) { mseOverLeadSince = null; mseStableSince = mseRateLastAt = 0; return; }
       var end = b.end(b.length - 1), start = b.start(b.length - 1);
       var ahead = end - vid.currentTime;
+      mseObservePlayback(vid, ahead);
       var now = Date.now();
       if (chromePlayback && ahead > mseMaxLead) {
         if (mseOverLeadSince === null) mseOverLeadSince = now;
@@ -252,9 +307,12 @@
         msePrimed = true;
         mseOverLeadSince = null;
         vid.playbackRate = 1;
-      } else if (ahead > mseTargetLead + (chromePlayback ? 0.04 : 0.1)) {
+      } else if (ahead > mseTargetLead + (chromePlayback ? 0.025 : 0.1)) {
         vid.playbackRate = chromePlayback && ahead <= mseMaxLead ? 1.03 : 1.05;
-      } else if (ahead < mseTargetLead + 0.02) {
+      } else if (chromePlayback && vid.readyState >= 3 &&
+                 (ahead < mseTargetLead - 0.02 || (vid.playbackRate < 1 && ahead < mseTargetLead))) {
+        vid.playbackRate = 0.97;
+      } else if (ahead <= mseTargetLead + (chromePlayback ? 0.01 : 0.02) + 0.000001) {
         vid.playbackRate = 1;
       }
     } catch(e) {}
@@ -280,6 +338,8 @@
     mseUrl = url;
     mseRunning = true;
     mseLastData = Date.now();
+    mseStartedAt = mseLastData;
+    mseProfileReset();
     mseLastTrim = Date.now();
     msePrimed = false;
     mseOverLeadSince = null;
@@ -367,7 +427,7 @@
       readyState: vid ? vid.readyState : 0, currentTime: vid ? vid.currentTime : 0,
       paused: vid ? vid.paused : true, seeking: vid ? vid.seeking : false,
       playbackRate: vid ? vid.playbackRate : 1,
-      playbackProfile: chromePlayback ? 'Chrome low latency' : 'Compatible',
+      playbackProfile: chromePlayback ? 'Chrome adaptive low latency' : 'Compatible',
       targetBufferMs: mseTargetLead * 1000, browserDecodeMs: mseDecodeMs,
       decoderError: vid && vid.error ? vid.error.code : null
     });
@@ -402,6 +462,13 @@
 
   var playerVideo = document.getElementById('stream_video');
   if (playerVideo && playerVideo.addEventListener) {
+    playerVideo.addEventListener('waiting', function() {
+      if (chromePlayback && mseRunning && msePrimed && !playerVideo.paused &&
+          !playerVideo.seeking && !document.hidden && Date.now() - mseStartedAt >= 3000) {
+        if (mseWaitingAt === null) mseWaitingAt = Date.now();
+        mseStableSince = mseRateLastAt = 0;
+      }
+    });
     playerVideo.addEventListener('error', function() {
       if (mseRunning && playerVideo.error)
         mseFail(mseGeneration, new Error('Video decoder error ' + playerVideo.error.code));
@@ -409,6 +476,8 @@
     playerVideo.addEventListener('seeked', function() { mseCatchUp(); });
     function resetCatchUp() {
       mseOverLeadSince = null;
+      mseStableSince = mseRateLastAt = 0;
+      mseWaitingAt = null;
       if (mseRunning) playerVideo.playbackRate = 1;
     }
     playerVideo.addEventListener('pause', resetCatchUp);

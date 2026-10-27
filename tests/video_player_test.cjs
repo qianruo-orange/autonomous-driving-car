@@ -441,6 +441,79 @@ test('Chrome pause, seeking, hidden and replacement sessions reset pending catch
   }
 });
 
+async function steadyTick(h, s, seconds = 1, ahead = 0.08, progress = true) {
+  await h.advance(seconds * 1000);
+  if (progress) h.video.currentTime += seconds;
+  s.buffer.ranges = [[Math.max(0, h.video.currentTime - 10), h.video.currentTime + ahead]];
+  s.reader.push(new Uint8Array([1, 2, 3])); await flush();
+  while (s.buffer.updating) { s.buffer.complete(); await flush(); }
+}
+
+test('Chrome steadily reduces its buffer from 80 to 50 ms without extra seeks or reconnects', async () => {
+  const h = makeHarness({userAgent:'Chrome/147.0.0.0'});
+  const s = await h.start();s.buffer.ranges=[[0,.16]];h.api.mseCatchUp();
+  const catchups=h.api.diagnostics().catchups;
+  for(let i=0;i<21;i++)await steadyTick(h,s);
+  assert.equal(h.api.diagnostics().targetBufferMs,70);
+  for(let i=0;i<40;i++)await steadyTick(h,s);
+  assert.equal(h.api.diagnostics().targetBufferMs,50);
+  assert.equal(h.api.diagnostics().bufferReductions,3);
+  assert.equal(h.api.diagnostics().catchups,catchups);
+  assert.equal(h.api.diagnostics().reconnects,0);
+  assert.equal(h.video.playbackRate,1.03,'Drain the old lead smoothly after lowering the target');
+  h.api.mseStop();await flush();
+});
+
+test('Chrome recovers buffer headroom after a real wait, without seeking to stale video', async () => {
+  const h = makeHarness({userAgent:'Chrome/147.0.0.0'});
+  const s=await h.start();s.buffer.ranges=[[0,.16]];h.api.mseCatchUp();
+  for(let i=0;i<61;i++)await steadyTick(h,s);
+  h.video.readyState=2;h.video.emit('waiting');await h.advance(150);
+  h.api.mseCatchUp();h.video.readyState=3;
+  await steadyTick(h,s,.1,.04);
+  assert.equal(h.api.diagnostics().targetBufferMs,80);
+  assert.equal(h.api.diagnostics().bufferRecoveries,1);
+  assert.equal(h.video.playbackRate,.97);
+  s.buffer.ranges=[[h.video.currentTime-10,h.video.currentTime+.085]];h.api.mseCatchUp();
+  assert.equal(h.video.playbackRate,1);
+  h.api.mseStop();await flush();
+});
+
+test('Chrome never lowers buffer for wall time without actual playback progress', async () => {
+  const h=makeHarness({userAgent:'Chrome/147.0.0.0'});
+  const s=await h.start();s.buffer.ranges=[[0,.16]];h.api.mseCatchUp();
+  for(let i=0;i<65;i++)await steadyTick(h,s,1,.08,false);
+  assert.equal(h.api.diagnostics().targetBufferMs,80);
+  assert.equal(h.api.diagnostics().bufferReductions,0);
+  await h.advance(60000);h.api.mseCatchUp();
+  assert.equal(h.api.diagnostics().targetBufferMs,80);
+  h.api.mseStop();await flush();
+});
+
+test('Chrome restart resets adaptive buffer and compatible browsers retain their fixed profile', async () => {
+  for(const userAgent of ['Chrome/147.0.0.0','Firefox/147.0']){
+    const h=makeHarness({userAgent});let s=await h.start();s.buffer.ranges=[[0,.4]];h.api.mseCatchUp();
+    for(let i=0;i<61;i++)await steadyTick(h,s);
+    assert.equal(h.api.diagnostics().targetBufferMs,userAgent.startsWith('Chrome')?50:200);
+    h.api.mseStop();s=await h.start();
+    assert.equal(h.api.diagnostics().targetBufferMs,userAgent.startsWith('Chrome')?80:200);
+    h.api.mseStop();await flush();
+  }
+});
+
+test('Chrome pause and background events restart the continuous stability window', async () => {
+  for(const event of ['pause','hidden']){
+    const h=makeHarness({userAgent:'Chrome/147.0.0.0'});
+    const s=await h.start();s.buffer.ranges=[[0,.16]];h.api.mseCatchUp();
+    for(let i=0;i<19;i++)await steadyTick(h,s);
+    if(event==='pause')h.video.emit('pause');
+    else{h.document.hidden=true;h.document.emit('visibilitychange');h.document.hidden=false;}
+    await steadyTick(h,s);await steadyTick(h,s);
+    assert.equal(h.api.diagnostics().targetBufferMs,80);
+    h.api.mseStop();await flush();
+  }
+});
+
 test('frame-presentation metadata measures visible media instead of the advanced playhead', async () => {
   const h = makeHarness({ frameCallbacks: true }); await h.start([], { ageHeader: '1500' });
   h.video.currentTime = 1.5;
