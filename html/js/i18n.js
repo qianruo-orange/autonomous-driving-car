@@ -5,6 +5,9 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    '比例系数': 'Proportional coefficient',
+    '积分系数': 'Integral coefficient',
+    '微分系数': 'Derivative coefficient',
     '跟踪设置': 'Tracking settings',
     '速度模式与限速': 'Speed mode and limits',
     '自动调速 PD': 'Automatic speed PD',

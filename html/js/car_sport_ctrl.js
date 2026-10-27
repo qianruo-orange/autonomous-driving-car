@@ -24,12 +24,12 @@
         max_yaw: '最大转向角速度 (rad/s)',
         wheel_track: '左右轮间距 (m)',
         deadband: '中心误差死区',
-        speed_kp: '自动速度 Kp',
-        speed_kd: '自动速度 Kd',
-        turn_kp: '转向 Kp',
-        turn_kd: '转向 Kd',
-        wheel_kp: '轮速 Kp',
-        wheel_ki: '轮速 Ki'
+        speed_kp: '比例系数',
+        speed_kd: '微分系数',
+        turn_kp: '比例系数',
+        turn_kd: '微分系数',
+        wheel_kp: '比例系数',
+        wheel_ki: '积分系数'
     };
     const groups = [
         ['tracking', '跟踪设置', ['enabled', 'target']],
