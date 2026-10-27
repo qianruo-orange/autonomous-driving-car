@@ -7,6 +7,20 @@
 #include <time.h>
 #include <unistd.h>
 
+void http_detection_report_delete(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri;
+    const char *relative = http_body_start(req);
+    if (!yolo_report_rel_valid(relative)) {
+        http_err(fd, 400, "Bad Request", "Invalid report filename"); return;
+    }
+    if (yolo_events_delete_report(relative) == 0) {
+        http_ok_json(fd, "{\"deleted\":true}", 16); return;
+    }
+    int code = errno == ENOENT ? 404 : errno == EINVAL || errno == ELOOP ? 400 : 500;
+    http_err(fd, code, code == 404 ? "Not Found" : code == 400 ? "Bad Request" : "Error", "Unable to delete report");
+}
+
 #define DETECTION_LIST_MAX 200
 
 typedef struct {

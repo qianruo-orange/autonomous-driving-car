@@ -37,6 +37,11 @@ void rknn_yolo_destroy(void *arg);
 int rknn_yolo_enabled(void);
 /* 返回平台 NPU 核心数（RK3588=3 / RK3576=2 / 其余单核）。 */
 int npu_core_count(void);
+/* Canonical model platform name (RK3588S -> rk3588), or "unknown" when the
+ * device tree is unsupported. Explicit ai_model paths remain configurable. */
+const char *npu_platform_name(void);
+/* Conversion, runtime defaults and uploads share config/yolo26.rknn. */
+void rknn_yolo_default_model_path(char *out, size_t size);
 /* 当前自适应启用的推理 worker 数；推理池不可用时返回 0。 */
 int rknn_yolo_active_workers(void);
 

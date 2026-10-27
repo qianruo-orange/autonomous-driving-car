@@ -22,6 +22,17 @@
    并发保存时避免写坏 config.txt */
 static pthread_mutex_t g_config_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static void config_normalize_model_path(struct app_config_t *cfg)
+{
+    char previous_default[256], previous_relative[256];
+    snprintf(previous_default, sizeof(previous_default), "config/models/%s/yolo26.rknn", npu_platform_name());
+    snprintf(previous_relative, sizeof(previous_relative), "./config/models/%s/yolo26.rknn", npu_platform_name());
+    if (!cfg->ai_model[0] || !strcmp(cfg->ai_model, "config/yolo26.rknn") ||
+        !strcmp(cfg->ai_model, "./config/yolo26.rknn") ||
+        !strcmp(cfg->ai_model, previous_default) || !strcmp(cfg->ai_model, previous_relative))
+        rknn_yolo_default_model_path(cfg->ai_model, sizeof(cfg->ai_model));
+}
+
 static void config_defaults(struct app_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
@@ -33,7 +44,7 @@ static void config_defaults(struct app_config_t *cfg)
     safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), "software");
     safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
 
-    safe_strncpy(cfg->ai_model, sizeof(cfg->ai_model), "config/yolo26.rknn");
+    rknn_yolo_default_model_path(cfg->ai_model, sizeof(cfg->ai_model));
     safe_strncpy(cfg->ai_names, sizeof(cfg->ai_names), "config/coco.names");
     cfg->ai_input_size  = 640;
     cfg->ai_conf        = 0.25f;
@@ -69,7 +80,7 @@ int config_load(struct app_config_t *cfg)
     cfg->video_width = 640; cfg->video_height = 480;
     safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), "software");
     safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
-    safe_strncpy(cfg->ai_model, sizeof(cfg->ai_model), "config/yolo26.rknn");
+    rknn_yolo_default_model_path(cfg->ai_model, sizeof(cfg->ai_model));
     safe_strncpy(cfg->ai_names, sizeof(cfg->ai_names), "config/coco.names");
     cfg->ai_input_size = 640; cfg->ai_conf = 0.25f; cfg->ai_nms = 0.45f;
     cfg->ai_interval_ms = 10; { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->ai_threads = _c; } /* 默认每核 1 个推理线程 */
@@ -162,6 +173,7 @@ int config_load(struct app_config_t *cfg)
     if (a->max_clients <= 0) a->max_clients = 16;
     if (cfg->video_width <= 0) cfg->video_width = 640;
     if (cfg->video_height <= 0) cfg->video_height = 480;
+    config_normalize_model_path(cfg);
     LOG_INFO("config: loaded from %s (%d can iface(s))", CONFIG_PATH, a->can_count);
     return 0;
 }
@@ -172,6 +184,7 @@ void config_save(app_ctx_t *app)
     struct app_config_t *cfg = app->cfg;
     can_ctx_t *can = app->can;
     tcp_ctx_t *tcp = app->tcp;
+    config_normalize_model_path(cfg);
 
     pthread_mutex_lock(&g_config_mutex);
     /* 原子写：先写临时文件，再 rename 覆盖，避免进程崩溃留下半截配置 */
@@ -217,7 +230,7 @@ void config_save(app_ctx_t *app)
     fprintf(fp, "video_codec %s\n", cfg->video_codec);
     fprintf(fp, "video_decoder %s\n", cfg->video_decoder[0] ? cfg->video_decoder : "software");
     fprintf(fp, "\n# --- AI 检测 (YOLO26, RKNN) ---\n");
-    fprintf(fp, "ai_model %s\n", cfg->ai_model[0] ? cfg->ai_model : "config/yolo26.rknn");
+    fprintf(fp, "ai_model %s\n", cfg->ai_model);
     fprintf(fp, "ai_names %s\n", cfg->ai_names[0] ? cfg->ai_names : "config/coco.names");
     fprintf(fp, "ai_input_size %d\n", cfg->ai_input_size > 0 ? cfg->ai_input_size : 640);
     fprintf(fp, "ai_conf %d\n", (int)(cfg->ai_conf > 0 ? cfg->ai_conf * 100 : 25));

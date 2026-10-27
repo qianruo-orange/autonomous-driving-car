@@ -9,6 +9,10 @@ BINARY="$PROJECT_DIR/bin/$APP_NAME"
 SERVICE_SRC="$PROJECT_DIR/$APP_NAME.service"
 SERVICE_NAME="$APP_NAME"
 
+detect_model_platform() {
+    python3 "$PROJECT_DIR/scripts/model_sync.py" detect-platform
+}
+
 usage() {
     echo "Usage: $0 [-i | -u | -r]"
     echo "  -i   Install: deploy and start service (default)"
@@ -51,8 +55,27 @@ do_install() {
         exit 1
     fi
 
+    local platform
+    platform="${GATEWAY_PLATFORM:-$(detect_model_platform || true)}"
+    if [ -z "$platform" ]; then
+        echo "[ERROR] unable to detect the RKNN platform; set GATEWAY_PLATFORM explicitly"
+        return 1
+    fi
+    platform=$(python3 "$PROJECT_DIR/scripts/model_sync.py" normalize-platform --platform "$platform")
+    # Check for independently changed models before interrupting the service.
+    python3 "$PROJECT_DIR/scripts/model_sync.py" reconcile \
+        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR" --platform "$platform"
+
     echo "[STOP] existing service (if running)"
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+
+    echo "[INSTALL] configuration and canonical model (preserving uploaded model changes)"
+    if ! python3 "$PROJECT_DIR/scripts/model_sync.py" install-config \
+        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR" --platform "$platform"; then
+        echo "[ERROR] configuration/model synchronization failed; restarting the previous service"
+        systemctl start "$SERVICE_NAME" 2>/dev/null || true
+        return 1
+    fi
 
     # 清理旧 WebRTC 边车（mediamtx + fifo pusher）：直播已改回 fMP4/MSE 直供，
     # 不再需要外部 RTSP 中转。从旧版本升级时留着会白占 VPU/内存并抢 8554/8889 端口
@@ -69,13 +92,6 @@ do_install() {
     mkdir -p "$DEPLOY_DIR/bin"
     cp "$BINARY" "$DEPLOY_DIR/bin/$APP_NAME"
     chmod 755 "$DEPLOY_DIR/bin/$APP_NAME"
-
-    echo "[INSTALL] config/ (先回拉设备端 config.txt，网页修改不丢失；再整目录覆盖)"
-    if [ -f "$DEPLOY_DIR/config/config.txt" ]; then
-        cp "$DEPLOY_DIR/config/config.txt" "$PROJECT_DIR/config/config.txt"
-    fi
-    rm -rf "$DEPLOY_DIR/config"
-    cp -r "$PROJECT_DIR/config" "$DEPLOY_DIR/config"
 
     echo "[INSTALL] html/"
     rm -rf "$DEPLOY_DIR/html"

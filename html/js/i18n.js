@@ -27,6 +27,7 @@
     '识别照片': 'Detection photos',
     '暂无检测汇总': 'No daily detection reports',
     '下载 TXT': 'Download TXT',
+    '删除日报 {file}？后续检测将继续创建当天文件。': 'Delete report {file}? New detections will recreate today\'s file.',
     '显示最近 200 条已保存的识别结果。': 'Showing the latest 200 completed detections.',
     '检测到目标时自动保存，每秒最多一张。照片与 JSON 检测数据使用相同文件名。': 'Detections are saved automatically, up to one snapshot per second. The photo and JSON data share the same filename.',
     '捕捉时间': 'Capture time',

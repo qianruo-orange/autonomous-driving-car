@@ -9,23 +9,33 @@ static ssize_t test_write(int fd, const void *bytes, size_t length);
 #include "http/http_api_detections.c"
 #include <assert.h>
 
-static long write_budget = -1;
+static atomic_long write_budget = -1;
+static atomic_int write_failures, recovery_logs, shutdown_failure_logs;
 static char response[65536], response_mime[64];
 static size_t response_len;
 static int response_code;
 
 static ssize_t test_write(int fd, const void *bytes, size_t length)
 {
-    if (write_budget < 0) return write(fd, bytes, length);
-    if (!write_budget) { errno = ENOSPC; return -1; }
-    if (length > (size_t)write_budget) length = (size_t)write_budget;
+    long budget = atomic_load(&write_budget);
+    if (budget < 0) return write(fd, bytes, length);
+    if (!budget) { atomic_fetch_add(&write_failures, 1); errno = ENOSPC; return -1; }
+    if (length > (size_t)budget) length = (size_t)budget;
     ssize_t n = write(fd, bytes, length);
-    if (n > 0) write_budget -= n;
+    if (n > 0) atomic_fetch_sub(&write_budget, n);
     return n;
 }
 
 void _log_error(const char *file, int line, const char *fmt, ...)
-{ (void)file; (void)line; (void)fmt; }
+{
+    (void)file; (void)line;
+    if (strstr(fmt, "shutdown storage failure")) atomic_fetch_add(&shutdown_failure_logs, 1);
+}
+void _log_info(const char *file, int line, const char *fmt, ...)
+{
+    (void)file; (void)line;
+    if (strstr(fmt, "storage recovered")) atomic_fetch_add(&recovery_logs, 1);
+}
 void http_ok_json(int fd, const char *json, size_t len)
 {
     (void)fd; assert(len < sizeof(response));
@@ -55,6 +65,74 @@ int http_json_append(char *json, size_t size, int off, const char *fmt, ...)
     return n < 0 || (size_t)n >= size - (size_t)off ? -1 : off + n;
 }
 
+const char *http_body_start(const char *request)
+{
+    if (!request) return "";
+    const char *body = strstr(request, "\r\n\r\n");
+    return body ? body + 4 : request;
+}
+
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t done_cond;
+    yolo_event_meta_t meta;
+    int done, status;
+} producer_t;
+
+static void *submit_one(void *argument)
+{
+    producer_t *producer = argument;
+    int status = yolo_events_submit_meta(&producer->meta);
+    pthread_mutex_lock(&producer->lock);
+    producer->status = status; producer->done = 1;
+    pthread_cond_signal(&producer->done_cond);
+    pthread_mutex_unlock(&producer->lock);
+    return NULL;
+}
+
+static int producer_done(producer_t *producer, int milliseconds)
+{
+    struct timespec until; clock_gettime(CLOCK_REALTIME, &until);
+    until.tv_nsec += (long)milliseconds * 1000000L;
+    until.tv_sec += until.tv_nsec / 1000000000L; until.tv_nsec %= 1000000000L;
+    pthread_mutex_lock(&producer->lock);
+    while (!producer->done)
+        if (pthread_cond_timedwait(&producer->done_cond, &producer->lock, &until)) break;
+    int done = producer->done;
+    pthread_mutex_unlock(&producer->lock);
+    return done;
+}
+
+static void check_backpressure(const yolo_event_meta_t *meta)
+{
+    producer_t producer = {.lock = PTHREAD_MUTEX_INITIALIZER, .done_cond = PTHREAD_COND_INITIALIZER, .meta = *meta};
+    events.count = YOLO_EVENT_QUEUE_SIZE; events.head = 0; events.stopping = 0; events.recent_count = events.recent_next = 0;
+    atomic_store(&events.enabled, 1);
+    pthread_t thread; assert(pthread_create(&thread, NULL, submit_one, &producer) == 0);
+    assert(!producer_done(&producer, 20));
+    pthread_mutex_lock(&events.lock); events.count = 0; pthread_cond_signal(&events.space); pthread_mutex_unlock(&events.lock);
+    assert(producer_done(&producer, 500) && producer.status == 0);
+    pthread_join(thread, NULL);
+    assert(events.count == 1); /* Waiting for space did not drop the frame. */
+
+    producer.done = 0; producer.meta.seq++; events.recent_count = events.recent_next = 0;
+    pthread_mutex_lock(&events.lock);
+    assert(pthread_create(&thread, NULL, submit_one, &producer) == 0);
+    assert(!producer_done(&producer, 20));
+    pthread_mutex_unlock(&events.lock);
+    assert(producer_done(&producer, 500) && producer.status == 0);
+    pthread_join(thread, NULL); /* Ordinary mutex contention also waits. */
+
+    producer.done = 0; producer.meta.seq++; events.count = YOLO_EVENT_QUEUE_SIZE; events.recent_count = events.recent_next = 0;
+    assert(pthread_create(&thread, NULL, submit_one, &producer) == 0);
+    assert(!producer_done(&producer, 20));
+    yolo_events_destroy();
+    assert(producer_done(&producer, 500) && producer.status == -1);
+    pthread_join(thread, NULL);
+    events.count = 0; events.stopping = 0; atomic_store(&events.enabled, 0);
+    pthread_cond_destroy(&producer.done_cond); pthread_mutex_destroy(&producer.lock);
+}
+
 static void submit_until_accepted(const yolo_event_meta_t *meta)
 {
     for (int i = 0; i < 1000; i++) {
@@ -72,6 +150,12 @@ static int line_count(const char *body)
 {
     int lines = 0; for (; *body; ++body) if (*body == '\n') lines++;
     return lines;
+}
+static int occurrence_count(const char *body, const char *needle)
+{
+    int count = 0;
+    for (const char *p = body; (p = strstr(p, needle)); p += strlen(needle)) count++;
+    return count;
 }
 static void clear_day(int root, const char *day)
 {
@@ -96,39 +180,63 @@ int main(void)
         .width = 1280, .height = 720, .focus_valid = 0, .focus_position = 999, .autofocus = -1,
         .count = 2, .objects = {{.cls = 0, .name = "target\\\t\r\n", .conf = .75f, .x1 = 10, .y1 = 20, .x2 = 110, .y2 = 220},
             {.cls = 1, .name = "person", .conf = .9f, .x1 = 30, .y1 = 40, .x2 = 130, .y2 = 240}}};
-    atomic_store(&events.enabled, 1); events.count = YOLO_EVENT_QUEUE_SIZE;
-    assert(yolo_events_submit_meta(&meta) == -1); events.count = 0;
-    pthread_mutex_lock(&events.lock); assert(yolo_events_submit_meta(&meta) == -1); pthread_mutex_unlock(&events.lock);
-    atomic_store(&events.enabled, 0);
+    check_backpressure(&meta);
     char scratch[] = "/tmp/yolo-events-test-XXXXXX"; assert(mkdtemp(scratch));
     int original = open(".", O_RDONLY | O_DIRECTORY); assert(original >= 0 && chdir(scratch) == 0);
     assert(yolo_events_init(NULL) == 0 && yolo_events_init(NULL) == 0);
-    assert(!yolo_events_due(0, 1000));
+    assert(yolo_events_due(0, 1000));
+    assert(!yolo_events_due(-1, 1000));
     assert(yolo_events_due(1, 1000) && yolo_events_due(1, 1000) && yolo_events_due(1, 1001));
     yolo_event_meta_t bad = meta; bad.objects[0].conf = NAN; assert(yolo_events_submit_meta(&bad) < 0);
     char first_day[9], ignored[REPORT_BUFFER_SIZE]; assert(format_report(&meta, first_day, ignored, sizeof(ignored)) > 0);
     submit_until_accepted(&meta); submit_until_accepted(&meta); /* Duplicate capture is not appended twice. */
+    yolo_event_meta_t original_meta = meta;
     meta.seq = 8; meta.capture_unix_ms += 1000; meta.count = 1; meta.focus_valid = 1; meta.focus_position = 220; meta.autofocus = 1;
     submit_until_accepted(&meta);
+    submit_until_accepted(&original_meta); /* Out-of-order duplicate is deduplicated too. */
+    meta.seq = 81; meta.capture_unix_ms += 1000; meta.count = 0;
+    submit_until_accepted(&meta); /* A frame without targets must still be present. */
     /* The timed flush must publish results while the writer remains running. */
     for (int i = 0; i < 600; ++i) {
         get_report(first_day);
-        if (response_code == 200 && line_count(response) == 4) break;
+        if (response_code == 200 && line_count(response) == 5) break;
         usleep(5000);
     }
-    assert(response_code == 200 && line_count(response) == 4);
+    assert(response_code == 200 && line_count(response) == 5);
     assert(!strcmp(response_mime, "text/plain; charset=utf-8"));
     assert(!strncmp(response, report_header, sizeof(report_header) - 1));
     assert(strstr(response, ".123+0800\t1280\t720\ttarget\\\\\\t\\r\\n\t0.750000\t10.000\t20.000\t110.000\t220.000\t7\tnull\tnull\tnull\n"));
     assert(strstr(response, "\t8\t220\tnull\ttrue\n"));
+    assert(strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t81\t220\tnull\ttrue\n"));
     assert(!strstr(response + sizeof(report_header) - 1, "capture_time"));
     size_t original_size = response_len;
     int retained_root = dup(events.root_fd); assert(retained_root >= 0);
     /* Simulate a short disk write then ENOSPC: old rows must remain intact. */
     write_budget = 5; assert(flush_report(first_day, "partial new row\n", 16) < 0); write_budget = -1;
-    get_report(first_day); assert(response_code == 200 && response_len == original_size && line_count(response) == 4);
+    get_report(first_day); assert(response_code == 200 && response_len == original_size && line_count(response) == 5);
 
-    meta.seq = 9; meta.capture_unix_ms += 86400000ull;
+    /* A transient append failure retains the complete batch. A frame accepted
+       during the retry also survives, and neither one is duplicated. */
+    int previous_failures = atomic_load(&write_failures);
+    write_budget = 5;
+    meta.seq = 82; meta.count = 1; meta.capture_unix_ms += 1000;
+    submit_until_accepted(&meta);
+    for (int i = 0; i < 800 && atomic_load(&write_failures) < previous_failures + 2; ++i) usleep(5000);
+    assert(atomic_load(&write_failures) >= previous_failures + 2);
+    meta.seq = 83; meta.capture_unix_ms += 1000;
+    submit_until_accepted(&meta);
+    write_budget = -1;
+    for (int i = 0; i < 800; ++i) {
+        get_report(first_day);
+        if (response_code == 200 && line_count(response) == 7) break;
+        usleep(5000);
+    }
+    assert(response_code == 200 && line_count(response) == 7);
+    assert(occurrence_count(response, "\t82\t220\tnull\ttrue\n") == 1);
+    assert(occurrence_count(response, "\t83\t220\tnull\ttrue\n") == 1);
+    assert(atomic_load(&recovery_logs) == 1);
+
+    meta.seq = 9; meta.count = 0; meta.capture_unix_ms += 86400000ull;
     char second_day[9]; assert(format_report(&meta, second_day, ignored, sizeof(ignored)) > 0);
     assert(strcmp(first_day, second_day)); submit_until_accepted(&meta); memset(&meta, 0, sizeof(meta));
     yolo_events_destroy(); assert(!yolo_events_due(1, 9000)); yolo_events_destroy();
@@ -162,9 +270,55 @@ int main(void)
     http_detection_reports_list(NULL, 0, "GET", "/api/detections/reports", NULL);
     assert(!strstr(response, "20000101"));
     http_detection_file(NULL, 0, "GET", "/detectionfile/20261027/../secret.txt", NULL); assert(response_code == 404);
+    errno = 0; assert(yolo_events_delete_report("20261027/../secret.txt") < 0 && errno == EINVAL);
+    errno = 0; assert(yolo_events_delete_report("20000101/detections_20000101.txt") < 0 && errno == EINVAL);
+    /* Deleting today's regular report is allowed; new records recreate it. */
+    char relative[64]; snprintf(relative, sizeof(relative), "%s/detections_%s.txt", first_day, first_day);
+    assert(yolo_events_init(NULL) == 0);
+    assert(yolo_events_delete_report(relative) == 0);
+    get_report(first_day); assert(response_code == 404);
+    errno = 0; assert(yolo_events_delete_report(relative) < 0 && errno == ENOENT);
+    meta = (yolo_event_meta_t){.seq = 12, .capture_unix_ms = 1793030402123ull,
+        .width = 1280, .height = 720, .autofocus = 1, .count = 0};
+    submit_until_accepted(&meta); yolo_events_destroy();
+    get_report(first_day); assert(response_code == 200 && line_count(response) == 2 && strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t12\tnull\tnull\ttrue\n"));
+    char request[160]; snprintf(request, sizeof(request), "POST /api/detections/reports/delete HTTP/1.1\r\n\r\n%s", relative);
+    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", request);
+    assert(response_code == 200 && !strcmp(response, "{\"deleted\":true}"));
+    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", relative);
+    assert(response_code == 404);
+    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20261027/../secret.txt");
+    assert(response_code == 400);
+    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20000101/detections_20000101.txt");
+    assert(response_code == 400);
+    /* A full queue plus permanent storage failure must release a blocked
+       inference producer before the caller joins that producer at shutdown. */
+    assert(yolo_events_init(NULL) == 0);
+    previous_failures = atomic_load(&write_failures);
+    write_budget = 0; meta.seq = 13;
+    submit_until_accepted(&meta);
+    for (int i = 0; i < 800 && atomic_load(&write_failures) == previous_failures; ++i) usleep(5000);
+    assert(atomic_load(&write_failures) > previous_failures);
+    for (int i = 0; i < YOLO_EVENT_QUEUE_SIZE; ++i) {
+        meta.seq++;
+        assert(yolo_events_submit_meta(&meta) == 0);
+    }
+    producer_t blocked = {.lock = PTHREAD_MUTEX_INITIALIZER, .done_cond = PTHREAD_COND_INITIALIZER, .meta = meta};
+    blocked.meta.seq++;
+    pthread_t blocked_thread; assert(pthread_create(&blocked_thread, NULL, submit_one, &blocked) == 0);
+    assert(!producer_done(&blocked, 20));
+    unsigned long long stopping_at = monotonic_ms();
+    yolo_events_prepare_stop();
+    assert(producer_done(&blocked, 2000) && blocked.status == -1);
+    pthread_join(blocked_thread, NULL);
+    yolo_events_destroy();
+    assert(monotonic_ms() - stopping_at < 3000u);
+    assert(atomic_load(&shutdown_failure_logs) == 1);
+    pthread_cond_destroy(&blocked.done_cond); pthread_mutex_destroy(&blocked.lock);
+    write_budget = -1;
     clear_day(retained_root, first_day); clear_day(retained_root, second_day); clear_day(retained_root, "20000101");
     close(retained_root); assert(rmdir(YOLO_EVENTS_DIR) == 0 && rmdir("recordings") == 0);
     assert(fchdir(original) == 0); close(original); assert(rmdir(scratch) == 0);
-    puts("PASS: metadata-only daily TXT batches, per-target rows, timed flush, rollback, cross-day append, bounded queue and protected downloads");
+    puts("PASS: every-frame TXT, transient storage recovery without omissions/duplicates, bounded failure shutdown, backpressure and protected report deletion/recreation");
     return 0;
 }

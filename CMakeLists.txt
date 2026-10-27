@@ -189,3 +189,11 @@ target_compile_options(decoder_config_test PRIVATE -UNDEBUG -ffunction-sections 
 set_property(TARGET decoder_config_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
 target_link_libraries(decoder_config_test PRIVATE pthread)
 add_test(NAME decoder_config COMMAND decoder_config_test)
+
+add_executable(model_path_test tests/model_path_test.c)
+target_include_directories(model_path_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(model_path_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+set_property(TARGET model_path_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+target_link_libraries(model_path_test PRIVATE pthread m)
+add_test(NAME model_path COMMAND model_path_test)
+add_test(NAME model_sync COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/model_sync_test.py)

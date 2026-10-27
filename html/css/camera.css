@@ -8,14 +8,7 @@
 #camera_form .camera-fields{gap:12px;margin:18px 0 4px}
 #camera_form .row{display:grid;grid-template-columns:130px minmax(0,1fr);gap:14px;align-items:center}
 #camera_form .row label{width:auto;margin:0;line-height:1.45}
-#camera_form select{width:100%;max-width:none;min-height:38px;padding:8px 12px;border:1px solid var(--card-border2);border-radius:9px;color:var(--text);background-color:var(--input-bg);color-scheme:dark;cursor:pointer;transition:border-color .15s,box-shadow .15s}
-#camera_form select:hover:not(:disabled){border-color:var(--accent)}
-#camera_form select:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--glow)}
-#camera_form select option{color:var(--text);background-color:var(--input-bg)}
-#camera_form select option:disabled{color:#91a3bb;background-color:#17263b}
-#camera_form select:disabled{opacity:.55;cursor:wait}
-html[data-theme="light"] #camera_form select{color-scheme:light}
-html[data-theme="light"] #camera_form select option:disabled{color:#718096;background-color:#edf2f7}
+#camera_form select{width:100%;max-width:none}
 @media(max-width:640px){#camera_form .row{grid-template-columns:1fr;gap:6px}}
 .camera-fields .row{margin:0}
 .camera-fields .row label{width:120px;flex:none}

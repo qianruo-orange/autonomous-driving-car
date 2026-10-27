@@ -2,6 +2,13 @@
 #include "yolo/rknn_yolo.c"
 #include <assert.h>
 
+static yolo_event_meta_t logged[4];
+static int logged_count;
+int yolo_events_due(int count, unsigned long long now)
+{ (void)now; return count >= 0; }
+int yolo_events_submit_meta(const yolo_event_meta_t *meta)
+{ assert(logged_count < 4); logged[logged_count++] = *meta; return 0; }
+
 int main(void)
 {
     frame_ring_t ring;
@@ -37,18 +44,12 @@ int main(void)
     assert(w == 16 && h == 16);
     frame_ring_unlock(&ring);
 
-    /* Snapshot metadata describes exactly the post-EMA boxes drawn by the
-       renderer, with lens values copied from this captured sequence. */
+    /* Inference metadata keeps the frame's own coordinates and lens sample. */
     g_ai.classes.count = 1;
     strcpy(g_ai.classes.names[0], "person");
     yolo_result_t display = {.seq = seq, .w = 16, .h = 16, .count = 1};
     display.dets[0] = (yolo_det_t){.cls = 0, .conf = .9f, .x1 = 1, .y1 = 1, .x2 = 10, .y2 = 10};
-    yolo_result_t previous = display;
-    previous.dets[0].x1 = 2;
-    previous.dets[0].x2 = 12;
-    yolo_smooth(&previous, &display);
-    assert(display.dets[0].x1 != 1);
-    assert(yolo_event_describe_rendered(&metadata, &display, 3000, 1000000) == 0);
+    assert(yolo_event_describe_result(&metadata, &display, 3000, 1000000) == 0);
     assert(metadata.seq == seq && metadata.capture_monotonic_ms == 2000);
     assert(metadata.capture_unix_ms == 999000 && metadata.count == 1);
     assert(metadata.focus_valid && metadata.focus_position == 220 && metadata.autofocus == 1);
@@ -57,9 +58,17 @@ int main(void)
     assert(metadata.objects[0].x1 == display.dets[0].x1);
     assert(metadata.objects[0].x2 == display.dets[0].x2);
     assert(metadata.objects[0].conf == display.dets[0].conf);
+    yolo_job_t job = {.seq = seq, .metadata = metadata};
+    yolo_record_result(&job, &display);
+    assert(logged_count == 1 && logged[0].seq == seq && logged[0].count == 1);
+    display.count = 0;
+    yolo_record_result(&job, &display);
+    assert(logged_count == 2 && logged[1].seq == seq && logged[1].count == 0);
     yolo_result_t wrong_frame = display;
     wrong_frame.seq++;
-    assert(yolo_event_describe_rendered(&metadata, &wrong_frame, 3000, 1000000) < 0);
+    assert(yolo_event_describe_result(&metadata, &wrong_frame, 3000, 1000000) < 0);
+    yolo_record_result(&job, &wrong_frame);
+    assert(logged_count == 2);
     frame_slot_t unknown = {.seq = seq, .w = 16, .h = 16, .capture_ms = 2000,
                             .focus_valid = 0, .focus_position = 999, .autofocus = 9};
     yolo_event_meta_t unknown_meta;
@@ -86,6 +95,6 @@ int main(void)
     frame_ring_unlock(&ring);
     frame_ring_destroy(&ring);
     puts("PASS: rendering owns RGB across camera quiesce; cleared slots cannot recycle it");
-    puts("PASS: event metadata retains the captured lens sample and exactly matches rendered EMA detections");
+    puts("PASS: completed inference metadata retains its captured lens sample, including empty detections");
     return 0;
 }

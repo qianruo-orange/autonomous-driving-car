@@ -13,6 +13,9 @@ void _log_info(const char *file, int line, const char *format, ...)
 void _log_error(const char *file, int line, const char *format, ...)
 { (void)file; (void)line; if (strstr(format, "unsupported video decoder")) unsupported_logs++; }
 int npu_core_count(void) { return 2; }
+const char *npu_platform_name(void) { return "rk3576"; }
+void rknn_yolo_default_model_path(char *out, size_t size)
+{ snprintf(out, size, "config/yolo26.rknn"); }
 int rknn_yolo_active_workers(void) { return 4; }
 int rknn_yolo_reload(void) { assert(!"Unexpected model reload"); return -1; }
 int can_enumerate_system(char names[][IFNAMSIZ], int maximum)
@@ -64,6 +67,17 @@ int main(void)
     assert(mkdir("config", 0700) == 0);
     struct app_config_t cfg;
     assert(config_load(&cfg) == 0 && !strcmp(cfg.video_decoder, "software"));
+    assert(!strcmp(cfg.ai_model, "config/yolo26.rknn"));
+    write_config("ai_model config/yolo26.rknn\n");
+    assert(config_load(&cfg) == 0 && !strcmp(cfg.ai_model, "config/yolo26.rknn"));
+    write_config("ai_model ./config/yolo26.rknn\n");
+    assert(config_load(&cfg) == 0 && !strcmp(cfg.ai_model, "config/yolo26.rknn"));
+    write_config("ai_model config/models/rk3576/yolo26.rknn\n");
+    assert(config_load(&cfg) == 0 && !strcmp(cfg.ai_model, "config/yolo26.rknn"));
+    write_config("ai_model ./config/models/rk3576/yolo26.rknn\n");
+    assert(config_load(&cfg) == 0 && !strcmp(cfg.ai_model, "config/yolo26.rknn"));
+    write_config("ai_model config/models/custom/special.rknn\n");
+    assert(config_load(&cfg) == 0 && !strcmp(cfg.ai_model, "config/models/custom/special.rknn"));
     write_config("video_device /dev/video1\nvideo_width 1280\nvideo_height 720\nvideo_codec software\n");
     assert(config_load(&cfg) == 0 && !strcmp(cfg.video_decoder, "software"));
     write_config("video_device /dev/video1\nvideo_width 1280\nvideo_height 720\nvideo_decoder hardware\n");
@@ -78,6 +92,7 @@ int main(void)
     char persisted[8192]; size_t size = fread(persisted, 1, sizeof(persisted) - 1, file);
     persisted[size] = '\0'; fclose(file);
     assert(strstr(persisted, "video_decoder software\n"));
+    assert(strstr(persisted, "ai_model config/yolo26.rknn\n"));
     http_config_get(&app, 0, "GET", "/api/config", "");
     assert(response_code == 200 && strstr(response_body, "\"video_decoder\":\"software\""));
 

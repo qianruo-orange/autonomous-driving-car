@@ -21,13 +21,17 @@ static const char report_header[] =
 
 static struct {
     pthread_mutex_t lock;
-    pthread_cond_t ready;
+    pthread_cond_t ready, space;
     pthread_t thread;
-    int started, stopping, head, count, root_fd, have_last;
-    unsigned long long last_seq, last_capture_ms;
+    int started, stopping, stop_prepared, head, count, root_fd, recent_count, recent_next;
+    struct { unsigned long long seq, capture_ms; } recent[YOLO_EVENT_QUEUE_SIZE];
     yolo_event_meta_t queue[YOLO_EVENT_QUEUE_SIZE];
     atomic_int enabled;
-} events = {.lock = PTHREAD_MUTEX_INITIALIZER, .ready = PTHREAD_COND_INITIALIZER, .root_fd = -1};
+} events = {.lock = PTHREAD_MUTEX_INITIALIZER, .ready = PTHREAD_COND_INITIALIZER,
+            .space = PTHREAD_COND_INITIALIZER, .root_fd = -1};
+
+/* Report writes/deletes serialize independently of the producer queue. */
+static pthread_mutex_t report_io_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int digits(const char *p, size_t n)
 {
@@ -93,6 +97,11 @@ static int format_report(const yolo_event_meta_t *meta, char day[9], char *out, 
     if (meta->focus_valid) snprintf(focus, sizeof(focus), "%d", meta->focus_position);
     const char *autofocus = meta->autofocus < 0 ? "null" : meta->autofocus ? "true" : "false";
     size_t length = 0;
+    if (!meta->count) {
+        if (append(out, cap, &length, "%s.%03llu%s\t%d\t%d\tnone\tnull\tnull\tnull\tnull\tnull\t%llu\t%s\tnull\t%s\n",
+                   stamp, meta->capture_unix_ms % 1000u, zone, meta->width, meta->height,
+                   meta->seq, focus, autofocus)) return -1;
+    }
     for (int i = 0; i < meta->count; i++) {
         const yolo_event_object_t *object = &meta->objects[i];
         if (append(out, cap, &length, "%s.%03llu%s\t%d\t%d\t", stamp,
@@ -119,7 +128,7 @@ static int write_all(int fd, const void *bytes, size_t length)
 
 /* Background-only append. A failed write is truncated back to its prior size,
  * preserving earlier complete rows. No video thread performs filesystem I/O. */
-static int flush_report(const char day[9], const char *rows, size_t length)
+static int flush_report_locked(const char day[9], const char *rows, size_t length)
 {
     if (!length) return 0;
     if (mkdirat(events.root_fd, day, 0755) && errno != EEXIST) return -1;
@@ -143,10 +152,72 @@ static int flush_report(const char day[9], const char *rows, size_t length)
     return rc;
 }
 
+static int flush_report(const char day[9], const char *rows, size_t length)
+{
+    pthread_mutex_lock(&report_io_lock);
+    int result = flush_report_locked(day, rows, length);
+    int saved_errno = errno;
+    pthread_mutex_unlock(&report_io_lock);
+    errno = saved_errno;
+    return result;
+}
+
+int yolo_events_delete_report(const char *relative)
+{
+    if (!yolo_report_rel_valid(relative)) { errno = EINVAL; return -1; }
+    pthread_mutex_lock(&report_io_lock);
+    int root = events.root_fd >= 0 ? dup(events.root_fd) :
+        open(YOLO_EVENTS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    int directory = -1, result = -1;
+    if (root < 0) goto done;
+    char day[9]; memcpy(day, relative, 8); day[8] = '\0';
+    directory = openat(root, day, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (directory < 0) goto done;
+    struct stat st;
+    if (fstatat(directory, relative + 9, &st, AT_SYMLINK_NOFOLLOW)) goto done;
+    if (!S_ISREG(st.st_mode)) { errno = EINVAL; goto done; }
+    result = unlinkat(directory, relative + 9, 0);
+done:;
+    int saved_errno = errno;
+    if (directory >= 0) close(directory);
+    if (root >= 0) close(root);
+    pthread_mutex_unlock(&report_io_lock);
+    errno = saved_errno;
+    return result;
+}
+
 static unsigned long long monotonic_ms(void)
 {
     struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
     return (unsigned long long)now.tv_sec * 1000u + now.tv_nsec / 1000000u;
+}
+
+/* Keep an accepted batch until the storage recovers. With the writer waiting,
+ * the bounded producer queue supplies backpressure instead of losing frames.
+ * Shutdown has three attempts so an unavailable disk cannot hang service stop. */
+static int flush_report_retry(const char day[9], const char *rows, size_t length)
+{
+    int failed = 0, stopping_attempts = 0;
+    for (;;) {
+        if (!flush_report(day, rows, length)) {
+            if (failed) LOG_INFO("yolo events: daily report storage recovered; pending batch saved");
+            return 0;
+        }
+        if (!failed++) LOG_ERROR("yolo events: daily report append failed; retaining batch for retry: %s", strerror(errno));
+        pthread_mutex_lock(&events.lock);
+        int stopping = events.stopping || events.stop_prepared;
+        int queued = events.count;
+        if (stopping && ++stopping_attempts >= 3) {
+            atomic_store(&events.enabled, 0);
+            pthread_cond_broadcast(&events.space);
+            pthread_mutex_unlock(&events.lock);
+            LOG_ERROR("yolo events: shutdown storage failure; %zu buffered report bytes and %d queued frames remain unsaved", length, queued);
+            return -1;
+        }
+        pthread_mutex_unlock(&events.lock);
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 200000000L};
+        while (nanosleep(&pause, &pause) && errno == EINTR) {}
+    }
 }
 
 static void *writer(void *unused)
@@ -176,10 +247,11 @@ static void *writer(void *unused)
             item = events.queue[events.head];
             events.head = (events.head + 1) % YOLO_EVENT_QUEUE_SIZE;
             events.count--; have_item = 1;
+            pthread_cond_signal(&events.space);
         }
         pthread_mutex_unlock(&events.lock);
         if (used && monotonic_ms() >= deadline) {
-            if (flush_report(day, batch, used)) LOG_ERROR("yolo events: daily report append failed: %s", strerror(errno));
+            if (flush_report_retry(day, batch, used)) return NULL;
             used = 0;
         }
         if (have_item) {
@@ -187,14 +259,14 @@ static void *writer(void *unused)
             int n = format_report(&item, item_day, rows, sizeof(rows));
             if (n < 0) { LOG_ERROR("yolo events: invalid daily report metadata"); continue; }
             if (used && (strcmp(day, item_day) || used + (size_t)n > sizeof(batch))) {
-                if (flush_report(day, batch, used)) LOG_ERROR("yolo events: daily report append failed: %s", strerror(errno));
+                if (flush_report_retry(day, batch, used)) return NULL;
                 used = 0;
             }
             if (!used) { memcpy(day, item_day, sizeof(day)); deadline = monotonic_ms() + 1000u; }
             memcpy(batch + used, rows, (size_t)n); used += (size_t)n;
         } else if (stopping) break;
     }
-    if (used && flush_report(day, batch, used)) LOG_ERROR("yolo events: final daily report append failed: %s", strerror(errno));
+    if (used) (void)flush_report_retry(day, batch, used);
     return NULL;
 }
 
@@ -218,7 +290,7 @@ int yolo_events_init(const char *root)
     if (events.started) { pthread_mutex_unlock(&events.lock); return 0; }
     events.root_fd = create_root(root ? root : YOLO_EVENTS_DIR);
     if (events.root_fd < 0) { pthread_mutex_unlock(&events.lock); return -1; }
-    events.stopping = events.head = events.count = events.have_last = 0;
+    events.stopping = events.stop_prepared = events.head = events.count = events.recent_count = events.recent_next = 0;
     int rc = pthread_create(&events.thread, NULL, writer, NULL);
     if (rc) {
         close(events.root_fd); events.root_fd = -1;
@@ -232,29 +304,35 @@ int yolo_events_init(const char *root)
 int yolo_events_due(int count, unsigned long long now_ms)
 {
     (void)now_ms;
-    return count > 0 && atomic_load(&events.enabled);
+    return count >= 0 && atomic_load(&events.enabled);
 }
 
 int yolo_events_submit_meta(const yolo_event_meta_t *meta)
 {
-    if (!meta || meta->count < 1 || meta->count > YOLO_MAX_DETS || meta->width <= 0 || meta->height <= 0 ||
+    if (!meta || meta->count < 0 || meta->count > YOLO_MAX_DETS || meta->width <= 0 || meta->height <= 0 ||
         meta->autofocus < -1 || meta->autofocus > 1 || !atomic_load(&events.enabled)) return -1;
     for (int i = 0; i < meta->count; i++) {
         const yolo_event_object_t *object = &meta->objects[i];
         if (!isfinite(object->conf) || !isfinite(object->x1) || !isfinite(object->y1) ||
             !isfinite(object->x2) || !isfinite(object->y2)) return -1;
     }
-    if (pthread_mutex_trylock(&events.lock)) return -1;
-    if (!atomic_load(&events.enabled) || events.stopping || events.count == YOLO_EVENT_QUEUE_SIZE) {
-        pthread_mutex_unlock(&events.lock); return -1;
-    }
-    if (events.have_last && events.last_seq == meta->seq && events.last_capture_ms == meta->capture_unix_ms) {
-        pthread_mutex_unlock(&events.lock); return 0;
+    pthread_mutex_lock(&events.lock);
+    for (;;) {
+        if (!atomic_load(&events.enabled) || events.stopping) { pthread_mutex_unlock(&events.lock); return -1; }
+        for (int i = 0; i < events.recent_count; ++i)
+            if (events.recent[i].seq == meta->seq && events.recent[i].capture_ms == meta->capture_unix_ms) {
+                pthread_mutex_unlock(&events.lock); return 0;
+            }
+        if (events.count < YOLO_EVENT_QUEUE_SIZE) break;
+        pthread_cond_wait(&events.space, &events.lock);
     }
     int index = (events.head + events.count) % YOLO_EVENT_QUEUE_SIZE;
     events.queue[index] = *meta;
     for (int i = 0; i < meta->count; i++) events.queue[index].objects[i].name[YOLO_EVENT_NAME_LEN - 1] = '\0';
-    events.last_seq = meta->seq; events.last_capture_ms = meta->capture_unix_ms; events.have_last = 1;
+    events.recent[events.recent_next].seq = meta->seq;
+    events.recent[events.recent_next].capture_ms = meta->capture_unix_ms;
+    events.recent_next = (events.recent_next + 1) % YOLO_EVENT_QUEUE_SIZE;
+    if (events.recent_count < YOLO_EVENT_QUEUE_SIZE) events.recent_count++;
     events.count++; pthread_cond_signal(&events.ready);
     pthread_mutex_unlock(&events.lock);
     return 0;
@@ -267,15 +345,26 @@ int yolo_events_submit(const unsigned char *jpeg, size_t len, const yolo_event_m
     return yolo_events_submit_meta(meta);
 }
 
+void yolo_events_prepare_stop(void)
+{
+    pthread_mutex_lock(&events.lock);
+    events.stop_prepared = 1;
+    pthread_mutex_unlock(&events.lock);
+}
+
 void yolo_events_destroy(void)
 {
     atomic_store(&events.enabled, 0);
     pthread_mutex_lock(&events.lock);
+    events.stopping = 1;
+    pthread_cond_broadcast(&events.ready);
+    pthread_cond_broadcast(&events.space);
     if (!events.started) { pthread_mutex_unlock(&events.lock); return; }
-    events.stopping = 1; pthread_cond_broadcast(&events.ready);
     pthread_mutex_unlock(&events.lock);
     pthread_join(events.thread, NULL);
     pthread_mutex_lock(&events.lock);
+    pthread_mutex_lock(&report_io_lock);
     close(events.root_fd); events.root_fd = -1; events.started = 0;
+    pthread_mutex_unlock(&report_io_lock);
     pthread_mutex_unlock(&events.lock);
 }

@@ -78,7 +78,14 @@ typedef struct {
     int               w, h;
     unsigned long long seq;
     unsigned long long capture_ms, decode_start_us, decode_end_us;
+    yolo_event_meta_t metadata;
 } yolo_job_t;
+
+static void yolo_event_capture_meta_locked(const frame_slot_t *slot, yolo_event_meta_t *meta);
+static int yolo_event_describe_result(yolo_event_meta_t *meta, const yolo_result_t *result,
+                                      unsigned long long now_monotonic_ms,
+                                      unsigned long long now_unix_ms);
+static void yolo_record_result(const yolo_job_t *job, const yolo_result_t *result);
 
 /* 推理结果队列条目：NMS 后处理的最终检测结果，只携带目标名称、置信度与
    标注框四点坐标（seq 定位待渲染帧；渲染尺寸取自槽位）。纯元数据，无缓冲所有权 */
@@ -578,6 +585,9 @@ static void *yolo_worker_task(void *arg)
                                      lb_scale, lb_pad_x, lb_pad_y, job.w, job.h,
                                      res.dets, YOLO_MAX_DETS, g_ai.conf, g_ai.nms, NULL);
         rknn_outputs_release(wk->ctx, 1, &output);
+        /* Persist every completed inference before the display queue can
+           coalesce it. Empty detections are records too; no photo is encoded. */
+        yolo_record_result(&job, &res);
         ai_adapt_workers();
         if (idx == 0) {
             static unsigned long long last_timing_us;
@@ -683,10 +693,9 @@ static void yolo_event_capture_meta_locked(const frame_slot_t *slot, yolo_event_
     meta->focus_sample_monotonic_ms = slot->focus_sample_ms;
 }
 
-/* Use the final, smoothed detections actually drawn into the saved JPEG.
-   Unix capture time is an estimate from the wall/monotonic clock offset; the
-   event schema labels that estimate explicitly. Keep monotonic time unchanged. */
-static int yolo_event_describe_rendered(yolo_event_meta_t *meta, const yolo_result_t *display,
+/* Describe one completed inference using its own captured frame metadata.
+   Unix capture time is estimated from the wall/monotonic clock offset. */
+static int yolo_event_describe_result(yolo_event_meta_t *meta, const yolo_result_t *display,
                                        unsigned long long now_monotonic_ms,
                                        unsigned long long now_unix_ms)
 {
@@ -709,6 +718,17 @@ static int yolo_event_describe_rendered(yolo_event_meta_t *meta, const yolo_resu
     return 0;
 }
 
+static void yolo_record_result(const yolo_job_t *job, const yolo_result_t *result)
+{
+    if (result->count < 0 || !yolo_events_due(result->count, ai_now_us() / 1000u)) return;
+    yolo_event_meta_t metadata = job->metadata;
+    struct timespec wall;
+    clock_gettime(CLOCK_REALTIME, &wall);
+    unsigned long long unix_ms = (unsigned long long)wall.tv_sec * 1000u + wall.tv_nsec / 1000000u;
+    if (yolo_event_describe_result(&metadata, result, ai_now_us() / 1000u, unix_ms) == 0)
+        yolo_events_submit_meta(&metadata);
+}
+
 static void *yolo_render_task(void *arg)
 {
     (void)arg;
@@ -726,8 +746,6 @@ static void *yolo_render_task(void *arg)
         unsigned long long seq = item.seq;
         int w = 0, h = 0;
         ring_buf_t rgbb = { 0 }, nv12b = { 0 }, jpegb = { 0 };
-        yolo_event_meta_t event_meta;
-        int save_event = 0;
         /* JPEG is needed only by live MJPEG viewers. Detection logs contain metadata. */
         int want_jpeg = video_stream_client_count() > 0;
         frame_ring_lock(ring);
@@ -738,8 +756,6 @@ static void *yolo_render_task(void *arg)
             frame_ring_unlock(ring);
             continue;
         }
-        save_event = yolo_events_due(item.count, ai_now_us() / 1000u);
-        if (save_event) yolo_event_capture_meta_locked(s, &event_meta);
         /* Local output buffers are also owned independently of the slot. */
         frame_ring_buf_take_locked(ring, FRAME_RING_POOL_NV12, (size_t)w * h * 3 / 2, &nv12b);
         if (want_jpeg)
@@ -781,16 +797,6 @@ static void *yolo_render_task(void *arg)
             snap_result(&disp);
         }
 
-        /* Describe this rendered frame without encoding or copying a photo. */
-        int event_valid = 0;
-        if (ok && save_event) {
-            struct timespec wall;
-            clock_gettime(CLOCK_REALTIME, &wall);
-            unsigned long long unix_ms = (unsigned long long)wall.tv_sec * 1000u + wall.tv_nsec / 1000000u;
-            event_valid = yolo_event_describe_rendered(&event_meta, &disp, ai_now_us() / 1000u, unix_ms) == 0;
-        }
-
-        int committed = 0;
         frame_ring_lock(ring);
         /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，否则缓冲回池 */
         if (!ring->quiescing && s->seq == seq && s->rgb_done) {
@@ -805,14 +811,12 @@ static void *yolo_render_task(void *arg)
                 frame_ring_buf_put_locked(ring, FRAME_RING_POOL_JPEG, jpegb.buf, jpegb.cap);
             }
             frame_ring_display_commit_locked(ring, s);
-            committed = ok;
         } else {
             frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12b.buf, nv12b.cap);
             frame_ring_buf_put_locked(ring, FRAME_RING_POOL_JPEG, jpegb.buf, jpegb.cap);
         }
         frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
-        if (committed && event_valid) yolo_events_submit_meta(&event_meta);
 
         /* Capture and the bounded result queue already pace this consumer.
            Do not hold a completed frame behind an additional 33 ms timer. */
@@ -851,50 +855,65 @@ static int load_model_file(const char *path, unsigned char **buf_out, size_t *le
  * "unavailable core mask found for current platform" 报错，全系兼容。
  * 未识别 SoC 默认 1 核（CORE_0 始终合法），保证不报错、可启动；
  * 新增平台只需在此表追加一行。结果缓存，仅首次读取。 */
-int npu_core_count(void)
+typedef struct { const char *name; int cores; } npu_platform_info_t;
+static const npu_platform_info_t npu_platforms[] = {
+    {"rk3588", 3}, {"rk3576", 2}, {"rk3568", 1}, {"rk3566", 1},
+    {"rk3562", 1}, {"rv1126", 1}, {"rv1109", 1}, {"rv1106", 1},
+    {"rv1103", 1}, {"rk3399pro", 1}, {"rk1808", 1}
+};
+static const npu_platform_info_t npu_unknown_platform = {"unknown", 1};
+static const npu_platform_info_t *npu_platform = &npu_unknown_platform;
+static pthread_once_t npu_platform_once = PTHREAD_ONCE_INIT;
+
+/* Device-tree compatible strings are NUL separated. Accept only Rockchip
+ * vendor entries and alphabetic SoC suffixes, e.g. rk3588s or rk3576m. */
+static const npu_platform_info_t *npu_platform_from_compatible(const char *data, size_t size)
 {
-    static int n = 0;
-    if (n) return n;
-    n = 1; /* 安全默认：单核 */
-
-    static const struct {
-        const char *compat;
-        int cores;
-    } table[] = {
-        { "rk3588",    3 },
-        { "rk3576",    2 },
-        { "rk3568",    1 },
-        { "rk3566",    1 },
-        { "rk3562",    1 },
-        { "rv1126",    1 },
-        { "rv1109",    1 },
-        { "rv1106",    1 },
-        { "rv1103",    1 },
-        { "rk3399pro", 1 },
-        { "rk1808",    1 },
-        { NULL,        0 },
-    };
-
-    char buf[512];
-    FILE *f = fopen("/proc/device-tree/compatible", "r");
-    if (f) {
-        size_t r = fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-        if (r > 0) {
-            buf[r] = '\0';
-            /* compatible 为多个以 '\0' 分隔的字符串，命中首个 SoC 即确定核数 */
-            for (char *p = buf; p < buf + r; p += strlen(p) + 1) {
-                for (int i = 0; table[i].compat; i++) {
-                    if (strstr(p, table[i].compat)) {
-                        n = table[i].cores;
-                        goto done;
-                    }
-                }
+    if (!data) return &npu_unknown_platform;
+    for (size_t offset = 0; offset < size; ) {
+        size_t length = strnlen(data + offset, size - offset);
+        const char *token = data + offset;
+        if (length > 9 && !memcmp(token, "rockchip,", 9)) {
+            const char *name = token + 9;
+            size_t name_length = length - 9;
+            for (size_t i = 0; i < sizeof(npu_platforms) / sizeof(npu_platforms[0]); ++i) {
+                size_t base_length = strlen(npu_platforms[i].name);
+                if (name_length < base_length || memcmp(name, npu_platforms[i].name, base_length)) continue;
+                size_t suffix = base_length;
+                while (suffix < name_length && name[suffix] >= 'a' && name[suffix] <= 'z') suffix++;
+                if (suffix == name_length) return &npu_platforms[i];
             }
         }
+        offset += length + 1;
     }
-done:
-    return n;
+    return &npu_unknown_platform;
+}
+
+static void npu_detect_platform_once(void)
+{
+    char data[512];
+    FILE *file = fopen("/proc/device-tree/compatible", "rb");
+    if (!file) return;
+    size_t size = fread(data, 1, sizeof(data), file);
+    fclose(file);
+    npu_platform = npu_platform_from_compatible(data, size);
+}
+
+const char *npu_platform_name(void)
+{
+    pthread_once(&npu_platform_once, npu_detect_platform_once);
+    return npu_platform->name;
+}
+
+int npu_core_count(void)
+{
+    (void)npu_platform_name();
+    return npu_platform->cores;
+}
+
+void rknn_yolo_default_model_path(char *out, size_t size)
+{
+    if (out && size) snprintf(out, size, "config/yolo26.rknn");
 }
 
 /* 创建一个推理上下文：rknn_init + 绑定 NPU 核 + 查输出属性 + 分配输入缓冲 */
@@ -954,6 +973,9 @@ static void ai_free_workers(void)
    队列残余任务由本函数统一作废 */
 static void ai_stop_pool(void)
 {
+    /* Let a failing report writer release blocked producers before worker joins.
+       Healthy storage still accepts and drains each in-flight inference. */
+    if (g_ai.events_initialized) yolo_events_prepare_stop();
     frame_ring_t *ring = ai_ring();
     pthread_mutex_lock(&g_ai.q_lock);
     g_ai.pool_running = 0;
@@ -1031,8 +1053,14 @@ static int ai_start_pool(void)
                  cfg->ai_names[0] ? cfg->ai_names : "config/coco.names");
 
     char model_path[256];
-    safe_strncpy(model_path, sizeof(model_path),
-                 cfg->ai_model[0] ? cfg->ai_model : "config/yolo26.rknn");
+    char previous_default[256], previous_relative[256];
+    snprintf(previous_default, sizeof(previous_default), "config/models/%s/yolo26.rknn", npu_platform_name());
+    snprintf(previous_relative, sizeof(previous_relative), "./config/models/%s/yolo26.rknn", npu_platform_name());
+    if (cfg->ai_model[0] && strcmp(cfg->ai_model, previous_default) &&
+        strcmp(cfg->ai_model, previous_relative) && strcmp(cfg->ai_model, "./config/yolo26.rknn"))
+        safe_strncpy(model_path, sizeof(model_path), cfg->ai_model);
+    else
+        rknn_yolo_default_model_path(model_path, sizeof(model_path));
     if (load_model_file(model_path, &g_ai.model, &g_ai.model_len) < 0) {
         LOG_ERROR("ai: model '%s' not found — AI unavailable (no AI)", model_path);
         g_ai.enabled = 0;
@@ -1136,6 +1164,12 @@ int rknn_yolo_reload(void)
     }
     LOG_INFO("ai: reloading inference pool...");
     ai_stop_pool();
+    if (g_ai.events_initialized) {
+        yolo_events_destroy();
+        g_ai.events_initialized = 0;
+    }
+    if (yolo_events_init(NULL) == 0) g_ai.events_initialized = 1;
+    else LOG_ERROR("yolo: detection report saving unavailable after reload");
     ai_start_pool();
     pthread_mutex_unlock(&g_reload_mutex);
     return g_ai.enabled ? 0 : -1;
@@ -1269,6 +1303,8 @@ void *rknn_ai_task(void *arg)
         if (!s) { frame_ring_unlock(ring); continue; }
         unsigned long long seq = s->seq;
         unsigned long long capture_ms = s->capture_ms;
+        yolo_event_meta_t metadata;
+        yolo_event_capture_meta_locked(s, &metadata);
         int fmt = s->fmt, w = s->w, h = s->h;
         unsigned char *raw = s->raw.buf;
         size_t raw_len = s->raw.len;
@@ -1299,7 +1335,8 @@ void *rknn_ai_task(void *arg)
 
         yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap,
                            .w = w, .h = h, .seq = seq, .capture_ms = capture_ms,
-                           .decode_start_us = decode_start_us, .decode_end_us = ai_now_us() };
+                           .decode_start_us = decode_start_us, .decode_end_us = ai_now_us(),
+                           .metadata = metadata };
         if (yolo_queue_push(&job) != 0)
             yolo_job_abandon(&job);   /* 停池/退出中：claim 摘除 + rgb 回池 */
 

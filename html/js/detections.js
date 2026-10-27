@@ -47,7 +47,25 @@
         row.insertCell().textContent = report.date;
         row.insertCell().textContent = report.name.split('/').pop();
         row.insertCell().textContent = (report.size / 1024).toFixed(1) + ' KB';
-        downloadLink(row.insertCell(), report.name, '', '下载 TXT');
+        var actions = row.insertCell();
+        downloadLink(actions, report.name, '', '下载');
+        var remove = document.createElement('button');
+        remove.className = 'del'; setI18nText(remove, '删除');
+        remove.addEventListener('click', async function () {
+          if (!confirm(t('删除日报 {file}？后续检测将继续创建当天文件。', {file: report.name}))) return;
+          remove.disabled = true;
+          try {
+            var response = await authFetch('/api/detections/reports/delete', {
+              method:'POST', headers:{'Content-Type':'text/plain;charset=UTF-8'}, body:report.name
+            });
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            window.fileToast('已删除 {file}', true, {file:report.name});
+            await load();
+          } catch (error) {
+            if (error.message !== 'auth cancelled') window.fileToast('删除失败', false);
+          } finally { remove.disabled = false; }
+        });
+        actions.appendChild(remove);
       });
     } catch (error) {
       message('加载失败（需管理员权限）');

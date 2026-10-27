@@ -29,6 +29,7 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function() { t.className = 'toast'; }, 2500);
   }
+  window.fileToast = toast;
 
   /* 拆分 "日期/文件名" 两段式 name */
   function splitName(name) {
