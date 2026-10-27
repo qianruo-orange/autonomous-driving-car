@@ -28,6 +28,20 @@ static int yolo_box_oversize(float x1, float y1, float x2, float y2,
            > YOLO_MAX_BOX_AREA_RATIO * (float)frame_w * (float)frame_h;
 }
 
+/* Model boxes may extend into letterbox padding or beyond the input. Every
+ * consumer (renderer, APIs and saved records) receives the same original-image
+ * pixel coordinates. Remove boxes with no visible area after projection. */
+static int yolo_box_clip(float *x1, float *y1, float *x2, float *y2, int width, int height)
+{
+    if (!isfinite(*x1) || !isfinite(*y1) || !isfinite(*x2) || !isfinite(*y2)) return 0;
+    float xmax = (float)(width - 1), ymax = (float)(height - 1);
+    *x1 = fminf(fmaxf(*x1, 0.0f), xmax);
+    *x2 = fminf(fmaxf(*x2, 0.0f), xmax);
+    *y1 = fminf(fmaxf(*y1, 0.0f), ymax);
+    *y2 = fminf(fmaxf(*y2, 0.0f), ymax);
+    return *x2 > *x1 && *y2 > *y1;
+}
+
 /* 解析单输出扁平格式：dims 中应恰好有两个 >1 的维度（batch 维为 1），
    较小者为通道数 ch（4+nc），较大者为锚点数 A。
    返回 ch/A 并标记 NCHW（ch 维在 A 维之前）或 NHWC。 */
@@ -103,26 +117,21 @@ static int yolo_nms_finish(float *cand, int ncand, yolo_det_t *dets,
 
 int yolo_postprocess(const float *const *out_buf, const rknn_tensor_attr *attrs,
                      uint32_t n_output,
-                     float lb_scale, int lb_pad_x, int lb_pad_y,
+                     float lb_scale_x, float lb_scale_y, int lb_pad_x, int lb_pad_y,
                      int frame_w, int frame_h,
                      yolo_det_t *dets, int max_dets,
                      float conf, float nms, int *nc_out)
 {
-    if (n_output != 1) {
+    if (n_output != 1 || !out_buf || !out_buf[0] || !attrs || !dets || max_dets <= 0 ||
+        frame_w <= 0 || frame_h <= 0 || !isfinite(lb_scale_x) || !isfinite(lb_scale_y) ||
+        lb_scale_x <= 0.0f || lb_scale_y <= 0.0f) {
         if (nc_out) *nc_out = 0;
         return 0;   /* 模型不匹配：上层已记录日志 */
     }
-    /* letterbox 逆映射：模型坐标 → 原图坐标（x = (x_m - pad) / scale）。
-       lb_scale ≤ 0 视为无效几何（防御）：直接按原值输出 */
-    float sx, sy, ox, oy;
-    if (lb_scale > 0.0f) {
-        sx = 1.0f / lb_scale;
-        sy = sx;                                /* letterbox 等比例：sx == sy */
-        ox = -(float)lb_pad_x * sx;
-        oy = -(float)lb_pad_y * sy;
-    } else {
-        sx = sy = 1.0f; ox = oy = 0.0f;
-    }
+    /* Invert the exact rounded ROI dimensions returned by preprocessing.
+     * Two actual scales are needed when one resized axis rounds to a pixel. */
+    float sx = 1.0f / lb_scale_x, sy = 1.0f / lb_scale_y;
+    float ox = -(float)lb_pad_x * sx, oy = -(float)lb_pad_y * sy;
     /* 候选上限即数组容量：YOLO_MAX_DETS（勿用 sizeof(cand)/6，那是字节数） */
     float cand[YOLO_MAX_DETS * 6];   /* x1,y1,x2,y2,score,cls */
     int cand_cap = YOLO_MAX_DETS;
@@ -161,7 +170,8 @@ int yolo_postprocess(const float *const *out_buf, const rknn_tensor_attr *attrs,
                 float by1 = (cy - bh * 0.5f) * sy + oy;
                 float bx2 = (cx + bw * 0.5f) * sx + ox;
                 float by2 = (cy + bh * 0.5f) * sy + oy;
-                if (yolo_box_oversize(bx1, by1, bx2, by2, frame_w, frame_h)) continue;
+                if (!yolo_box_clip(&bx1, &by1, &bx2, &by2, frame_w, frame_h) ||
+                    yolo_box_oversize(bx1, by1, bx2, by2, frame_w, frame_h)) continue;
                 cand[ncand * 6 + 0] = bx1;
                 cand[ncand * 6 + 1] = by1;
                 cand[ncand * 6 + 2] = bx2;
@@ -188,7 +198,8 @@ int yolo_postprocess(const float *const *out_buf, const rknn_tensor_attr *attrs,
             float by1 = (cy - bh * 0.5f) * sy + oy;
             float bx2 = (cx + bw * 0.5f) * sx + ox;
             float by2 = (cy + bh * 0.5f) * sy + oy;
-            if (yolo_box_oversize(bx1, by1, bx2, by2, frame_w, frame_h)) continue;
+            if (!yolo_box_clip(&bx1, &by1, &bx2, &by2, frame_w, frame_h) ||
+                    yolo_box_oversize(bx1, by1, bx2, by2, frame_w, frame_h)) continue;
             cand[ncand * 6 + 0] = bx1;
             cand[ncand * 6 + 1] = by1;
             cand[ncand * 6 + 2] = bx2;
@@ -216,7 +227,8 @@ int yolo_postprocess(const float *const *out_buf, const rknn_tensor_attr *attrs,
         float by1 = (cy - bh * 0.5f) * sy + oy;
         float bx2 = (cx + bw * 0.5f) * sx + ox;
         float by2 = (cy + bh * 0.5f) * sy + oy;
-        if (yolo_box_oversize(bx1, by1, bx2, by2, frame_w, frame_h)) continue;
+        if (!yolo_box_clip(&bx1, &by1, &bx2, &by2, frame_w, frame_h) ||
+                    yolo_box_oversize(bx1, by1, bx2, by2, frame_w, frame_h)) continue;
         cand[ncand * 6 + 0] = bx1;
         cand[ncand * 6 + 1] = by1;
         cand[ncand * 6 + 2] = bx2;

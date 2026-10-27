@@ -6,9 +6,10 @@
  * 初始化日志系统。
  * @param dir  日志目录路径
  *
- * info/error 分别写入按天命名的文件，存放在按日期建立的二级目录下：
- *   dir/YYYYMMDD/socketcan_info_YYYYMMDD.log
- *   dir/YYYYMMDD/socketcan_error_YYYYMMDD.log
+ * Info/error logs include their creation timestamp and millisecond precision:
+ *   dir/YYYYMMDD/rockchip-smart-gateway_info_YYYYMMDD_HHMMSS_mmm.log
+ *   dir/YYYYMMDD/rockchip-smart-gateway_error_YYYYMMDD_HHMMSS_mmm.log
+ * A collision suffix preserves files created within the same millisecond.
  */
 void log_init(const char *dir);
 

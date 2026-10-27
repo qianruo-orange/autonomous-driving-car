@@ -27,12 +27,12 @@
   }
   function reportBusy(response) {
     if (response.status!==409 && response.status!==503) return false;
-    window.fileToast('识别结果正在更新，请稍后重试',false);
+    window.fileToast('结果正在更新，请稍后重试',false);
     return true;
   }
   function message(key) {
     reports.replaceChildren();
-    var cell = reports.insertRow().insertCell(); cell.colSpan = 4;
+    var cell = reports.insertRow().insertCell(); cell.colSpan = 5;
     setI18nText(cell, key);
   }
   function downloadLink(cell, name, suffix, key) {
@@ -50,7 +50,7 @@
         if (!response.ok) throw new Error('HTTP ' + response.status);
         saveDownload(await response.blob(), name.split('/').pop() + suffix);
       } catch (error) {
-        if (error.message !== 'auth cancelled') alert(t('识别结果下载失败，请重试'));
+        if (error.message !== 'auth cancelled') alert(t('结果下载失败，请重试'));
       } finally { link.removeAttribute('aria-disabled'); setBulkBusy(false); }
     });
     cell.appendChild(link);
@@ -65,12 +65,14 @@
       var data = await response.json();
       reports.replaceChildren();
       if (!data.files || !data.files.length) {
-        var empty = reports.insertRow().insertCell(); empty.colSpan = 4; setI18nText(empty, '暂无检测汇总');
+        var empty = reports.insertRow().insertCell(); empty.colSpan = 5; setI18nText(empty, '暂无结果文件');
       } else data.files.forEach(function (report) {
         var row = reports.insertRow();
-        row.insertCell().textContent = report.date;
-        row.insertCell().textContent = report.name.split('/').pop();
-        row.insertCell().textContent = report.size > 0 ? (report.size / 1024).toFixed(1) + ' KB' : '—';
+        row.insertCell().textContent = window.gatewayFiles.formatDate(report.date, report.mtime);
+        var filename = row.insertCell();
+        filename.textContent = report.name.split('/').pop(); filename.title = filename.textContent;
+        row.insertCell().textContent = window.gatewayFiles.formatSize(report.size);
+        row.insertCell().textContent = report.mtime || '—';
         var actions = row.insertCell();
         downloadLink(actions, report.name, '', '下载');
         var remove = document.createElement('button');
@@ -106,7 +108,7 @@
     setBulkBusy(true); setI18nText(packButton, '打包中…');
     try {
       var response = await reportDownload('/api/detections/reports/pack');
-      if (response.status === 404) { window.fileToast('暂无可打包的识别结果', false); return; }
+      if (response.status === 404) { window.fileToast('暂无可打包的结果', false); return; }
       if (reportBusy(response)) return;
       if (!response.ok) throw new Error('HTTP ' + response.status);
       saveDownload(await response.blob(), 'detections_pack.tar.gz');
@@ -118,7 +120,7 @@
     }
   });
   clearButton.addEventListener('click', async function () {
-    if (bulkBusy || !confirm(t('确定清空全部识别结果？此操作不可恢复，后续检测将继续创建当天文件。'))) return;
+    if (bulkBusy || !confirm(t('确定清空全部结果？此操作不可恢复，后续检测将继续创建当天文件。'))) return;
     setBulkBusy(true);
     try {
       var response = await authFetch('/api/detections/reports/clear', {method:'POST'});
@@ -128,10 +130,10 @@
         return;
       }
       var result = await response.json();
-      window.fileToast('已清空 {count} 个识别结果文件', true, {count:result.deleted || 0});
+      window.fileToast('已清空 {count} 个结果文件', true, {count:result.deleted || 0});
       await load();
     } catch (error) {
-      if (error.message !== 'auth cancelled') window.fileToast('清空识别结果失败，请重试', false);
+      if (error.message !== 'auth cancelled') window.fileToast('清空结果失败，请重试', false);
     } finally { setBulkBusy(false); }
   });
   load();

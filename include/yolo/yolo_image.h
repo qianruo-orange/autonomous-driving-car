@@ -30,10 +30,11 @@ void yolo_rgb_to_nv12(const unsigned char *rgb, int w, int h, unsigned char *nv1
 
 /* RGB24 letterbox+padding（OpenCV SIMD）：等比例缩放到 dw×dh 内后居中，
    四周填 114 灰边（ultralytics 训练惯例）。输出实际缩放系数与左上偏移，
-   供后处理把模型坐标逆映射回原图坐标系（x = (x_m - pad) / scale） */
+   供后处理把模型坐标逆映射回原图坐标系。X/Y 使用取整后实际尺寸比，
+   避免非整比例分辨率在另一轴产生偏移。 */
 void yolo_rgb_letterbox(const unsigned char *src, int sw, int sh,
                         unsigned char *dst, int dw, int dh,
-                        float *scale_out, int *pad_x_out, int *pad_y_out);
+                        float *scale_x_out, float *scale_y_out, int *pad_x_out, int *pad_y_out);
 
 /* RGB24 → NV12（OpenCV SIMD：cvtColor I420 + U/V 平面交错，NEON 加速）。
    替代 yolo_rgb_to_nv12 用于渲染热路径（录像编码零拷贝快照）。 */

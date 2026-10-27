@@ -13,6 +13,7 @@
 .file-section-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .file-section-header h2{margin:0;font-size:17px;color:var(--accent)}
 .file-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.file-actions .btn{display:inline-flex;align-items:center;justify-content:center;flex:0 0 176px;width:176px;height:38px;margin:0;padding:0 12px;font-size:13px;line-height:1.2;white-space:nowrap}
 .file-actions a[aria-disabled="true"]{opacity:.55;cursor:wait;pointer-events:none}
 .btn{display:inline-block;padding:8px 14px;border-radius:8px;border:none;cursor:pointer;font-size:13px;text-decoration:none;backdrop-filter:blur(8px);transition:all .25s}
 .btn-pack{background:linear-gradient(135deg,rgba(30,111,212,.7),rgba(30,111,212,.5));color:#fff;box-shadow:0 2px 8px rgba(30,111,212,.25)}
@@ -21,7 +22,14 @@
 .btn-clear:hover{background:linear-gradient(135deg,rgba(192,57,78,1),rgba(192,57,78,.8));box-shadow:0 4px 16px rgba(192,57,78,.35);transform:translateY(-1px)}
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;border-radius:10px}
 table{border-collapse:collapse;width:100%;min-width:480px;background:var(--card-bg);backdrop-filter:blur(12px);border:1px solid var(--card-border);border-radius:10px;overflow:hidden}
+.file-section table{table-layout:fixed;min-width:760px}
+.file-col-date{width:13%}
+.file-col-name{width:39%}
+.file-col-size{width:11%}
+.file-col-mtime{width:21%}
+.file-col-actions{width:16%}
 th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--card-border);white-space:nowrap}
+.file-section th,.file-section td{overflow:hidden;text-overflow:ellipsis}
 th{color:var(--muted);font-size:12px;background:rgba(94,194,240,.03)}
 td{font-size:13px}
 .del{background:linear-gradient(135deg,#c0394e,#d94459);color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px;transition:all .2s;box-shadow:0 1px 4px rgba(192,57,78,.2)}
@@ -31,7 +39,7 @@ td{font-size:13px}
 .dl:hover{color:var(--accent-hover)}
 /* 正在录制的行高亮 */
 tr.row-active td{background:rgba(30,111,212,.08)}
-tr.row-active td:first-child{border-left:3px solid var(--accent)}
+tr.row-active td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
 /* 加载/空状态 */
 .loading,.empty{text-align:center;color:var(--muted);padding:18px 0}
 /* 轻量提示 */

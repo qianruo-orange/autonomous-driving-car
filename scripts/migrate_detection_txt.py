@@ -80,9 +80,14 @@ def frame_text(metadata, objects):
     for fields in objects:
         # The journal already escapes backslashes and control characters in
         # target names. Keep these escapes so one target always occupies one line.
+        # Retained journals are already in original-image coordinates. Old
+        # postprocessing omitted image-boundary clipping; never scale twice.
+        bounds = (int(metadata[1]) - 1,) * 2 + (int(metadata[2]) - 1,) * 2
+        values = [number(fields[index]) for index in (5, 7, 6, 8)]
+        coordinates = [0.0 if value <= 0 else min(value, bound)
+                       for value, bound in zip(values, bounds)]
         yield ('\t%s %.6f position[%.3f %.3f %.3f %.3f]\n' %
-               (fields[3], number(fields[4]), number(fields[5]), number(fields[7]),
-                number(fields[6]), number(fields[8])))
+               (fields[3], number(fields[4]), *coordinates))
 
 
 def regular_at(directory, name):

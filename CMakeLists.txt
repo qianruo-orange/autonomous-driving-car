@@ -155,7 +155,7 @@ set_property(TARGET recording_split_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl
 target_link_libraries(recording_split_test PRIVATE pthread)
 add_test(NAME recording_split COMMAND recording_split_test)
 
-add_executable(color_conversion_test tests/color_conversion_test.cpp source/yolo/yolo_draw.cpp source/yolo/yolo_image.c)
+add_executable(color_conversion_test tests/color_conversion_test.cpp source/yolo/yolo_draw.cpp source/yolo/yolo_image.c source/yolo/yolo_postprocess.c)
 target_include_directories(color_conversion_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
 target_compile_options(color_conversion_test PRIVATE -UNDEBUG)
 target_link_libraries(color_conversion_test PRIVATE ${OpenCV_LIBS} ${LIBJPEG})
@@ -205,6 +205,7 @@ target_link_libraries(yolo_bulk_test PRIVATE pthread m)
 add_test(NAME yolo_bulk COMMAND yolo_bulk_test)
 add_test(NAME detection_excel COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/detection_excel_test.py)
 add_test(NAME detection_txt COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/detection_txt_test.py)
+add_test(NAME coordinates_repair COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/coordinates_repair_test.py)
 
 add_executable(detection_download_test tests/detection_download_test.c)
 target_include_directories(detection_download_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
@@ -224,3 +225,10 @@ target_include_directories(cpu_affinity_test PRIVATE ${PROJECT_SOURCE_DIR}/sourc
 target_compile_options(cpu_affinity_test PRIVATE -UNDEBUG)
 target_link_libraries(cpu_affinity_test PRIVATE pthread)
 add_test(NAME cpu_affinity COMMAND cpu_affinity_test)
+
+add_executable(file_timestamps_test tests/file_timestamps_test.c)
+target_include_directories(file_timestamps_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(file_timestamps_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+set_property(TARGET file_timestamps_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+target_link_libraries(file_timestamps_test PRIVATE pthread)
+add_test(NAME file_timestamps COMMAND file_timestamps_test)

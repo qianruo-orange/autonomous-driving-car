@@ -9,6 +9,8 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <limits.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "core/log.h"
 #include "core/common.h"
@@ -19,52 +21,60 @@ typedef struct {
     FILE    *fp_error;
     char     dir[256];
     char     date[16];
+    char     info_path[PATH_MAX], error_path[PATH_MAX];
     pthread_mutex_t mutex;
 } log_ctx_t;
 
 static log_ctx_t g_log = { .mutex = PTHREAD_MUTEX_INITIALIZER };
 
+#ifndef LOG_MAX_SIZE
 #define LOG_MAX_SIZE (10 * 1024 * 1024)  /* 10MB */
+#endif
 
-/* 若文件超过大小限制，重命名为 .1 备份 */
-static void rotate_if_needed(const char *path)
+/* Exclusive creation preserves old logs even on rapid restarts or clock
+   adjustments. The timestamp remains meaningful outside the date directory. */
+static void open_log_channel(int is_error)
 {
-    struct stat st;
-    if (stat(path, &st) == 0 && st.st_size > LOG_MAX_SIZE) {
-        char bak[PATH_MAX];
-        snprintf(bak, sizeof(bak), "%s.1", path);
-        rename(path, bak);
+    FILE **fpp = is_error ? &g_log.fp_error : &g_log.fp_info;
+    char *active_path = is_error ? g_log.error_path : g_log.info_path;
+    if (*fpp && *fpp != stderr) fclose(*fpp);
+    *fpp = stderr;
+    active_path[0] = '\0';
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    struct tm tm;
+    localtime_r(&tv.tv_sec, &tm);
+    char stamp[32], name[128], path[PATH_MAX];
+    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
+    for (int index = 0; index < 10000; index++) {
+        if (!index)
+            snprintf(name, sizeof(name), "%s_%s_%s_%03ld.log", APP_NAME,
+                     is_error ? "error" : "info", stamp, tv.tv_usec / 1000);
+        else
+            snprintf(name, sizeof(name), "%s_%s_%s_%03ld_%d.log", APP_NAME,
+                     is_error ? "error" : "info", stamp, tv.tv_usec / 1000, index);
+        int length = snprintf(path, sizeof(path), "%s/%s/%s", g_log.dir, g_log.date, name);
+        if (length < 0 || (size_t)length >= sizeof(path)) return;
+        int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        if (fd < 0) { if (errno == EEXIST) continue; return; }
+        FILE *fp = fdopen(fd, "a");
+        if (!fp) { close(fd); unlink(path); return; }
+        *fpp = fp;
+        safe_strncpy(active_path, PATH_MAX, path);
+        return;
     }
 }
 
-/* 每次写入前检查：日志文件被外部删除（Web 端删除）后重建；超限即轮转
-   （解决同一天内不轮转的问题） */
+/* Deletion and size rotation open a fresh timestamped file. Existing logs and
+   legacy .log.1 backups are never renamed or overwritten. */
 static void rotate_check(int is_error)
 {
     FILE **fpp = is_error ? &g_log.fp_error : &g_log.fp_info;
-    if (!*fpp || *fpp == stderr) return;
-
-    char subdir[PATH_MAX], path[PATH_MAX], bak[PATH_MAX];
-    snprintf(subdir, sizeof(subdir), "%s/%s", g_log.dir, g_log.date);
-    /* 规范化命名：日期已体现在按天目录（logs/YYYYMMDD/） */
-    snprintf(path, sizeof(path), "%s/%s_%s.log",
-             subdir, APP_NAME, is_error ? "error" : "info");
-
+    const char *path = is_error ? g_log.error_path : g_log.info_path;
+    if (!*fpp || *fpp == stderr || !*path) return;
     struct stat st;
-    if (stat(path, &st) != 0) {
-        /* 文件被 unlink（Web 端删除日志）：关闭旧句柄，重新创建文件 */
-        fclose(*fpp);
-        *fpp = fopen(path, "a");
-        if (!*fpp) *fpp = stderr;
-        return;
-    }
-    if (st.st_size <= LOG_MAX_SIZE) return;
-
-    snprintf(bak, sizeof(bak), "%s.1", path);
-    fclose(*fpp);
-    rename(path, bak);
-    *fpp = fopen(path, "a");
-    if (!*fpp) *fpp = stderr;
+    if (stat(path, &st) != 0 || st.st_size > LOG_MAX_SIZE)
+        open_log_channel(is_error);
 }
 
 static void ensure_date(void)
@@ -75,22 +85,13 @@ static void ensure_date(void)
     if (strcmp(cur, g_log.date) == 0) return;
 
     safe_strncpy(g_log.date, sizeof(g_log.date), cur);
-    if (g_log.fp_info && g_log.fp_info != stderr)  fclose(g_log.fp_info);
-    if (g_log.fp_error && g_log.fp_error != stderr) fclose(g_log.fp_error);
-
     /* 二级目录：按日期存放 logs/YYYYMMDD/ */
     char subdir[512];
     snprintf(subdir, sizeof(subdir), "%s/%s", g_log.dir, g_log.date);
     mkdir(subdir, 0755);
 
-    char path[512];
-    /* 规范化命名：日期已体现在按天目录（logs/YYYYMMDD/） */
-    snprintf(path, sizeof(path), "%s/%s_info.log", subdir, APP_NAME);
-    rotate_if_needed(path);
-    g_log.fp_info = fopen(path, "a"); if (!g_log.fp_info) g_log.fp_info = stderr;
-    snprintf(path, sizeof(path), "%s/%s_error.log", subdir, APP_NAME);
-    rotate_if_needed(path);
-    g_log.fp_error = fopen(path, "a"); if (!g_log.fp_error) g_log.fp_error = stderr;
+    open_log_channel(0);
+    open_log_channel(1);
 }
 
 void log_init(const char *dir)

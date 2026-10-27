@@ -18,7 +18,8 @@
 
 typedef struct rec_mp4_s rec_mp4_t;
 
-/* 创建会话：目录建文件，文件名为 <prefix>_YYYYMMDD_HHMMSS.mp4（写入 name_out）。
+/* 创建会话：目录建文件，文件名为 <prefix>_YYYYMMDD_HHMMSS_mmm.mp4（写入 name_out）。
+   同毫秒重名时追加序号，保留已有文件。
    失败返回 NULL（目录不可写 / 内存不足）。 */
 rec_mp4_t *rec_mp4_create(const char *dir, const char *prefix, int w, int h,
                           char *name_out, size_t name_size);

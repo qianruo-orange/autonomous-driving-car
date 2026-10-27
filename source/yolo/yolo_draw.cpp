@@ -93,7 +93,7 @@ static void yolo_draw_box(unsigned char *rgb, int w, int h,
 
 void yolo_rgb_letterbox(const unsigned char *src, int sw, int sh,
                         unsigned char *dst, int dw, int dh,
-                        float *scale_out, int *pad_x_out, int *pad_y_out)
+                        float *scale_x_out, float *scale_y_out, int *pad_x_out, int *pad_y_out)
 {
     /* 等比例缩放并取整，scale 用实际尺寸比（与画布几何一致，逆映射才精确） */
     float s = (float)dw / sw < (float)dh / sh ? (float)dw / sw : (float)dh / sh;
@@ -101,7 +101,8 @@ void yolo_rgb_letterbox(const unsigned char *src, int sw, int sh,
     if (nw < 1) nw = 1;
     if (nh < 1) nh = 1;
     int px = (dw - nw) / 2, py = (dh - nh) / 2;
-    if (scale_out) *scale_out = (float)nw / (float)sw;
+    if (scale_x_out) *scale_x_out = (float)nw / (float)sw;
+    if (scale_y_out) *scale_y_out = (float)nh / (float)sh;
     if (pad_x_out) *pad_x_out = px;
     if (pad_y_out) *pad_y_out = py;
 

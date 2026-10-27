@@ -519,7 +519,7 @@ static void snap_result(const yolo_result_t *res)
    （新帧权重 0.4，保留 0.6 历史），降低逐帧检测抖动 */
 static void yolo_smooth(const yolo_result_t *prev, yolo_result_t *cur)
 {
-    if (prev->count <= 0 || cur->count <= 0) return;
+    if (prev->count <= 0 || cur->count <= 0 || prev->w != cur->w || prev->h != cur->h) return;
     const float alpha = 0.4f;
     for (int i = 0; i < cur->count; i++) {
         yolo_det_t *d = &cur->dets[i];
@@ -568,9 +568,9 @@ static void *yolo_worker_task(void *arg)
         unsigned long long worker_us = ai_now_us();
 
         /* letterbox+padding 预处理（等比例 + 114 灰边）；几何参数供后处理逆映射 */
-        float lb_scale; int lb_pad_x, lb_pad_y;
+        float lb_scale_x, lb_scale_y; int lb_pad_x, lb_pad_y;
         yolo_rgb_letterbox(job.rgb, job.w, job.h, wk->in_buf, g_ai.in_w, g_ai.in_h,
-                           &lb_scale, &lb_pad_x, &lb_pad_y);
+                           &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
         unsigned long long prepared_us = ai_now_us();
 
         rknn_input in;
@@ -601,7 +601,7 @@ static void *yolo_worker_task(void *arg)
         res.w   = job.w;
         res.h   = job.h;
         res.count = yolo_postprocess(out_buf, &wk->out_attr, 1,
-                                     lb_scale, lb_pad_x, lb_pad_y, job.w, job.h,
+                                     lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, job.w, job.h,
                                      res.dets, YOLO_MAX_DETS, g_ai.conf, g_ai.nms, NULL);
         rknn_outputs_release(wk->ctx, 1, &output);
         /* Persist every completed inference before the display queue can

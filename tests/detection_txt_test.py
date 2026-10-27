@@ -45,6 +45,11 @@ class DetectionTxtTests(unittest.TestCase):
         self.assertIn(r'person\t\n\\', result)
         self.assertEqual(result.count('\n'), 4)
 
+    def test_legacy_original_coordinates_are_clipped_without_rescaling(self):
+        row = self.row().replace('\t1.25\t2.5\t100\t200\t', '\t-25\t-4\t1300\t800\t')
+        result = self.convert([row])
+        self.assertIn('position[0.000 1279.000 0.000 719.000]', result)
+
     def test_reject_bad_rows_without_silent_loss(self):
         for row in (self.row(confidence='nan'), self.row(focus='1.2'), self.row(mm='-1'),
                     self.row().rstrip('\n'), self.row().replace('1280', '0', 1)):

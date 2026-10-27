@@ -19,6 +19,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #include "video/rec_mp4.h"
 
@@ -343,22 +346,31 @@ rec_mp4_t *rec_mp4_create(const char *dir, const char *prefix, int w, int h,
     if (!s) return NULL;
 
     mkdir(dir, 0755);
-    time_t t = time(NULL);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
     struct tm tm;
-    localtime_r(&t, &tm);
-    /* 规范化命名：日期已体现在按天目录（dir = .../YYYYMMDD），文件名只保留时间 */
-    int idx = 0;
-    do {
+    localtime_r(&tv.tv_sec, &tm);
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
+    /* Include the complete creation timestamp so a downloaded file keeps its
+       date. Exclusive creation also protects rapid split/restart collisions. */
+    for (int idx = 0; idx < 1000; idx++) {
+        int length;
         if (idx == 0)
-            snprintf(s->name, sizeof(s->name), "%s_%02d%02d%02d.mp4",
-                     prefix, tm.tm_hour, tm.tm_min, tm.tm_sec);
+            length = snprintf(s->name, sizeof(s->name), "%s_%s_%03ld.mp4",
+                              prefix, stamp, tv.tv_usec / 1000);
         else
-            snprintf(s->name, sizeof(s->name), "%s_%02d%02d%02d_%d.mp4",
-                     prefix, tm.tm_hour, tm.tm_min, tm.tm_sec, idx);
-        snprintf(s->path, sizeof(s->path), "%s/%s", dir, s->name);
-    } while (access(s->path, F_OK) == 0 && ++idx < 1000);  /* 同秒会话冲突追加序号 */
-
-    s->fp = fopen(s->path, "wb");
+            length = snprintf(s->name, sizeof(s->name), "%s_%s_%03ld_%d.mp4",
+                              prefix, stamp, tv.tv_usec / 1000, idx);
+        if (length < 0 || (size_t)length >= sizeof(s->name)) break;
+        length = snprintf(s->path, sizeof(s->path), "%s/%s", dir, s->name);
+        if (length < 0 || (size_t)length >= sizeof(s->path)) break;
+        int fd = open(s->path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        if (fd < 0) { if (errno == EEXIST) continue; break; }
+        s->fp = fdopen(fd, "wb");
+        if (!s->fp) { close(fd); unlink(s->path); }
+        break;
+    }
     if (!s->fp) { free(s); return NULL; }
     s->w = w; s->h = h;
     s->start_ms = now_ms();
