@@ -145,7 +145,7 @@ static void get_report(const char *day)
 {
     /* Inspect durable TXT directly; transport and packing are tested separately. */
     char path[256];
-    snprintf(path, sizeof(path), "%s/%s/detections_%s.txt", YOLO_EVENTS_DIR, day, day);
+    snprintf(path, sizeof(path), "%s/%s/result_%s.txt", YOLO_EVENTS_DIR, day, day);
     int descriptor = open(path, O_RDONLY | O_NOFOLLOW);
     FILE *input = descriptor < 0 ? NULL : fdopen(descriptor, "rb");
     if (!input) { response_code = 404; response_len = 0; response[0] = '\0'; return; }
@@ -178,10 +178,11 @@ static void clear_day(int root, const char *day)
 int main(void)
 {
     setenv("TZ", "Asia/Shanghai", 1); tzset();
+    assert(yolo_report_rel_valid("20261027/result_20261027.txt"));
     assert(yolo_report_rel_valid("20261027/detections_20261027.txt"));
-    const char *invalid[] = {"20261027/detections_20261028.txt", "20261027/../secret.txt",
-        "2026102a/detections_2026102a.txt", "20261027/detections_20261027.txt/extra",
-        "20261027/detections_20261027.txt?x=1", "20261027/random.txt"};
+    const char *invalid[] = {"20261027/result_20261028.txt", "20261027/../secret.txt",
+        "2026102a/detections_2026102a.txt", "20261027/result_20261027.txt/extra",
+        "20261027/result_20261027.txt?x=1", "20261027/random.txt"};
     for (size_t i = 0; i < sizeof(invalid)/sizeof(invalid[0]); i++) assert(!yolo_report_rel_valid(invalid[i]));
     assert(yolo_event_rel_valid("20261027/det_010203_004_1.jpg"));
     assert(!yolo_events_due(1, 1000));
@@ -283,15 +284,15 @@ int main(void)
     assert(strstr(response, second_day) < strstr(response, first_day));
     assert(mkdirat(retained_root, "20000101", 0755) == 0);
     int malicious = openat(retained_root, "20000101", O_RDONLY | O_DIRECTORY); assert(malicious >= 0);
-    assert(symlinkat("/etc/passwd", malicious, "detections_20000101.txt") == 0); close(malicious);
+    assert(symlinkat("/etc/passwd", malicious, "result_20000101.txt") == 0); close(malicious);
     get_report("20000101"); assert(response_code == 404);
     http_detection_reports_list(NULL, 0, "GET", "/api/detections/reports", NULL);
     assert(!strstr(response, "20000101"));
     http_detection_file(NULL, 0, "GET", "/detectionfile/20261027/../secret.txt", NULL); assert(response_code == 404);
     errno = 0; assert(yolo_events_delete_report("20261027/../secret.txt") < 0 && errno == EINVAL);
-    errno = 0; assert(yolo_events_delete_report("20000101/detections_20000101.txt") < 0 && errno == EINVAL);
+    errno = 0; assert(yolo_events_delete_report("20000101/result_20000101.txt") < 0 && errno == EINVAL);
     /* Deleting today's regular report is allowed; new records recreate it. */
-    char relative[64]; snprintf(relative, sizeof(relative), "%s/detections_%s.txt", first_day, first_day);
+    char relative[64]; snprintf(relative, sizeof(relative), "%s/result_%s.txt", first_day, first_day);
     assert(yolo_events_init(NULL) == 0);
     assert(yolo_events_delete_report(relative) == 0);
     get_report(first_day); assert(response_code == 404);
@@ -307,7 +308,7 @@ int main(void)
     assert(response_code == 404);
     http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20261027/../secret.txt");
     assert(response_code == 400);
-    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20000101/detections_20000101.txt");
+    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20000101/result_20000101.txt");
     assert(response_code == 400);
     /* A full queue plus permanent storage failure must release a blocked
        inference producer before the caller joins that producer at shutdown. */

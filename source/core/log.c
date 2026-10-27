@@ -48,10 +48,10 @@ static void open_log_channel(int is_error)
     strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
     for (int index = 0; index < 10000; index++) {
         if (!index)
-            snprintf(name, sizeof(name), "%s_%s_%s_%03ld.log", APP_NAME,
+            snprintf(name, sizeof(name), "%s_%s_%s_%03ld.log", "log",
                      is_error ? "error" : "info", stamp, tv.tv_usec / 1000);
         else
-            snprintf(name, sizeof(name), "%s_%s_%s_%03ld_%d.log", APP_NAME,
+            snprintf(name, sizeof(name), "%s_%s_%s_%03ld_%d.log", "log",
                      is_error ? "error" : "info", stamp, tv.tv_usec / 1000, index);
         int length = snprintf(path, sizeof(path), "%s/%s/%s", g_log.dir, g_log.date, name);
         if (length < 0 || (size_t)length >= sizeof(path)) return;

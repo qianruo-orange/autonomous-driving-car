@@ -58,7 +58,7 @@ static void put(const char *relative, const char *bytes)
 
 static void put_txt(const char *day)
 {
-    char relative[80]; snprintf(relative, sizeof(relative), "%s/detections_%s.txt", day, day);
+    char relative[80]; snprintf(relative, sizeof(relative), "%s/result_%s.txt", day, day);
     put(relative, row);
 }
 
@@ -98,9 +98,9 @@ int main(void)
     int original = open(".", O_RDONLY | O_DIRECTORY); assert(original >= 0 && chdir(scratch) == 0);
     assert(mkdir("recordings", 0700) == 0 && mkdir(YOLO_EVENTS_DIR, 0700) == 0);
     events.root_fd = open(YOLO_EVENTS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC); assert(events.root_fd >= 0);
-    assert(yolo_report_rel_valid("20010101/detections_20010101.txt"));
+    assert(yolo_report_rel_valid("20010101/result_20010101.txt"));
     assert(!yolo_report_rel_valid("20010101/detections_20010101.xlsx"));
-    assert(!yolo_report_rel_valid("20010101/detections_20010102.txt"));
+    assert(!yolo_report_rel_valid("20010101/result_20010102.txt"));
     assert(!yolo_report_rel_valid("20010101/../secret.txt"));
 
     http_detection_reports_pack(NULL, 0, "GET", "/api/detections/reports/pack", NULL);
@@ -112,43 +112,43 @@ int main(void)
     put("20010101/detections_20010101.xlsx", "retained old workbook");
     assert(mkdirat(events.root_fd, "20010103", 0700) == 0);
     int malicious = openat(events.root_fd, "20010103", O_RDONLY | O_DIRECTORY); assert(malicious >= 0);
-    assert(symlinkat("/etc/passwd", malicious, "detections_20010103.txt") == 0); close(malicious);
+    assert(symlinkat("/etc/passwd", malicious, "result_20010103.txt") == 0); close(malicious);
     assert(symlinkat("/tmp", events.root_fd, "20010104") == 0);
 
     http_detection_reports_list(NULL, 0, "GET", "/api/detections/reports", NULL);
     assert(response_code == 200 && strstr(response, "20010101.txt") && strstr(response, "20010102.txt"));
     assert(!strstr(response, "20010103") && !strstr(response, "20010104") && !strstr(response, ".rows"));
     assert(strstr(response, "20010102") < strstr(response, "20010101"));
-    http_detection_file(NULL, 0, "GET", "/detectionfile/20010101/detections_20010101.txt", NULL);
+    http_detection_file(NULL, 0, "GET", "/detectionfile/20010101/result_20010101.txt", NULL);
     assert(response_code == 200 && !strcmp(response_mime, "text/plain; charset=utf-8"));
-    assert(strstr(response_headers, "detections_20010101.txt") && !strcmp(response, row));
-    assert(faccessat(events.root_fd, "20010101/detections_20010101.txt", F_OK, 0) == 0);
+    assert(strstr(response_headers, "result_20010101.txt") && !strcmp(response, row));
+    assert(faccessat(events.root_fd, "20010101/result_20010101.txt", F_OK, 0) == 0);
     save_response("download.txt");
     python_check("import sys; p=open(sys.argv[1],encoding='utf-8').read(); assert p.count('：num[')==1; assert 'FocalLength[raw:645]' in p; assert 'position[1.000 3.000 2.000 4.000]' in p", "download.txt");
-    http_detection_file(NULL, 0, "GET", "/detectionfile/20010103/detections_20010103.txt", NULL); assert(response_code == 404);
+    http_detection_file(NULL, 0, "GET", "/detectionfile/20010103/result_20010103.txt", NULL); assert(response_code == 404);
     http_detection_file(NULL, 0, "GET", "/detectionfile/20010101/../secret.txt", NULL); assert(response_code == 404);
 
     http_detection_reports_pack(NULL, 0, "GET", "/api/detections/reports/pack", NULL);
     assert(response_code == 200 && !strcmp(response_mime, "application/gzip") && strstr(response_headers, "detections_pack.tar.gz"));
     save_response("reports.tar.gz");
-    python_check("import sys,tarfile; t=tarfile.open(sys.argv[1]); files=[m for m in t.getmembers() if m.isfile()]; assert {m.name.lstrip('./') for m in files}=={'20010101/detections_20010101.txt','20010102/detections_20010102.txt'}; assert all('：num[1]' in t.extractfile(m).read().decode() for m in files)", "reports.tar.gz");
+    python_check("import sys,tarfile; t=tarfile.open(sys.argv[1]); files=[m for m in t.getmembers() if m.isfile()]; assert {m.name.lstrip('./') for m in files}=={'20010101/result_20010101.txt','20010102/result_20010102.txt'}; assert all('：num[1]' in t.extractfile(m).read().decode() for m in files)", "reports.tar.gz");
 
     unsigned long long before_clear = atomic_load(&report_epoch);
     http_detection_reports_clear(NULL, 0, "POST", "/api/detections/reports/clear", NULL);
     assert(response_code == 200 && !strcmp(response, "{\"deleted\":2}"));
     assert(flush_report_epoch("20010101", row, sizeof(row) - 1, before_clear) == 1);
     assert(faccessat(events.root_fd, "20010101/.detections_20010101.rows", F_OK, 0) < 0);
-    assert(faccessat(events.root_fd, "20010101/detections_20010101.txt", F_OK, 0) < 0);
+    assert(faccessat(events.root_fd, "20010101/result_20010101.txt", F_OK, 0) < 0);
     assert(faccessat(events.root_fd, "20010101/legacy.json", F_OK, 0) == 0);
     assert(faccessat(events.root_fd, "20010101/legacy.jpg", F_OK, 0) == 0);
     assert(faccessat(events.root_fd, "20010101/detections_20010101.xlsx", F_OK, 0) < 0);
     unsigned long long fresh = atomic_load(&report_epoch);
     assert(flush_report_epoch("20010101", row, sizeof(row) - 1, fresh) == 0);
-    assert(yolo_events_delete_report("20010101/detections_20010101.txt") == 0);
+    assert(yolo_events_delete_report("20010101/result_20010101.txt") == 0);
     assert(flush_report_epoch("20010101", row, sizeof(row) - 1, fresh) == 1);
     assert(flush_report_epoch("20010102", row, sizeof(row) - 1, fresh) == 0); /* Other days are not discarded. */
     assert(flush_report_epoch("20010101", row, sizeof(row) - 1, atomic_load(&report_epoch)) == 0);
-    errno = 0; assert(yolo_events_delete_report("20010103/detections_20010103.txt") < 0 && errno == EINVAL);
+    errno = 0; assert(yolo_events_delete_report("20010103/result_20010103.txt") < 0 && errno == EINVAL);
 
     /* A completed snapshot cannot resurrect reports after a clear request. */
     char snapshot[] = "/tmp/yolo-bulk-snapshot-XXXXXX"; assert(mkdtemp(snapshot));
@@ -161,7 +161,7 @@ int main(void)
 
     /* Reject oversized input before copying its sparse bytes. */
     put_txt("20010101");
-    int huge = openat(events.root_fd, "20010101/detections_20010101.txt", O_WRONLY | O_CLOEXEC);
+    int huge = openat(events.root_fd, "20010101/result_20010101.txt", O_WRONLY | O_CLOEXEC);
     assert(huge >= 0 && ftruncate(huge, 2ll * 1024 * 1024 * 1024 + 1) == 0); close(huge);
     http_detection_reports_pack(NULL, 0, "GET", "/api/detections/reports/pack", NULL); assert(response_code == 413);
     assert(yolo_events_clear_reports(&count) == 0 && count == 1);

@@ -15,6 +15,7 @@
 .file-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .file-actions .btn{display:inline-flex;align-items:center;justify-content:center;flex:0 0 176px;width:176px;height:38px;margin:0;padding:0 12px;font-size:13px;line-height:1.2;white-space:nowrap}
 .file-actions a[aria-disabled="true"]{opacity:.55;cursor:wait;pointer-events:none}
+.file-global-actions{justify-content:flex-end;margin-bottom:16px}
 .btn{display:inline-block;padding:8px 14px;border-radius:8px;border:none;cursor:pointer;font-size:13px;text-decoration:none;backdrop-filter:blur(8px);transition:all .25s}
 .btn-pack{background:linear-gradient(135deg,rgba(30,111,212,.7),rgba(30,111,212,.5));color:#fff;box-shadow:0 2px 8px rgba(30,111,212,.25)}
 .btn-pack:hover{box-shadow:0 4px 16px rgba(30,111,212,.4);transform:translateY(-1px)}
@@ -22,12 +23,12 @@
 .btn-clear:hover{background:linear-gradient(135deg,rgba(192,57,78,1),rgba(192,57,78,.8));box-shadow:0 4px 16px rgba(192,57,78,.35);transform:translateY(-1px)}
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;border-radius:10px}
 table{border-collapse:collapse;width:100%;min-width:480px;background:var(--card-bg);backdrop-filter:blur(12px);border:1px solid var(--card-border);border-radius:10px;overflow:hidden}
-.file-section table{table-layout:fixed;min-width:760px}
-.file-col-date{width:13%}
-.file-col-name{width:39%}
-.file-col-size{width:11%}
-.file-col-mtime{width:21%}
-.file-col-actions{width:16%}
+.file-section table{table-layout:fixed;min-width:880px}
+.file-col-date{width:12%}
+.file-col-name{width:30%}
+.file-col-size{width:10%}
+.file-col-mtime{width:20%}
+.file-col-actions{width:28%}
 th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--card-border);white-space:nowrap}
 .file-section th,.file-section td{overflow:hidden;text-overflow:ellipsis}
 th{color:var(--muted);font-size:12px;background:rgba(94,194,240,.03)}
@@ -37,11 +38,23 @@ td{font-size:13px}
 .del:disabled{background:var(--btn-bg);color:var(--muted);cursor:not-allowed;opacity:1;box-shadow:none;transform:none}
 .dl{color:var(--accent);transition:color .2s}
 .dl:hover{color:var(--accent-hover)}
+.file-preview-button{border:1px solid var(--card-border2);border-radius:4px;background:var(--btn-bg);color:var(--accent);padding:3px 7px;font:inherit;font-size:11px;cursor:pointer;margin-right:8px}
+.file-preview-button:disabled{color:var(--muted);cursor:not-allowed;opacity:.6}
+.file-preview-overlay{position:fixed;inset:0;z-index:1001;background:rgba(3,8,20,.72);padding:24px;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(5px)}
+.file-preview-overlay[hidden]{display:none}
+.file-preview-dialog{width:min(960px,100%);max-height:90vh;overflow:auto;padding:20px;border:1px solid var(--card-border2);border-radius:16px;background:var(--select-menu-bg);box-shadow:var(--shadow)}
+.file-preview-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.file-preview-header h2{font-size:18px;color:var(--accent)}
+.file-preview-name{margin:10px 0;overflow-wrap:anywhere}
+.file-preview-status{color:var(--muted);font-size:13px;margin-bottom:12px}
+#file_preview_text{max-height:65vh;overflow:auto;padding:14px;background:var(--input-bg);border:1px solid var(--card-border);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 Consolas,monospace}
+#file_preview_video{display:block;width:100%;max-height:65vh;background:#000;border-radius:8px}
+#file_preview_video[hidden],#file_preview_text[hidden]{display:none}
 /* 正在录制的行高亮 */
 tr.row-active td{background:rgba(30,111,212,.08)}
 tr.row-active td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
 /* 加载/空状态 */
-.loading,.empty{text-align:center;color:var(--muted);padding:18px 0}
+.loading,.empty{text-align:left;color:var(--muted);padding:18px 12px}
 /* 轻量提示 */
 .toast{position:fixed;left:50%;bottom:32px;transform:translateX(-50%) translateY(80px);background:var(--card-bg);border:1px solid var(--card-border);color:var(--text);padding:10px 18px;border-radius:10px;font-size:13px;opacity:0;transition:all .25s;pointer-events:none;backdrop-filter:blur(12px);z-index:99;max-width:86vw;box-shadow:0 4px 20px rgba(0,0,0,.2)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -55,4 +68,6 @@ tr.row-active td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
   .del{padding:2px 6px;font-size:10px;margin-left:4px}
   .file-section{padding:12px}
   .file-section-header{align-items:flex-start}
+  .file-preview-overlay{padding:12px}
+  .file-preview-dialog{padding:14px}
 }

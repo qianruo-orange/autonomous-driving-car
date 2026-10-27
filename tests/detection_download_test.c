@@ -13,7 +13,7 @@ static unsigned callbacks;
 
 int yolo_report_rel_valid(const char *relative)
 {
-    return relative && !strcmp(relative, "20261027/detections_20261027.txt");
+    return relative && !strcmp(relative, "20261027/result_20261027.txt");
 }
 
 static int fixture_export(int archive)
@@ -115,7 +115,7 @@ static void check_success(int archive, size_t body_size, int blocking_export)
     unsigned expected = callbacks + 1;
     uint64_t before = download_now_ms();
     assert(!http_detection_download_start(pair[0], archive ? "/api/detections/reports/pack" :
-        "/detectionfile/20261027/detections_20261027.txt", closed));
+        "/detectionfile/20261027/result_20261027.txt", closed));
     /* Export waits on a condition; returning here proves the caller is free. */
     assert(download_now_ms() - before < 500u);
     wait_entered();
@@ -124,7 +124,7 @@ static void check_success(int archive, size_t body_size, int blocking_export)
         for (unsigned i=0; i<DETECTION_DOWNLOAD_MAX-1u; ++i) {
             assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, queued[i]));
             assert(!http_detection_download_start(queued[i][0], archive ? "/api/detections/reports/pack" :
-                "/detectionfile/20261027/detections_20261027.txt", closed));
+                "/detectionfile/20261027/result_20261027.txt", closed));
             expected++;
         }
         int second[2]; assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, second));
@@ -139,7 +139,7 @@ static void check_success(int archive, size_t body_size, int blocking_export)
     char *response = read_response(pair[1], &length);
     assert(strstr(response, "HTTP/1.1 200 OK\r\n"));
     assert(strstr(response, archive ? "application/gzip" : "text/plain; charset=utf-8"));
-    assert(strstr(response, archive ? "filename=\"detections_pack.tar.gz\"" : "filename=\"detections_20261027.txt\""));
+    assert(strstr(response, archive ? "filename=\"detections_pack.tar.gz\"" : "filename=\"result_20261027.txt\""));
     char *body = strstr(response, "\r\n\r\n"); assert(body); body += 4;
     assert(length - (size_t)(body - response) == body_size);
     for (size_t i = 0; i < body_size; i++) assert(body[i] == 'A' + i % 26);
@@ -164,7 +164,7 @@ static void check_txt_bypasses_archive(void)
     assert(!http_detection_download_start(package[0], "/api/detections/reports/pack", closed));
     wait_entered(); /* Compression remains blocked until after the TXT response. */
     assert(!http_detection_download_start(text[0],
-        "/detectionfile/20261027/detections_20261027.txt", closed));
+        "/detectionfile/20261027/result_20261027.txt", closed));
     size_t length;
     char *response = read_response(text[1], &length);
     assert(length && strstr(response, "HTTP/1.1 200 OK\r\n"));

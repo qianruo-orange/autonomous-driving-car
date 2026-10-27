@@ -270,7 +270,7 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         if (!date_valid(date->d_name)) continue;
         int directory = openat(root_fd, date->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (directory < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.txt", date->d_name);
+        char name[64]; snprintf(name, sizeof(name), "result_%.8s.txt", date->d_name);
         struct stat st;
         int valid = !fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size > 0;
         close(directory);
@@ -293,7 +293,7 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         if (!localtime_r(&entries[i].modified, &local) || !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M:%S", &local))
             snprintf(modified, sizeof(modified), "Unknown");
         off = http_json_append(json, sizeof(json), off,
-            "%s{\"name\":\"%s/detections_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            "%s{\"name\":\"%s/result_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
             i ? "," : "", entries[i].day, entries[i].day, entries[i].day, entries[i].day + 4,
             entries[i].day + 6, (long long)entries[i].size, modified);
         if (off < 0) { http_err(fd, 500, "Error", NULL); return; }

@@ -35,7 +35,7 @@ class CoordinatesRepairTests(unittest.TestCase):
             root = Path(scratch) / 'detections'
             day = root / '20261027'
             day.mkdir(parents=True)
-            source = day / 'detections_20261027.txt'
+            source = day / 'result_20261027.txt'
             original = ('time：num[1] size[1280 720] FocalLength[raw:645]\n'
                         '\tperson 0.750000 position[-5 1290 12 760]\n').encode()
             source.write_bytes(original)
@@ -57,7 +57,7 @@ class CoordinatesRepairTests(unittest.TestCase):
                 root = Path(scratch) / 'detections'
                 day = root / '20261027'
                 day.mkdir(parents=True)
-                source = day / 'detections_20261027.txt'
+                source = day / 'result_20261027.txt'
                 source.write_bytes(body.encode())
                 backup = Path(scratch) / 'backups'
                 with self.assertRaises(ValueError):

@@ -101,7 +101,15 @@ def regular_at(directory, name):
 
 
 def migrate_day(directory, day):
-    name, journal = f'detections_{day}.txt', f'.detections_{day}.rows'
+    name, journal = f'result_{day}.txt', f'.detections_{day}.rows'
+    legacy = f'detections_{day}.txt'
+    if regular_at(directory, name):
+        return False
+    if regular_at(directory, legacy):
+        os.link(legacy, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+        os.unlink(legacy, dir_fd=directory)
+        os.fsync(directory)
+        return True
     # This prevents a later deployment from replacing newer native TXT frames
     # with the older retained journal. Clear/delete removes both files together.
     if regular_at(directory, name) or not regular_at(directory, journal):

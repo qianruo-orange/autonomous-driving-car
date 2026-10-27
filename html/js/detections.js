@@ -6,6 +6,7 @@
   var busy = false;
   var refreshPending = false;
   var bulkBusy = false;
+  function pageBusy() { return window.gatewayFiles.isBulkBusy(); }
   function setBulkBusy(value) {
     bulkBusy = value;
     clearButton.disabled = value;
@@ -41,7 +42,7 @@
     setI18nText(link, key);
     link.addEventListener('click', async function (event) {
       event.preventDefault();
-      if (bulkBusy || link.getAttribute('aria-disabled') === 'true') return;
+      if (bulkBusy || pageBusy() || link.getAttribute('aria-disabled') === 'true') return;
       setBulkBusy(true);
       link.setAttribute('aria-disabled','true');
       try {
@@ -74,11 +75,12 @@
         row.insertCell().textContent = window.gatewayFiles.formatSize(report.size);
         row.insertCell().textContent = report.mtime || '—';
         var actions = row.insertCell();
+        window.gatewayFiles.addPreviewButton(actions, 'result', report.name, false);
         downloadLink(actions, report.name, '', '下载');
         var remove = document.createElement('button');
         remove.className = 'del'; setI18nText(remove, '删除');
         remove.addEventListener('click', async function () {
-          if (bulkBusy) return;
+          if (bulkBusy || pageBusy()) return;
           if (!confirm(t('删除日报 {file}？后续检测将继续创建当天文件。', {file: report.name}))) return;
           remove.disabled = true;
           try {
@@ -104,7 +106,7 @@
   }
   packButton.addEventListener('click', async function (event) {
     event.preventDefault();
-    if (bulkBusy) return;
+    if (bulkBusy || pageBusy()) return;
     setBulkBusy(true); setI18nText(packButton, '打包中…');
     try {
       var response = await reportDownload('/api/detections/reports/pack');
@@ -120,7 +122,7 @@
     }
   });
   clearButton.addEventListener('click', async function () {
-    if (bulkBusy || !confirm(t('确定清空全部结果？此操作不可恢复，后续检测将继续创建当天文件。'))) return;
+    if (bulkBusy || pageBusy() || !confirm(t('确定清空全部结果？此操作不可恢复，后续检测将继续创建当天文件。'))) return;
     setBulkBusy(true);
     try {
       var response = await authFetch('/api/detections/reports/clear', {method:'POST'});
@@ -137,6 +139,7 @@
     } finally { setBulkBusy(false); }
   });
   load();
+  document.addEventListener('fileschanged', load);
   var timer = setInterval(load, 5000);
   window.addEventListener('pagehide', function () { clearInterval(timer); });
 })();

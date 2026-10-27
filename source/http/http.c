@@ -614,7 +614,23 @@ static void http_process_request(http_conn_t *c)
     /* 认证/命令类处理可能耗时（crypt 等），先喂狗 */
     watchdog_feed_self("http");
 
-    /* Excel export and archive compression can outlast an HTTP heartbeat.
+    if (!strncmp(c->uri, "/api/files/", 11)) {
+        int video = !strncmp(c->uri, "/api/files/video?", 17);
+        int allowed = video ? http_files_video_authorized(c->uri, req) :
+            !strcmp(c->method, "GET") && !strcmp(c->uri, "/api/files/pack") && http_files_download_authorized(req);
+        if (!allowed &&
+            !http_check_auth_root(req, fd)) goto finish;
+        /* Detach before a fast worker can close/reuse the descriptor. */
+        conn_detach(c);
+        if (http_files_start(app, fd, c->method, c->uri, req, http_detection_client_closed)) {
+            static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 10\r\nConnection: close\r\n\r\nFiles busy";
+            (void)send(fd, busy, sizeof(busy)-1, MSG_NOSIGNAL);
+            close(fd); http_detection_client_closed(fd);
+        }
+        return;
+    }
+
+    /* Snapshot generation and archive compression can outlast an HTTP heartbeat.
        Authenticate in the reactor, then transfer the socket to a file worker. */
     if (!strcmp(c->method, "GET") &&
         (!strcmp(c->uri, "/api/detections/reports/pack") ||

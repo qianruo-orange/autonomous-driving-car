@@ -14,6 +14,20 @@ SPEC.loader.exec_module(txt)
 
 
 class DetectionTxtTests(unittest.TestCase):
+    @unittest.skipUnless(os.open in os.supports_dir_fd, 'POSIX directory descriptor safety')
+    def test_legacy_public_txt_is_renamed_without_reexport(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            day = root / '20261027'
+            day.mkdir()
+            legacy = day / 'detections_20261027.txt'
+            original = b'preserve exact native TXT history\n'
+            legacy.write_bytes(original)
+            self.assertEqual(txt.migrate(root), 1)
+            self.assertFalse(legacy.exists())
+            self.assertEqual((day / 'result_20261027.txt').read_bytes(), original)
+            self.assertEqual(txt.migrate(root), 0)
+
     def row(self, seq=1, name='person', confidence='0.75', focus='645', mm='null', camera=None):
         fields = ['2026-10-27T15:01:02.003+0800', '1280', '720', name,
                   confidence, '1.25', '2.5', '100', '200', str(seq), focus, mm, 'true']
@@ -65,7 +79,7 @@ class DetectionTxtTests(unittest.TestCase):
             journal = day / '.detections_20261027.rows'
             journal.write_text('\t'.join(txt.HEADER) + '\n' + self.row(), encoding='utf-8')
             self.assertEqual(txt.migrate(root), 1)
-            output = day / 'detections_20261027.txt'
+            output = day / 'result_20261027.txt'
             expected = self.convert([self.row()])
             self.assertEqual(output.read_text(encoding='utf-8'), expected)
             self.assertTrue(journal.exists())
@@ -87,7 +101,7 @@ class DetectionTxtTests(unittest.TestCase):
             journal.write_text('\t'.join(txt.HEADER) + '\n' + self.row() + 'partial', encoding='utf-8')
             with self.assertRaises(ValueError):
                 txt.migrate(root)
-            output = day / 'detections_20261027.txt'
+            output = day / 'result_20261027.txt'
             self.assertFalse(output.exists())
             self.assertFalse(list(day.glob('*.tmp')))
             journal.unlink()

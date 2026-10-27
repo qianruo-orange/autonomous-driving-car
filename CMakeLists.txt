@@ -232,3 +232,10 @@ target_compile_options(file_timestamps_test PRIVATE -UNDEBUG -ffunction-sections
 set_property(TARGET file_timestamps_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
 target_link_libraries(file_timestamps_test PRIVATE pthread)
 add_test(NAME file_timestamps COMMAND file_timestamps_test)
+
+add_executable(http_files_test tests/http_files_test.c source/http/http_util.c)
+target_include_directories(http_files_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(http_files_test PRIVATE -UNDEBUG)
+target_link_libraries(http_files_test PRIVATE pthread)
+add_test(NAME http_files COMMAND http_files_test)
+add_test(NAME file_names COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/file_names_test.py)

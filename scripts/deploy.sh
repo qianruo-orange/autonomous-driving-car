@@ -78,6 +78,11 @@ do_install() {
     fi
 
     echo "[MIGRATE] retained detection journals to daily TXT"
+    if ! nice -n 10 python3 "$PROJECT_DIR/scripts/normalize_file_names.py" --root "$DEPLOY_DIR"; then
+        echo "[ERROR] filename normalization failed; restarting the previous service"
+        systemctl start "$SERVICE_NAME" 2>/dev/null || true
+        return 1
+    fi
     if ! nice -n 10 python3 "$PROJECT_DIR/scripts/migrate_detection_txt.py" \
         --root "$DEPLOY_DIR/recordings/detections"; then
         echo "[ERROR] TXT migration failed; retaining journals and restarting the previous service"

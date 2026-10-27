@@ -145,6 +145,8 @@ int main(void)
     assert(rec_file_valid("rec_123456.mp4"));
     assert(rec_file_valid("rec_20261027_123456_123.mp4"));
     assert(rec_file_valid("rec_20261027_123456_123_1.mp4"));
+    assert(rec_file_valid("video_20261027_123456_123.mp4"));
+    assert(rec_file_valid("video_20261027_123456_123_1.mp4"));
     assert(!rec_file_valid("rec_../private.mp4"));
     clean_directory(root);
     puts("PASS: timestamped log/recording names preserve old files, collisions, rotation and API compatibility");

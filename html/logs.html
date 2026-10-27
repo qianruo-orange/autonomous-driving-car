@@ -18,6 +18,10 @@
   </div>
 </div>
 <div id="toast" class="toast"></div>
+<div class="file-actions file-global-actions" aria-label="文件操作" data-i18n-aria="文件操作">
+  <a href="/api/files/pack" class="btn btn-pack" id="pack_all_files_btn">📦 <span data-i18n="打包全部文件">打包全部文件</span></a>
+  <button class="btn btn-clear" id="clear_all_files_btn">🗑 <span data-i18n="删除全部文件">删除全部文件</span></button>
+</div>
 <main class="file-manager">
   <section class="file-section" aria-labelledby="logs_title">
     <div class="file-section-header">
@@ -64,6 +68,19 @@
     </div>
   </section>
 </main>
+<div id="file_preview_overlay" class="file-preview-overlay" hidden>
+  <section class="file-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="file_preview_title">
+    <div class="file-preview-header">
+      <h2 id="file_preview_title" data-i18n="文件预览">文件预览</h2>
+      <button type="button" class="btn btn-back" id="file_preview_close" data-i18n="关闭">关闭</button>
+    </div>
+    <p id="file_preview_name" class="file-preview-name"></p>
+    <p id="file_preview_status" class="file-preview-status" role="status"></p>
+    <pre id="file_preview_text" hidden></pre>
+    <video id="file_preview_video" controls playsinline preload="metadata" hidden></video>
+  </section>
+</div>
+<script src="/js/file-manager.js"></script>
 <script src="/js/logs.js"></script>
 <script src="/js/detections.js"></script>
 </body></html>

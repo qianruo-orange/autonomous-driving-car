@@ -117,7 +117,7 @@ def repair(root, backup_root):
     for day in sorted(root.iterdir()):
         if not re.fullmatch(r'[0-9]{8}', day.name) or day.is_symlink() or not day.is_dir():
             continue
-        source = day / f'detections_{day.name}.txt'
+        source = day / f'result_{day.name}.txt'
         if source.exists() or source.is_symlink():
             changed += repair_file(source, backup_root)
     return changed

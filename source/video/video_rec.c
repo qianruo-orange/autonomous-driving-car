@@ -264,7 +264,7 @@ void *video_rec_task(void *arg)
             snprintf(dir, sizeof(dir), "%s/%s", REC_DIR, day);
 
             char fname[128] = "";
-            rec_mp4_t *s = rec_mp4_create(dir, "rec", pw, ph,
+            rec_mp4_t *s = rec_mp4_create(dir, "video", pw, ph,
                                           fname, sizeof(fname));
             if (!s) {
                 h264_encoder_destroy(enc);
@@ -357,7 +357,7 @@ void *video_rec_task(void *arg)
                     localtime_r(&split_time, &split_tm);
                     strftime(next_day, sizeof(next_day), "%Y%m%d", &split_tm);
                     snprintf(next_dir, sizeof(next_dir), "%s/%s", REC_DIR, next_day);
-                    rec_mp4_t *next = rec_mp4_create(next_dir, "rec", pw, ph,
+                    rec_mp4_t *next = rec_mp4_create(next_dir, "video", pw, ph,
                                                     next_name, sizeof(next_name));
                     if (next) {
                         int finalized = rec_mp4_finalize(s);

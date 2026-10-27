@@ -16,7 +16,9 @@
     var match = String(value || fallback || '').match(/^(\d{4})-?(\d{2})-?(\d{2})(?:$|[T\s_/])/);
     return match ? match[1] + '-' + match[2] + '-' + match[3] : '—';
   }
-  window.gatewayFiles = {formatDate:fmtDate, formatSize:fmtSize};
+  var fileManager = window.gatewayFiles = window.gatewayFiles || {};
+  fileManager.formatDate = fmtDate; fileManager.formatSize = fmtSize;
+  fileManager.isRecordingBusy = function() { return splitBusy; };
 
   /* 轻量提示（替代 alert） */
   var toastTimer = null;
@@ -79,6 +81,7 @@
       del.setAttribute('data-i18n-title', '正在录制的文件无法删除');
     }
     del.addEventListener('click', delFn);
+    fileManager.addPreviewButton(tdOp, tbody.id === 'rows_rec' ? 'recording' : 'log', f.name, active);
     tdOp.appendChild(dl);
     tdOp.appendChild(del);
 
@@ -122,6 +125,7 @@
     tbody.innerHTML = '';
     files.forEach(function(f) {
       addRow(tbody, f, dlBase, del ? function() {
+        if (fileManager.isBulkBusy()) return;
         if (!confirm(t('删除文件 ') + f.name + t('？'))) return;
         var opt = { method: del.method };
         if (del.bodyName) opt.body = f.name;   /* 录像删除：文件名放请求体 */
@@ -143,7 +147,7 @@
     var busy = false;
     btn.addEventListener('click', function(ev) {
       ev.preventDefault();
-      if (busy) return;
+      if (busy || fileManager.isBulkBusy()) return;
       busy = true;
       btn.setAttribute('aria-disabled', 'true');
       setI18nText(btn, '打包中…');
@@ -207,7 +211,7 @@
   }
 
   async function splitAndDownload(previousFile, url, link) {
-    if (splitBusy) return;
+    if (splitBusy || fileManager.isBulkBusy()) return;
     splitBusy = true;
     link.setAttribute('aria-disabled', 'true');
     setI18nText(link, '正在截断...');
@@ -251,6 +255,7 @@
   /* ---- 一键清空（清空录像时保留正在录制的文件） ---- */
   function bindClear(btn, url, confirmMsg, resultKey, reload) {
     btn.addEventListener('click', function() {
+      if (fileManager.isBulkBusy()) return;
       if (!confirm(t(confirmMsg))) return;
       authFetch(url, { method: 'POST' })
         .then(function(r) {
@@ -273,6 +278,7 @@
 
   loadLogs();
   loadRec();
+  document.addEventListener('fileschanged', function() { loadLogs(); loadRec(); });
   var timer = setInterval(function() {
     if (!document.hidden) { loadLogs(); loadRec(); }
   }, 5000);

@@ -25,10 +25,11 @@
 static int rec_file_valid(const char *name)
 {
     size_t len = name ? strlen(name) : 0;
-    if (len < 9 || strncmp(name, "rec_", 4) != 0 ||
+    size_t prefix = name && !strncmp(name, "video_", 6) ? 6 : 4;
+    if (len < prefix + 5 || (strncmp(name, "rec_", 4) && strncmp(name, "video_", 6)) ||
         strcmp(name + len - 4, ".mp4") != 0)
         return 0;
-    for (size_t i = 4; i + 4 < len; i++)
+    for (size_t i = prefix; i + 4 < len; i++)
         if (name[i] != '-' && name[i] != '_' &&
             (name[i] < '0' || name[i] > '9'))
             return 0;
