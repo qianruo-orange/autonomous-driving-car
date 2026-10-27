@@ -341,26 +341,44 @@ static int run_report_command(char *const command[], int output)
     char *arguments[24] = {"nice", "-n", "10"};
     size_t n = 3;
     for (size_t i = 0; command[i]; i++) {
-        if (n + 1 >= sizeof(arguments) / sizeof(arguments[0])) { errno = E2BIG; return -1; }
+        if (n + 1 >= sizeof(arguments) / sizeof(arguments[0])) {
+            LOG_ERROR("yolo report command arguments exceed capacity"); errno = E2BIG; return -1;
+        }
         arguments[n++] = command[i];
     }
     arguments[n] = NULL;
     posix_spawn_file_actions_t actions;
     int result = posix_spawn_file_actions_init(&actions);
+    const char *phase = "file actions";
     if (!result) {
         result = output >= 0 ? posix_spawn_file_actions_adddup2(&actions, output, STDOUT_FILENO) :
             posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
         if (!result) result = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
         pid_t child;
         extern char **environ;
-        if (!result) result = posix_spawnp(&child, "nice", &actions, NULL, arguments, environ);
+        if (!result) {
+            phase = "posix_spawnp";
+            result = posix_spawnp(&child, "nice", &actions, NULL, arguments, environ);
+        }
         posix_spawn_file_actions_destroy(&actions);
+        if (result) LOG_ERROR("yolo report command %s %s failed: %s (error %d)",
+                              command[0], phase, strerror(result), result);
         if (!result) {
             int status; pid_t waited;
             do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
-            if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status)) result = EIO;
+            if (waited < 0) {
+                LOG_ERROR("yolo report command %s waitpid failed: %s", command[0], strerror(errno));
+                result = EIO;
+            } else if (WIFSIGNALED(status)) {
+                LOG_ERROR("yolo report command %s terminated by signal %d", command[0], WTERMSIG(status));
+                result = EIO;
+            } else if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+                LOG_ERROR("yolo report command %s exited with status %d", command[0],
+                          WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+                result = EIO;
+            }
         }
-    }
+    } else LOG_ERROR("yolo report command %s file actions failed: %s (error %d)", command[0], strerror(result), result);
     if (result) { errno = result; return -1; }
     return 0;
 }
@@ -471,26 +489,44 @@ static int publish_snapshot_reports(const char *snapshot, unsigned long long epo
     return result;
 }
 
+static int report_failure(const char *operation, const char *phase, int error)
+{
+    if (error == ENOENT) LOG_INFO("yolo report %s %s: no report available", operation, phase);
+    else LOG_ERROR("yolo report %s %s failed: %s (error %d)", operation, phase, strerror(error), error);
+    errno = error;
+    return -1;
+}
+
 int yolo_events_export_report(const char *relative)
 {
     if (!yolo_report_rel_valid(relative)) { errno = EINVAL; return -1; }
     char snapshot[] = "/tmp/gateway-detections-snapshot-XXXXXX";
-    if (!mkdtemp(snapshot)) return -1;
+    if (!mkdtemp(snapshot)) return report_failure("workbook", "temporary directory", errno);
     unsigned count = 0; unsigned long long epoch;
     pthread_mutex_lock(&report_io_lock);
     int result = snapshot_reports(snapshot, &count, relative, &epoch);
     int saved_errno = errno;
     pthread_mutex_unlock(&report_io_lock);
+    const char *phase = "snapshot";
     if (!result && !count) { result = -1; saved_errno = ENOENT; }
-    if (!result && export_snapshot_reports(snapshot)) { result = -1; saved_errno = errno; }
-    if (!result && publish_snapshot_reports(snapshot, epoch)) { result = -1; saved_errno = errno; }
+    if (!result) {
+        phase = "Excel export";
+        if (export_snapshot_reports(snapshot)) { result = -1; saved_errno = errno; }
+    }
+    if (!result) {
+        phase = "cache publication";
+        if (publish_snapshot_reports(snapshot, epoch)) { result = -1; saved_errno = errno; }
+    }
     int output = -1;
     if (!result) {
+        phase = "snapshot open";
         char path[PATH_MAX]; snprintf(path, sizeof(path), "%s/%s", snapshot, relative);
         output = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         if (output < 0) saved_errno = errno;
     }
-    remove_report_snapshot(snapshot); errno = saved_errno;
+    remove_report_snapshot(snapshot);
+    if (output < 0) return report_failure("workbook", phase, saved_errno);
+    errno = saved_errno;
     return output;
 }
 
@@ -499,30 +535,34 @@ int yolo_events_pack_reports(unsigned *file_count)
     unsigned count = 0;
     unsigned long long epoch;
     char snapshot[] = "/tmp/gateway-detections-snapshot-XXXXXX";
-    if (!mkdtemp(snapshot)) return -1;
+    if (!mkdtemp(snapshot)) return report_failure("archive", "temporary directory", errno);
     pthread_mutex_lock(&report_io_lock);
     int result = snapshot_reports(snapshot, &count, NULL, &epoch);
     int saved_errno = errno;
     pthread_mutex_unlock(&report_io_lock);
     if (result || !count) {
-        remove_report_snapshot(snapshot); errno = result ? saved_errno : ENOENT; return -1;
+        remove_report_snapshot(snapshot); return report_failure("archive", "snapshot", result ? saved_errno : ENOENT);
     }
     if (export_snapshot_reports(snapshot)) {
-        saved_errno = errno; remove_report_snapshot(snapshot); errno = saved_errno; return -1;
+        saved_errno = errno; remove_report_snapshot(snapshot); return report_failure("archive", "Excel export", saved_errno);
     }
     if (publish_snapshot_reports(snapshot, epoch)) {
-        saved_errno = errno; remove_report_snapshot(snapshot); errno = saved_errno; return -1;
+        saved_errno = errno; remove_report_snapshot(snapshot); return report_failure("archive", "cache publication", saved_errno);
     }
     char output_path[] = "/tmp/gateway-detections-archive-XXXXXX";
     int output = mkstemp(output_path);
-    if (output < 0) { saved_errno = errno; remove_report_snapshot(snapshot); errno = saved_errno; return -1; }
+    if (output < 0) { saved_errno = errno; remove_report_snapshot(snapshot); return report_failure("archive", "temporary file", saved_errno); }
     unlink(output_path);
     char *arguments[] = {"tar", "-czf", "-", "-C", snapshot, ".", NULL};
     result = run_report_command(arguments, output);
-    if (!result && !snapshot_epoch_unchanged(epoch)) result = -1;
+    const char *phase = "compression";
+    if (!result && !snapshot_epoch_unchanged(epoch)) { phase = "generation check"; result = -1; }
     saved_errno = errno;
     remove_report_snapshot(snapshot);
-    if (result || lseek(output, 0, SEEK_SET) < 0) { if (!result) saved_errno = errno; close(output); errno = saved_errno; return -1; }
+    if (result || lseek(output, 0, SEEK_SET) < 0) {
+        if (!result) { phase = "rewind"; saved_errno = errno; }
+        close(output); return report_failure("archive", phase, saved_errno);
+    }
     if (file_count) *file_count = count;
     return output;
 }

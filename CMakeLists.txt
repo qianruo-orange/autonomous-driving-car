@@ -217,3 +217,9 @@ target_compile_options(cpufreq_test PRIVATE -UNDEBUG -ffunction-sections -fdata-
 set_property(TARGET cpufreq_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
 target_link_libraries(cpufreq_test PRIVATE pthread)
 add_test(NAME cpufreq COMMAND cpufreq_test)
+
+add_executable(cpu_affinity_test tests/cpu_affinity_test.c)
+target_include_directories(cpu_affinity_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(cpu_affinity_test PRIVATE -UNDEBUG)
+target_link_libraries(cpu_affinity_test PRIVATE pthread)
+add_test(NAME cpu_affinity COMMAND cpu_affinity_test)

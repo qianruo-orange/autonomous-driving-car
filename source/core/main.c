@@ -27,6 +27,7 @@
 #include "watchdog/watchdog.h"
 #include "core/log.h"
 #include "core/common.h"
+#include "core/cpu_affinity.h"
 #include "video/video_stream.h"
 #include "video/video_rec.h"
 #include "yolo/rknn_yolo.h"
@@ -188,6 +189,10 @@ static void *thread_wrapper(void *arg)
     int idx = (int)(intptr_t)arg;
     const char *name = g_modules[idx].name;
     set_current_thread_name(name);
+    if (!strcmp(name, "video") || !strcmp(name, "ai") || !strcmp(name, "rec"))
+        (void)cpu_bind_big();
+    else
+        (void)cpu_bind_little();
     if (g_modules[idx].ops.task) g_modules[idx].ops.task(&g_app);
     watchdog_unregister_self(name);
     __atomic_fetch_sub(&g_app.threads_running, 1, __ATOMIC_RELEASE);
@@ -250,6 +255,8 @@ int main(void)
     g_app.dbcs = g_dbc;
 
     log_init(PATH_LOGS);
+    cpu_affinity_init();
+    (void)cpu_bind_little();
     config_load(&cfg);
     log_close(); log_init(cfg.log_dir);
 

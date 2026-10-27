@@ -62,6 +62,8 @@
     '边缘智能网关': 'Edge AI Gateway',
     '配置': 'Configuration',
     '仪表盘': 'Dashboard',
+    '主界面': 'Home',
+      '识别结果正在更新或导出，请稍后重试': 'Detection reports are updating or exporting; please retry shortly',
     'DBC解析': 'DBC Decoder',
     'DBC 信号解析': 'DBC Signal Decoder',
     '文件下载': 'Files',

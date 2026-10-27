@@ -5,11 +5,11 @@
 .camera-page .tb-right{flex-wrap:wrap}
 .camera-fields{display:grid;gap:8px;margin:16px 0}
 .can-grid #camera_form{align-self:start}
-#camera_form .camera-fields{gap:12px;margin:18px 0 4px}
-#camera_form .row{display:grid;grid-template-columns:130px minmax(0,1fr);gap:14px;align-items:center}
+#camera_form .camera-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;margin:18px 0 4px}
+#camera_form .row{display:grid;grid-template-columns:1fr;gap:6px;align-items:start;min-width:0}
 #camera_form .row label{width:auto;margin:0;line-height:1.45}
 #camera_form select{width:100%;max-width:none}
-@media(max-width:640px){#camera_form .row{grid-template-columns:1fr;gap:6px}}
+@media(max-width:640px){#camera_form .camera-fields{grid-template-columns:1fr}}
 .camera-fields .row{margin:0}
 .camera-fields .row label{width:120px;flex:none}
 .camera-fields .row select{max-width:none;min-width:0}

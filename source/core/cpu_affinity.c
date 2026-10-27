@@ -1,84 +1,128 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
-
-/**
- * cpu_affinity.c — 计算密集线程绑核（详见 include/core/cpu_affinity.h）。
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <sched.h>
 #include <errno.h>
-
+#include <limits.h>
+#include <stdatomic.h>
 #include "core/cpu_affinity.h"
 #include "core/log.h"
 
-/* Cortex 大核 CPU part 编号（适配 RKNPU 全系平台）：
-   RK3588 大核 A76=0xd0b，RK3576 大核 A72=0xd08；
-   小核 A55=0xd05 / A53=0xd03。同构小核平台（RK3566/RK3568 全 A55）
-   检测不到大核时自动退化为默认调度，不绑核。 */
-#define CPU_PART_A76 0xd0b
-#define CPU_PART_A72 0xd08
+#ifndef CPU_AFFINITY_ROOT
+#define CPU_AFFINITY_ROOT "/sys/devices/system/cpu"
+#endif
 
-static pthread_once_t s_once = PTHREAD_ONCE_INIT;
-static cpu_set_t      s_big_set;
-static int            s_big_count = 0;
-static int            s_logged = 0;
+static pthread_once_t affinity_once = PTHREAD_ONCE_INIT;
+static cpu_set_t heavy_set, light_set;
+static int affinity_ready;
+static atomic_int heavy_error_logged, light_error_logged;
 
-/* 从 /proc/cpuinfo 解析大核集合。cpuinfo 行形如：
-     processor : 4
-     CPU part  : 0xd0b
-   分隔符为空格/Tab 混排，统一从首个 ':' 之后取数值。 */
-static void cpu_detect_big(void)
+/* Only initially permitted CPUs participate. Do not infer core numbers from
+ * a SoC name or from thermally capped scaling frequencies. */
+static int read_metrics(const char *root, const cpu_set_t *allowed, const char *attribute,
+                        unsigned long long values[CPU_SETSIZE])
 {
-    FILE *fp = fopen("/proc/cpuinfo", "r");
-    if (!fp) return;
-    CPU_ZERO(&s_big_set);
-    char line[256];
-    int cur = -1;
-    while (fgets(line, sizeof(line), fp)) {
-        const char *colon = strchr(line, ':');
-        if (!colon) continue;
-        if (strncmp(line, "processor", 9) == 0) {
-            cur = atoi(colon + 1);
-        } else if (strncmp(line, "CPU part", 8) == 0) {
-            unsigned int part = (unsigned int)strtoul(colon + 1, NULL, 0);
-            if ((part == CPU_PART_A76 || part == CPU_PART_A72) &&
-                cur >= 0 && cur < CPU_SETSIZE) {
-                CPU_SET(cur, &s_big_set);
-                s_big_count++;
-            }
-            cur = -1;
-        }
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (!CPU_ISSET(cpu, allowed)) continue;
+        char path[PATH_MAX], extra;
+        int n = snprintf(path, sizeof(path), "%s/cpu%d/%s", root, cpu, attribute);
+        if (n < 0 || (size_t)n >= sizeof(path)) return -1;
+        FILE *input = fopen(path, "r");
+        if (!input) return -1;
+        int fields = fscanf(input, "%llu %c", &values[cpu], &extra);
+        int failed = ferror(input);
+        if (fclose(input)) failed = 1;
+        if (failed || fields != 1 || !values[cpu]) return -1;
     }
-    fclose(fp);
-}
-
-int cpu_bind_big(void)
-{
-    pthread_once(&s_once, cpu_detect_big);
-    if (s_big_count <= 0) return -1;   /* 非异构平台：不绑核，交给默认调度 */
-
-    if (pthread_setaffinity_np(pthread_self(), sizeof(s_big_set), &s_big_set) != 0) {
-        if (!s_logged)
-            LOG_ERROR("cpu: bind big cores failed: %s", strerror(errno));
-        s_logged = 1;
-        return -1;
-    }
-    if (!s_logged) {
-        char buf[128] = "";
-        for (int i = 0; i < CPU_SETSIZE && i < 64; i++) {
-            if (CPU_ISSET(i, &s_big_set)) {
-                char t[8];
-                snprintf(t, sizeof(t), "%s%d", buf[0] ? "," : "", i);
-                strncat(buf, t, sizeof(buf) - strlen(buf) - 1);
-            }
-        }
-        LOG_INFO("cpu: heavy threads bound to big cores [%s] (%d core(s))",
-                 buf, s_big_count);
-    }
-    s_logged = 1;
     return 0;
 }
+
+/* Middle and highest capability tiers can both contribute to heavy work. */
+static int split_metrics(const cpu_set_t *allowed, const unsigned long long values[CPU_SETSIZE],
+                         cpu_set_t *heavy, cpu_set_t *light)
+{
+    unsigned long long minimum = ULLONG_MAX, maximum = 0;
+    int count = 0;
+    *heavy = *light = *allowed;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) if (CPU_ISSET(cpu, allowed)) {
+        if (!values[cpu]) return 0;
+        if (values[cpu] < minimum) minimum = values[cpu];
+        if (values[cpu] > maximum) maximum = values[cpu];
+        count++;
+    }
+    if (count < 2 || minimum == maximum) return 0;
+    unsigned long long midpoint = minimum + (maximum - minimum) / 2u;
+    CPU_ZERO(heavy); CPU_ZERO(light);
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) if (CPU_ISSET(cpu, allowed)) {
+        if (values[cpu] > midpoint) CPU_SET(cpu, heavy);
+        else CPU_SET(cpu, light);
+    }
+    return 1;
+}
+
+static const char *detect_groups(const char *root, const cpu_set_t *allowed,
+                                 cpu_set_t *heavy, cpu_set_t *light)
+{
+    unsigned long long values[CPU_SETSIZE] = {0};
+    *heavy = *light = *allowed;
+    if (!read_metrics(root, allowed, "cpu_capacity", values) &&
+        split_metrics(allowed, values, heavy, light)) return "cpu_capacity";
+    memset(values, 0, sizeof(values));
+    if (!read_metrics(root, allowed, "cpufreq/cpuinfo_max_freq", values) &&
+        split_metrics(allowed, values, heavy, light)) return "cpuinfo_max_freq";
+    *heavy = *light = *allowed;
+    return "shared allowed CPUs (homogeneous or unknown topology)";
+}
+
+static void describe_set(const cpu_set_t *set, char *text, size_t size)
+{
+    size_t used = 0;
+    text[0] = '\0';
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) if (CPU_ISSET(cpu, set)) {
+        int n = snprintf(text + used, size - used, "%s%d", used ? "," : "", cpu);
+        if (n < 0 || (size_t)n >= size - used) break;
+        used += (size_t)n;
+    }
+}
+
+static void initialize_affinity(void)
+{
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) || !CPU_COUNT(&allowed)) {
+        LOG_ERROR("cpu: cannot read allowed CPU set; keeping scheduler affinity: %s", strerror(errno));
+        return;
+    }
+    const char *source = detect_groups(CPU_AFFINITY_ROOT, &allowed, &heavy_set, &light_set);
+    affinity_ready = 1;
+    char heavy[4096], light[4096];
+    describe_set(&heavy_set, heavy, sizeof(heavy));
+    describe_set(&light_set, light, sizeof(light));
+    LOG_INFO("cpu: heavy CPUs [%s], light CPUs [%s], detected by %s", heavy, light, source);
+}
+
+int cpu_affinity_init(void)
+{
+    int result = pthread_once(&affinity_once, initialize_affinity);
+    if (result) { errno = result; return -1; }
+    return affinity_ready ? 0 : -1;
+}
+
+static int bind_group(const cpu_set_t *set, atomic_int *logged, const char *name)
+{
+    if (cpu_affinity_init()) return -1;
+    int result = pthread_setaffinity_np(pthread_self(), sizeof(*set), set);
+    if (result) {
+        if (!atomic_exchange(logged, 1))
+            LOG_ERROR("cpu: cannot bind %s work: %s", name, strerror(result));
+        errno = result;
+        return -1;
+    }
+    return 0;
+}
+
+int cpu_bind_big(void) { return bind_group(&heavy_set, &heavy_error_logged, "heavy"); }
+int cpu_bind_little(void) { return bind_group(&light_set, &light_error_logged, "light"); }

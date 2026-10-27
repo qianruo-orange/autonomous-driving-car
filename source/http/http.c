@@ -595,6 +595,13 @@ static void http_video_client_closed(int fd)
     __atomic_fetch_sub(&g_http_active, 1, __ATOMIC_RELAXED);
 }
 
+/* File workers close their own socket; only return the connection count here. */
+static void http_detection_client_closed(int fd)
+{
+    (void)fd;
+    __atomic_fetch_sub(&g_http_active, 1, __ATOMIC_RELAXED);
+}
+
 /* ---- 请求处理（连接状态机的一部分） ---- */
 
 /* 视频 MJPEG 走独立推流线程（video 模块创建），其余全部在 Reactor 主循环内处理 */
@@ -613,7 +620,7 @@ static void http_process_request(http_conn_t *c)
         (!strcmp(c->uri, "/api/detections/reports/pack") ||
          (!strncmp(c->uri, "/detectionfile/", 15) && yolo_report_rel_valid(c->uri + 15)))) {
         if (!http_check_auth_root(req, fd)) goto finish;
-        if (http_detection_download_start(fd, c->uri, http_video_client_closed) == 0) {
+        if (http_detection_download_start(fd, c->uri, http_detection_client_closed) == 0) {
             conn_detach(c);
             return;
         }

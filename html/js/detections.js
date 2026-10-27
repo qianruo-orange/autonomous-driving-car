@@ -19,6 +19,18 @@
     document.body.appendChild(anchor); anchor.click(); anchor.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
+  async function reportDownload(url) {
+    for (var attempt=0; ; attempt++) {
+      var response=await authFetch(url);
+      if ((response.status!==409 && response.status!==503) || attempt>=4) return response;
+      await new Promise(function (resolve) { setTimeout(resolve,500*(attempt+1)); });
+    }
+  }
+  function reportBusy(response) {
+    if (response.status!==409 && response.status!==503) return false;
+    window.fileToast('识别结果正在更新或导出，请稍后重试',false);
+    return true;
+  }
   function message(key) {
     reports.replaceChildren();
     var cell = reports.insertRow().insertCell(); cell.colSpan = 4;
@@ -30,15 +42,17 @@
     setI18nText(link, key);
     link.addEventListener('click', async function (event) {
       event.preventDefault();
-      if (link.getAttribute('aria-disabled') === 'true') return;
+      if (bulkBusy || link.getAttribute('aria-disabled') === 'true') return;
+      setBulkBusy(true);
       link.setAttribute('aria-disabled','true');
       try {
-        var response = await authFetch(link.href);
+        var response = await reportDownload(link.href);
+        if (reportBusy(response)) return;
         if (!response.ok) throw new Error('HTTP ' + response.status);
         saveDownload(await response.blob(), name.split('/').pop() + suffix);
       } catch (error) {
         if (error.message !== 'auth cancelled') alert(t('识别结果下载失败，请重试'));
-      } finally { link.removeAttribute('aria-disabled'); }
+      } finally { link.removeAttribute('aria-disabled'); setBulkBusy(false); }
     });
     cell.appendChild(link);
   }
@@ -63,6 +77,7 @@
         var remove = document.createElement('button');
         remove.className = 'del'; setI18nText(remove, '删除');
         remove.addEventListener('click', async function () {
+          if (bulkBusy) return;
           if (!confirm(t('删除日报 {file}？后续检测将继续创建当天文件。', {file: report.name}))) return;
           remove.disabled = true;
           try {
@@ -91,8 +106,9 @@
     if (bulkBusy) return;
     setBulkBusy(true); setI18nText(packButton, '打包中…');
     try {
-      var response = await authFetch('/api/detections/reports/pack');
+      var response = await reportDownload('/api/detections/reports/pack');
       if (response.status === 404) { window.fileToast('暂无可打包的识别结果', false); return; }
+      if (reportBusy(response)) return;
       if (!response.ok) throw new Error('HTTP ' + response.status);
       saveDownload(await response.blob(), 'detections_pack.tar.gz');
       window.fileToast('打包完成，开始下载', true);
