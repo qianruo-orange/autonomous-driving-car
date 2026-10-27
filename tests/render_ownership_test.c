@@ -22,6 +22,7 @@ int main(void)
     slot->focus_position = 220;
     slot->autofocus = 1;
     slot->focus_sample_ms = 2033;
+    strcpy(slot->camera, "UGREEN Camera 2K (/dev/video1)");
     slot->rgb_done = 1;
     frame_ring_buf_take_locked(&ring, FRAME_RING_POOL_RGB, 16 * 16 * 3, &slot->rgb);
     assert(slot->rgb.buf);
@@ -31,6 +32,8 @@ int main(void)
     unsigned long long seq = slot->seq;
     yolo_event_meta_t metadata;
     yolo_event_capture_meta_locked(slot, &metadata);
+    strcpy(slot->camera, "Another camera (/dev/video9)");
+    assert(!strcmp(metadata.camera, "UGREEN Camera 2K (/dev/video1)"));
     ring_buf_t owned = {0};
     int w = 0, h = 0;
     assert(yolo_render_take_rgb_locked(&ring, seq + 1, &owned, &w, &h) < 0);
@@ -54,6 +57,7 @@ int main(void)
     assert(metadata.capture_unix_ms == 999000 && metadata.count == 1);
     assert(metadata.focus_valid && metadata.focus_position == 220 && metadata.autofocus == 1);
     assert(metadata.focus_sample_monotonic_ms == 2033);
+    assert(!strcmp(metadata.camera, "UGREEN Camera 2K (/dev/video1)"));
     assert(!strcmp(metadata.objects[0].name, "person"));
     assert(metadata.objects[0].x1 == display.dets[0].x1);
     assert(metadata.objects[0].x2 == display.dets[0].x2);
@@ -61,6 +65,7 @@ int main(void)
     yolo_job_t job = {.seq = seq, .metadata = metadata};
     yolo_record_result(&job, &display);
     assert(logged_count == 1 && logged[0].seq == seq && logged[0].count == 1);
+    assert(!strcmp(logged[0].camera, "UGREEN Camera 2K (/dev/video1)"));
     display.count = 0;
     yolo_record_result(&job, &display);
     assert(logged_count == 2 && logged[1].seq == seq && logged[1].count == 0);
@@ -75,6 +80,7 @@ int main(void)
     yolo_event_capture_meta_locked(&unknown, &unknown_meta);
     assert(!unknown_meta.focus_valid && !unknown_meta.focus_position && unknown_meta.autofocus == -1);
     assert(!unknown_meta.focus_sample_monotonic_ms);
+    assert(!strcmp(unknown_meta.camera, "Unknown"));
 
     /* Reproduce the old race: no raw claims remain, so quiesce clears slots
        immediately while rendering still uses the transferred RGB memory. */
@@ -82,6 +88,7 @@ int main(void)
     assert(frame_ring_quiesce_wait(&ring, 20) == 0);
     assert(slot->seq == 0 && !slot->rgb.buf);
     assert(metadata.seq == seq && metadata.focus_position == 220 && metadata.capture_monotonic_ms == 2000);
+    assert(!strcmp(metadata.camera, "UGREEN Camera 2K (/dev/video1)"));
     frame_ring_lock(&ring);
     for (pool_item_t *item = ring.pool_rgb; item; item = item->next)
         assert(item->buf != owned.buf);

@@ -20,7 +20,7 @@
 
 #define REPORT_BUFFER_SIZE 65536u
 static const char report_header[] =
-    "capture_time\twidth\theight\ttarget\tconfidence\tx1\ty1\tx2\ty2\tframe_seq\tfocus_position_raw\tfocal_length_mm\tautofocus\n";
+    "capture_time\twidth\theight\ttarget\tconfidence\tx1\ty1\tx2\ty2\tframe_seq\tfocus_position_raw\tfocal_length_mm\tautofocus\tcamera\n";
 
 static struct {
     pthread_mutex_t lock;
@@ -105,9 +105,9 @@ static int append(char *out, size_t cap, size_t *length, const char *format, ...
     return 0;
 }
 
-static int append_target(char *out, size_t cap, size_t *length, const char *name)
+static int append_escaped(char *out, size_t cap, size_t *length, const char *name, size_t limit)
 {
-    for (size_t i = 0; i < YOLO_EVENT_NAME_LEN && name[i]; i++) {
+    for (size_t i = 0; i < limit && name[i]; i++) {
         unsigned char ch = (unsigned char)name[i];
         if (ch == '\\') { if (append(out, cap, length, "\\\\")) return -1; }
         else if (ch == '\t') { if (append(out, cap, length, "\\t")) return -1; }
@@ -117,6 +117,18 @@ static int append_target(char *out, size_t cap, size_t *length, const char *name
         else if (append(out, cap, length, "%c", ch)) return -1;
     }
     return 0;
+}
+
+static int append_target(char *out, size_t cap, size_t *length, const char *name)
+{
+    return append_escaped(out, cap, length, name, YOLO_EVENT_NAME_LEN);
+}
+
+static int append_camera(char *out, size_t cap, size_t *length, const yolo_event_meta_t *meta)
+{
+    return append(out, cap, length, "\t") ||
+        append_escaped(out, cap, length, meta->camera[0] ? meta->camera : "Unknown", YOLO_EVENT_CAMERA_LEN) ||
+        append(out, cap, length, "\n") ? -1 : 0;
 }
 
 static int format_report(const yolo_event_meta_t *meta, char day[9], char *out, size_t cap)
@@ -131,18 +143,19 @@ static int format_report(const yolo_event_meta_t *meta, char day[9], char *out, 
     const char *autofocus = meta->autofocus < 0 ? "null" : meta->autofocus ? "true" : "false";
     size_t length = 0;
     if (!meta->count) {
-        if (append(out, cap, &length, "%s.%03llu%s\t%d\t%d\tnone\tnull\tnull\tnull\tnull\tnull\t%llu\t%s\tnull\t%s\n",
+        if (append(out, cap, &length, "%s.%03llu%s\t%d\t%d\tnone\tnull\tnull\tnull\tnull\tnull\t%llu\t%s\tnull\t%s",
                    stamp, meta->capture_unix_ms % 1000u, zone, meta->width, meta->height,
-                   meta->seq, focus, autofocus)) return -1;
+                   meta->seq, focus, autofocus) || append_camera(out, cap, &length, meta)) return -1;
     }
     for (int i = 0; i < meta->count; i++) {
         const yolo_event_object_t *object = &meta->objects[i];
         if (append(out, cap, &length, "%s.%03llu%s\t%d\t%d\t", stamp,
                    meta->capture_unix_ms % 1000u, zone, meta->width, meta->height) ||
             append_target(out, cap, &length, object->name) ||
-            append(out, cap, &length, "\t%.6f\t%.3f\t%.3f\t%.3f\t%.3f\t%llu\t%s\tnull\t%s\n",
+            append(out, cap, &length, "\t%.6f\t%.3f\t%.3f\t%.3f\t%.3f\t%llu\t%s\tnull\t%s",
                    (double)object->conf, (double)object->x1, (double)object->y1,
-                   (double)object->x2, (double)object->y2, meta->seq, focus, autofocus)) return -1;
+                   (double)object->x2, (double)object->y2, meta->seq, focus, autofocus) ||
+            append_camera(out, cap, &length, meta)) return -1;
     }
     return (int)length;
 }
@@ -759,6 +772,7 @@ int yolo_events_submit_meta(const yolo_event_meta_t *meta)
     }
     int index = (events.head + events.count) % YOLO_EVENT_QUEUE_SIZE;
     events.queue[index] = *meta;
+    events.queue[index].camera[YOLO_EVENT_CAMERA_LEN - 1] = '\0';
     events.queue_epoch[index] = atomic_load(&report_epoch);
     for (int i = 0; i < meta->count; i++) events.queue[index].objects[i].name[YOLO_EVENT_NAME_LEN - 1] = '\0';
     events.recent[events.recent_next].seq = meta->seq;

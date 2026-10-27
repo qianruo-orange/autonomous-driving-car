@@ -125,7 +125,7 @@ int main(void)
     assert(strstr(response_headers, "detections_20010101.xlsx") && !memcmp(response, "PK", 2));
     assert(faccessat(events.root_fd, "20010101/detections_20010101.xlsx", F_OK, 0) == 0);
     save_response("download.xlsx");
-    python_check("import sys,zipfile; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; s=z.read('xl/worksheets/sheet1.xml'); assert b'person' in s and b'<v>42</v>' in s and b'frame_seq' in s", "download.xlsx");
+    python_check("import sys,zipfile,xml.etree.ElementTree as E; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; n={'m':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}; rows=E.fromstring(z.read('xl/worksheets/sheet1.xml')).findall('m:sheetData/m:row',n); assert len(rows)==3; text=lambda c:c.find('m:is/m:t',n).text; assert text(rows[0][0])=='Targets' and rows[0][1].find('m:v',n).text=='1' and text(rows[0][2])=='Resolution' and text(rows[0][4])=='Camera' and rows[0][9].find('m:v',n).text=='42'; assert text(rows[1][0])=='Target' and text(rows[2][0])=='person'", "download.xlsx");
     http_detection_file(NULL, 0, "GET", "/detectionfile/20010103/detections_20010103.xlsx", NULL); assert(response_code == 404);
     http_detection_file(NULL, 0, "GET", "/detectionfile/20010101/../secret.xlsx", NULL); assert(response_code == 404);
 

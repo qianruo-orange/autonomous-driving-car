@@ -189,6 +189,14 @@ int main(void)
         .width = 1280, .height = 720, .focus_valid = 0, .focus_position = 999, .autofocus = -1,
         .count = 2, .objects = {{.cls = 0, .name = "target\\\t\r\n", .conf = .75f, .x1 = 10, .y1 = 20, .x2 = 110, .y2 = 220},
             {.cls = 1, .name = "person", .conf = .9f, .x1 = 30, .y1 = 40, .x2 = 130, .y2 = 240}}};
+    yolo_event_meta_t camera_meta = meta;
+    snprintf(camera_meta.camera, sizeof(camera_meta.camera), "UGREEN\tCamera\\\n(/dev/video1)");
+    char camera_day[9], camera_rows[REPORT_BUFFER_SIZE];
+    assert(format_report(&camera_meta, camera_day, camera_rows, sizeof(camera_rows)) > 0);
+    assert(strstr(camera_rows, "\tUGREEN\\tCamera\\\\\\n(/dev/video1)\n"));
+    assert(occurrence_count(camera_rows, "\tUGREEN\\tCamera\\\\\\n(/dev/video1)\n") == 2);
+    memset(camera_meta.camera, 'A', sizeof(camera_meta.camera)); /* Bounded even without a terminator. */
+    assert(format_report(&camera_meta, camera_day, camera_rows, sizeof(camera_rows)) > 0);
     check_backpressure(&meta);
     char scratch[] = "/tmp/yolo-events-test-XXXXXX"; assert(mkdtemp(scratch));
     int original = open(".", O_RDONLY | O_DIRECTORY); assert(original >= 0 && chdir(scratch) == 0);
@@ -214,9 +222,9 @@ int main(void)
     assert(response_code == 200 && line_count(response) == 5);
     assert(!strcmp(response_mime, "text/plain; charset=utf-8"));
     assert(!strncmp(response, report_header, sizeof(report_header) - 1));
-    assert(strstr(response, ".123+0800\t1280\t720\ttarget\\\\\\t\\r\\n\t0.750000\t10.000\t20.000\t110.000\t220.000\t7\tnull\tnull\tnull\n"));
-    assert(strstr(response, "\t8\t220\tnull\ttrue\n"));
-    assert(strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t81\t220\tnull\ttrue\n"));
+    assert(strstr(response, ".123+0800\t1280\t720\ttarget\\\\\\t\\r\\n\t0.750000\t10.000\t20.000\t110.000\t220.000\t7\tnull\tnull\tnull\tUnknown\n"));
+    assert(strstr(response, "\t8\t220\tnull\ttrue\tUnknown\n"));
+    assert(strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t81\t220\tnull\ttrue\tUnknown\n"));
     assert(!strstr(response + sizeof(report_header) - 1, "capture_time"));
     size_t original_size = response_len;
     int retained_root = dup(events.root_fd); assert(retained_root >= 0);
@@ -241,15 +249,15 @@ int main(void)
         usleep(5000);
     }
     assert(response_code == 200 && line_count(response) == 7);
-    assert(occurrence_count(response, "\t82\t220\tnull\ttrue\n") == 1);
-    assert(occurrence_count(response, "\t83\t220\tnull\ttrue\n") == 1);
+    assert(occurrence_count(response, "\t82\t220\tnull\ttrue\tUnknown\n") == 1);
+    assert(occurrence_count(response, "\t83\t220\tnull\ttrue\tUnknown\n") == 1);
     assert(atomic_load(&recovery_logs) == 1);
 
     meta.seq = 9; meta.count = 0; meta.capture_unix_ms += 86400000ull;
     char second_day[9]; assert(format_report(&meta, second_day, ignored, sizeof(ignored)) > 0);
     assert(strcmp(first_day, second_day)); submit_until_accepted(&meta); memset(&meta, 0, sizeof(meta));
     yolo_events_destroy(); assert(!yolo_events_due(1, 9000)); yolo_events_destroy();
-    get_report(second_day); assert(response_code == 200 && line_count(response) == 2 && strstr(response, "\t9\t220\tnull\ttrue\n"));
+    get_report(second_day); assert(response_code == 200 && line_count(response) == 2 && strstr(response, "\t9\t220\tnull\ttrue\tUnknown\n"));
 
     /* Reopening the writer appends to a day's existing report without a header. */
     assert(yolo_events_init(NULL) == 0);
@@ -290,7 +298,7 @@ int main(void)
     meta = (yolo_event_meta_t){.seq = 12, .capture_unix_ms = 1793030402123ull,
         .width = 1280, .height = 720, .autofocus = 1, .count = 0};
     submit_until_accepted(&meta); yolo_events_destroy();
-    get_report(first_day); assert(response_code == 200 && line_count(response) == 2 && strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t12\tnull\tnull\ttrue\n"));
+    get_report(first_day); assert(response_code == 200 && line_count(response) == 2 && strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t12\tnull\tnull\ttrue\tUnknown\n"));
     char request[160]; snprintf(request, sizeof(request), "POST /api/detections/reports/delete HTTP/1.1\r\n\r\n%s", relative);
     http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", request);
     assert(response_code == 200 && !strcmp(response, "{\"deleted\":true}"));

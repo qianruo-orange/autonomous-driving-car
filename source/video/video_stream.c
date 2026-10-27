@@ -32,6 +32,7 @@ typedef struct {
     pthread_mutex_t    cfg_mutex;    /* 保护 device / width / height */
     frame_ring_t       ring;         /* 视频帧环形队列：采集侧零拷贝发布 */
     char               device[128];
+    char               camera_label[FRAME_RING_CAMERA_LEN]; /* Immutable during each capture session. */
     int                width, height;
     int                pixfmt;   /* 实际像素格式（V4L2_PIX_FMT_*） */
     int                fd;
@@ -156,7 +157,7 @@ static int init_video_device(video_ctx_t *vs, int verbose)
     }
     watchdog_feed_self("video");
 
-    struct v4l2_capability cap;
+    struct v4l2_capability cap = {0};
     if (ioctl(vs->fd, VIDIOC_QUERYCAP, &cap) < 0) {
         LOG_ERROR("video_stream: VIDIOC_QUERYCAP failed");
         goto fail_close;
@@ -165,6 +166,11 @@ static int init_video_device(video_ctx_t *vs, int verbose)
         LOG_ERROR("video_stream: device %s is not video capture", vs->device);
         goto fail_close;
     }
+    if (cap.card[0])
+        snprintf(vs->camera_label, sizeof(vs->camera_label), "%.*s (%s)",
+                 (int)sizeof(cap.card), (const char *)cap.card, vs->device);
+    else
+        snprintf(vs->camera_label, sizeof(vs->camera_label), "%s", vs->device);
     watchdog_feed_self("video");
 
     struct v4l2_format fmt = {0};
@@ -355,6 +361,10 @@ void *video_stream_task(void *arg)
         /* 会话开始：初始化设备（参数变更由 restart_req 触发重新进入本循环） */
         pthread_mutex_lock(&vs->cfg_mutex);
         int ok = (init_video_device(vs, !failed_before) == 0);
+        /* Keep the negotiated session geometry with its frames while a new
+           configuration is being requested by the HTTP thread. */
+        int capture_width = vs->width, capture_height = vs->height;
+        int capture_pixfmt = vs->pixfmt;
         pthread_mutex_unlock(&vs->cfg_mutex);
 
         if (!ok) {
@@ -479,6 +489,7 @@ void *video_stream_task(void *arg)
             s->focus_position = focus.position;
             s->autofocus = focus.autofocus;
             s->focus_sample_ms = focus.sample_ms;
+            snprintf(s->camera, sizeof(s->camera), "%s", vs->camera_label);
             if ((buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
                 struct timespec captured_now;
                 clock_gettime(CLOCK_MONOTONIC, &captured_now);
@@ -487,9 +498,9 @@ void *video_stream_task(void *arg)
                 if (capture_ms && capture_ms <= now_ms && now_ms - capture_ms < 5000)
                     s->capture_ms = capture_ms;
             }
-            s->w = vs->width;
-            s->h = vs->height;
-            s->fmt = (vs->pixfmt == V4L2_PIX_FMT_MJPEG) ? FRAME_RING_FMT_MJPEG
+            s->w = capture_width;
+            s->h = capture_height;
+            s->fmt = (capture_pixfmt == V4L2_PIX_FMT_MJPEG) ? FRAME_RING_FMT_MJPEG
                                                         : FRAME_RING_FMT_YUYV;
             frame_ring_produce_commit_locked(&vs->ring);
             frame_ring_unlock(&vs->ring);

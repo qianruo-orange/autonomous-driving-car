@@ -7,6 +7,7 @@
 
 #define YOLO_EVENTS_DIR "recordings/detections"
 #define YOLO_EVENT_NAME_LEN 96
+#define YOLO_EVENT_CAMERA_LEN 192
 #define YOLO_EVENT_QUEUE_SIZE 512
 #define YOLO_EVENT_JPEG_MAX (4u * 1024u * 1024u)
 
@@ -25,6 +26,7 @@ typedef struct {
     int focus_valid, focus_position;
     int autofocus; /* -1 means unknown, otherwise 0 or 1. */
     unsigned long long focus_sample_monotonic_ms;
+    char camera[YOLO_EVENT_CAMERA_LEN]; /* Captured device identity, not current global configuration. */
     int count;
     yolo_event_object_t objects[YOLO_MAX_DETS];
 } yolo_event_meta_t;

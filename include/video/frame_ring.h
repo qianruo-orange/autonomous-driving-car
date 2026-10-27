@@ -39,6 +39,7 @@
  */
 
 #define FRAME_RING_N 32
+#define FRAME_RING_CAMERA_LEN 192
 
 /* 帧格式（采集侧写入；0=MJPEG，1=YUYV。与 video_stream 的 VIDEO_FMT_* 对齐） */
 #define FRAME_RING_FMT_MJPEG 0
@@ -70,6 +71,7 @@ typedef struct {
     int focus_position;
     int autofocus;           /* 1 = enabled, 0 = disabled, -1 = unavailable */
     unsigned long long focus_sample_ms; /* CLOCK_MONOTONIC sample completion */
+    char camera[FRAME_RING_CAMERA_LEN]; /* Identity of the device that captured this frame. */
     int w, h, fmt;            /* fmt: FRAME_RING_FMT_* */
 
     /* ---- 采集阶段 ---- */

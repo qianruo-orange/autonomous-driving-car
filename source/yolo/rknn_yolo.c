@@ -691,6 +691,8 @@ static void yolo_event_capture_meta_locked(const frame_slot_t *slot, yolo_event_
     meta->focus_position = meta->focus_valid ? slot->focus_position : 0;
     meta->autofocus = slot->autofocus == 0 || slot->autofocus == 1 ? slot->autofocus : -1;
     meta->focus_sample_monotonic_ms = slot->focus_sample_ms;
+    snprintf(meta->camera, sizeof(meta->camera), "%.*s", (int)sizeof(slot->camera) - 1,
+             slot->camera[0] ? slot->camera : "Unknown");
 }
 
 /* Describe one completed inference using its own captured frame metadata.
