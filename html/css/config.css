@@ -4,7 +4,8 @@ body{padding:30px}
 h1{font-size:24px;margin-bottom:0}
 /* 顶栏：左侧标题+功能按钮，右侧导航按钮 */
 .top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
-.tb-left{display:flex;align-items:center;gap:8px}
+.top-bar .tb-left{display:flex;align-items:center;gap:12px}
+.tb-left>.card-status:empty{display:none}
 .tb-right{display:flex;align-items:center;gap:6px}
 .tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
 .top-bar .theme-btn{position:static;margin-left:0;flex:none}
