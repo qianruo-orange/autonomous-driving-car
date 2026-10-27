@@ -163,7 +163,7 @@ add_test(NAME color_conversion COMMAND color_conversion_test)
 
 
 
-add_executable(render_ownership_test tests/render_ownership_test.c source/video/frame_ring.c)
+add_executable(render_ownership_test tests/render_ownership_test.c source/video/frame_ring.c source/control/car_sport_ctrl.c)
 target_include_directories(render_ownership_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
 target_compile_options(render_ownership_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
 set_property(TARGET render_ownership_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")

@@ -711,6 +711,8 @@ static void http_process_request(http_conn_t *c)
         { "/api/can/send",   0, "POST", http_can_send_wrap,   http_check_auth_root },
         { "/api/can/frames", 0, NULL,   http_can_rx_wrap,     NULL },
         { "/api/can/toggle",0, "POST", http_can_toggle_wrap, http_check_auth_root },
+        { "/api/follow",    0, "POST", http_follow_post, http_check_auth_root },
+        { "/api/follow",    0, "GET", http_follow_get, NULL },
         { "/api/config",    0, "POST", http_config_post,  http_check_auth_root },
         { "/api/config",    0, NULL,   http_config_get,   NULL },
         { "/api/config/export", 0, NULL, http_config_export, http_check_auth_root },

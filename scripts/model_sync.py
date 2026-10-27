@@ -295,7 +295,7 @@ def install_config(project, deployment, platform):
             relative = source.relative_to(source_root)
             if relative.parts[0] == "models" or source.suffix.lower() in (".rknn", ".pt", ".onnx"):
                 continue
-            if relative.as_posix() == "cpu_freq.conf" and checked(deployment, Path("config") / relative).exists():
+            if relative.as_posix() in ("cpu_freq.conf", "follow.conf") and checked(deployment, Path("config") / relative).exists():
                 continue  # Preserve the frequency settings saved on this device.
             if source.is_symlink():
                 raise ModelSyncError("Refusing a symlink in configuration: " + str(source))

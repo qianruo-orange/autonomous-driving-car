@@ -54,6 +54,7 @@
 #include "video/video_stream.h"
 
 #include "yolo/rknn_yolo.h"
+#include "control/car_sport_ctrl.h"
 #include "yolo/yolo_image.h"
 #include "yolo/yolo_postprocess.h"
 #include "yolo/yolo_draw.h"
@@ -741,13 +742,16 @@ static int yolo_event_describe_result(yolo_event_meta_t *meta, const yolo_result
 
 static void yolo_record_result(const yolo_job_t *job, const yolo_result_t *result)
 {
-    if (result->count < 0 || !yolo_events_due(result->count, ai_now_us() / 1000u)) return;
+    if (result->count < 0) return;
     yolo_event_meta_t metadata = job->metadata;
     struct timespec wall;
     clock_gettime(CLOCK_REALTIME, &wall);
     unsigned long long unix_ms = (unsigned long long)wall.tv_sec * 1000u + wall.tv_nsec / 1000000u;
-    if (yolo_event_describe_result(&metadata, result, ai_now_us() / 1000u, unix_ms) == 0)
-        yolo_events_submit_meta(&metadata);
+    if (yolo_event_describe_result(&metadata, result, ai_now_us() / 1000u, unix_ms) == 0) {
+        follow_submit(&metadata);
+        if (yolo_events_due(result->count, ai_now_us() / 1000u))
+            yolo_events_submit_meta(&metadata);
+    }
 }
 
 static void *yolo_render_task(void *arg)

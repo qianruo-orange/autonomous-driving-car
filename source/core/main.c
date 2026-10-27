@@ -32,6 +32,7 @@
 #include "video/video_rec.h"
 #include "yolo/rknn_yolo.h"
 #include "tcp/net_ip.h"
+#include "control/car_sport_ctrl.h"
 
 /* 模块生命周期函数 */
 typedef struct {
@@ -129,6 +130,11 @@ static module_t g_modules[] = {
         .ops  = { .init = http_server_start, .dtor = http_server_stop, .task = http_server_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
         .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+    },
+    /* Event-driven differential vehicle controller owns a joinable FIFO worker. */
+    {
+        .name = "car_sport_ctrl",
+        .ops = { .init = follow_init, .dtor = follow_destroy, .task = NULL },
     },
     /* video */
     {
