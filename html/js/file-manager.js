@@ -41,7 +41,7 @@
       // Native download streams large archives to disk instead of retaining
       // all recordings in a JavaScript Blob before the save dialog appears.
       var anchor = document.createElement('a');
-      anchor.href = '/api/files/pack'; anchor.download = 'gateway_files.tar.gz';
+      anchor.href = '/api/files/pack'; anchor.download = 'gateway_files.zip';
       document.body.appendChild(anchor); anchor.click(); anchor.remove();
       window.fileToast('已开始打包下载，请在浏览器下载列表查看进度', true);
     } catch(error) {

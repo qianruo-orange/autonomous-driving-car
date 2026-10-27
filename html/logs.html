@@ -9,6 +9,10 @@
 <div class="top-bar">
   <div class="tb-left">
     <h1>📁 <span data-i18n="文件下载">文件下载</span></h1>
+    <div class="file-actions file-global-actions" aria-label="文件操作" data-i18n-aria="文件操作">
+      <a href="/api/files/pack" class="btn btn-pack" id="pack_all_files_btn">📦 <span data-i18n="打包全部文件">打包全部文件</span></a>
+      <button class="btn btn-clear" id="clear_all_files_btn">🗑 <span data-i18n="删除全部文件">删除全部文件</span></button>
+    </div>
   </div>
   <div class="tb-right">
     <a href="/" class="btn btn-back">📊 <span data-i18n="主界面">主界面</span></a>
@@ -18,10 +22,6 @@
   </div>
 </div>
 <div id="toast" class="toast"></div>
-<div class="file-actions file-global-actions" aria-label="文件操作" data-i18n-aria="文件操作">
-  <a href="/api/files/pack" class="btn btn-pack" id="pack_all_files_btn">📦 <span data-i18n="打包全部文件">打包全部文件</span></a>
-  <button class="btn btn-clear" id="clear_all_files_btn">🗑 <span data-i18n="删除全部文件">删除全部文件</span></button>
-</div>
 <main class="file-manager">
   <section class="file-section" aria-labelledby="logs_title">
     <div class="file-section-header">

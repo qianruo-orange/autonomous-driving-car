@@ -98,8 +98,8 @@ int main(void)
     assert(!http_files_download_authorized(authenticated));free(response);
     response=request("GET","/api/files/pack",NULL,NULL,&length);assert(strstr(response,"200 OK"));
     data=strstr(response,"\r\n\r\n");assert(data);data+=4;size_t bytes=length-(size_t)(data-response);
-    assert(bytes>2&&(unsigned char)data[0]==0x1f&&(unsigned char)data[1]==0x8b);put("archive.tar.gz",data,bytes);free(response);
-    assert(system("tar -tzf archive.tar.gz > archive.list")==0);
+    assert(bytes>4&&!memcmp(data,"PK\003\004",4));put("archive.zip",data,bytes);free(response);
+    assert(system("python3 -m zipfile -l archive.zip > archive.list")==0);
     FILE *list=fopen("archive.list","r");assert(list);char names[8192]={0};assert(fread(names,1,sizeof(names)-1,list)>0);fclose(list);
     assert(strstr(names,"logs/20261027/log_info_")&&strstr(names,"recordings/20261027/rec_120001.mp4")&&strstr(names,"results/20261027/result_20261027.txt"));
     assert(!strstr(names,"120000_000.mp4")&&!strstr(names,"120002_000.mp4")&&!strstr(names,"unsafe.log"));

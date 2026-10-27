@@ -7,6 +7,7 @@
   var EN = {
     '预览': 'Preview',
     '文件预览': 'File preview',
+    '文件操作': 'File actions',
     '关闭': 'Close',
     '打包全部文件': 'Download all files',
     '删除全部文件': 'Delete all files',
