@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* logs.css — 日志文件页面样式 毛玻璃水滴风（主题变量化） */
-.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
+.top-bar{display:flex;align-items:center;justify-content:space-between;max-width:1000px;margin:0 auto 16px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
 .tb-left{display:flex;align-items:center;gap:8px}
 .top-bar,.tb-left{flex-wrap:wrap;gap:8px}
 .btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
@@ -8,7 +8,7 @@
 .tb-right{display:flex;align-items:center;gap:6px}
 .tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
 .top-bar .theme-btn{position:static;margin-left:0;flex:none}
-.file-manager{display:grid;gap:20px}
+.file-manager{display:grid;gap:20px;max-width:1000px;margin:0 auto}
 .file-section{min-width:0;padding:16px;border:1px solid var(--card-border);border-radius:14px;background:var(--card-bg)}
 .file-section-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .file-section-header h2{margin:0;font-size:17px;color:var(--accent)}
