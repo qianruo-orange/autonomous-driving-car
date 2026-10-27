@@ -728,7 +728,7 @@ static void *yolo_render_task(void *arg)
         ring_buf_t rgbb = { 0 }, nv12b = { 0 }, jpegb = { 0 };
         yolo_event_meta_t event_meta;
         int save_event = 0;
-        /* JPEG is needed only by MJPEG viewers or a rate-limited detection event. */
+        /* JPEG is needed only by live MJPEG viewers. Detection logs contain metadata. */
         int want_jpeg = video_stream_client_count() > 0;
         frame_ring_lock(ring);
         /* Rendering owns RGB until it explicitly returns the buffer below.
@@ -740,7 +740,6 @@ static void *yolo_render_task(void *arg)
         }
         save_event = yolo_events_due(item.count, ai_now_us() / 1000u);
         if (save_event) yolo_event_capture_meta_locked(s, &event_meta);
-        want_jpeg |= save_event;
         /* Local output buffers are also owned independently of the slot. */
         frame_ring_buf_take_locked(ring, FRAME_RING_POOL_NV12, (size_t)w * h * 3 / 2, &nv12b);
         if (want_jpeg)
@@ -782,18 +781,13 @@ static void *yolo_render_task(void *arg)
             snap_result(&disp);
         }
 
-        /* Copy outside the ring lock while this renderer still owns the JPEG.
-           After commit, camera quiesce or another frame can recycle slot data.
-           Event submission makes its own bounded queue copy and performs no I/O. */
-        unsigned char *event_jpeg = NULL;
-        if (ok && save_event && jlen && jlen <= YOLO_EVENT_JPEG_MAX) {
+        /* Describe this rendered frame without encoding or copying a photo. */
+        int event_valid = 0;
+        if (ok && save_event) {
             struct timespec wall;
             clock_gettime(CLOCK_REALTIME, &wall);
             unsigned long long unix_ms = (unsigned long long)wall.tv_sec * 1000u + wall.tv_nsec / 1000000u;
-            if (yolo_event_describe_rendered(&event_meta, &disp, ai_now_us() / 1000u, unix_ms) == 0) {
-                event_jpeg = malloc(jlen);
-                if (event_jpeg) memcpy(event_jpeg, jbuf, jlen);
-            }
+            event_valid = yolo_event_describe_rendered(&event_meta, &disp, ai_now_us() / 1000u, unix_ms) == 0;
         }
 
         int committed = 0;
@@ -818,8 +812,7 @@ static void *yolo_render_task(void *arg)
         }
         frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
-        if (committed && event_jpeg) yolo_events_submit(event_jpeg, jlen, &event_meta);
-        free(event_jpeg);
+        if (committed && event_valid) yolo_events_submit_meta(&event_meta);
 
         /* Capture and the bounded result queue already pace this consumer.
            Do not hold a completed frame behind an additional 33 ms timer. */
@@ -1167,7 +1160,7 @@ int rknn_yolo_init(void *arg)
         return -1;
     }
     if (yolo_events_init(NULL) == 0) g_ai.events_initialized = 1;
-    else LOG_ERROR("yolo: detection image saving unavailable; live inference remains enabled");
+    else LOG_ERROR("yolo: detection report saving unavailable; live inference remains enabled");
     /* AI 为必要流程：无 AI（模型缺失/NPU 不可用）直接报错，服务启动失败 */
     if (ai_start_pool() < 0) {
         LOG_ERROR("ai: mandatory inference pool failed to start — no AI, aborting startup");

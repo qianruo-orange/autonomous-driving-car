@@ -7,7 +7,7 @@
 
 #define YOLO_EVENTS_DIR "recordings/detections"
 #define YOLO_EVENT_NAME_LEN 96
-#define YOLO_EVENT_QUEUE_SIZE 4
+#define YOLO_EVENT_QUEUE_SIZE 128
 #define YOLO_EVENT_JPEG_MAX (4u * 1024u * 1024u)
 
 typedef struct {
@@ -32,10 +32,12 @@ typedef struct {
 /* root is normally NULL (YOLO_EVENTS_DIR); tests can use a private directory.
  * Initialize once before rendering starts. A failed init disables event saving. */
 int yolo_events_init(const char *root);
-/* Reserve at most one snapshot per second. No I/O and no blocking lock. */
+/* Every detected frame is eligible. No image encoding, I/O, or blocking lock. */
 int yolo_events_due(int count, unsigned long long monotonic_ms);
-/* Copies both inputs. Returns 0 when accepted, -1 when busy/invalid/disabled.
- * The renderer never waits for filesystem writes; a full queue drops the event. */
+/* Copies metadata into the bounded queue; returns -1 on pressure/invalid input.
+ * The background writer appends a daily TXT, flushing every second or 64 KiB. */
+int yolo_events_submit_meta(const yolo_event_meta_t *meta);
+/* Compatibility entry point. Image arguments are ignored; no photo is saved. */
 int yolo_events_submit(const unsigned char *jpeg, size_t jpeg_len,
                        const yolo_event_meta_t *meta);
 /* Stop after producers have exited; drains accepted events before returning. */
@@ -43,5 +45,6 @@ void yolo_events_destroy(void);
 
 /* Strict YYYYMMDD/det_HHMMSS_mmm_SEQ.jpg|json validation for downloads. */
 int yolo_event_rel_valid(const char *relative);
+int yolo_report_rel_valid(const char *relative);
 
 #endif

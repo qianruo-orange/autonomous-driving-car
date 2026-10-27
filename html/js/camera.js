@@ -106,6 +106,7 @@
       hardwareAvailable = responses[2] && typeof responses[2].hardware_encoder_available === 'boolean' ?
         responses[2].hardware_encoder_available : null;
       codec.querySelector('option[value="hardware"]').disabled = hardwareAvailable !== true;
+      setI18nText(codec.querySelector('option[value="hardware"]'), hardwareAvailable === true ? '硬件编码' : '硬件编码（不可用）');
       codec.value = cfg.video_codec === 'hardware' ? 'hardware' : 'software';
       var decoderAvailable = responses[2] && responses[2].hardware_decoder_available === true;
       decoder.querySelector('option[value="hardware"]').disabled = !decoderAvailable;

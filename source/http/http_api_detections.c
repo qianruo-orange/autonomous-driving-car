@@ -146,7 +146,8 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
 {
     (void)app; (void)method; (void)req;
     const char *prefix = "/detectionfile/";
-    if (strncmp(uri, prefix, strlen(prefix)) || !yolo_event_rel_valid(uri + strlen(prefix))) {
+    int is_report = !strncmp(uri, prefix, strlen(prefix)) && yolo_report_rel_valid(uri + strlen(prefix));
+    if (strncmp(uri, prefix, strlen(prefix)) || (!is_report && !yolo_event_rel_valid(uri + strlen(prefix)))) {
         http_handle_404(fd, uri); return;
     }
     const char *relative = uri + strlen(prefix), *name = relative + 9;
@@ -164,8 +165,10 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
     snprintf(marker, sizeof(marker), "%.*s.json", (int)base_len, name);
     snprintf(jpeg, sizeof(jpeg), "%.*s.jpg", (int)base_len, name);
     struct stat statbuf;
-    int valid_pair = !fstatat(day_fd, marker, &statbuf, AT_SYMLINK_NOFOLLOW) && S_ISREG(statbuf.st_mode) &&
-                     !fstatat(day_fd, jpeg, &statbuf, AT_SYMLINK_NOFOLLOW) && S_ISREG(statbuf.st_mode);
+    int valid_pair = is_report || (!fstatat(day_fd, marker, &statbuf, AT_SYMLINK_NOFOLLOW) && S_ISREG(statbuf.st_mode) &&
+                     !fstatat(day_fd, jpeg, &statbuf, AT_SYMLINK_NOFOLLOW) && S_ISREG(statbuf.st_mode));
+    /* A daily TXT is independently complete; legacy image downloads keep the
+       existing two-file completion checks. */
     int src_fd = valid_pair ? openat(day_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) : -1;
     close(day_fd);
     if (src_fd < 0) { http_handle_404(fd, uri); return; }
@@ -176,6 +179,64 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
     if (!source) { close(src_fd); http_err(fd, 500, "Error", NULL); return; }
     char disposition[160];
     snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
-    http_serve_stream(fd, is_json ? "application/json" : "image/jpeg", disposition,
+    http_serve_stream(fd, is_report ? "text/plain; charset=utf-8" : is_json ? "application/json" : "image/jpeg", disposition,
                       source, (size_t)statbuf.st_size, NULL);
+}
+
+typedef struct {
+    char day[9];
+    off_t size;
+    time_t modified;
+} detection_report_t;
+
+static int report_newest_first(const void *left, const void *right)
+{
+    return strcmp(((const detection_report_t *)right)->day, ((const detection_report_t *)left)->day);
+}
+
+void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    int root_fd = open(YOLO_EVENTS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (root_fd < 0) { http_ok_json(fd, "{\"files\":[]}", 12); return; }
+    DIR *root = fdopendir(root_fd);
+    if (!root) { close(root_fd); http_err(fd, 500, "Error", NULL); return; }
+    detection_report_t entries[DETECTION_LIST_MAX];
+    int count = 0;
+    struct dirent *date;
+    while ((date = readdir(root))) {
+        if (!date_valid(date->d_name)) continue;
+        int directory = openat(root_fd, date->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (directory < 0) continue;
+        char name[32]; snprintf(name, sizeof(name), "detections_%.8s.txt", date->d_name);
+        struct stat st;
+        int valid = !fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size > 0;
+        close(directory);
+        if (!valid) continue;
+        detection_report_t candidate = {.size = st.st_size, .modified = st.st_mtime};
+        memcpy(candidate.day, date->d_name, 8); candidate.day[8] = '\0';
+        if (count < DETECTION_LIST_MAX) entries[count++] = candidate;
+        else {
+            int oldest = 0;
+            for (int i = 1; i < count; ++i) if (strcmp(entries[i].day, entries[oldest].day) < 0) oldest = i;
+            if (strcmp(candidate.day, entries[oldest].day) > 0) entries[oldest] = candidate;
+        }
+    }
+    closedir(root);
+    qsort(entries, (size_t)count, sizeof(entries[0]), report_newest_first);
+    char json[65536];
+    int off = snprintf(json, sizeof(json), "{\"files\":[");
+    for (int i = 0; i < count; ++i) {
+        char modified[32]; struct tm local;
+        if (!localtime_r(&entries[i].modified, &local) || !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M:%S", &local))
+            snprintf(modified, sizeof(modified), "Unknown");
+        off = http_json_append(json, sizeof(json), off,
+            "%s{\"name\":\"%s/detections_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            i ? "," : "", entries[i].day, entries[i].day, entries[i].day, entries[i].day + 4,
+            entries[i].day + 6, (long long)entries[i].size, modified);
+        if (off < 0) { http_err(fd, 500, "Error", NULL); return; }
+    }
+    off = http_json_append(json, sizeof(json), off, "]}");
+    if (off < 0) { http_err(fd, 500, "Error", NULL); return; }
+    http_ok_json(fd, json, (size_t)off);
 }

@@ -690,6 +690,7 @@ static void http_process_request(http_conn_t *c)
         { "/api/video/devices",0,NULL, http_video_devices,NULL },
         { "/api/camera",0,"GET",http_camera_get,NULL },
         { "/api/detections",0,"GET",http_detections_list,http_check_auth_root },
+        { "/api/detections/reports",0,"GET",http_detection_reports_list,http_check_auth_root },
         { "/detectionfile/",1,"GET",http_detection_file,http_check_auth_root },
         { "/api/rec/start",0, "POST", http_rec_handler,  http_check_auth_root },
         { "/api/rec/stop", 0, "POST", http_rec_handler,  http_check_auth_root },

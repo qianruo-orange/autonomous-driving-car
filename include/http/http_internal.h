@@ -56,6 +56,7 @@ void http_cpufreq_post(app_ctx_t *app, int fd, const char *method, const char *u
 void http_video_devices(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_camera_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detections_list(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
+void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detection_file(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_video_caps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_video_codeccaps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
