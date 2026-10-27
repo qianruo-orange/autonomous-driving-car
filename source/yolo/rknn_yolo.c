@@ -57,6 +57,7 @@
 #include "yolo/yolo_image.h"
 #include "yolo/yolo_postprocess.h"
 #include "yolo/yolo_draw.h"
+#include "yolo/yolo_events.h"
 #include "core/common.h"
 #include "core/cpu_affinity.h"
 #include "core/log.h"
@@ -106,7 +107,7 @@ enum { ADAPT_BASELINE, ADAPT_TRIAL, ADAPT_HOLD };
 typedef struct {
     int cores, capacity, best_workers, trial_workers, phase, unstable_votes;
     unsigned tested;
-    unsigned long long hold_until_us;
+    unsigned long long hold_until_us, minimum_hold_until_us;
     adaptive_observation_t best;
 } adaptive_controller_t;
 
@@ -124,6 +125,7 @@ static struct {
     float          conf, nms;
     int            nthreads;                 /* Workers evenly assigned to detected NPU cores. */
     int            active_workers;
+    int            events_initialized;
     adaptive_controller_t adaptive;
     adaptive_window_t adaptive_window;
 
@@ -225,12 +227,15 @@ static int adaptive_controller_observe(adaptive_controller_t *control,
                                       const adaptive_observation_t *observation)
 {
     if (control->phase == ADAPT_HOLD) {
+        /* Trials can temporarily reduce throughput. Never restart them during
+           the first two minutes, even if temperature or load fluctuates. */
+        if (now < control->minimum_hold_until_us) return control->best_workers;
         int changed = fabs(observation->camera_fps - control->best.camera_fps) >
-                          fmax(1, control->best.camera_fps * .1) ||
-                      observation->fps < control->best.fps * .9 ||
-                      observation->latency_ms > control->best.latency_ms * 1.35 + 15;
+                          fmax(2, control->best.camera_fps * .2) ||
+                      observation->fps < control->best.fps * .75 ||
+                      observation->latency_ms > control->best.latency_ms * 1.75 + 30;
         control->unstable_votes = changed ? control->unstable_votes + 1 : 0;
-        if (now < control->hold_until_us && control->unstable_votes < 2) return control->best_workers;
+        if (now < control->hold_until_us && control->unstable_votes < 3) return control->best_workers;
         control->tested = adaptive_worker_bit(control, control->best_workers);
         control->unstable_votes = 0;
         control->phase = ADAPT_BASELINE;
@@ -246,6 +251,7 @@ static int adaptive_controller_observe(adaptive_controller_t *control,
         else {
             control->phase = ADAPT_HOLD;
             control->hold_until_us = now + 180000000u;
+            control->minimum_hold_until_us = now + 120000000u;
         }
         return control->best_workers;
     }
@@ -254,6 +260,7 @@ static int adaptive_controller_observe(adaptive_controller_t *control,
     if (!next) {
         control->phase = ADAPT_HOLD;
         control->hold_until_us = now + 180000000u;
+        control->minimum_hold_until_us = now + 120000000u;
         return control->best_workers;
     }
     control->trial_workers = next;
@@ -661,6 +668,47 @@ static int yolo_render_take_rgb_locked(frame_ring_t *ring, unsigned long long se
     return 0;
 }
 
+/* Called while the matching slot is pinned by the renderer's ring lock. Lens
+   readings belong to this captured frame, never to a later HTTP status poll. */
+static void yolo_event_capture_meta_locked(const frame_slot_t *slot, yolo_event_meta_t *meta)
+{
+    memset(meta, 0, sizeof(*meta));
+    meta->seq = slot->seq;
+    meta->capture_monotonic_ms = slot->capture_ms;
+    meta->width = slot->w;
+    meta->height = slot->h;
+    meta->focus_valid = !!slot->focus_valid;
+    meta->focus_position = meta->focus_valid ? slot->focus_position : 0;
+    meta->autofocus = slot->autofocus == 0 || slot->autofocus == 1 ? slot->autofocus : -1;
+    meta->focus_sample_monotonic_ms = slot->focus_sample_ms;
+}
+
+/* Use the final, smoothed detections actually drawn into the saved JPEG.
+   Unix capture time is an estimate from the wall/monotonic clock offset; the
+   event schema labels that estimate explicitly. Keep monotonic time unchanged. */
+static int yolo_event_describe_rendered(yolo_event_meta_t *meta, const yolo_result_t *display,
+                                       unsigned long long now_monotonic_ms,
+                                       unsigned long long now_unix_ms)
+{
+    if (meta->seq != display->seq || meta->width != display->w || meta->height != display->h ||
+        !meta->capture_monotonic_ms) return -1;
+    unsigned long long age = now_monotonic_ms >= meta->capture_monotonic_ms ?
+                             now_monotonic_ms - meta->capture_monotonic_ms : 0;
+    meta->capture_unix_ms = now_unix_ms >= age ? now_unix_ms - age : now_unix_ms;
+    meta->count = display->count < 0 ? 0 : display->count > YOLO_MAX_DETS ? YOLO_MAX_DETS : display->count;
+    for (int i = 0; i < meta->count; ++i) {
+        const yolo_det_t *det = &display->dets[i];
+        yolo_event_object_t *object = &meta->objects[i];
+        object->cls = det->cls;
+        snprintf(object->name, sizeof(object->name), "%s",
+                 det->cls >= 0 && det->cls < g_ai.classes.count ? g_ai.classes.names[det->cls] : "obj");
+        object->conf = det->conf;
+        object->x1 = det->x1; object->y1 = det->y1;
+        object->x2 = det->x2; object->y2 = det->y2;
+    }
+    return 0;
+}
+
 static void *yolo_render_task(void *arg)
 {
     (void)arg;
@@ -678,7 +726,9 @@ static void *yolo_render_task(void *arg)
         unsigned long long seq = item.seq;
         int w = 0, h = 0;
         ring_buf_t rgbb = { 0 }, nv12b = { 0 }, jpegb = { 0 };
-        /* 无 MJPEG 观看者时跳过 JPEG 编码与池占用（省 CPU） */
+        yolo_event_meta_t event_meta;
+        int save_event = 0;
+        /* JPEG is needed only by MJPEG viewers or a rate-limited detection event. */
         int want_jpeg = video_stream_client_count() > 0;
         frame_ring_lock(ring);
         /* Rendering owns RGB until it explicitly returns the buffer below.
@@ -688,6 +738,9 @@ static void *yolo_render_task(void *arg)
             frame_ring_unlock(ring);
             continue;
         }
+        save_event = yolo_events_due(item.count, ai_now_us() / 1000u);
+        if (save_event) yolo_event_capture_meta_locked(s, &event_meta);
+        want_jpeg |= save_event;
         /* Local output buffers are also owned independently of the slot. */
         frame_ring_buf_take_locked(ring, FRAME_RING_POOL_NV12, (size_t)w * h * 3 / 2, &nv12b);
         if (want_jpeg)
@@ -700,8 +753,8 @@ static void *yolo_render_task(void *arg)
         memset(&disp, 0, sizeof(disp));
         disp.seq = seq;
         disp.w = w; disp.h = h;
-        disp.count = item.count;
-        for (int i = 0; i < item.count && i < YOLO_MAX_DETS; i++) {
+        disp.count = item.count < 0 ? 0 : item.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : item.count;
+        for (int i = 0; i < disp.count; i++) {
             disp.dets[i].cls  = yolo_class_index(item.dets[i].name);
             disp.dets[i].conf = item.dets[i].conf;
             disp.dets[i].x1 = item.dets[i].x1;
@@ -729,6 +782,21 @@ static void *yolo_render_task(void *arg)
             snap_result(&disp);
         }
 
+        /* Copy outside the ring lock while this renderer still owns the JPEG.
+           After commit, camera quiesce or another frame can recycle slot data.
+           Event submission makes its own bounded queue copy and performs no I/O. */
+        unsigned char *event_jpeg = NULL;
+        if (ok && save_event && jlen && jlen <= YOLO_EVENT_JPEG_MAX) {
+            struct timespec wall;
+            clock_gettime(CLOCK_REALTIME, &wall);
+            unsigned long long unix_ms = (unsigned long long)wall.tv_sec * 1000u + wall.tv_nsec / 1000000u;
+            if (yolo_event_describe_rendered(&event_meta, &disp, ai_now_us() / 1000u, unix_ms) == 0) {
+                event_jpeg = malloc(jlen);
+                if (event_jpeg) memcpy(event_jpeg, jbuf, jlen);
+            }
+        }
+
+        int committed = 0;
         frame_ring_lock(ring);
         /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，否则缓冲回池 */
         if (!ring->quiescing && s->seq == seq && s->rgb_done) {
@@ -743,12 +811,15 @@ static void *yolo_render_task(void *arg)
                 frame_ring_buf_put_locked(ring, FRAME_RING_POOL_JPEG, jpegb.buf, jpegb.cap);
             }
             frame_ring_display_commit_locked(ring, s);
+            committed = ok;
         } else {
             frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12b.buf, nv12b.cap);
             frame_ring_buf_put_locked(ring, FRAME_RING_POOL_JPEG, jpegb.buf, jpegb.cap);
         }
         frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
+        if (committed && event_jpeg) yolo_events_submit(event_jpeg, jlen, &event_meta);
+        free(event_jpeg);
 
         /* Capture and the bounded result queue already pace this consumer.
            Do not hold a completed frame behind an additional 33 ms timer. */
@@ -1095,9 +1166,15 @@ int rknn_yolo_init(void *arg)
         LOG_ERROR("ai: init without config");
         return -1;
     }
+    if (yolo_events_init(NULL) == 0) g_ai.events_initialized = 1;
+    else LOG_ERROR("yolo: detection image saving unavailable; live inference remains enabled");
     /* AI 为必要流程：无 AI（模型缺失/NPU 不可用）直接报错，服务启动失败 */
     if (ai_start_pool() < 0) {
         LOG_ERROR("ai: mandatory inference pool failed to start — no AI, aborting startup");
+        if (g_ai.events_initialized) {
+            yolo_events_destroy();
+            g_ai.events_initialized = 0;
+        }
         return -1;
     }
     return 0;
@@ -1108,6 +1185,10 @@ void rknn_yolo_destroy(void *arg)
     (void)arg;
     g_ai.running = 0;
     ai_stop_pool();
+    if (g_ai.events_initialized) {
+        yolo_events_destroy();
+        g_ai.events_initialized = 0;
+    }
 
     pthread_mutex_destroy(&g_ai.q_lock);
     pthread_cond_destroy(&g_ai.q_not_empty);

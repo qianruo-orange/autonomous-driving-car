@@ -12,6 +12,7 @@
     <div class="tab-bar">
       <button class="tab-btn tab-on" data-tab="logs" onclick="switchTab('logs')">📋 <span data-i18n="日志">日志</span></button>
       <button class="tab-btn" data-tab="rec" onclick="switchTab('rec')">🎬 <span data-i18n="录像">录像</span></button>
+      <button class="tab-btn" data-tab="detections" onclick="switchTab('detections')">📷 <span data-i18n="识别结果">识别结果</span></button>
     </div>
     <a href="/logs/pack" class="btn btn-pack" id="pack_btn">📦 <span data-i18n="打包下载">打包下载</span></a>
     <a href="/api/rec/pack" class="btn btn-pack" id="pack_rec_btn" style="display:none">📦 <span data-i18n="打包下载">打包下载</span></a>
@@ -20,7 +21,6 @@
     <button class="btn btn-pack btn-clear" id="clear_rec_btn" style="display:none">🗑 <span data-i18n="清空录像">清空录像</span></button>
   </div>
   <div class="tb-right">
-    <a href="/camera" class="btn btn-back">📷 <span data-i18n="相机">相机</span></a>
     <a href="/" class="btn btn-back">📊 <span data-i18n="仪表盘">仪表盘</span></a>
     <a href="/dbc" class="btn btn-back"> <span data-i18n="DBC解析">DBC解析</span></a>
     <a href="/config" class="btn btn-back"> <span data-i18n="配置">配置</span></a>
@@ -38,6 +38,14 @@
     <thead><tr><th data-i18n="日期">日期</th><th data-i18n="文件名">文件名</th><th data-i18n="大小">大小</th><th data-i18n="修改时间">修改时间</th><th data-i18n="操作">操作</th></tr></thead>
     <tbody id="rows_rec"></tbody>
   </table>
+  <section id="detections_panel" style="display:none">
+    <p class="tip" data-i18n="检测到目标时自动保存，每秒最多一张。照片与 JSON 检测数据使用相同文件名。">检测到目标时自动保存，每秒最多一张。照片与 JSON 检测数据使用相同文件名。</p>
+    <button type="button" class="btn btn-pack" id="refresh_detections" data-i18n="查询">查询</button>
+    <p class="tip" data-i18n="显示最近 200 条已保存的识别结果。">显示最近 200 条已保存的识别结果。</p>
+    <p class="tip" data-i18n="镜头位置为设备原始值，不是毫米焦距。">镜头位置为设备原始值，不是毫米焦距。</p>
+    <table><thead><tr><th data-i18n="捕捉时间">捕捉时间</th><th data-i18n="文件名">文件名</th><th data-i18n="目标数">目标数</th><th data-i18n="镜头位置">镜头位置</th><th data-i18n="大小">大小</th><th data-i18n="下载">下载</th></tr></thead><tbody id="rows_detections"></tbody></table>
+  </section>
 </div>
 <script src="/js/logs.js"></script>
+<script src="/js/detections.js"></script>
 </body></html>

@@ -37,6 +37,9 @@ typedef struct {
     int                fd;
     struct { void *start; size_t length; } *buffers;
     int                nbuffers;
+    int                focus_auto_supported, focus_auto_writable;
+    int                focus_absolute_supported;
+    unsigned long long focus_auto_check_ms, focus_error_log_ms;
     app_ctx_t         *app;          /* 运行上下文（读 running / cfg） */
 } video_ctx_t;
 
@@ -57,6 +60,74 @@ static void raw_release_cb(void *arg, int vbuf_index)
 }
 
 /* ---- 内部函数 ---- */
+
+typedef struct {
+    int valid, position, autofocus;
+    unsigned long long sample_ms;
+} video_focus_sample_t;
+
+static unsigned long long video_monotonic_ms(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (unsigned long long)now.tv_sec * 1000u + now.tv_nsec / 1000000u;
+}
+
+static int video_focus_query(int fd, unsigned int id, int *writable)
+{
+    struct v4l2_queryctrl control = {.id = id};
+    if (ioctl(fd, VIDIOC_QUERYCTRL, &control) < 0 ||
+        (control.flags & V4L2_CTRL_FLAG_DISABLED)) return 0;
+    if (writable) *writable = !(control.flags & (V4L2_CTRL_FLAG_READ_ONLY | V4L2_CTRL_FLAG_INACTIVE));
+    return 1;
+}
+
+static void video_focus_init(video_ctx_t *vs)
+{
+    vs->focus_auto_writable = 0;
+    vs->focus_auto_supported = video_focus_query(vs->fd, V4L2_CID_FOCUS_AUTO, &vs->focus_auto_writable);
+    vs->focus_absolute_supported = video_focus_query(vs->fd, V4L2_CID_FOCUS_ABSOLUTE, NULL);
+    vs->focus_auto_check_ms = video_monotonic_ms();
+    vs->focus_error_log_ms = 0;
+    if (vs->focus_auto_supported && vs->focus_auto_writable) {
+        struct v4l2_control automatic = {.id = V4L2_CID_FOCUS_AUTO, .value = 1};
+        if (ioctl(vs->fd, VIDIOC_S_CTRL, &automatic) < 0)
+            LOG_ERROR("video_stream: unable to enable continuous autofocus: %s", strerror(errno));
+    }
+}
+
+/* Measured on the UGREEN camera: both G_CTRL calls take about 0.18 ms.
+ * Keep them outside the frame ring lock. Their completion timestamp explicitly
+ * distinguishes this lens sample from the sensor's earlier exposure timestamp. */
+static void video_focus_sample(video_ctx_t *vs, video_focus_sample_t *sample)
+{
+    memset(sample, 0, sizeof(*sample));
+    sample->autofocus = -1;
+    struct v4l2_control automatic = {.id = V4L2_CID_FOCUS_AUTO};
+    if (vs->focus_auto_supported && ioctl(vs->fd, VIDIOC_G_CTRL, &automatic) == 0)
+        sample->autofocus = !!automatic.value;
+    unsigned long long now = video_monotonic_ms();
+    if (vs->focus_auto_supported && vs->focus_auto_writable &&
+        now - vs->focus_auto_check_ms >= 1000) {
+        vs->focus_auto_check_ms = now;
+        if (sample->autofocus != 1) {
+            automatic.value = 1;
+            if (ioctl(vs->fd, VIDIOC_S_CTRL, &automatic) == 0) {
+                if (ioctl(vs->fd, VIDIOC_G_CTRL, &automatic) == 0)
+                    sample->autofocus = !!automatic.value;
+            } else if (!vs->focus_error_log_ms || now - vs->focus_error_log_ms >= 30000) {
+                vs->focus_error_log_ms = now;
+                LOG_ERROR("video_stream: unable to restore continuous autofocus: %s", strerror(errno));
+            }
+        }
+    }
+    struct v4l2_control position = {.id = V4L2_CID_FOCUS_ABSOLUTE};
+    if (vs->focus_absolute_supported && ioctl(vs->fd, VIDIOC_G_CTRL, &position) == 0) {
+        sample->valid = 1;
+        sample->position = position.value;
+    }
+    sample->sample_ms = video_monotonic_ms();
+}
 
 static int init_video_device(video_ctx_t *vs, int verbose)
 {
@@ -141,6 +212,8 @@ static int init_video_device(video_ctx_t *vs, int verbose)
         vs->ring.capture_fps_den = actual.parm.capture.timeperframe.numerator;
         frame_ring_unlock(&vs->ring);
     }
+
+    video_focus_init(vs);
 
     struct v4l2_requestbuffers req = {0};
     /* 8 个驱动缓冲：零拷贝延迟 QBUF 模式下，缓冲占用 = 推理解码在途 +
@@ -367,6 +440,9 @@ void *video_stream_task(void *arg)
                 continue;
             }
 
+            video_focus_sample_t focus;
+            video_focus_sample(vs, &focus);
+
             /* 零拷贝入环：mmap 指针直接进槽（不 memcpy），消费完成前不 QBUF。
                环无空闲槽（消费严重滞后）时丢弃本帧并立即归还驱动缓冲 */
             frame_ring_lock(&vs->ring);
@@ -386,6 +462,10 @@ void *video_stream_task(void *arg)
             s->raw_present    = 1;
             s->raw_is_mmap    = 1;
             s->raw_vbuf_index = buf.index;
+            s->focus_valid = focus.valid;
+            s->focus_position = focus.position;
+            s->autofocus = focus.autofocus;
+            s->focus_sample_ms = focus.sample_ms;
             if ((buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
                 struct timespec captured_now;
                 clock_gettime(CLOCK_MONOTONIC, &captured_now);

@@ -646,10 +646,7 @@ static void http_process_request(http_conn_t *c)
         if (!http_check_auth_root(req, fd)) goto finish;
         http_serve_file(fd, "/config.html"); goto finish;
     }
-    if (strcmp(c->uri, "/camera") == 0 || strcmp(c->uri, "/camera.html") == 0) {
-        if (!http_check_auth_root(req, fd)) goto finish;
-        http_serve_file(fd, "/camera.html"); goto finish;
-    }
+
     if (strcmp(c->uri, "/dbc") == 0 || strncmp(c->uri, "/dbc.html", 9) == 0) {
         if (!http_check_auth_user(req, fd)) goto finish;
         http_serve_file(fd, "/dbc.html"); goto finish;
@@ -691,8 +688,9 @@ static void http_process_request(http_conn_t *c)
         { "/api/video/codeccaps",1, NULL, http_video_codeccaps, NULL },
         { "/api/video/stats",0,NULL,  http_video_stats,  NULL },
         { "/api/video/devices",0,NULL, http_video_devices,NULL },
-        { "/api/camera/focus",0,"POST",http_camera_post,http_check_auth_root },
         { "/api/camera",0,"GET",http_camera_get,NULL },
+        { "/api/detections",0,"GET",http_detections_list,http_check_auth_root },
+        { "/detectionfile/",1,"GET",http_detection_file,http_check_auth_root },
         { "/api/rec/start",0, "POST", http_rec_handler,  http_check_auth_root },
         { "/api/rec/stop", 0, "POST", http_rec_handler,  http_check_auth_root },
         { "/api/rec/split",0,"POST", http_rec_handler,  http_check_auth_root },

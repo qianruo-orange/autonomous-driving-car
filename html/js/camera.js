@@ -109,6 +109,9 @@
       device.value = cfg.video_device || (devices[0] && devices[0].path) || '';
       hardwareAvailable = responses[2] && typeof responses[2].hardware_encoder_available === 'boolean' ?
         responses[2].hardware_encoder_available : null;
+      var focus = responses[2] && responses[2].focus_absolute;
+      setI18nText(document.getElementById('camera_focus_status'), focus && focus.supported ?
+        '镜头位置：{value}（设备原始值）' : '相机调焦不可用', {value: focus ? focus.value : ''});
       codec.querySelector('option[value="hardware"]').disabled = hardwareAvailable !== true;
       codec.value = cfg.video_codec === 'hardware' ? 'hardware' : 'software';
       setI18nText(document.getElementById('camera_encoder_hint'), hardwareAvailable === true ? '' :

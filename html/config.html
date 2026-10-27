@@ -2,6 +2,7 @@
 <!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="配置">配置</title>
 <link rel="stylesheet" href="/css/common.css">
 <link rel="stylesheet" href="/css/config.css">
+<link rel="stylesheet" href="/css/camera.css">
 <script src="/js/theme.js"></script>
 <script src="/js/i18n.js"></script>
 <script src="/js/auth.js"></script>
@@ -14,7 +15,6 @@
     <button type="button" class="btn btn-back" onclick="loadCfg()">🔄 <span data-i18n="查询">查询</span></button>
   </div>
   <div class="tb-right">
-    <a href="/camera" class="btn btn-back">📷 <span data-i18n="相机">相机</span></a>
     <a href="/" class="btn btn-back"> <span data-i18n="仪表盘">仪表盘</span></a>
     <a href="/dbc" class="btn btn-back">📡 <span data-i18n="DBC解析">DBC解析</span></a>
     <a href="/logs" class="btn btn-back">📁 <span data-i18n="文件下载">文件下载</span></a>
@@ -23,8 +23,25 @@
   </div>
 </div>
 
-<form id="f">
+<div id="f">
 <div class="can-grid">
+  <form class="card" id="camera_form">
+    <h3><span data-i18n="视频采集">视频采集</span></h3>
+    <div class="camera-fields">
+      <div class="row"><label for="camera_device" data-i18n="相机设备">相机设备</label><select id="camera_device"></select></div>
+      <div class="row"><label for="camera_codec" data-i18n="视频编码">视频编码</label><select id="camera_codec"><option value="software" data-i18n="软件编码">软件编码</option><option value="hardware" data-i18n="硬件编码">硬件编码</option></select></div>
+      <div class="row"><label for="camera_size" data-i18n="分辨率">分辨率</label><select id="camera_size"></select></div>
+      <div class="row"><label for="camera_fps" data-i18n="帧率">帧率</label><select id="camera_fps"></select><span class="unit">FPS</span></div>
+    </div>
+    <p class="tip" id="camera_cap_hint" data-i18n="仅显示相机与编码器共同支持的分辨率和帧率。">仅显示相机与编码器共同支持的分辨率和帧率。</p>
+    <p class="tip" id="camera_encoder_hint"></p>
+    <p class="tip" data-i18n="保存采集参数后，视频和录像会重新启动。">保存采集参数后，视频和录像会重新启动。</p>
+    <div class="camera-actions">
+      <button class="btn btn-back" type="button" id="camera_refresh" data-i18n="查询">查询</button>
+      <button class="btn btn-save" type="submit" id="camera_save" data-i18n="保存">保存</button>
+    </div>
+    <p id="camera_status" class="camera-status" role="status" aria-live="polite"></p>
+  <p class="tip" data-i18n="相机始终使用连续自动对焦。">相机始终使用连续自动对焦。</p><p id="camera_focus_status" class="camera-status" role="status"></p><p class="tip" data-i18n="镜头位置为设备原始值，不是毫米焦距。">镜头位置为设备原始值，不是毫米焦距。</p></form>
 <div class="card" id="card_ai"><h3><span data-i18n="AI 检测">AI 检测</span><span class="card-status" id="status_ai"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveAi()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="ai-split">
 <div class="ai-col">
@@ -113,7 +130,8 @@
 
 </div>
 <div id="msg"></div>
-</form>
+</div>
 
 <script src="/js/config.js"></script>
+<script src="/js/camera.js"></script>
 </body></html>

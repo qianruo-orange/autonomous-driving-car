@@ -64,6 +64,12 @@ typedef struct pool_item {
 typedef struct {
     unsigned long long seq;   /* 帧绝对序号（u64 单调递增，永不回绕） */
     unsigned long long capture_ms;
+    /* Lens telemetry sampled after DQBUF, not synchronized with exposure.
+       Position is the device's raw V4L2 unit; no millimetre calibration exists. */
+    int focus_valid;
+    int focus_position;
+    int autofocus;           /* 1 = enabled, 0 = disabled, -1 = unavailable */
+    unsigned long long focus_sample_ms; /* CLOCK_MONOTONIC sample completion */
     int w, h, fmt;            /* fmt: FRAME_RING_FMT_* */
 
     /* ---- 采集阶段 ---- */

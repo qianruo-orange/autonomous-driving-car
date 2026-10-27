@@ -693,3 +693,10 @@
   window.reboot = function() { if (!confirm(t('确定要重启设备吗？'))) return; authFetch('/api/reboot').catch(function(){}); };
   window.shutdown = function() { if (!confirm(t('确定要关闭设备吗？'))) return; authFetch('/api/shutdown').catch(function(){}); };
 })();
+
+window.toggleGatewayFullscreen = async function () {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else { var view = document.querySelector(".video-wrapper"); if (view && view.requestFullscreen) await view.requestFullscreen(); }
+  } catch (error) {}
+};

@@ -198,7 +198,7 @@ Transmit: tcp_tx_packet() --> txq --> eventfd wakes tcp_task --> client socket
 NPU scheduling and hardware displays adapt to the actual platform:
 
 - **NPU masks:** at startup, `source/yolo/rknn_yolo.c` reads `/proc/device-tree/compatible`. RK3588 / RK3588S use three cores, RK3576 / RK3576M use two, and supported RK356x / RV1126 / RV110x / RK3399PRO / RK1808 devices use one. Unknown platforms fall back to one core. Workers use `1u << (idx % cores)` to select legal single-core masks and distribute work.
-- **Inference workers:** the active count adapts to the negotiated camera frame rate and measured per-frame inference time. Workers are balanced across the detected NPU cores; a small reserve pool avoids model reloads when demand changes. Downward changes require sustained evidence, and inference has no additional sleep interval. Every displayed frame retains its own AI result.
+- **Inference workers:** after eight seconds of warmup, the controller compares core-balanced worker counts using four-second windows of actual rendered/encoded throughput and frame age. A worse trial returns to the measured best count. After selection, a two-minute minimum hold prevents repeated probing during ordinary load variation; routine reassessment has a three-minute cooldown. A small reserve pool avoids model reloads when demand changes. Inference has no additional sleep interval, and every displayed frame retains its own AI result.
 - **CPU / NPU indicators:** the dashboard uses `cpu_cores.length` / `npu_count` to build and size core indicators dynamically, wrapping them when needed.
 - **GPU metrics:** use `gpu` when available and `gpu_freq` otherwise, as described above.
 - **Model selection:** before compilation, `build.sh` selects or converts a model for the platform detected through `/proc/device-tree/compatible`, or explicitly selected with `-P`. For example, a cached RK3576 model is stored at `config/models/rk3576/yolo26.rknn`.
@@ -403,11 +403,14 @@ The parser recognizes `BO_` message lines and `SG_` signal lines. Other lines, i
 
 The HTTP server listens on port 80 by default:
 
-- `/`: dashboard, including live video without a seek bar, a fullscreen button, live autofocus/manual focus controls, displayed FPS, CPU utilization and per-core indicators, per-core NPU load, GPU load or frequency, memory, disk, and network rates.
+- `/`: dashboard, including live video without a seek bar, a fullscreen button, displayed FPS, CPU utilization and per-core indicators, per-core NPU load, GPU load or frequency, memory, disk, and network rates. There are no manual focus controls.
 - `/dbc`: receive-side and transmit-side DBC signal views.
-- `/camera`: a dedicated camera module for device, resolution, frame rate, encoder selection, and live lens focus. Frame-rate choices intersect camera and encoder capabilities. Focus support and limits come from the active V4L2 device; changing focus does not restart the stream. Lens positions are device values and are not distances in millimeters.
-- `/config`: runtime configuration for AI confidence/NMS and model uploads, CAN settings and DBC upload, network addressing, CPU frequency controls, network tests, and configuration export. Use each card's Save button to apply its settings.
-- `/logs`: file downloads with separate Logs and Recordings tabs.
+- `/config`: runtime configuration for camera device, resolution, frame rate and encoder, AI confidence/NMS and model uploads, CAN settings and DBC upload, network addressing, CPU frequency controls, network tests, and configuration export. Camera frame-rate choices intersect capture and encoder capabilities. Use each card's Save button to apply its settings.
+- `/logs`: file downloads with separate Logs, Recordings, and Detections tabs. Detections provides paired Photo and Detection JSON downloads for the latest 200 completed captures.
+
+Continuous autofocus is enabled when capture starts and restored if it is externally disabled. The dashboard and configuration page have no manual lens controls. Each captured frame carries a lens-position sample and its monotonic sample time. These controls are read immediately after dequeue, rather than being queried later when a file is saved; this is not exposure-synchronized lens telemetry.
+
+When targets are detected, up to one annotated JPEG per second is queued for automatic saving under `recordings/detections/YYYYMMDD/`, with matching JSON. The bounded background writer performs disk I/O outside the video pipeline and drops new save requests when its four-entry queue is busy. JSON is published last so downloads see completed pairs. Detection coordinates and confidence describe the same rendered frame and final overlay as the JPEG. The metadata includes the frame sequence, estimated Unix capture time, monotonic capture time, autofocus state, raw lens position, and lens sample time. Millimeter focal length is `null`: V4L2 defines no physical unit for `FOCUS_ABSOLUTE`, and the connected UGREEN camera reports zero in its UVC focal-length descriptors. No conversion or calibration is invented. See the [Linux camera control reference](https://docs.kernel.org/userspace-api/media/v4l/ext-ctrls-camera.html).
 
 In **Files → Recordings**, **Split recording** saves the active MP4 and continues into a new file at the next keyframe, normally within one GOP. The encoder and live-stream connection remain active. The list refreshes after completion; the saved segment becomes downloadable and the new segment remains marked Recording. Downloads of the unfinished active MP4 are disabled until it is saved. The split operation requires administrator access and rejects stale filenames or duplicate pending requests.
 
@@ -455,7 +458,8 @@ Authentication below follows the route definitions in `source/http/http.c`.
 | GET | `/api/video/stats` | None | Frame-ring per-stage counters. |
 | GET | `/api/video/devices` | None | Available video devices. |
 | GET | `/api/camera` | None | Current lens controls, limits, and hardware encoder availability. |
-| POST | `/api/camera/focus` | Administrator | Set autofocus (`auto=0` or `1`) and optionally a validated manual lens position (`focus=<n>`, with `auto=0`). |
+| GET | `/api/detections` | Administrator | Latest 200 completed detection photo/JSON pairs. |
+| GET | `/detectionfile/<date/filename>` | Administrator | Download a saved detection JPEG or JSON; incomplete pairs and unsafe paths are rejected. |
 | GET | `/video/stream` | None | H.264 fragmented MP4 live stream for MSE. |
 | GET | `/video/mjpeg` | None | Raw MJPEG stream. |
 | GET | `/video/mjpeg_ai` | None | AI-annotated MJPEG stream. |

@@ -238,16 +238,19 @@
   /* ---- Tab 切换 ---- */
   function switchTab(tab) {
     var isRec = tab === 'rec';
-    document.getElementById('tbl_logs').style.display = isRec ? 'none' : '';
+    var isLogs = tab === 'logs';
+    document.getElementById('tbl_logs').style.display = isLogs ? '' : 'none';
     document.getElementById('tbl_rec').style.display = isRec ? '' : 'none';
-    document.getElementById('pack_btn').style.display = isRec ? 'none' : '';
+    document.getElementById('detections_panel').style.display = tab === 'detections' ? '' : 'none';
+    document.getElementById('pack_btn').style.display = isLogs ? '' : 'none';
     document.getElementById('pack_rec_btn').style.display = isRec ? '' : 'none';
-    document.getElementById('clear_btn').style.display = isRec ? 'none' : '';
+    document.getElementById('clear_btn').style.display = isLogs ? '' : 'none';
     document.getElementById('clear_rec_btn').style.display = isRec ? '' : 'none';
     if (splitButton) splitButton.style.display = isRec ? '' : 'none';
     var btns = document.querySelectorAll('.tab-btn');
     for (var i = 0; i < btns.length; i++)
       btns[i].classList.toggle('tab-on', btns[i].getAttribute('data-tab') === tab);
+    document.dispatchEvent(new CustomEvent('filestabchange', {detail:{tab:tab}}));
   }
   window.switchTab = switchTab;
 

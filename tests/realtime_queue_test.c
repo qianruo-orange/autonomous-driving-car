@@ -69,9 +69,19 @@ static void check_adaptive_policy(void)
     assert(control.phase == ADAPT_HOLD);
     assert(adaptive_controller_observe(&control, 33000000u, &good) == 4);
     assert(control.phase == ADAPT_HOLD);
-    adaptive_observation_t changed = {.fps = 20, .camera_fps = 30, .latency_ms = 210};
+    adaptive_observation_t changed = {.fps = 20, .camera_fps = 30, .latency_ms = 300};
     assert(adaptive_controller_observe(&control, 38000000u, &changed) == 4);
-    assert(adaptive_controller_observe(&control, 43000000u, &changed) == 2);
+    assert(adaptive_controller_observe(&control, 43000000u, &changed) == 4);
+    assert(adaptive_controller_observe(&control, 100000000u, &changed) == 4);
+    assert(control.phase == ADAPT_HOLD && control.unstable_votes == 0);
+    adaptive_observation_t noise = {.fps = 25, .camera_fps = 30, .latency_ms = 180};
+    assert(adaptive_controller_observe(&control, 149000000u, &noise) == 4);
+    assert(adaptive_controller_observe(&control, 153000000u, &noise) == 4);
+    assert(adaptive_controller_observe(&control, 157000000u, &noise) == 4);
+    assert(control.phase == ADAPT_HOLD && control.unstable_votes == 0);
+    assert(adaptive_controller_observe(&control, 161000000u, &changed) == 4);
+    assert(adaptive_controller_observe(&control, 165000000u, &changed) == 4);
+    assert(adaptive_controller_observe(&control, 169000000u, &changed) == 2);
     assert(control.phase == ADAPT_TRIAL);
 
     /* A faster/light model can retain the lower count; it is not fixed at 4. */
