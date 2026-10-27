@@ -7,6 +7,37 @@
 #include <time.h>
 #include <unistd.h>
 
+void http_detection_reports_clear(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    unsigned deleted = 0;
+    if (yolo_events_clear_reports(&deleted)) {
+        http_err(fd, 500, "Error", "Unable to clear detection reports"); return;
+    }
+    char json[64]; int n = snprintf(json, sizeof(json), "{\"deleted\":%u}", deleted);
+    http_ok_json(fd, json, (size_t)n);
+}
+
+void http_detection_reports_pack(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    int archive = yolo_events_pack_reports(NULL);
+    if (archive < 0) {
+        int code = errno == ENOENT ? 404 : errno == EFBIG ? 413 : errno == EAGAIN ? 409 : 500;
+        http_err(fd, code, code == 404 ? "Not Found" : code == 413 ? "Payload Too Large" : "Error",
+                 code == 404 ? "No detection reports" : "Unable to pack detection reports"); return;
+    }
+    struct stat st;
+    if (fstat(archive, &st) || st.st_size <= 0) {
+        close(archive); http_err(fd, 500, "Error", "Unable to read report archive"); return;
+    }
+    FILE *stream = fdopen(archive, "rb");
+    if (!stream) { close(archive); http_err(fd, 500, "Error", NULL); return; }
+    http_serve_stream(fd, "application/gzip",
+        "Content-Disposition: attachment; filename=\"detections_pack.tar.gz\"\r\n",
+        stream, (size_t)st.st_size, NULL);
+}
+
 void http_detection_report_delete(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
     (void)app; (void)method; (void)uri;
@@ -165,6 +196,23 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
         http_handle_404(fd, uri); return;
     }
     const char *relative = uri + strlen(prefix), *name = relative + 9;
+    if (is_report) {
+        int report = yolo_events_export_report(relative);
+        if (report < 0) {
+            int code = errno == ENOENT ? 404 : errno == EAGAIN ? 409 : errno == EFBIG ? 413 : 500;
+            http_err(fd, code, code == 404 ? "Not Found" : code == 409 ? "Conflict" : "Error",
+                     "Unable to export detection workbook"); return;
+        }
+        struct stat st;
+        if (fstat(report, &st) || st.st_size <= 0) { close(report); http_err(fd, 500, "Error", NULL); return; }
+        FILE *source = fdopen(report, "rb");
+        if (!source) { close(report); http_err(fd, 500, "Error", NULL); return; }
+        char disposition[160];
+        snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
+        http_serve_stream(fd, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                          disposition, source, (size_t)st.st_size, NULL);
+        return;
+    }
     char date[9]; memcpy(date, relative, 8); date[8] = '\0';
     int root_fd = open(YOLO_EVENTS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (root_fd < 0) { http_handle_404(fd, uri); return; }
@@ -193,7 +241,7 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
     if (!source) { close(src_fd); http_err(fd, 500, "Error", NULL); return; }
     char disposition[160];
     snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
-    http_serve_stream(fd, is_report ? "text/plain; charset=utf-8" : is_json ? "application/json" : "image/jpeg", disposition,
+    http_serve_stream(fd, is_report ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : is_json ? "application/json" : "image/jpeg", disposition,
                       source, (size_t)statbuf.st_size, NULL);
 }
 
@@ -222,12 +270,15 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         if (!date_valid(date->d_name)) continue;
         int directory = openat(root_fd, date->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (directory < 0) continue;
-        char name[32]; snprintf(name, sizeof(name), "detections_%.8s.txt", date->d_name);
-        struct stat st;
-        int valid = !fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size > 0;
+        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.xlsx", date->d_name);
+        struct stat st, cached;
+        int has_cached = !fstatat(directory, name, &cached, AT_SYMLINK_NOFOLLOW) && S_ISREG(cached.st_mode) && cached.st_size > 0;
+        char rows[64]; snprintf(rows, sizeof(rows), ".detections_%.8s.rows", date->d_name);
+        int valid = !fstatat(directory, rows, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size > 0;
+        if (!valid && has_cached) { st = cached; valid = 1; }
         close(directory);
         if (!valid) continue;
-        detection_report_t candidate = {.size = st.st_size, .modified = st.st_mtime};
+        detection_report_t candidate = {.size = has_cached ? cached.st_size : 0, .modified = st.st_mtime};
         memcpy(candidate.day, date->d_name, 8); candidate.day[8] = '\0';
         if (count < DETECTION_LIST_MAX) entries[count++] = candidate;
         else {
@@ -245,7 +296,7 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         if (!localtime_r(&entries[i].modified, &local) || !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M:%S", &local))
             snprintf(modified, sizeof(modified), "Unknown");
         off = http_json_append(json, sizeof(json), off,
-            "%s{\"name\":\"%s/detections_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            "%s{\"name\":\"%s/detections_%s.xlsx\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
             i ? "," : "", entries[i].day, entries[i].day, entries[i].day, entries[i].day + 4,
             entries[i].day + 6, (long long)entries[i].size, modified);
         if (off < 0) { http_err(fd, 500, "Error", NULL); return; }

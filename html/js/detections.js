@@ -1,9 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 (function () {
   var reports = document.getElementById('rows_detection_reports');
-  var button = document.getElementById('refresh_detections');
   var panel = document.getElementById('detections_panel');
+  var packButton = document.getElementById('pack_detections_btn');
+  var clearButton = document.getElementById('clear_detections_btn');
   var busy = false;
+  var refreshPending = false;
+  var bulkBusy = false;
+  function setBulkBusy(value) {
+    bulkBusy = value;
+    clearButton.disabled = value;
+    packButton.setAttribute('aria-disabled', String(value));
+  }
+  function saveDownload(blob, filename) {
+    var anchor = document.createElement('a');
+    var url = URL.createObjectURL(blob);
+    anchor.href = url; anchor.download = filename;
+    document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
   function message(key) {
     reports.replaceChildren();
     var cell = reports.insertRow().insertCell(); cell.colSpan = 4;
@@ -20,12 +35,7 @@
       try {
         var response = await authFetch(link.href);
         if (!response.ok) throw new Error('HTTP ' + response.status);
-        var blob = await response.blob();
-        var anchor = document.createElement('a');
-        var url = URL.createObjectURL(blob);
-        anchor.href = url; anchor.download = name.split('/').pop() + suffix;
-        document.body.appendChild(anchor); anchor.click(); anchor.remove();
-        setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+        saveDownload(await response.blob(), name.split('/').pop() + suffix);
       } catch (error) {
         if (error.message !== 'auth cancelled') alert(t('识别结果下载失败，请重试'));
       } finally { link.removeAttribute('aria-disabled'); }
@@ -33,8 +43,9 @@
     cell.appendChild(link);
   }
   async function load() {
-    if (busy || document.hidden || panel.style.display === 'none') return;
-    busy = true; button.disabled = true;
+    if (document.hidden || panel.style.display === 'none') return;
+    if (busy) { refreshPending = true; return; }
+    busy = true;
     try {
       var response = await authFetch('/api/detections/reports');
       if (!response.ok) throw new Error('Unable to load saved detections');
@@ -46,7 +57,7 @@
         var row = reports.insertRow();
         row.insertCell().textContent = report.date;
         row.insertCell().textContent = report.name.split('/').pop();
-        row.insertCell().textContent = (report.size / 1024).toFixed(1) + ' KB';
+        row.insertCell().textContent = report.size > 0 ? (report.size / 1024).toFixed(1) + ' KB' : '—';
         var actions = row.insertCell();
         downloadLink(actions, report.name, '', '下载');
         var remove = document.createElement('button');
@@ -70,9 +81,44 @@
     } catch (error) {
       message('加载失败（需管理员权限）');
     }
-    finally { busy = false; button.disabled = false; }
+    finally {
+      busy = false;
+      if (refreshPending) { refreshPending = false; load(); }
+    }
   }
-  button.addEventListener('click', load);
+  packButton.addEventListener('click', async function (event) {
+    event.preventDefault();
+    if (bulkBusy) return;
+    setBulkBusy(true); setI18nText(packButton, '打包中…');
+    try {
+      var response = await authFetch('/api/detections/reports/pack');
+      if (response.status === 404) { window.fileToast('暂无可打包的识别结果', false); return; }
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      saveDownload(await response.blob(), 'detections_pack.tar.gz');
+      window.fileToast('打包完成，开始下载', true);
+    } catch (error) {
+      if (error.message !== 'auth cancelled') window.fileToast('打包失败或已取消', false);
+    } finally {
+      setI18nText(packButton, '📦 打包下载'); setBulkBusy(false);
+    }
+  });
+  clearButton.addEventListener('click', async function () {
+    if (bulkBusy || !confirm(t('确定清空全部识别结果？此操作不可恢复，后续检测将继续创建当天文件。'))) return;
+    setBulkBusy(true);
+    try {
+      var response = await authFetch('/api/detections/reports/clear', {method:'POST'});
+      if (!response.ok) {
+        window.fileToast(response.status === 401 ? '需要管理员权限（root 或 sudo 用户）' : '清空失败 ({status})',
+          false, {status:response.status});
+        return;
+      }
+      var result = await response.json();
+      window.fileToast('已清空 {count} 个识别结果文件', true, {count:result.deleted || 0});
+      await load();
+    } catch (error) {
+      if (error.message !== 'auth cancelled') window.fileToast('清空识别结果失败，请重试', false);
+    } finally { setBulkBusy(false); }
+  });
   document.addEventListener('filestabchange', function (event) { if (event.detail.tab === 'detections') load(); });
   var timer = setInterval(load, 5000);
   window.addEventListener('pagehide', function () { clearInterval(timer); });

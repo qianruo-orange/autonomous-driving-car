@@ -245,8 +245,10 @@
     document.getElementById('detections_panel').style.display = tab === 'detections' ? '' : 'none';
     document.getElementById('pack_btn').style.display = isLogs ? '' : 'none';
     document.getElementById('pack_rec_btn').style.display = isRec ? '' : 'none';
+    document.getElementById('pack_detections_btn').style.display = tab === 'detections' ? '' : 'none';
     document.getElementById('clear_btn').style.display = isLogs ? '' : 'none';
     document.getElementById('clear_rec_btn').style.display = isRec ? '' : 'none';
+    document.getElementById('clear_detections_btn').style.display = tab === 'detections' ? '' : 'none';
     if (splitButton) splitButton.style.display = isRec ? '' : 'none';
     var btns = document.querySelectorAll('.tab-btn');
     for (var i = 0; i < btns.length; i++)

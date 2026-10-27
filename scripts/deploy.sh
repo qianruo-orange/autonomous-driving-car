@@ -97,6 +97,10 @@ do_install() {
     rm -rf "$DEPLOY_DIR/html"
     cp -r "$PROJECT_DIR/html" "$DEPLOY_DIR/html"
 
+    echo "[INSTALL] Excel report exporter"
+    mkdir -p "$DEPLOY_DIR/scripts"
+    cp "$PROJECT_DIR/scripts/export_detection_excel.py" "$DEPLOY_DIR/scripts/export_detection_excel.py"
+
     echo "[INSTALL] logs/"
     mkdir -p "$DEPLOY_DIR/logs"
 

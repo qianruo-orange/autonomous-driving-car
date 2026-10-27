@@ -36,7 +36,8 @@ int yolo_events_init(const char *root);
 int yolo_events_due(int count, unsigned long long monotonic_ms);
 /* Copies metadata into the bounded queue, waiting for space rather than dropping
  * frames. Returns -1 for invalid data or shutdown. Zero-target frames produce a
- * 'none' row. The writer flushes daily TXT data every second or 64 KiB. */
+ * 'none' row. The writer flushes private daily journals every second or 64 KiB;
+ * downloads export a standard Excel workbook from a stable journal snapshot. */
 int yolo_events_submit_meta(const yolo_event_meta_t *meta);
 /* Compatibility entry point. Image arguments are ignored; no photo is saved. */
 int yolo_events_submit(const unsigned char *jpeg, size_t jpeg_len,
@@ -51,7 +52,12 @@ void yolo_events_destroy(void);
 /* Strict YYYYMMDD/det_HHMMSS_mmm_SEQ.jpg|json validation for downloads. */
 int yolo_event_rel_valid(const char *relative);
 int yolo_report_rel_valid(const char *relative);
-/* Delete only a strict daily regular TXT. Active-day results can recreate it. */
+/* Delete the strict daily Excel report and journal. Active-day results can
+ * recreate it; queued pre-delete batches are blocked by a generation barrier. */
 int yolo_events_delete_report(const char *relative);
+/* Daily Excel reports only. Archive descriptor is rewound and owned by caller. */
+int yolo_events_pack_reports(unsigned *file_count);
+int yolo_events_export_report(const char *relative);
+int yolo_events_clear_reports(unsigned *deleted);
 
 #endif

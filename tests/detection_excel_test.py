@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Validate the production standard-library detection workbook exporter."""
+import importlib.util
+from pathlib import Path
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+from xml.etree import ElementTree as ET
+import zipfile
+
+SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/export_detection_excel.py'
+SPEC = importlib.util.spec_from_file_location('detection_excel', SCRIPT)
+excel = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(excel)
+NS = {'m':excel.MAIN_NS, 'r':excel.PACKAGE_REL_NS}
+
+
+class DetectionExcelTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix='gateway-excel-test-')
+        self.root = Path(self.directory.name)
+        self.source = self.root / 'daily.rows'
+        self.output = self.root / 'detections_20261027.xlsx'
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def row(self, sequence=1, name='person'):
+        return '\t'.join(['2026-10-27T15:01:02.003+0800', '1280', '720', name,
+            '0.750000', '1.250', '2.500', '100.000', '200.000', str(sequence), '645', 'null', 'true']) + '\n'
+
+    def journal(self, rows):
+        self.source.write_text('\t'.join(excel.HEADER) + '\n' + ''.join(rows), encoding='utf-8', newline='')
+
+    def workbook_rows(self):
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertIsNone(archive.testzip())
+            workbook = ET.fromstring(archive.read('xl/workbook.xml'))
+            relationships = ET.fromstring(archive.read('xl/_rels/workbook.xml.rels'))
+            targets = {item.attrib['Id']:item.attrib['Target'] for item in relationships}
+            result = []
+            for sheet in workbook.find('m:sheets', NS):
+                relationship = sheet.attrib['{' + excel.REL_NS + '}id']
+                sheet_xml = ET.fromstring(archive.read('xl/' + targets[relationship]))
+                result.append(sheet_xml.findall('m:sheetData/m:row', NS))
+            self.assertIn('[Content_Types].xml', archive.namelist())
+            self.assertIn('_rels/.rels', archive.namelist())
+            self.assertIn('xl/styles.xml', archive.namelist())
+            for name in archive.namelist():
+                if name.endswith(('.xml', '.rels')):
+                    ET.fromstring(archive.read(name))
+            return result
+
+    def test_standard_package_types_and_escaped_target(self):
+        self.journal([self.row(name='=SUM(A1) & <bird> "quoted" _x000A_\x01')])
+        result = excel.export_workbook(self.source, self.output)
+        self.assertEqual((result['rows'], result['sheets']), (1, 1))
+        rows = self.workbook_rows()[0]
+        self.assertEqual(len(rows), 2)
+        cells = {cell.attrib['r']:cell for cell in rows[1]}
+        self.assertEqual(cells['A2'].attrib['t'], 'inlineStr')
+        self.assertEqual(cells['D2'].attrib['t'], 'inlineStr')
+        self.assertEqual(cells['D2'].find('m:is/m:t', NS).text, '=SUM(A1) & <bird> "quoted" _x005F_x000A_\uFFFD')
+        self.assertEqual(cells['B2'].find('m:v', NS).text, '1280')
+        self.assertEqual(cells['E2'].find('m:v', NS).text, '0.750000')
+        self.assertIsNone(cells['L2'].find('m:v', NS))
+        self.assertEqual(cells['M2'].attrib['t'], 'b')
+        self.assertEqual(cells['M2'].find('m:v', NS).text, '1')
+
+    def test_new_sheets_repeat_header_and_preserve_every_row(self):
+        self.journal([self.row(i) for i in range(1, 6)])
+        result = excel.export_workbook(self.source, self.output, sheet_row_limit=3)
+        self.assertEqual((result['rows'], result['sheets']), (5, 3))
+        sheets = self.workbook_rows()
+        self.assertEqual([len(rows) for rows in sheets], [3, 3, 2])
+        sequences = []
+        for rows in sheets:
+            self.assertEqual(rows[0].find('m:c/m:is/m:t', NS).text, 'capture_time')
+            for row in rows[1:]:
+                cells = list(row)
+                sequences.append(cells[9].find('m:v', NS).text)
+        self.assertEqual(sequences, ['1', '2', '3', '4', '5'])
+
+    def test_frozen_size_excludes_later_appends_and_incomplete_row(self):
+        self.journal([self.row(1)])
+        frozen = self.source.stat().st_size
+        with self.source.open('ab') as stream:
+            stream.write(self.row(2).encode())
+        excel.export_workbook(self.source, self.output, input_size=frozen)
+        self.assertEqual(len(self.workbook_rows()[0]), 2)
+        excel.export_workbook(self.source, self.output)
+        self.assertEqual(len(self.workbook_rows()[0]), 3)
+        with self.source.open('ab') as stream:
+            stream.write(b'incomplete\trow')
+        excel.export_workbook(self.source, self.output)
+        self.assertEqual(len(self.workbook_rows()[0]), 3)
+
+    def test_size_is_captured_before_reading_the_stream(self):
+        self.journal([self.row(1)])
+        original = excel.frozen_lines
+        def append_then_read(stream, size):
+            with self.source.open('ab') as current:
+                current.write(self.row(2).encode())
+            return original(stream, size)
+        with patch.object(excel, 'frozen_lines', append_then_read):
+            result = excel.export_workbook(self.source, self.output)
+        self.assertEqual(result['rows'], 1)
+        self.assertEqual(len(self.workbook_rows()[0]), 2)
+
+    def test_empty_input_and_header_only_create_valid_header(self):
+        for contents in ('', '\t'.join(excel.HEADER) + '\n'):
+            self.source.write_text(contents, encoding='utf-8')
+            result = excel.export_workbook(self.source, self.output)
+            self.assertEqual(result['rows'], 0)
+            self.assertEqual(len(self.workbook_rows()[0]), 1)
+
+    def test_no_target_row_has_blank_numeric_cells(self):
+        self.journal(['2026-10-27T15:01:02.003+0800\t1280\t720\tnone\tnull\tnull\tnull\tnull\tnull\t2\tnull\tnull\tfalse\n'])
+        excel.export_workbook(self.source, self.output)
+        cells = list(self.workbook_rows()[0][1])
+        self.assertIsNone(cells[4].find('m:v', NS))
+        self.assertEqual(cells[12].find('m:v', NS).text, '0')
+
+    def test_bad_rows_and_publish_failure_preserve_previous_workbook(self):
+        self.journal([self.row()])
+        excel.export_workbook(self.source, self.output)
+        previous = self.output.read_bytes()
+        for bad in (self.row().replace('0.750000', 'NaN'), 'wrong\tcolumns\n'):
+            self.journal([bad])
+            with self.assertRaises(ValueError):
+                excel.export_workbook(self.source, self.output)
+            self.assertEqual(self.output.read_bytes(), previous)
+            self.assertFalse(list(self.root.glob('*.tmp')))
+        self.journal([self.row(2)])
+        with patch.object(excel.os, 'replace', side_effect=OSError('simulated replacement failure')):
+            with self.assertRaises(OSError):
+                excel.export_workbook(self.source, self.output)
+        self.assertEqual(self.output.read_bytes(), previous)
+        self.assertFalse(list(self.root.glob('*.tmp')))
+
+    def test_wrong_header_and_invalid_limits_are_rejected(self):
+        self.source.write_text('wrong header\n', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            excel.export_workbook(self.source, self.output)
+        self.journal([])
+        for limit in (0, 1, excel.MAX_SHEET_ROWS + 1):
+            with self.assertRaises(ValueError):
+                excel.export_workbook(self.source, self.output, sheet_row_limit=limit)
+
+    def test_cli_exports_a_workbook(self):
+        self.journal([self.row()])
+        result = subprocess.run([sys.executable, str(SCRIPT), '--input', str(self.source), '--output', str(self.output),
+            '--sheet-row-limit', '3'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"rows": 1', result.stdout)
+        self.workbook_rows()
+
+    @unittest.skipUnless(hasattr(os, 'symlink'), 'symlinks unavailable')
+    def test_symlink_input_output_and_parent_are_rejected(self):
+        self.journal([self.row()])
+        link = self.root / 'link.rows'
+        try:
+            link.symlink_to(self.source)
+        except OSError as error:
+            self.skipTest(str(error))
+        with self.assertRaises(ValueError):
+            excel.export_workbook(link, self.output)
+        link.unlink()
+        link.symlink_to(self.source)
+        with self.assertRaises(ValueError):
+            excel.export_workbook(self.source, link)
+        parent = self.root / 'linked'
+        parent.symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            excel.export_workbook(parent / self.source.name, self.output)
+
+
+if __name__ == '__main__':
+    unittest.main()

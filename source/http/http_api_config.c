@@ -420,11 +420,12 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
     config_save(app);
     http_ok_text(fd, "saved");
 
-    /* 视频参数变更后重启视频流（target=video 时用户点击保存即按变更结果重启） */
+    /* The recording and live stream share a session-owned encoder. Rebuild it
+       before capture changes, otherwise every frame at the new dimensions is
+       rejected by the old encoder and reported as an inference stall. */
+    if (vid_changed & (APPLY_VIDEO_CAPTURE | APPLY_VIDEO_ENCODER))
+        video_rec_cycle_session();
     if (vid_changed & APPLY_VIDEO_CAPTURE) video_stream_restart();
-    /* 码率系数变更：编码器随录制会话创建，须滚动一次会话新码率才生效
-       （当前段正常收尾存盘，线程立即按新配置续录下一段） */
-    if (vid_changed & APPLY_VIDEO_ENCODER) video_rec_cycle_session();
     /* AI 参数变更后热重载推理池（停旧池 → 重读配置重建），无需重启服务 */
     if (ai_changed) rknn_yolo_reload();
 

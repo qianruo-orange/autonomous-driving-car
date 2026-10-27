@@ -24,9 +24,10 @@
     '镜头位置：{value}（设备原始值）': 'Lens position: {value} (raw device value)',
     '识别结果': 'Detections',
     '每日检测汇总': 'Daily detection reports',
+    '每日检测汇总（Excel）': 'Daily detection reports (Excel)',
     '识别照片': 'Detection photos',
     '暂无检测汇总': 'No daily detection reports',
-    '下载 TXT': 'Download TXT',
+    '下载 Excel': 'Download Excel',
     '删除日报 {file}？后续检测将继续创建当天文件。': 'Delete report {file}? New detections will recreate today\'s file.',
     '显示最近 200 条已保存的识别结果。': 'Showing the latest 200 completed detections.',
     '检测到目标时自动保存，每秒最多一张。照片与 JSON 检测数据使用相同文件名。': 'Detections are saved automatically, up to one snapshot per second. The photo and JSON data share the same filename.',
@@ -325,6 +326,11 @@
     '已删除 {file}': 'Deleted {file}',
     '已清空 {count} 个日志文件': 'Cleared {count} log files',
     '已清空 {count} 个录像文件': 'Cleared {count} recording files',
+    '清空识别结果': 'Clear detections',
+    '确定清空全部识别结果？此操作不可恢复，后续检测将继续创建当天文件。': 'Clear all detection reports? This cannot be undone. New detections will create today\'s report again.',
+    '已清空 {count} 个识别结果文件': 'Cleared {count} detection report files',
+    '清空识别结果失败，请重试': 'Unable to clear detection reports. Please try again.',
+    '暂无可打包的识别结果': 'No detection reports to archive',
     '{count}条记录，每 0.5s 自动刷新': '{count} records, auto-refresh every 0.5s'
   };
 

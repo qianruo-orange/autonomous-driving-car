@@ -32,6 +32,7 @@
 #include <grp.h>
 
 #include "http/http_internal.h"
+#include "yolo/yolo_events.h"
 #include "video/h264_stream.h"
 #include "video/video_stream.h"
 #include "watchdog/watchdog.h"
@@ -606,6 +607,20 @@ static void http_process_request(http_conn_t *c)
     /* 认证/命令类处理可能耗时（crypt 等），先喂狗 */
     watchdog_feed_self("http");
 
+    /* Excel export and archive compression can outlast an HTTP heartbeat.
+       Authenticate in the reactor, then transfer the socket to a file worker. */
+    if (!strcmp(c->method, "GET") &&
+        (!strcmp(c->uri, "/api/detections/reports/pack") ||
+         (!strncmp(c->uri, "/detectionfile/", 15) && yolo_report_rel_valid(c->uri + 15)))) {
+        if (!http_check_auth_root(req, fd)) goto finish;
+        if (http_detection_download_start(fd, c->uri, http_video_client_closed) == 0) {
+            conn_detach(c);
+            return;
+        }
+        http_err(fd, 503, "Service Unavailable", "Detection export is busy; retry shortly");
+        goto finish;
+    }
+
     if (strcmp(c->uri, "/video/stream") == 0) {
         /* H.264 fMP4 推流（浏览器 MSE）：录制编码扇出，无会话/无 AI 时 503 */
         if (h264_stream_client_start(fd, http_video_client_closed) != 0) {
@@ -691,6 +706,8 @@ static void http_process_request(http_conn_t *c)
         { "/api/camera",0,"GET",http_camera_get,NULL },
         { "/api/detections",0,"GET",http_detections_list,http_check_auth_root },
         { "/api/detections/reports",0,"GET",http_detection_reports_list,http_check_auth_root },
+        { "/api/detections/reports/pack",0,"GET",http_detection_reports_pack,http_check_auth_root },
+        { "/api/detections/reports/clear",0,"POST",http_detection_reports_clear,http_check_auth_root },
         { "/api/detections/reports/delete",0,"POST",http_detection_report_delete,http_check_auth_root },
         { "/detectionfile/",1,"GET",http_detection_file,http_check_auth_root },
         { "/api/rec/start",0, "POST", http_rec_handler,  http_check_auth_root },

@@ -5,8 +5,10 @@
 #include "core/config.c"
 #include "http/http_api_config.c"
 
-static int response_code, restart_calls, unsupported_logs;
+static int response_code, restart_calls, cycle_calls, unsupported_logs;
 static char response_body[8192];
+static char video_actions[8];
+static size_t video_action_count;
 
 void _log_info(const char *file, int line, const char *format, ...)
 { (void)file; (void)line; (void)format; }
@@ -40,8 +42,18 @@ int can_socket_set_filter(int fd, canid_t id, canid_t mask)
 int watchdog_feed_thread(pthread_t tid, const char *name) { (void)tid; (void)name; return 0; }
 int tcp_listen(int port, const char *bind)
 { (void)port; (void)bind; assert(!"Unexpected TCP listener change"); return -1; }
-void video_stream_restart(void) { restart_calls++; }
-void video_rec_cycle_session(void) { assert(!"Unexpected encoder restart"); }
+void video_stream_restart(void)
+{
+    restart_calls++;
+    assert(video_action_count + 1 < sizeof(video_actions));
+    video_actions[video_action_count++] = 'R'; video_actions[video_action_count] = '\0';
+}
+void video_rec_cycle_session(void)
+{
+    cycle_calls++;
+    assert(video_action_count + 1 < sizeof(video_actions));
+    video_actions[video_action_count++] = 'C'; video_actions[video_action_count] = '\0';
+}
 void http_send_response(int fd, int code, const char *status, const char *mime,
                         const void *body, size_t length)
 {
@@ -56,6 +68,16 @@ static void write_config(const char *text)
 {
     FILE *file = fopen(PATH_CONFIG, "w"); assert(file);
     assert(fputs(text, file) >= 0); assert(!fclose(file));
+}
+
+static void expect_video_actions(app_ctx_t *app, const char *form, const char *expected)
+{
+    video_action_count = 0; video_actions[0] = '\0';
+    int prior_cycles = cycle_calls, prior_restarts = restart_calls;
+    http_config_post(app, 0, "POST", "/api/config", form);
+    assert(response_code == 200 && !strcmp(video_actions, expected));
+    assert(cycle_calls - prior_cycles == (strchr(expected, 'C') != NULL));
+    assert(restart_calls - prior_restarts == (strchr(expected, 'R') != NULL));
 }
 
 int main(void)
@@ -105,14 +127,30 @@ int main(void)
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
         http_config_post(&app, 0, "POST", "/api/config", invalid[i]);
         assert(response_code == 400 && cfg.video_width == 1280 && cfg.video_height == 720);
-        assert(!strcmp(cfg.video_decoder, "software") && tcp.max_clients == 16 && !restart_calls);
+        assert(!strcmp(cfg.video_decoder, "software") && tcp.max_clients == 16 && !restart_calls && !cycle_calls);
     }
-    http_config_post(&app, 0, "POST", "/api/config", "target=video&video_decoder=software");
-    assert(response_code == 200 && restart_calls == 1 && !strcmp(cfg.video_decoder, "software"));
+    expect_video_actions(&app, "target=video&video_decoder=software", "CR");
+    assert(!strcmp(cfg.video_decoder, "software"));
+    /* Capture-only changes must also replace the shared encoder, and do so
+       before restarting capture. Exercise the all-target path so the explicit
+       video-card restart cannot conceal a missing change bit. */
+    expect_video_actions(&app, "target=all&video_width=1920&video_height=1080", "CR");
+    assert(cfg.video_width == 1920 && cfg.video_height == 1080);
+    expect_video_actions(&app, "target=all&video_fps=25", "CR");
+    assert(cfg.video_fps == 25);
+    expect_video_actions(&app, "target=all&video_device=%2Fdev%2Fvideo9", "CR");
+    assert(!strcmp(cfg.video_device, "/dev/video9"));
+    expect_video_actions(&app, "target=all&video_codec=hardware", "C");
+    assert(!strcmp(cfg.video_codec, "hardware"));
+    expect_video_actions(&app, "target=all&video_codec=software&video_width=1280&video_height=720&video_fps=30", "CR");
+    assert(!strcmp(cfg.video_codec, "software") && cfg.video_width == 1280 && cfg.video_height == 720 && cfg.video_fps == 30);
+    expect_video_actions(&app, "target=all", "");
+    expect_video_actions(&app, "target=net&max_clients=12", "");
+    assert(tcp.max_clients == 12);
     assert(config_load(&cfg) == 0 && !strcmp(cfg.video_decoder, "software"));
     pthread_mutex_destroy(&app.can_mutex);
     assert(unlink(PATH_CONFIG) == 0 && rmdir("config") == 0);
     assert(fchdir(original_directory) == 0); close(original_directory); assert(rmdir(directory) == 0);
-    puts("PASS: decoder defaults, legacy files, persistence, API reporting and mutation-free rejection");
+    puts("PASS: decoder rejection/persistence and ordered shared-encoder rebuild for capture changes");
     return 0;
 }

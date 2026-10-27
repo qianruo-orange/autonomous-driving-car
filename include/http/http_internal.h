@@ -21,6 +21,8 @@
 void http_send_response(int fd, int code, const char *status, const char *mime, const void *body, size_t len);
 void http_handle_404(int fd, const char *path);
 void http_serve_file(int fd, const char *uri);
+/* On success a detached worker owns fd; caller must detach its reactor entry. */
+int http_detection_download_start(int fd, const char *uri, void (*on_close)(int));
 /* 流式发送数据源（文件）到客户端：静态文件/日志下载/日志打包共用。
    服务器接管 src 所有权，发送完毕或连接关闭时负责 fclose；unlink_after
    非空时发送完成后删除该文件（用于临时打包文件）。 */
@@ -57,6 +59,8 @@ void http_video_devices(app_ctx_t *app, int fd, const char *method, const char *
 void http_camera_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detections_list(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
+void http_detection_reports_pack(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
+void http_detection_reports_clear(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detection_report_delete(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detection_file(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_video_caps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);

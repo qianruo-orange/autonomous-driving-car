@@ -197,3 +197,16 @@ set_property(TARGET model_path_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc
 target_link_libraries(model_path_test PRIVATE pthread m)
 add_test(NAME model_path COMMAND model_path_test)
 add_test(NAME model_sync COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/model_sync_test.py)
+
+add_executable(yolo_bulk_test tests/yolo_bulk_test.c)
+target_include_directories(yolo_bulk_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(yolo_bulk_test PRIVATE -UNDEBUG)
+target_link_libraries(yolo_bulk_test PRIVATE pthread m)
+add_test(NAME yolo_bulk COMMAND yolo_bulk_test)
+add_test(NAME detection_excel COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/detection_excel_test.py)
+
+add_executable(detection_download_test tests/detection_download_test.c)
+target_include_directories(detection_download_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(detection_download_test PRIVATE -UNDEBUG)
+target_link_libraries(detection_download_test PRIVATE pthread)
+add_test(NAME detection_download COMMAND detection_download_test)

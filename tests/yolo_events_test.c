@@ -143,8 +143,17 @@ static void submit_until_accepted(const yolo_event_meta_t *meta)
 }
 static void get_report(const char *day)
 {
-    char uri[128]; snprintf(uri, sizeof(uri), "/detectionfile/%s/detections_%s.txt", day, day);
-    http_detection_file(NULL, 0, "GET", uri, NULL);
+    /* Inspect the durable append data directly; standard XLSX export and its
+       download/pack routes are covered separately by the bulk/export tests. */
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s/.detections_%s.rows", YOLO_EVENTS_DIR, day, day);
+    FILE *input = fopen(path, "rb");
+    if (!input) { response_code = 404; response_len = 0; response[0] = '\0'; return; }
+    response_len = fread(response, 1, sizeof(response) - 1, input);
+    assert(!ferror(input) && feof(input));
+    fclose(input);
+    response[response_len] = '\0'; response_code = 200;
+    snprintf(response_mime, sizeof(response_mime), "text/plain; charset=utf-8");
 }
 static int line_count(const char *body)
 {
@@ -162,17 +171,17 @@ static void clear_day(int root, const char *day)
     int directory = openat(root, day, O_RDONLY | O_DIRECTORY | O_NOFOLLOW); assert(directory >= 0);
     DIR *files = fdopendir(dup(directory)); assert(files);
     struct dirent *file;
-    while ((file = readdir(files))) if (file->d_name[0] != '.') assert(unlinkat(directory, file->d_name, 0) == 0);
+    while ((file = readdir(files))) if (strcmp(file->d_name, ".") && strcmp(file->d_name, "..")) assert(unlinkat(directory, file->d_name, 0) == 0);
     closedir(files); close(directory); assert(unlinkat(root, day, AT_REMOVEDIR) == 0);
 }
 
 int main(void)
 {
     setenv("TZ", "Asia/Shanghai", 1); tzset();
-    assert(yolo_report_rel_valid("20261027/detections_20261027.txt"));
-    const char *invalid[] = {"20261027/detections_20261028.txt", "20261027/../secret.txt",
-        "2026102a/detections_2026102a.txt", "20261027/detections_20261027.txt/extra",
-        "20261027/detections_20261027.txt?x=1", "20261027/random.txt"};
+    assert(yolo_report_rel_valid("20261027/detections_20261027.xlsx"));
+    const char *invalid[] = {"20261027/detections_20261028.xlsx", "20261027/../secret.txt",
+        "2026102a/detections_2026102a.xlsx", "20261027/detections_20261027.xlsx/extra",
+        "20261027/detections_20261027.xlsx?x=1", "20261027/random.txt"};
     for (size_t i = 0; i < sizeof(invalid)/sizeof(invalid[0]); i++) assert(!yolo_report_rel_valid(invalid[i]));
     assert(yolo_event_rel_valid("20261027/det_010203_004_1.jpg"));
     assert(!yolo_events_due(1, 1000));
@@ -256,7 +265,7 @@ int main(void)
     while ((entry = readdir(root))) if (date_valid(entry->d_name)) {
         dates++; int fd = openat(retained_root, entry->d_name, O_RDONLY | O_DIRECTORY); assert(fd >= 0);
         DIR *files = fdopendir(fd); assert(files); struct dirent *file;
-        while ((file = readdir(files))) if (file->d_name[0] != '.') { assert(strstr(file->d_name, ".txt")); files_found++; }
+        while ((file = readdir(files))) if (strcmp(file->d_name, ".") && strcmp(file->d_name, "..")) { assert(strstr(file->d_name, ".rows")); files_found++; }
         closedir(files);
     }
     closedir(root); assert(dates == 2 && files_found == 2); /* No photos or JSON were generated. */
@@ -265,15 +274,15 @@ int main(void)
     assert(strstr(response, second_day) < strstr(response, first_day));
     assert(mkdirat(retained_root, "20000101", 0755) == 0);
     int malicious = openat(retained_root, "20000101", O_RDONLY | O_DIRECTORY); assert(malicious >= 0);
-    assert(symlinkat("/etc/passwd", malicious, "detections_20000101.txt") == 0); close(malicious);
+    assert(symlinkat("/etc/passwd", malicious, "detections_20000101.xlsx") == 0); close(malicious);
     get_report("20000101"); assert(response_code == 404);
     http_detection_reports_list(NULL, 0, "GET", "/api/detections/reports", NULL);
     assert(!strstr(response, "20000101"));
     http_detection_file(NULL, 0, "GET", "/detectionfile/20261027/../secret.txt", NULL); assert(response_code == 404);
     errno = 0; assert(yolo_events_delete_report("20261027/../secret.txt") < 0 && errno == EINVAL);
-    errno = 0; assert(yolo_events_delete_report("20000101/detections_20000101.txt") < 0 && errno == EINVAL);
+    errno = 0; assert(yolo_events_delete_report("20000101/detections_20000101.xlsx") < 0 && errno == EINVAL);
     /* Deleting today's regular report is allowed; new records recreate it. */
-    char relative[64]; snprintf(relative, sizeof(relative), "%s/detections_%s.txt", first_day, first_day);
+    char relative[64]; snprintf(relative, sizeof(relative), "%s/detections_%s.xlsx", first_day, first_day);
     assert(yolo_events_init(NULL) == 0);
     assert(yolo_events_delete_report(relative) == 0);
     get_report(first_day); assert(response_code == 404);
@@ -289,7 +298,7 @@ int main(void)
     assert(response_code == 404);
     http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20261027/../secret.txt");
     assert(response_code == 400);
-    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20000101/detections_20000101.txt");
+    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20000101/detections_20000101.xlsx");
     assert(response_code == 400);
     /* A full queue plus permanent storage failure must release a blocked
        inference producer before the caller joins that producer at shutdown. */
