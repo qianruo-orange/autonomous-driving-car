@@ -54,6 +54,10 @@
 /* NPU 核数与尺寸由 monitor.js 按平台动态设置 */
 .core-bar{height:6px;background:var(--track);border-radius:3px;overflow:hidden;box-shadow:inset 0 1px 2px var(--inset-shadow)}
 .core-bar div{height:100%;border-radius:3px;transition:width .5s}
+/* Distinguish the three resource cards; retain red overload warnings. */
+#cpu_bar:not(.red),#cpu_cores .core-bar div:not(.red){background:linear-gradient(90deg,#38bdf8,#60a5fa);box-shadow:0 0 8px rgba(56,189,248,.25)}
+#mem_bar:not(.red),#disk_bar:not(.red){background:linear-gradient(90deg,#f59e0b,#fbbf24);box-shadow:0 0 8px rgba(245,158,11,.25)}
+#npu_cores .core-bar div,#gpu_bar{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 8px rgba(129,140,248,.25)}
 .core-label{font-size:10px;color:var(--muted);margin-bottom:2px;display:flex;justify-content:space-between}
 .net-iface{margin-bottom:8px}
 #net_speed{display:flex;gap:16px}
