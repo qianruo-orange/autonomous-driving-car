@@ -68,12 +68,12 @@ static int valid(const double *v)
     for (int i = VP; i <= WD; i++)
         if (v[i] > 100)
             return 0;
-    return v[TI] == 0 && v[WD] == 0 && v[ENABLED] <= 1 && floor(v[ENABLED]) == v[ENABLED] &&
-           v[CLASS] <= 99 && floor(v[CLASS]) == v[CLASS] && v[SPEED] > .0 && v[SPEED] <= 2 &&
-           v[YAW] > 0 && v[YAW] <= 4 && v[TRACK] >= .05 && v[TRACK] <= 2 && v[DEAD] <= .5 &&
-           v[TIMEOUT] >= 100 && v[TIMEOUT] <= 1000 && v[SEED_X] <= 1 && v[SEED_Y] <= 1 &&
-           v[MANUAL] <= 1 && floor(v[MANUAL]) == v[MANUAL] && v[SETPOINT] <= 2 &&
-           (!v[MANUAL] || v[SETPOINT] <= v[SPEED]) && v[AREA] <= 1;
+    return v[VI] == 0 && v[TI] == 0 && v[WD] == 0 && v[ENABLED] <= 1 &&
+           floor(v[ENABLED]) == v[ENABLED] && v[CLASS] <= 99 && floor(v[CLASS]) == v[CLASS] &&
+           v[SPEED] > .0 && v[SPEED] <= 2 && v[YAW] > 0 && v[YAW] <= 4 && v[TRACK] >= .05 &&
+           v[TRACK] <= 2 && v[DEAD] <= .5 && v[TIMEOUT] >= 100 && v[TIMEOUT] <= 1000 &&
+           v[SEED_X] <= 1 && v[SEED_Y] <= 1 && v[MANUAL] <= 1 && floor(v[MANUAL]) == v[MANUAL] &&
+           v[SETPOINT] <= 2 && (!v[MANUAL] || v[SETPOINT] <= v[SPEED]) && v[AREA] <= 1;
 }
 static void reset(void)
 {
@@ -94,10 +94,6 @@ static void halt(const char *reason)
     g.reason = reason;
     if (g.motor.stop && g.motor.stop(g.app) < 0)
         g.reason = "motor_stop_failed";
-}
-static follow_gains_t gains(int at)
-{
-    return (follow_gains_t){g.cfg[at], g.cfg[at + 1], g.cfg[at + 2]};
 }
 static void tick(unsigned long long now, int can_enabled)
 {
@@ -165,7 +161,8 @@ static void tick(unsigned long long now, int can_enabled)
     }
     double v = g.cfg[MANUAL]
                    ? g.cfg[SETPOINT]
-                   : fmax(0, follow_pid_step(&g.pid[0], gains(VP), g.area_error, dt, g.cfg[SPEED]));
+                   : fmax(0, follow_pid_step(&g.pid[0], (follow_gains_t){g.cfg[VP], 0, g.cfg[VD]},
+                                             g.area_error, dt, g.cfg[SPEED]));
     double yaw =
         follow_pid_step(&g.pid[1], (follow_gains_t){g.cfg[TP], 0, g.cfg[TD]}, g.ex, dt, g.cfg[YAW]);
     follow_mix(v, yaw, g.cfg[TRACK], g.cfg[SPEED], &g.left_target, &g.right_target);
@@ -272,6 +269,9 @@ int follow_init(void *app)
                 if (!strcmp(key, keys[i]))
                     loaded[i] = value;
         fclose(f);
+        /* Retire the former automatic-speed integral gain without discarding
+         * the remaining saved settings from an older configuration. */
+        loaded[VI] = 0;
         if (valid(loaded))
             memcpy(g.cfg, loaded, sizeof(loaded));
     }

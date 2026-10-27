@@ -24,9 +24,7 @@
         max_yaw: '最大转向角速度 (rad/s)',
         wheel_track: '左右轮间距 (m)',
         deadband: '中心误差死区',
-        timeout_ms: '过期停止时间 (ms)',
         speed_kp: '自动速度 Kp',
-        speed_ki: '自动速度 Ki',
         speed_kd: '自动速度 Kd',
         turn_kp: '转向 Kp',
         turn_kd: '转向 Kd',
@@ -34,9 +32,9 @@
         wheel_ki: '轮速 Ki'
     };
     const groups = [
-        ['tracking', '跟踪设置', ['enabled', 'target', 'timeout_ms']],
+        ['tracking', '跟踪设置', ['enabled', 'target']],
         ['speed', '速度模式与限速', ['manual', 'max_speed', 'setpoint']],
-        ['automatic', '自动调速 PID', ['speed_kp', 'speed_ki', 'speed_kd']],
+        ['automatic', '自动调速 PD', ['speed_kp', 'speed_kd']],
         ['steering', '转向 PD', ['max_yaw', 'deadband', 'turn_kp', 'turn_kd']],
         ['wheels', '轮速 PI', ['wheel_track', 'wheel_kp', 'wheel_ki']]
     ];

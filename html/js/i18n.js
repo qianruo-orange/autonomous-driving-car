@@ -7,7 +7,7 @@
   var EN = {
     '跟踪设置': 'Tracking settings',
     '速度模式与限速': 'Speed mode and limits',
-    '自动调速 PID': 'Automatic speed PID',
+    '自动调速 PD': 'Automatic speed PD',
     '转向 PD': 'Steering PD',
     '轮速 PI': 'Wheel speed PI',
     '轮速 Kp': 'Wheel speed Kp',
