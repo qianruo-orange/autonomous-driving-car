@@ -24,13 +24,14 @@
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;border-radius:10px}
 table{border-collapse:collapse;width:100%;min-width:480px;background:var(--card-bg);backdrop-filter:blur(12px);border:1px solid var(--card-border);border-radius:10px;overflow:hidden}
 .file-section table{table-layout:fixed;min-width:880px}
-.file-col-date{width:12%}
-.file-col-name{width:30%}
-.file-col-size{width:10%}
-.file-col-mtime{width:20%}
-.file-col-actions{width:28%}
+.file-col-date{width:112px}
+.file-col-name{width:auto}
+.file-col-size{width:100px}
+.file-col-mtime{width:170px}
+.file-col-actions{width:220px}
 th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--card-border);white-space:nowrap}
 .file-section th,.file-section td{overflow:hidden;text-overflow:ellipsis}
+.file-section th:last-child,.file-section td:last-child{text-align:right}
 th{color:var(--muted);font-size:12px;background:rgba(94,194,240,.03)}
 td{font-size:13px}
 .del{background:linear-gradient(135deg,#c0394e,#d94459);color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px;transition:all .2s;box-shadow:0 1px 4px rgba(192,57,78,.2)}
