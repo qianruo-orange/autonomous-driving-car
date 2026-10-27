@@ -31,7 +31,9 @@ typedef struct {
 } detection_download_t;
 
 static pthread_mutex_t detection_download_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t detection_export_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned detection_download_active;
+#define DETECTION_DOWNLOAD_MAX 4u
 
 static uint64_t download_now_ms(void)
 {
@@ -98,9 +100,13 @@ static void *detection_download_worker(void *argument)
     (void)nice(10);
     int flags = fcntl(job->fd, F_GETFL);
     if (flags < 0 || fcntl(job->fd, F_SETFL, flags | O_NONBLOCK) < 0) goto done;
+    /* Accept a small bounded queue while only one CPU-intensive export runs.
+       Waiting here leaves the HTTP reactor and video threads available. */
+    pthread_mutex_lock(&detection_export_lock);
     int source = job->archive ? yolo_events_pack_reports(NULL) :
         yolo_events_export_report(job->relative);
     int export_error = errno;
+    pthread_mutex_unlock(&detection_export_lock);
     uint64_t started = download_now_ms();
     download_clock_t clock = {.started = started, .progress = started};
     if (source < 0) {
@@ -153,7 +159,7 @@ int http_detection_download_start(int fd, const char *uri, void (*on_close)(int)
     if (fd < 0 || (!archive && (!relative || strlen(relative) >= sizeof(((detection_download_t *)0)->relative) ||
                               !yolo_report_rel_valid(relative)))) { errno = EINVAL; return -1; }
     pthread_mutex_lock(&detection_download_lock);
-    if (detection_download_active) {
+    if (detection_download_active >= DETECTION_DOWNLOAD_MAX) {
         pthread_mutex_unlock(&detection_download_lock); errno = EBUSY; return -1;
     }
     detection_download_active++;

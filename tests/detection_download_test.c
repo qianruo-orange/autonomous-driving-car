@@ -45,7 +45,9 @@ int yolo_events_pack_reports(unsigned *count)
 
 static void closed(int fd)
 {
-    assert(fcntl(fd, F_GETFD) < 0 && errno == EBADF);
+    /* The peer's EOF checks closure. Other workers can reuse this fd number
+       before the notification arrives, so do not inspect its current owner. */
+    (void)fd;
     pthread_mutex_lock(&fixture_lock);
     callbacks++; pthread_cond_broadcast(&fixture_changed);
     pthread_mutex_unlock(&fixture_lock);
@@ -114,7 +116,14 @@ static void check_success(int archive, size_t body_size, int blocking_export)
     /* Export waits on a condition; returning here proves the caller is free. */
     assert(download_now_ms() - before < 500u);
     wait_entered();
+    int queued[DETECTION_DOWNLOAD_MAX - 1u][2];
     if (blocking_export) {
+        for (unsigned i=0; i<DETECTION_DOWNLOAD_MAX-1u; ++i) {
+            assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, queued[i]));
+            assert(!http_detection_download_start(queued[i][0], archive ? "/api/detections/reports/pack" :
+                "/detectionfile/20261027/detections_20261027.xlsx", closed));
+            expected++;
+        }
         int second[2]; assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, second));
         errno = 0;
         assert(http_detection_download_start(second[0], "/api/detections/reports/pack", closed) < 0 && errno == EBUSY);
@@ -131,7 +140,13 @@ static void check_success(int archive, size_t body_size, int blocking_export)
     char *body = strstr(response, "\r\n\r\n"); assert(body); body += 4;
     assert(length - (size_t)(body - response) == body_size);
     for (size_t i = 0; i < body_size; i++) assert(body[i] == 'A' + i % 26);
-    free(response); close(pair[1]); wait_closed(expected);
+    free(response); close(pair[1]);
+    if (blocking_export) for (unsigned i=0; i<DETECTION_DOWNLOAD_MAX-1u; ++i) {
+        response=read_response(queued[i][1], &length);
+        assert(strstr(response,"HTTP/1.1 200 OK\r\n"));
+        free(response); close(queued[i][1]);
+    }
+    wait_closed(expected);
     assert(fixture_archive == archive);
 }
 
