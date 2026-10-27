@@ -201,7 +201,7 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
         if (report < 0) {
             int code = errno == ENOENT ? 404 : errno == EAGAIN ? 409 : errno == EFBIG ? 413 : 500;
             http_err(fd, code, code == 404 ? "Not Found" : code == 409 ? "Conflict" : "Error",
-                     "Unable to export detection workbook"); return;
+                     "Unable to read detection TXT"); return;
         }
         struct stat st;
         if (fstat(report, &st) || st.st_size <= 0) { close(report); http_err(fd, 500, "Error", NULL); return; }
@@ -209,7 +209,7 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
         if (!source) { close(report); http_err(fd, 500, "Error", NULL); return; }
         char disposition[160];
         snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
-        http_serve_stream(fd, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        http_serve_stream(fd, "text/plain; charset=utf-8",
                           disposition, source, (size_t)st.st_size, NULL);
         return;
     }
@@ -241,7 +241,7 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
     if (!source) { close(src_fd); http_err(fd, 500, "Error", NULL); return; }
     char disposition[160];
     snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
-    http_serve_stream(fd, is_report ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : is_json ? "application/json" : "image/jpeg", disposition,
+    http_serve_stream(fd, is_report ? "text/plain; charset=utf-8" : is_json ? "application/json" : "image/jpeg", disposition,
                       source, (size_t)statbuf.st_size, NULL);
 }
 
@@ -270,15 +270,12 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         if (!date_valid(date->d_name)) continue;
         int directory = openat(root_fd, date->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (directory < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.xlsx", date->d_name);
-        struct stat st, cached;
-        int has_cached = !fstatat(directory, name, &cached, AT_SYMLINK_NOFOLLOW) && S_ISREG(cached.st_mode) && cached.st_size > 0;
-        char rows[64]; snprintf(rows, sizeof(rows), ".detections_%.8s.rows", date->d_name);
-        int valid = !fstatat(directory, rows, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size > 0;
-        if (!valid && has_cached) { st = cached; valid = 1; }
+        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.txt", date->d_name);
+        struct stat st;
+        int valid = !fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size > 0;
         close(directory);
         if (!valid) continue;
-        detection_report_t candidate = {.size = has_cached ? cached.st_size : 0, .modified = st.st_mtime};
+        detection_report_t candidate = {.size = st.st_size, .modified = st.st_mtime};
         memcpy(candidate.day, date->d_name, 8); candidate.day[8] = '\0';
         if (count < DETECTION_LIST_MAX) entries[count++] = candidate;
         else {
@@ -296,7 +293,7 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         if (!localtime_r(&entries[i].modified, &local) || !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M:%S", &local))
             snprintf(modified, sizeof(modified), "Unknown");
         off = http_json_append(json, sizeof(json), off,
-            "%s{\"name\":\"%s/detections_%s.xlsx\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            "%s{\"name\":\"%s/detections_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
             i ? "," : "", entries[i].day, entries[i].day, entries[i].day, entries[i].day + 4,
             entries[i].day + 6, (long long)entries[i].size, modified);
         if (off < 0) { http_err(fd, 500, "Error", NULL); return; }

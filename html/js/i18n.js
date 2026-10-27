@@ -24,10 +24,8 @@
     '镜头位置：{value}（设备原始值）': 'Lens position: {value} (raw device value)',
     '识别结果': 'Detections',
     '每日检测汇总': 'Daily detection reports',
-    '每日检测汇总（Excel）': 'Daily detection reports (Excel)',
     '识别照片': 'Detection photos',
     '暂无检测汇总': 'No daily detection reports',
-    '下载 Excel': 'Download Excel',
     '删除日报 {file}？后续检测将继续创建当天文件。': 'Delete report {file}? New detections will recreate today\'s file.',
     '显示最近 200 条已保存的识别结果。': 'Showing the latest 200 completed detections.',
     '检测到目标时自动保存，每秒最多一张。照片与 JSON 检测数据使用相同文件名。': 'Detections are saved automatically, up to one snapshot per second. The photo and JSON data share the same filename.',
@@ -63,7 +61,7 @@
     '配置': 'Configuration',
     '仪表盘': 'Dashboard',
     '主界面': 'Home',
-      '识别结果正在更新或导出，请稍后重试': 'Detection reports are updating or exporting; please retry shortly',
+    '识别结果正在更新，请稍后重试': 'Detection reports are updating; please retry shortly',
     'DBC解析': 'DBC Decoder',
     'DBC 信号解析': 'DBC Signal Decoder',
     '文件下载': 'Files',
@@ -385,7 +383,7 @@
 
   window.updateLangBtn = function () {
     var b = document.getElementById('langBtn');
-    if (b) b.textContent = getLang() === 'en' ? 'ZH' : 'EN';
+    if (b) b.textContent = getLang() === 'en' ? 'Chinese' : 'English';
   };
 
   window.setLang = function (l) {

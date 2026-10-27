@@ -56,59 +56,69 @@ static void destroy_waiter(queue_waiter_t *waiter)
 static void check_adaptive_policy(void)
 {
     adaptive_controller_t control;
-    adaptive_observation_t good = {.fps = 29.1, .camera_fps = 30, .latency_ms = 134};
-    adaptive_observation_t too_few = {.fps = 26.5, .camera_fps = 30, .latency_ms = 172};
-    adaptive_observation_t contention = {.fps = 25.67, .camera_fps = 30, .latency_ms = 220};
+    adaptive_observation_t good = {.fps = 29.1, .camera_fps = 30, .latency_ms = 134, .worker_ms = 80};
     assert(adaptive_controller_init(&control, 2, 6) == 4);
-    assert(adaptive_controller_observe(&control, 12000000u, &good) == 2);
-    assert(control.phase == ADAPT_TRIAL);
-    assert(adaptive_controller_observe(&control, 17500000u, &too_few) == 4);
-    assert(control.phase == ADAPT_BASELINE);
-    assert(adaptive_controller_observe(&control, 23000000u, &good) == 6);
-    assert(adaptive_controller_observe(&control, 28500000u, &contention) == 4);
+    /* The old 180-second expiry forced a bad 4 -> 2 -> 6 exploration even
+       while delivering camera FPS. Keep a smooth stream steady indefinitely. */
+    for (unsigned long long second = 12; second < 1200; second++)
+        assert(adaptive_controller_observe(&control, second * 1000000u, &good) == 4);
     assert(control.phase == ADAPT_HOLD);
-    assert(adaptive_controller_observe(&control, 33000000u, &good) == 4);
-    assert(control.phase == ADAPT_HOLD);
-    adaptive_observation_t changed = {.fps = 20, .camera_fps = 30, .latency_ms = 300};
-    assert(adaptive_controller_observe(&control, 38000000u, &changed) == 4);
-    assert(adaptive_controller_observe(&control, 43000000u, &changed) == 4);
-    assert(adaptive_controller_observe(&control, 100000000u, &changed) == 4);
-    assert(control.phase == ADAPT_HOLD && control.unstable_votes == 0);
-    adaptive_observation_t noise = {.fps = 25, .camera_fps = 30, .latency_ms = 180};
-    assert(adaptive_controller_observe(&control, 149000000u, &noise) == 4);
-    assert(adaptive_controller_observe(&control, 153000000u, &noise) == 4);
-    assert(adaptive_controller_observe(&control, 157000000u, &noise) == 4);
-    assert(control.phase == ADAPT_HOLD && control.unstable_votes == 0);
-    assert(adaptive_controller_observe(&control, 161000000u, &changed) == 4);
-    assert(adaptive_controller_observe(&control, 165000000u, &changed) == 4);
-    assert(adaptive_controller_observe(&control, 169000000u, &changed) == 2);
-    assert(control.phase == ADAPT_TRIAL);
 
-    /* A faster/light model can retain the lower count; it is not fixed at 4. */
-    adaptive_observation_t light = {.fps = 30, .camera_fps = 30, .latency_ms = 70};
-    adaptive_observation_t light_lower = {.fps = 30, .camera_fps = 30, .latency_ms = 60};
-    assert(adaptive_controller_init(&control, 2, 6) == 4);
-    assert(adaptive_controller_observe(&control, 12000000u, &light) == 2);
-    assert(adaptive_controller_observe(&control, 17500000u, &light_lower) == 2);
-    assert(adaptive_controller_observe(&control, 23000000u, &light_lower) == 6);
-    assert(adaptive_controller_observe(&control, 28500000u, &light_lower) == 2);
-    assert(control.phase == ADAPT_HOLD);
-    assert(adaptive_controller_observe(&control, 220000000u, &light_lower) == 4);
+    /* One low window is insufficient. Three sustained shortages can try more
+       workers, but a contended trial rolls back after the first measurement. */
+    adaptive_observation_t limited = {.fps = 24, .camera_fps = 30, .latency_ms = 170, .worker_ms = 80};
+    adaptive_observation_t contention = {.fps = 22, .camera_fps = 30, .latency_ms = 240, .worker_ms = 100};
+    assert(adaptive_controller_observe(&control, 1200000000u, &limited) == 4);
+    assert(adaptive_controller_observe(&control, 1201000000u, &good) == 4);
+    assert(adaptive_controller_observe(&control, 1202000000u, &limited) == 4);
+    assert(adaptive_controller_observe(&control, 1203000000u, &limited) == 4);
+    assert(adaptive_controller_observe(&control, 1204000000u, &limited) == 6);
     assert(control.phase == ADAPT_TRIAL);
+    assert(adaptive_controller_observe(&control, 1205000000u, &contention) == 4);
+    assert(control.best.fps == limited.fps); /* Bad trial is not the baseline. */
+    for (unsigned long long second = 1206; second < 1600; second++)
+        assert(adaptive_controller_observe(&control, second * 1000000u, &limited) == 4);
+    assert(control.tested & adaptive_worker_bit(&control, 6));
 
-    /* A useful throughput improvement can select the larger count. */
-    adaptive_observation_t limited = {.fps = 20, .camera_fps = 30, .latency_ms = 140};
-    adaptive_observation_t improved = {.fps = 28, .camera_fps = 30, .latency_ms = 150};
+    /* A real camera-rate change reopens a cached failure after three windows;
+       elapsed wall time alone did not reopen it above. */
+    adaptive_observation_t faster = {.fps = 30, .camera_fps = 60, .latency_ms = 170, .worker_ms = 80};
+    adaptive_observation_t improved = {.fps = 40, .camera_fps = 60, .latency_ms = 180, .worker_ms = 100};
+    assert(adaptive_controller_observe(&control, 1600000000u, &faster) == 4);
+    assert(adaptive_controller_observe(&control, 1601000000u, &faster) == 4);
+    assert(adaptive_controller_observe(&control, 1602000000u, &faster) == 4);
+    assert(adaptive_controller_observe(&control, 1603000000u, &faster) == 4);
+    assert(adaptive_controller_observe(&control, 1604000000u, &faster) == 6);
+    assert(adaptive_controller_observe(&control, 1605000000u, &improved) == 6);
+    assert(control.best_workers == 6 && control.phase == ADAPT_HOLD);
+
+    /* A fast model with measured 25% spare capacity can safely try fewer
+       workers. The selected lower pool must remain steady, not fixed at 4. */
+    adaptive_observation_t light = {.fps = 30, .camera_fps = 30, .latency_ms = 70, .worker_ms = 40};
+    adaptive_observation_t light_lower = {.fps = 30, .camera_fps = 30, .latency_ms = 60, .worker_ms = 38};
     assert(adaptive_controller_init(&control, 2, 6) == 4);
-    assert(adaptive_controller_observe(&control, 12000000u, &limited) == 2);
-    assert(adaptive_controller_observe(&control, 17500000u, &too_few) == 2);
-    assert(adaptive_controller_observe(&control, 23000000u, &too_few) == 6);
-    assert(adaptive_controller_observe(&control, 28500000u, &improved) == 6);
-    assert(control.phase == ADAPT_HOLD);
+    assert(adaptive_controller_observe(&control, 12000000u, &light) == 4);
+    assert(adaptive_controller_observe(&control, 13000000u, &light) == 4);
+    assert(adaptive_controller_observe(&control, 14000000u, &light) == 2);
+    assert(adaptive_controller_observe(&control, 15000000u, &light_lower) == 2);
+    for (unsigned long long second = 16; second < 600; second++)
+        assert(adaptive_controller_observe(&control, second * 1000000u, &light_lower) == 2);
+
+    /* Unknown service time cannot justify a blind reduction. A nearly full
+       smaller pool also lacks the safety margin needed to reduce workers. */
+    good.worker_ms = 0;
+    assert(adaptive_controller_init(&control, 2, 6) == 4);
+    for (unsigned long long second = 1; second < 10; second++)
+        assert(adaptive_controller_observe(&control, second * 1000000u, &good) == 4);
+    good.worker_ms = 60;
+    for (unsigned long long second = 10; second < 20; second++)
+        assert(adaptive_controller_observe(&control, second * 1000000u, &good) == 4);
+
+    /* Single-core/one-context platforms have no alternate pool to probe. */
     assert(adaptive_controller_init(&control, 1, 1) == 1);
     assert(adaptive_controller_observe(&control, 12000000u, &light) == 1);
     assert(control.phase == ADAPT_HOLD);
-    puts("PASS: measured adaptive trials roll back contention, select useful concurrency and hold without oscillation");
+    puts("PASS: adaptive workers preserve smooth demand, require sustained evidence and cache failed trials");
 }
 
 static void check_adaptive_queue(void)

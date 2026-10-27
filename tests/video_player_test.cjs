@@ -101,7 +101,8 @@ function makeHarness({ userAgent = '', frameCallbacks = false } = {}) {
     removeSourceBuffer(buffer) { if (buffer.updating) buffer.abort(); this.buffer = null; }
     open() { this.readyState = 'open'; this.emit('sourceopen'); }
   }
-  const document = { hidden: false, getElementById(id) { return id === 'stream_video' ? video : null; } };
+  const document = Object.assign(new Target(), { hidden: false,
+    getElementById(id) { return id === 'stream_video' ? video : null; } });
   const context = {
     window: {}, document, MediaSource, AbortController, Blob, Uint8Array, navigator: { userAgent },
     Date: { now: () => now },
@@ -342,18 +343,102 @@ test('oversized incomplete MJPEG input aborts the old fetch before reconnecting'
   assert.equal(h.api.state().streamAbort, null);
 });
 
-test('Chrome profile primes at 40 ms and bounds latency without reopening the connection', async () => {
+test('Chrome profile primes at 80 ms and bounds sustained backlog without reopening', async () => {
   const h = makeHarness({ userAgent: 'Mozilla/5.0 Chrome/147.0.0.0 Safari/537.36' });
-  const s = await h.start(); s.buffer.ranges = [[0, 0.1]];
-  h.api.mseCatchUp(); assert.ok(Math.abs(h.video.currentTime - 0.06) < 1e-8);
-  assert.equal(h.api.diagnostics().targetBufferMs, 40);
-  s.buffer.ranges = [[0, 0.15]]; h.api.mseCatchUp();
-  assert.equal(h.video.playbackRate, 1.05);
-  h.video.currentTime = 0.11; h.api.mseCatchUp(); assert.equal(h.video.playbackRate, 1);
-  s.buffer.ranges = [[0, 0.4]]; h.api.mseCatchUp();
-  assert.ok(Math.abs(h.video.currentTime - 0.36) < 1e-8);
+  const s = await h.start(); s.buffer.ranges = [[0, 0.16]];
+  h.api.mseCatchUp(); assert.ok(Math.abs(h.video.currentTime - 0.08) < 1e-8);
+  assert.equal(h.api.diagnostics().targetBufferMs, 80);
+  s.buffer.ranges = [[0, 0.24]]; h.api.mseCatchUp();
+  assert.equal(h.video.playbackRate, 1.03);
+  h.video.currentTime = 0.15; h.api.mseCatchUp(); assert.equal(h.video.playbackRate, 1);
+  s.buffer.ranges = [[0, 0.5]]; h.api.mseCatchUp();
+  assert.equal(h.video.currentTime, 0.15);
+  await h.advance(400); h.api.mseCatchUp();
+  assert.ok(Math.abs(h.video.currentTime - 0.42) < 1e-8);
   assert.equal(s.reader.cancelled, 0);
   h.api.mseStop(); await flush();
+});
+
+test('Chrome repeated Wi-Fi frame bursts are accelerated without repeated seeks', async () => {
+  const h = makeHarness({ userAgent: 'Chromium/147.0.0.0' });
+  const s = await h.start(); s.buffer.ranges = [[0, 0.16]]; h.api.mseCatchUp();
+  const catchups = h.api.state().mseDiag.catchups;
+  for (let batch = 1; batch <= 40; batch++) {
+    await h.advance(100);
+    /* Three received frames at once with two frames already ahead used to
+       exceed the 120 ms threshold and throw away frames on every batch. */
+    h.video.currentTime = batch * 0.1;
+    s.buffer.ranges = [[0, h.video.currentTime + 0.19]];
+    const before = h.video.currentTime;
+    h.api.mseCatchUp();
+    assert.equal(h.video.currentTime, before);
+    assert.equal(h.video.playbackRate, 1.03);
+  }
+  assert.equal(h.api.state().mseDiag.catchups, catchups);
+  assert.equal(s.reader.cancelled, 0);
+  h.api.mseStop(); await flush();
+});
+
+test('Chrome backlog must remain above limit for 400 ms; recovery clears its timer', async () => {
+  const h = makeHarness({ userAgent: 'Chrome/147.0.0.0' });
+  const s = await h.start(); s.buffer.ranges = [[0, 0.16]]; h.api.mseCatchUp();
+  const catchups = h.api.state().mseDiag.catchups;
+  h.video.currentTime = 1;
+  s.buffer.ranges = [[0, 1.32]]; h.api.mseCatchUp();
+  assert.equal(h.video.playbackRate, 1.05);
+  await h.advance(399); h.api.mseCatchUp();
+  assert.equal(h.video.currentTime, 1);
+  s.buffer.ranges = [[0, 1.2]]; h.api.mseCatchUp();
+  await h.advance(100);
+  s.buffer.ranges = [[0, 1.32]]; h.api.mseCatchUp();
+  await h.advance(399); h.api.mseCatchUp();
+  assert.equal(h.api.state().mseDiag.catchups, catchups);
+  await h.advance(1); h.api.mseCatchUp();
+  assert.ok(Math.abs(h.video.currentTime - 1.24) < 1e-8);
+  assert.equal(h.api.state().mseDiag.catchups, catchups + 1);
+  assert.equal(h.video.playbackRate, 1);
+  h.api.mseStop(); await flush();
+});
+
+test('Chrome immediately catches a large stale buffer and buffered-range gaps', async () => {
+  const h = makeHarness({ userAgent: 'Chrome/147.0.0.0' });
+  const s = await h.start(); s.buffer.ranges = [[0, 0.16]]; h.api.mseCatchUp();
+  const catchups = h.api.state().mseDiag.catchups;
+  h.video.currentTime = 1; s.buffer.ranges = [[0, 1.8]]; h.api.mseCatchUp();
+  assert.ok(Math.abs(h.video.currentTime - 1.72) < 1e-8);
+  assert.equal(h.api.state().mseDiag.catchups, catchups + 1);
+  s.buffer.ranges = [[2, 2.1]]; h.api.mseCatchUp();
+  assert.ok(Math.abs(h.video.currentTime - 2.02) < 1e-8);
+  assert.equal(s.reader.cancelled, 0);
+  h.api.mseStop(); await flush();
+});
+
+test('Chrome pause, seeking, hidden and replacement sessions reset pending catch-up', async () => {
+  for (const skipped of ['pause', 'seeking', 'hidden', 'restart']) {
+    const h = makeHarness({ userAgent: 'Chrome/147.0.0.0' });
+    let s = await h.start(); s.buffer.ranges = [[0, 0.16]]; h.api.mseCatchUp();
+    h.video.currentTime = 1; s.buffer.ranges = [[0, 1.32]]; h.api.mseCatchUp();
+    const catchups = h.api.state().mseDiag.catchups;
+    await h.advance(300);
+    if (skipped === 'hidden') {
+      h.document.hidden = true; h.document.emit('visibilitychange');
+    } else if (skipped === 'restart') {
+      h.api.mseStop(); s = await h.start();
+      s.buffer.ranges = [[0, 0.16]]; h.api.mseCatchUp();
+    } else {
+      h.video[skipped === 'pause' ? 'paused' : 'seeking'] = true;
+      h.video.emit(skipped);
+    }
+    assert.equal(h.video.playbackRate, 1);
+    await h.advance(300);
+    h.document.hidden = h.video.paused = h.video.seeking = false;
+    h.video.currentTime = 1; s.buffer.ranges = [[0, 1.32]]; h.api.mseCatchUp();
+    const expected = catchups + (skipped === 'restart' ? 1 : 0);
+    assert.equal(h.api.state().mseDiag.catchups, expected, skipped);
+    await h.advance(400); h.api.mseCatchUp();
+    assert.equal(h.api.state().mseDiag.catchups, expected + 1, skipped);
+    h.api.mseStop(); await flush();
+  }
 });
 
 test('frame-presentation metadata measures visible media instead of the advanced playhead', async () => {

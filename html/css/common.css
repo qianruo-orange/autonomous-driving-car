@@ -87,3 +87,10 @@ a:hover{color:var(--accent-hover)}
 .btn-back:hover{background:linear-gradient(135deg,rgba(94,194,240,.18),rgba(94,194,240,.1));border-color:var(--accent);color:var(--accent);box-shadow:0 4px 16px rgba(94,194,240,.2);transform:translateY(-1px)}
 .btn-save{background:linear-gradient(135deg,#236e4a,#2d8a5c);color:#fff;box-shadow:0 2px 12px rgba(35,110,74,.3);border:none}
 .btn-save:hover{box-shadow:0 4px 20px rgba(35,110,74,.5);transform:translateY(-1px)}
+
+/* Header controls share geometry across all pages and keep action colors. */
+.top-bar{flex-wrap:wrap;gap:12px}
+.top-bar .tb-left,.top-bar .tb-right{flex-wrap:wrap;gap:8px;min-width:0}
+.top-bar .tb-right{justify-content:flex-end}
+.top-bar .btn,.top-bar .theme-btn,.top-bar .pwr{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;gap:6px;height:38px;padding:0 12px;margin:0;border:1px solid var(--card-border2);border-radius:12px;font-family:inherit;font-size:13px;font-weight:600;line-height:1.2;white-space:nowrap;vertical-align:middle}
+.top-bar .theme-btn{position:static;min-width:38px}

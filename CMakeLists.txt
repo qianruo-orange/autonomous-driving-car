@@ -204,6 +204,7 @@ target_compile_options(yolo_bulk_test PRIVATE -UNDEBUG)
 target_link_libraries(yolo_bulk_test PRIVATE pthread m)
 add_test(NAME yolo_bulk COMMAND yolo_bulk_test)
 add_test(NAME detection_excel COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/detection_excel_test.py)
+add_test(NAME detection_txt COMMAND python3 ${PROJECT_SOURCE_DIR}/tests/detection_txt_test.py)
 
 add_executable(detection_download_test tests/detection_download_test.c)
 target_include_directories(detection_download_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)

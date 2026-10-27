@@ -143,11 +143,11 @@ static void submit_until_accepted(const yolo_event_meta_t *meta)
 }
 static void get_report(const char *day)
 {
-    /* Inspect the durable append data directly; standard XLSX export and its
-       download/pack routes are covered separately by the bulk/export tests. */
+    /* Inspect durable TXT directly; transport and packing are tested separately. */
     char path[256];
-    snprintf(path, sizeof(path), "%s/%s/.detections_%s.rows", YOLO_EVENTS_DIR, day, day);
-    FILE *input = fopen(path, "rb");
+    snprintf(path, sizeof(path), "%s/%s/detections_%s.txt", YOLO_EVENTS_DIR, day, day);
+    int descriptor = open(path, O_RDONLY | O_NOFOLLOW);
+    FILE *input = descriptor < 0 ? NULL : fdopen(descriptor, "rb");
     if (!input) { response_code = 404; response_len = 0; response[0] = '\0'; return; }
     response_len = fread(response, 1, sizeof(response) - 1, input);
     assert(!ferror(input) && feof(input));
@@ -178,10 +178,10 @@ static void clear_day(int root, const char *day)
 int main(void)
 {
     setenv("TZ", "Asia/Shanghai", 1); tzset();
-    assert(yolo_report_rel_valid("20261027/detections_20261027.xlsx"));
-    const char *invalid[] = {"20261027/detections_20261028.xlsx", "20261027/../secret.txt",
-        "2026102a/detections_2026102a.xlsx", "20261027/detections_20261027.xlsx/extra",
-        "20261027/detections_20261027.xlsx?x=1", "20261027/random.txt"};
+    assert(yolo_report_rel_valid("20261027/detections_20261027.txt"));
+    const char *invalid[] = {"20261027/detections_20261028.txt", "20261027/../secret.txt",
+        "2026102a/detections_2026102a.txt", "20261027/detections_20261027.txt/extra",
+        "20261027/detections_20261027.txt?x=1", "20261027/random.txt"};
     for (size_t i = 0; i < sizeof(invalid)/sizeof(invalid[0]); i++) assert(!yolo_report_rel_valid(invalid[i]));
     assert(yolo_event_rel_valid("20261027/det_010203_004_1.jpg"));
     assert(!yolo_events_due(1, 1000));
@@ -193,9 +193,10 @@ int main(void)
     snprintf(camera_meta.camera, sizeof(camera_meta.camera), "UGREEN\tCamera\\\n(/dev/video1)");
     char camera_day[9], camera_rows[REPORT_BUFFER_SIZE];
     assert(format_report(&camera_meta, camera_day, camera_rows, sizeof(camera_rows)) > 0);
-    assert(strstr(camera_rows, "\tUGREEN\\tCamera\\\\\\n(/dev/video1)\n"));
-    assert(occurrence_count(camera_rows, "\tUGREEN\\tCamera\\\\\\n(/dev/video1)\n") == 2);
-    memset(camera_meta.camera, 'A', sizeof(camera_meta.camera)); /* Bounded even without a terminator. */
+    assert(strstr(camera_rows, "：num[2] size[1280 720] FocalLength[unknown]\n"));
+    assert(strstr(camera_rows, "position[10.000 110.000 20.000 220.000]\n"));
+    /* Camera identity is retained in metadata; public TXT follows the requested sample. */
+    memset(camera_meta.camera, 'A', sizeof(camera_meta.camera));
     assert(format_report(&camera_meta, camera_day, camera_rows, sizeof(camera_rows)) > 0);
     check_backpressure(&meta);
     char scratch[] = "/tmp/yolo-events-test-XXXXXX"; assert(mkdtemp(scratch));
@@ -216,21 +217,21 @@ int main(void)
     /* The timed flush must publish results while the writer remains running. */
     for (int i = 0; i < 600; ++i) {
         get_report(first_day);
-        if (response_code == 200 && line_count(response) == 5) break;
+        if (response_code == 200 && line_count(response) == 6) break;
         usleep(5000);
     }
-    assert(response_code == 200 && line_count(response) == 5);
+    assert(response_code == 200 && line_count(response) == 6);
     assert(!strcmp(response_mime, "text/plain; charset=utf-8"));
-    assert(!strncmp(response, report_header, sizeof(report_header) - 1));
-    assert(strstr(response, ".123+0800\t1280\t720\ttarget\\\\\\t\\r\\n\t0.750000\t10.000\t20.000\t110.000\t220.000\t7\tnull\tnull\tnull\tUnknown\n"));
-    assert(strstr(response, "\t8\t220\tnull\ttrue\tUnknown\n"));
-    assert(strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t81\t220\tnull\ttrue\tUnknown\n"));
-    assert(!strstr(response + sizeof(report_header) - 1, "capture_time"));
+    assert(strstr(response, ".123+0800：num[2] size[1280 720] FocalLength[unknown]\n"));
+    assert(strstr(response, "\ttarget\\\\\\t\\r\\n 0.750000 position[10.000 110.000 20.000 220.000]\n"));
+    assert(strstr(response, "00:00:01.123+0800：num[1] size[1280 720] FocalLength[raw:220]\n"));
+    assert(strstr(response, "00:00:02.123+0800：num[0] size[1280 720] FocalLength[raw:220]\n"));
+    assert(!strstr(response, "capture_time"));
     size_t original_size = response_len;
     int retained_root = dup(events.root_fd); assert(retained_root >= 0);
     /* Simulate a short disk write then ENOSPC: old rows must remain intact. */
     write_budget = 5; assert(flush_report(first_day, "partial new row\n", 16) < 0); write_budget = -1;
-    get_report(first_day); assert(response_code == 200 && response_len == original_size && line_count(response) == 5);
+    get_report(first_day); assert(response_code == 200 && response_len == original_size && line_count(response) == 6);
 
     /* A transient append failure retains the complete batch. A frame accepted
        during the retry also survives, and neither one is duplicated. */
@@ -245,19 +246,19 @@ int main(void)
     write_budget = -1;
     for (int i = 0; i < 800; ++i) {
         get_report(first_day);
-        if (response_code == 200 && line_count(response) == 7) break;
+        if (response_code == 200 && line_count(response) == 10) break;
         usleep(5000);
     }
-    assert(response_code == 200 && line_count(response) == 7);
-    assert(occurrence_count(response, "\t82\t220\tnull\ttrue\tUnknown\n") == 1);
-    assert(occurrence_count(response, "\t83\t220\tnull\ttrue\tUnknown\n") == 1);
+    assert(response_code == 200 && line_count(response) == 10);
+    assert(occurrence_count(response, "00:00:03.123+0800：num[1]") == 1);
+    assert(occurrence_count(response, "00:00:04.123+0800：num[1]") == 1);
     assert(atomic_load(&recovery_logs) == 1);
 
     meta.seq = 9; meta.count = 0; meta.capture_unix_ms += 86400000ull;
     char second_day[9]; assert(format_report(&meta, second_day, ignored, sizeof(ignored)) > 0);
     assert(strcmp(first_day, second_day)); submit_until_accepted(&meta); memset(&meta, 0, sizeof(meta));
     yolo_events_destroy(); assert(!yolo_events_due(1, 9000)); yolo_events_destroy();
-    get_report(second_day); assert(response_code == 200 && line_count(response) == 2 && strstr(response, "\t9\t220\tnull\ttrue\tUnknown\n"));
+    get_report(second_day); assert(response_code == 200 && line_count(response) == 1 && strstr(response, "FocalLength[raw:220]"));
 
     /* Reopening the writer appends to a day's existing report without a header. */
     assert(yolo_events_init(NULL) == 0);
@@ -266,14 +267,14 @@ int main(void)
         .objects = {{.name = "new target", .conf = .5f, .x2 = 100, .y2 = 100}}};
     submit_until_accepted(&meta); yolo_events_destroy();
     get_report(second_day); assert(response_code == 200 && line_count(response) == 3);
-    assert(!strstr(response + sizeof(report_header) - 1, "capture_time"));
+    assert(!strstr(response, "capture_time"));
 
     DIR *root = fdopendir(dup(retained_root)); assert(root);
     struct dirent *entry; int dates = 0, files_found = 0;
     while ((entry = readdir(root))) if (date_valid(entry->d_name)) {
         dates++; int fd = openat(retained_root, entry->d_name, O_RDONLY | O_DIRECTORY); assert(fd >= 0);
         DIR *files = fdopendir(fd); assert(files); struct dirent *file;
-        while ((file = readdir(files))) if (strcmp(file->d_name, ".") && strcmp(file->d_name, "..")) { assert(strstr(file->d_name, ".rows")); files_found++; }
+        while ((file = readdir(files))) if (strcmp(file->d_name, ".") && strcmp(file->d_name, "..")) { assert(strstr(file->d_name, ".txt")); files_found++; }
         closedir(files);
     }
     closedir(root); assert(dates == 2 && files_found == 2); /* No photos or JSON were generated. */
@@ -282,15 +283,15 @@ int main(void)
     assert(strstr(response, second_day) < strstr(response, first_day));
     assert(mkdirat(retained_root, "20000101", 0755) == 0);
     int malicious = openat(retained_root, "20000101", O_RDONLY | O_DIRECTORY); assert(malicious >= 0);
-    assert(symlinkat("/etc/passwd", malicious, "detections_20000101.xlsx") == 0); close(malicious);
+    assert(symlinkat("/etc/passwd", malicious, "detections_20000101.txt") == 0); close(malicious);
     get_report("20000101"); assert(response_code == 404);
     http_detection_reports_list(NULL, 0, "GET", "/api/detections/reports", NULL);
     assert(!strstr(response, "20000101"));
     http_detection_file(NULL, 0, "GET", "/detectionfile/20261027/../secret.txt", NULL); assert(response_code == 404);
     errno = 0; assert(yolo_events_delete_report("20261027/../secret.txt") < 0 && errno == EINVAL);
-    errno = 0; assert(yolo_events_delete_report("20000101/detections_20000101.xlsx") < 0 && errno == EINVAL);
+    errno = 0; assert(yolo_events_delete_report("20000101/detections_20000101.txt") < 0 && errno == EINVAL);
     /* Deleting today's regular report is allowed; new records recreate it. */
-    char relative[64]; snprintf(relative, sizeof(relative), "%s/detections_%s.xlsx", first_day, first_day);
+    char relative[64]; snprintf(relative, sizeof(relative), "%s/detections_%s.txt", first_day, first_day);
     assert(yolo_events_init(NULL) == 0);
     assert(yolo_events_delete_report(relative) == 0);
     get_report(first_day); assert(response_code == 404);
@@ -298,7 +299,7 @@ int main(void)
     meta = (yolo_event_meta_t){.seq = 12, .capture_unix_ms = 1793030402123ull,
         .width = 1280, .height = 720, .autofocus = 1, .count = 0};
     submit_until_accepted(&meta); yolo_events_destroy();
-    get_report(first_day); assert(response_code == 200 && line_count(response) == 2 && strstr(response, "\tnone\tnull\tnull\tnull\tnull\tnull\t12\tnull\tnull\ttrue\tUnknown\n"));
+    get_report(first_day); assert(response_code == 200 && line_count(response) == 1 && strstr(response, "：num[0] size[1280 720] FocalLength[unknown]\n"));
     char request[160]; snprintf(request, sizeof(request), "POST /api/detections/reports/delete HTTP/1.1\r\n\r\n%s", relative);
     http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", request);
     assert(response_code == 200 && !strcmp(response, "{\"deleted\":true}"));
@@ -306,7 +307,7 @@ int main(void)
     assert(response_code == 404);
     http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20261027/../secret.txt");
     assert(response_code == 400);
-    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20000101/detections_20000101.xlsx");
+    http_detection_report_delete(NULL, 0, "POST", "/api/detections/reports/delete", "20000101/detections_20000101.txt");
     assert(response_code == 400);
     /* A full queue plus permanent storage failure must release a blocked
        inference producer before the caller joins that producer at shutdown. */

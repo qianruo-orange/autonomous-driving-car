@@ -107,20 +107,22 @@ typedef struct {
 } yolo_worker_t;
 
 typedef struct {
-    double fps, camera_fps, latency_ms;
+    double fps, camera_fps, latency_ms, worker_ms;
 } adaptive_observation_t;
 
 enum { ADAPT_BASELINE, ADAPT_TRIAL, ADAPT_HOLD };
 typedef struct {
     int cores, capacity, best_workers, trial_workers, phase, unstable_votes;
+    int pending_workers, pending_votes;
     unsigned tested;
-    unsigned long long hold_until_us, minimum_hold_until_us;
-    adaptive_observation_t best;
+    unsigned long long hold_until_us;
+    adaptive_observation_t best, load_reference;
 } adaptive_controller_t;
 
 typedef struct {
     unsigned long long started_us, collect_after_us, last_sample_seq;
     unsigned long long captured, rendered, encoded, samples, latency_sum_ms;
+    unsigned long long worker_samples, worker_sum_us;
 } adaptive_window_t;
 
 /* 模块全局上下文 */
@@ -197,7 +199,8 @@ static int adaptive_controller_init(adaptive_controller_t *control, int cores, i
     control->cores = cores;
     control->capacity = capacity;
     control->best_workers = cores * 2 > capacity ? capacity : cores * 2;
-    control->tested = adaptive_worker_bit(control, control->best_workers);
+    control->tested = 0; /* Rejected candidates, retained while demand is stable. */
+    control->phase = ADAPT_HOLD;
     return control->best_workers;
 }
 
@@ -218,65 +221,77 @@ static int adaptive_observation_better(const adaptive_observation_t *candidate,
     return candidate_workers < baseline_workers;
 }
 
-static int adaptive_next_trial(const adaptive_controller_t *control)
-{
-    for (int workers = control->cores; workers <= control->capacity; workers += control->cores)
-        if (!(control->tested & adaptive_worker_bit(control, workers))) return workers;
-    return 0;
-}
-
-/* Called only for complete measurement windows. Every failed trial returns to
-   the measured best count; a fresh baseline precedes the next trial. Once all
-   core groups have been compared, hold the result for three minutes. Sustained
-   input/load changes can request an earlier new comparison. */
+/* Live playback has priority over exploration. Do not periodically re-test a
+   known bad low count. More workers are considered only after sustained supply
+   deficit; fewer require measured service-time headroom, not a blind trial. */
 static int adaptive_controller_observe(adaptive_controller_t *control,
                                       unsigned long long now,
                                       const adaptive_observation_t *observation)
 {
-    if (control->phase == ADAPT_HOLD) {
-        /* Trials can temporarily reduce throughput. Never restart them during
-           the first two minutes, even if temperature or load fluctuates. */
-        if (now < control->minimum_hold_until_us) return control->best_workers;
-        int changed = fabs(observation->camera_fps - control->best.camera_fps) >
-                          fmax(2, control->best.camera_fps * .2) ||
-                      observation->fps < control->best.fps * .75 ||
-                      observation->latency_ms > control->best.latency_ms * 1.75 + 30;
-        control->unstable_votes = changed ? control->unstable_votes + 1 : 0;
-        if (now < control->hold_until_us && control->unstable_votes < 3) return control->best_workers;
-        control->tested = adaptive_worker_bit(control, control->best_workers);
-        control->unstable_votes = 0;
-        control->phase = ADAPT_BASELINE;
-    }
     if (control->phase == ADAPT_TRIAL) {
         if (adaptive_observation_better(observation, &control->best,
                                         control->trial_workers, control->best_workers)) {
+            /* The former count was measured and lost this comparison. Do not
+               immediately alternate back when another window has noise. */
+            control->tested |= adaptive_worker_bit(control, control->best_workers);
             control->best_workers = control->trial_workers;
             control->best = *observation;
-        }
+            control->load_reference = *observation;
+        } else control->tested |= adaptive_worker_bit(control, control->trial_workers);
         control->trial_workers = 0;
-        if (adaptive_next_trial(control)) control->phase = ADAPT_BASELINE;
-        else {
-            control->phase = ADAPT_HOLD;
-            control->hold_until_us = now + 180000000u;
-            control->minimum_hold_until_us = now + 120000000u;
-        }
+        control->pending_workers = control->pending_votes = 0;
+        control->unstable_votes = 0;
+        control->hold_until_us = now + 8000000u;
+        control->phase = ADAPT_HOLD;
         return control->best_workers;
+    }
+    /* Let in-flight frames drain after accepting or rejecting a trial. This is
+       a cooldown only: elapsed time never requests an exploratory trial. */
+    if (now < control->hold_until_us) {
+        control->best = *observation;
+        return control->best_workers;
+    }
+    if (control->load_reference.camera_fps <= 0) control->load_reference = *observation;
+    int changed = fabs(observation->camera_fps - control->load_reference.camera_fps) >
+                      fmax(2, control->load_reference.camera_fps * .2) ||
+                  (observation->worker_ms > 0 && control->load_reference.worker_ms > 0 &&
+                   (observation->worker_ms > control->load_reference.worker_ms * 1.4 ||
+                    observation->worker_ms < control->load_reference.worker_ms * .7));
+    control->unstable_votes = changed ? control->unstable_votes + 1 : 0;
+    if (control->unstable_votes >= 3) {
+        control->tested = 0;
+        control->load_reference = *observation;
+        control->unstable_votes = 0;
     }
     control->best = *observation;
-    int next = adaptive_next_trial(control);
-    if (!next) {
-        control->phase = ADAPT_HOLD;
-        control->hold_until_us = now + 180000000u;
-        control->minimum_hold_until_us = now + 120000000u;
+    control->phase = ADAPT_HOLD;
+    int next = control->best_workers;
+    if (observation->camera_fps > 0) {
+        double tolerance = fmax(.75, observation->camera_fps * .05);
+        if (observation->fps + tolerance < observation->camera_fps) {
+            if (next < control->capacity) next += control->cores;
+        } else if (observation->worker_ms > 0 && next > control->cores) {
+            /* Sum of worker occupancy must fit the smaller pool with at least
+               25 percent spare capacity. Contention makes this conservative. */
+            double demand = observation->camera_fps * observation->worker_ms / 1000.0;
+            if (demand <= (next - control->cores) * .75) next -= control->cores;
+        }
+    }
+    if (next == control->best_workers || (control->tested & adaptive_worker_bit(control, next))) {
+        control->pending_workers = control->pending_votes = 0;
         return control->best_workers;
     }
+    if (next != control->pending_workers) {
+        control->pending_workers = next;
+        control->pending_votes = 1;
+    } else control->pending_votes++;
+    if (control->pending_votes < 3) return control->best_workers;
     control->trial_workers = next;
-    control->tested |= adaptive_worker_bit(control, next);
     control->phase = ADAPT_TRIAL;
     return next;
 }
 
-static void ai_adapt_workers(void)
+static void ai_adapt_workers(unsigned long long worker_us)
 {
     frame_ring_t *ring = video_stream_get_ring();
     if (!ring) return;
@@ -306,27 +321,31 @@ static void ai_adapt_workers(void)
         window->encoded = encoded;
         window->last_sample_seq = sample_seq;
         window->samples = window->latency_sum_ms = 0;
+        window->worker_samples = window->worker_sum_us = 0;
     }
+    window->worker_sum_us += worker_us;
+    window->worker_samples++;
     if (sample_seq != window->last_sample_seq && age) {
         window->last_sample_seq = sample_seq;
         window->latency_sum_ms += age;
         window->samples++;
     }
-    if (now - window->started_us >= 4000000u && window->samples) {
+    if (now - window->started_us >= 1000000u && window->samples) {
         double seconds = (double)(now - window->started_us) / 1000000.0;
         double delivered = (double)(rendered - window->rendered) / seconds;
         if (encoding) delivered = fmin(delivered, (double)(encoded - window->encoded) / seconds);
         adaptive_observation_t observation = {
             .fps = delivered,
             .camera_fps = (double)(captured - window->captured) / seconds,
-            .latency_ms = (double)window->latency_sum_ms / window->samples
+            .latency_ms = (double)window->latency_sum_ms / window->samples,
+            .worker_ms = (double)window->worker_sum_us / window->worker_samples / 1000.0
         };
         int current = __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED);
         int target = adaptive_controller_observe(&g_ai.adaptive, now, &observation);
         window->started_us = 0;
         if (target != current) {
             __atomic_store_n(&g_ai.active_workers, target, __ATOMIC_RELAXED);
-            window->collect_after_us = now + 1500000u;
+            window->collect_after_us = now + 250000u;
             selected = target;
             changed = 1;
             measured_fps = observation.fps;
@@ -588,7 +607,7 @@ static void *yolo_worker_task(void *arg)
         /* Persist every completed inference before the display queue can
            coalesce it. Empty detections are records too; no photo is encoded. */
         yolo_record_result(&job, &res);
-        ai_adapt_workers();
+        ai_adapt_workers(outputs_us - worker_us);
         if (idx == 0) {
             static unsigned long long last_timing_us;
             unsigned long long finished_us = ai_now_us();

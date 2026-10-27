@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* logs.js — 日志/录像列表、下载、删除页面逻辑。
- * 日志与录像共用 loadFileList/delFile（复用同一套渲染与删除流程）；
- * 打包下载统一走 authFetch（避免 <a> 直连未登录时弹浏览器原生认证框）。 */
+/* Shared file-manager list, download, deletion and recording controls. */
 (function() {
   var splitBusy = false;
   var splitButton = document.getElementById('split_rec_btn');
+  var listBusy = {};
 
   function updateSplitButton(status) {
     if (!splitButton) return;
@@ -92,13 +91,16 @@
      apiUrl 返回 {files:[{name,size,mtime}]}；
      del = {url, method, reload}，activeFile 为"录制中"文件名（可空）。 */
   async function loadFileList(apiUrl, tbodyId, emptyMsg, dlBase, del, activeFile) {
+    if (listBusy[tbodyId]) return;
+    listBusy[tbodyId] = true;
+    try {
     var tbody = document.getElementById(tbodyId);
     function message(key, cls) {
       tbody.innerHTML = '<tr><td colspan="5"></td></tr>';
       tbody.firstChild.firstChild.className = cls;
       setI18nText(tbody.firstChild.firstChild, key);
     }
-    message('加载中…', 'loading');
+    if (!tbody.hasChildNodes()) message('加载中…', 'loading');
     var files;
     try {
       var r = await fetch(apiUrl);
@@ -130,12 +132,17 @@
           .catch(function() {});
       } : null, activeFile === f.name);
     });
+    } finally { listBusy[tbodyId] = false; }
   }
 
   /* 打包下载：统一走 authFetch（带登录重试），成功转 blob 触发浏览器下载 */
   function bindPack(btn, url, filename) {
+    var busy = false;
     btn.addEventListener('click', function(ev) {
       ev.preventDefault();
+      if (busy) return;
+      busy = true;
+      btn.setAttribute('aria-disabled', 'true');
       setI18nText(btn, '打包中…');
       authFetch(url)
         .then(function(r) {
@@ -154,6 +161,10 @@
         .catch(function() {
           setI18nText(btn, '📦 打包下载');
           toast('打包失败或已取消', false);
+        })
+        .finally(function() {
+          busy = false;
+          btn.removeAttribute('aria-disabled');
         });
     });
   }
@@ -236,31 +247,13 @@
   bindClear(document.getElementById('clear_rec_btn'), '/api/rec/clear',
     '确定清空全部录像？此操作不可恢复', '已清空 {count} 个录像文件', loadRec);
 
-  /* ---- Tab 切换 ---- */
-  function switchTab(tab) {
-    var isRec = tab === 'rec';
-    var isLogs = tab === 'logs';
-    document.getElementById('tbl_logs').style.display = isLogs ? '' : 'none';
-    document.getElementById('tbl_rec').style.display = isRec ? '' : 'none';
-    document.getElementById('detections_panel').style.display = tab === 'detections' ? '' : 'none';
-    document.getElementById('pack_btn').style.display = isLogs ? '' : 'none';
-    document.getElementById('pack_rec_btn').style.display = isRec ? '' : 'none';
-    document.getElementById('pack_detections_btn').style.display = tab === 'detections' ? '' : 'none';
-    document.getElementById('clear_btn').style.display = isLogs ? '' : 'none';
-    document.getElementById('clear_rec_btn').style.display = isRec ? '' : 'none';
-    document.getElementById('clear_detections_btn').style.display = tab === 'detections' ? '' : 'none';
-    if (splitButton) splitButton.style.display = isRec ? '' : 'none';
-    var btns = document.querySelectorAll('.tab-btn');
-    for (var i = 0; i < btns.length; i++)
-      btns[i].classList.toggle('tab-on', btns[i].getAttribute('data-tab') === tab);
-    document.dispatchEvent(new CustomEvent('filestabchange', {detail:{tab:tab}}));
-  }
-  window.switchTab = switchTab;
-
   bindPack(document.getElementById('pack_btn'), '/logs/pack', 'logs_pack.tar.gz');
   bindPack(document.getElementById('pack_rec_btn'), '/api/rec/pack', 'recordings_pack.tar.gz');
 
   loadLogs();
   loadRec();
-  setInterval(loadRec, 5000);   /* 录像持续生成，低频刷新 */
+  var timer = setInterval(function() {
+    if (!document.hidden) { loadLogs(); loadRec(); }
+  }, 5000);
+  window.addEventListener('pagehide', function() { clearInterval(timer); });
 })();

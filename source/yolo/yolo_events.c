@@ -19,8 +19,6 @@
 #include <sys/wait.h>
 
 #define REPORT_BUFFER_SIZE 65536u
-static const char report_header[] =
-    "capture_time\twidth\theight\ttarget\tconfidence\tx1\ty1\tx2\ty2\tframe_seq\tfocus_position_raw\tfocal_length_mm\tautofocus\tcamera\n";
 
 static struct {
     pthread_mutex_t lock;
@@ -89,9 +87,9 @@ int yolo_event_rel_valid(const char *relative)
 
 int yolo_report_rel_valid(const char *relative)
 {
-    return relative && strlen(relative) == 33 && digits(relative, 8) && relative[8] == '/' &&
+    return relative && strlen(relative) == 32 && digits(relative, 8) && relative[8] == '/' &&
         !strncmp(relative + 9, "detections_", 11) && !memcmp(relative, relative + 20, 8) &&
-        !strcmp(relative + 28, ".xlsx");
+        !strcmp(relative + 28, ".txt");
 }
 
 static int append(char *out, size_t cap, size_t *length, const char *format, ...)
@@ -124,38 +122,28 @@ static int append_target(char *out, size_t cap, size_t *length, const char *name
     return append_escaped(out, cap, length, name, YOLO_EVENT_NAME_LEN);
 }
 
-static int append_camera(char *out, size_t cap, size_t *length, const yolo_event_meta_t *meta)
-{
-    return append(out, cap, length, "\t") ||
-        append_escaped(out, cap, length, meta->camera[0] ? meta->camera : "Unknown", YOLO_EVENT_CAMERA_LEN) ||
-        append(out, cap, length, "\n") ? -1 : 0;
-}
-
+/* The public TXT follows the frame/object layout used by field tools. Focus
+ * positions have no calibrated millimetre mapping, so label raw values honestly. */
 static int format_report(const yolo_event_meta_t *meta, char day[9], char *out, size_t cap)
 {
     time_t seconds = (time_t)(meta->capture_unix_ms / 1000u);
     struct tm date;
-    char stamp[32], zone[16], focus[32] = "null";
+    char stamp[32], zone[16], focus[32] = "unknown";
     if (!localtime_r(&seconds, &date) || !strftime(day, 9, "%Y%m%d", &date) ||
         !strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%S", &date) ||
         !strftime(zone, sizeof(zone), "%z", &date)) return -1;
-    if (meta->focus_valid) snprintf(focus, sizeof(focus), "%d", meta->focus_position);
-    const char *autofocus = meta->autofocus < 0 ? "null" : meta->autofocus ? "true" : "false";
+    if (meta->focus_valid) snprintf(focus, sizeof(focus), "raw:%d", meta->focus_position);
     size_t length = 0;
-    if (!meta->count) {
-        if (append(out, cap, &length, "%s.%03llu%s\t%d\t%d\tnone\tnull\tnull\tnull\tnull\tnull\t%llu\t%s\tnull\t%s",
-                   stamp, meta->capture_unix_ms % 1000u, zone, meta->width, meta->height,
-                   meta->seq, focus, autofocus) || append_camera(out, cap, &length, meta)) return -1;
-    }
+    if (append(out, cap, &length, "%s.%03llu%s：num[%d] size[%d %d] FocalLength[%s]\n",
+               stamp, meta->capture_unix_ms % 1000u, zone, meta->count,
+               meta->width, meta->height, focus)) return -1;
     for (int i = 0; i < meta->count; i++) {
         const yolo_event_object_t *object = &meta->objects[i];
-        if (append(out, cap, &length, "%s.%03llu%s\t%d\t%d\t", stamp,
-                   meta->capture_unix_ms % 1000u, zone, meta->width, meta->height) ||
+        if (append(out, cap, &length, "\t") ||
             append_target(out, cap, &length, object->name) ||
-            append(out, cap, &length, "\t%.6f\t%.3f\t%.3f\t%.3f\t%.3f\t%llu\t%s\tnull\t%s",
-                   (double)object->conf, (double)object->x1, (double)object->y1,
-                   (double)object->x2, (double)object->y2, meta->seq, focus, autofocus) ||
-            append_camera(out, cap, &length, meta)) return -1;
+            append(out, cap, &length, " %.6f position[%.3f %.3f %.3f %.3f]\n",
+                   (double)object->conf, (double)object->x1, (double)object->x2,
+                   (double)object->y1, (double)object->y2)) return -1;
     }
     return (int)length;
 }
@@ -180,15 +168,14 @@ static int flush_report_locked(const char day[9], const char *rows, size_t lengt
     if (mkdirat(events.root_fd, day, 0755) && errno != EEXIST) return -1;
     int directory = openat(events.root_fd, day, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (directory < 0) return -1;
-    char name[64]; snprintf(name, sizeof(name), ".detections_%s.rows", day);
+    char name[64]; snprintf(name, sizeof(name), "detections_%s.txt", day);
     int fd = openat(directory, name, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0644);
     close(directory);
     if (fd < 0) return -1;
     struct stat st;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); errno = EINVAL; return -1; }
     int rc = 0;
-    if ((!st.st_size && write_all(fd, report_header, sizeof(report_header) - 1)) ||
-        write_all(fd, rows, length) || fsync(fd)) rc = -1;
+    if (write_all(fd, rows, length) || fsync(fd)) rc = -1;
     if (rc) {
         int saved_errno = errno;
         if (ftruncate(fd, st.st_size) == 0) (void)fsync(fd);
@@ -230,20 +217,22 @@ int yolo_events_delete_report(const char *relative)
     char day[9]; memcpy(day, relative, 8); day[8] = '\0';
     directory = openat(root, day, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (directory < 0) goto done;
-    char rows[64]; snprintf(rows, sizeof(rows), ".detections_%s.rows", day);
-    const char *names[] = {relative + 9, rows};
-    int found[2] = {0};
-    for (size_t i = 0; i < 2; i++) {
+    char rows[64], workbook[64];
+    snprintf(rows, sizeof(rows), ".detections_%s.rows", day);
+    snprintf(workbook, sizeof(workbook), "detections_%s.xlsx", day);
+    const char *names[] = {relative + 9, rows, workbook};
+    int found[3] = {0};
+    for (size_t i = 0; i < 3; i++) {
         struct stat st;
         if (!fstatat(directory, names[i], &st, AT_SYMLINK_NOFOLLOW)) {
             if (!S_ISREG(st.st_mode)) { errno = EINVAL; goto done; }
             found[i] = 1;
         } else if (errno != ENOENT) goto done;
     }
-    if (!found[0] && !found[1]) { errno = ENOENT; goto done; }
+    if (!found[0] && !found[1] && !found[2]) { errno = ENOENT; goto done; }
     if (invalidate_report_locked(day)) goto done;
     result = 0;
-    for (size_t i = 0; i < 2; i++)
+    for (size_t i = 0; i < 3; i++)
         if (found[i] && unlinkat(directory, names[i], 0)) { result = -1; break; }
 done:;
     int saved_errno = errno;
@@ -270,19 +259,16 @@ static void remove_report_snapshot(const char *path)
         if (strlen(entry->d_name) != 8 || !digits(entry->d_name, 8)) continue;
         int day = openat(dirfd(root), entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (day < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.xlsx", entry->d_name);
-        (void)unlinkat(day, name, 0);
-        snprintf(name, sizeof(name), ".detections_%.8s.rows", entry->d_name);
+        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.txt", entry->d_name);
         (void)unlinkat(day, name, 0); close(day);
         (void)unlinkat(dirfd(root), entry->d_name, AT_REMOVEDIR);
     }
     closedir(root); (void)rmdir(path);
 }
 
-/* Caller enters/returns holding report_io_lock. Pin the open inode and its
- * complete flushed prefix under the lock, then copy outside it: journals only
- * append (failed writes roll back to at least this prefix), while clear unlinks
- * and Excel cache updates rename. The epoch check rejects a concurrent clear. */
+/* Caller enters/returns holding report_io_lock. Pin a complete flushed TXT
+ * prefix, then copy outside the lock. Appends cannot alter that prefix; a clear
+ * unlinks the inode. Reject a snapshot if deletion changed its generation. */
 static int snapshot_reports(const char *snapshot, unsigned *count, const char *selected,
                             unsigned long long *epoch)
 {
@@ -302,14 +288,9 @@ static int snapshot_reports(const char *snapshot, unsigned *count, const char *s
         if (selected && strncmp(selected, entry->d_name, 8)) continue;
         int day = openat(root_fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (day < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.xlsx", entry->d_name);
-        char rows[64]; snprintf(rows, sizeof(rows), ".detections_%.8s.rows", entry->d_name);
-        const char *source_name = rows;
-        int source = openat(day, rows, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        if (source < 0 && errno == ENOENT) {
-            source_name = name;
-            source = openat(day, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        }
+        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.txt", entry->d_name);
+        const char *source_name = name;
+        int source = openat(day, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
         close(day);
         if (source < 0) continue;
         struct stat st;
@@ -396,34 +377,6 @@ static int run_report_command(char *const command[], int output)
     return 0;
 }
 
-static int export_snapshot_reports(const char *snapshot)
-{
-    const char *script = getenv("GATEWAY_EXCEL_EXPORTER");
-    if (!script || !*script) script = "scripts/export_detection_excel.py";
-    char resolved_script[PATH_MAX];
-    if (!realpath(script, resolved_script)) { errno = EIO; return -1; }
-    DIR *root = opendir(snapshot);
-    if (!root) return -1;
-    int result = 0;
-    struct dirent *entry;
-    while ((entry = readdir(root))) {
-        if (strlen(entry->d_name) != 8 || !digits(entry->d_name, 8)) continue;
-        char input[PATH_MAX], output[PATH_MAX];
-        snprintf(input, sizeof(input), "%s/%.8s/.detections_%.8s.rows", snapshot, entry->d_name, entry->d_name);
-        snprintf(output, sizeof(output), "%s/%.8s/detections_%.8s.xlsx", snapshot, entry->d_name, entry->d_name);
-        if (access(input, F_OK)) continue; /* Existing Excel-only reports need no conversion. */
-        struct stat st;
-        if (stat(input, &st)) { result = -1; break; }
-        char *arguments[] = {"python3", resolved_script, "--input", input, "--output", output, NULL};
-        if (run_report_command(arguments, -1)) { result = -1; break; }
-        struct timespec times[] = {st.st_atim, st.st_mtim};
-        if (utimensat(AT_FDCWD, output, times, AT_SYMLINK_NOFOLLOW)) { result = -1; break; }
-        if (unlink(input)) { result = -1; break; }
-    }
-    int saved_errno = errno; closedir(root); errno = saved_errno;
-    return result;
-}
-
 static int snapshot_epoch_unchanged(unsigned long long epoch)
 {
     pthread_mutex_lock(&report_io_lock);
@@ -431,75 +384,6 @@ static int snapshot_epoch_unchanged(unsigned long long epoch)
     pthread_mutex_unlock(&report_io_lock);
     if (!unchanged) errno = EAGAIN;
     return unchanged;
-}
-
-/* Excel caches are published only after compression, under the same deletion
- * barrier as journal appends. Concurrent older snapshots cannot replace newer
- * caches. The inference writer never builds or rewrites an Excel ZIP. */
-static int publish_snapshot_reports(const char *snapshot, unsigned long long epoch)
-{
-    pthread_mutex_lock(&report_io_lock);
-    if (epoch != atomic_load(&report_epoch)) {
-        pthread_mutex_unlock(&report_io_lock); errno = EAGAIN; return -1;
-    }
-    DIR *stage = opendir(snapshot);
-    int root = report_root_open();
-    if (!stage || root < 0) {
-        int saved_errno = errno; if (stage) closedir(stage); if (root >= 0) close(root);
-        pthread_mutex_unlock(&report_io_lock); errno = saved_errno; return -1;
-    }
-    int result = 0;
-    static unsigned sequence;
-    struct dirent *entry;
-    while ((entry = readdir(stage))) {
-        if (strlen(entry->d_name) != 8 || !digits(entry->d_name, 8)) continue;
-        char name[64], relative[96], temporary[96];
-        snprintf(name, sizeof(name), "detections_%.8s.xlsx", entry->d_name);
-        snprintf(relative, sizeof(relative), "%.8s/%s", entry->d_name, name);
-        int source = openat(dirfd(stage), relative, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-        int day = openat(root, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-        if (source < 0 || day < 0) {
-            if (source >= 0) close(source);
-            if (day >= 0) close(day);
-            result = -1; break;
-        }
-        struct stat source_stat, cached;
-        if (fstat(source, &source_stat) || !S_ISREG(source_stat.st_mode)) {
-            close(source); close(day); errno = EINVAL; result = -1; break;
-        }
-        int has_cache = !fstatat(day, name, &cached, AT_SYMLINK_NOFOLLOW);
-        if (has_cache && !S_ISREG(cached.st_mode)) {
-            close(source); close(day); errno = EINVAL; result = -1; break;
-        }
-        if (has_cache && (cached.st_mtim.tv_sec > source_stat.st_mtim.tv_sec ||
-            (cached.st_mtim.tv_sec == source_stat.st_mtim.tv_sec && cached.st_mtim.tv_nsec > source_stat.st_mtim.tv_nsec))) {
-            close(source); close(day); continue;
-        }
-        snprintf(temporary, sizeof(temporary), ".detections_%.8s.export_%ld_%u.tmp", entry->d_name, (long)getpid(), sequence++);
-        int target = openat(day, temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
-        if (target < 0) { close(source); close(day); result = -1; break; }
-        char bytes[65536]; off_t remaining = source_stat.st_size;
-        while (remaining) {
-            size_t length = remaining > (off_t)sizeof(bytes) ? sizeof(bytes) : (size_t)remaining;
-            ssize_t n = read(source, bytes, length);
-            if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) { if (!n) errno = EIO; result = -1; break; }
-            if (write_all(target, bytes, (size_t)n)) { result = -1; break; }
-            remaining -= n;
-        }
-        struct timespec times[] = {source_stat.st_atim, source_stat.st_mtim};
-        if (!result && (futimens(target, times) || fsync(target))) result = -1;
-        int saved_errno = errno;
-        if (close(target) && !result) { result = -1; saved_errno = errno; }
-        close(source);
-        if (!result && renameat(day, temporary, day, name)) { result = -1; saved_errno = errno; }
-        if (result) (void)unlinkat(day, temporary, 0);
-        close(day); errno = saved_errno;
-        if (result) break;
-    }
-    int saved_errno = errno; closedir(stage); close(root);
-    pthread_mutex_unlock(&report_io_lock); errno = saved_errno;
-    return result;
 }
 
 static int report_failure(const char *operation, const char *phase, int error)
@@ -514,7 +398,7 @@ int yolo_events_export_report(const char *relative)
 {
     if (!yolo_report_rel_valid(relative)) { errno = EINVAL; return -1; }
     char snapshot[] = "/tmp/gateway-detections-snapshot-XXXXXX";
-    if (!mkdtemp(snapshot)) return report_failure("workbook", "temporary directory", errno);
+    if (!mkdtemp(snapshot)) return report_failure("TXT", "temporary directory", errno);
     unsigned count = 0; unsigned long long epoch;
     pthread_mutex_lock(&report_io_lock);
     int result = snapshot_reports(snapshot, &count, relative, &epoch);
@@ -522,14 +406,6 @@ int yolo_events_export_report(const char *relative)
     pthread_mutex_unlock(&report_io_lock);
     const char *phase = "snapshot";
     if (!result && !count) { result = -1; saved_errno = ENOENT; }
-    if (!result) {
-        phase = "Excel export";
-        if (export_snapshot_reports(snapshot)) { result = -1; saved_errno = errno; }
-    }
-    if (!result) {
-        phase = "cache publication";
-        if (publish_snapshot_reports(snapshot, epoch)) { result = -1; saved_errno = errno; }
-    }
     int output = -1;
     if (!result) {
         phase = "snapshot open";
@@ -538,7 +414,7 @@ int yolo_events_export_report(const char *relative)
         if (output < 0) saved_errno = errno;
     }
     remove_report_snapshot(snapshot);
-    if (output < 0) return report_failure("workbook", phase, saved_errno);
+    if (output < 0) return report_failure("TXT", phase, saved_errno);
     errno = saved_errno;
     return output;
 }
@@ -556,17 +432,11 @@ int yolo_events_pack_reports(unsigned *file_count)
     if (result || !count) {
         remove_report_snapshot(snapshot); return report_failure("archive", "snapshot", result ? saved_errno : ENOENT);
     }
-    if (export_snapshot_reports(snapshot)) {
-        saved_errno = errno; remove_report_snapshot(snapshot); return report_failure("archive", "Excel export", saved_errno);
-    }
-    if (publish_snapshot_reports(snapshot, epoch)) {
-        saved_errno = errno; remove_report_snapshot(snapshot); return report_failure("archive", "cache publication", saved_errno);
-    }
     char output_path[] = "/tmp/gateway-detections-archive-XXXXXX";
     int output = mkstemp(output_path);
     if (output < 0) { saved_errno = errno; remove_report_snapshot(snapshot); return report_failure("archive", "temporary file", saved_errno); }
     unlink(output_path);
-    char *arguments[] = {"tar", "-czf", "-", "-C", snapshot, ".", NULL};
+    char *arguments[] = {"tar", "-I", "gzip -1", "-cf", "-", "-C", snapshot, ".", NULL};
     result = run_report_command(arguments, output);
     const char *phase = "compression";
     if (!result && !snapshot_epoch_unchanged(epoch)) { phase = "generation check"; result = -1; }
@@ -604,11 +474,13 @@ int yolo_events_clear_reports(unsigned *deleted)
         if (strlen(entry->d_name) != 8 || !digits(entry->d_name, 8)) continue;
         int day = openat(root_fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
         if (day < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "detections_%.8s.xlsx", entry->d_name);
-        char rows[64]; snprintf(rows, sizeof(rows), ".detections_%.8s.rows", entry->d_name);
-        const char *names[] = {name, rows};
+        char name[64], rows[64], workbook[64];
+        snprintf(name, sizeof(name), "detections_%.8s.txt", entry->d_name);
+        snprintf(rows, sizeof(rows), ".detections_%.8s.rows", entry->d_name);
+        snprintf(workbook, sizeof(workbook), "detections_%.8s.xlsx", entry->d_name);
+        const char *names[] = {name, rows, workbook};
         int found = 0;
-        for (size_t i = 0; i < 2; i++) {
+        for (size_t i = 0; i < 3; i++) {
             struct stat st;
             if (!fstatat(day, names[i], &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode)) {
                 if (unlinkat(day, names[i], 0)) { result = -1; break; }

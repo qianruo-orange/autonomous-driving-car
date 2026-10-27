@@ -77,6 +77,14 @@ do_install() {
         return 1
     fi
 
+    echo "[MIGRATE] retained detection journals to daily TXT"
+    if ! nice -n 10 python3 "$PROJECT_DIR/scripts/migrate_detection_txt.py" \
+        --root "$DEPLOY_DIR/recordings/detections"; then
+        echo "[ERROR] TXT migration failed; retaining journals and restarting the previous service"
+        systemctl start "$SERVICE_NAME" 2>/dev/null || true
+        return 1
+    fi
+
     # 清理旧 WebRTC 边车（mediamtx + fifo pusher）：直播已改回 fMP4/MSE 直供，
     # 不再需要外部 RTSP 中转。从旧版本升级时留着会白占 VPU/内存并抢 8554/8889 端口
     for u in mediamtx rockchip-smart-gateway-webrtc; do
@@ -97,9 +105,9 @@ do_install() {
     rm -rf "$DEPLOY_DIR/html"
     cp -r "$PROJECT_DIR/html" "$DEPLOY_DIR/html"
 
-    echo "[INSTALL] Excel report exporter"
+    echo "[INSTALL] TXT migration utility"
     mkdir -p "$DEPLOY_DIR/scripts"
-    cp "$PROJECT_DIR/scripts/export_detection_excel.py" "$DEPLOY_DIR/scripts/export_detection_excel.py"
+    cp "$PROJECT_DIR/scripts/migrate_detection_txt.py" "$DEPLOY_DIR/scripts/migrate_detection_txt.py"
 
     echo "[INSTALL] logs/"
     mkdir -p "$DEPLOY_DIR/logs"

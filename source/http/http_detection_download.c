@@ -100,13 +100,13 @@ static void *detection_download_worker(void *argument)
     (void)nice(10);
     int flags = fcntl(job->fd, F_GETFL);
     if (flags < 0 || fcntl(job->fd, F_SETFL, flags | O_NONBLOCK) < 0) goto done;
-    /* Accept a small bounded queue while only one CPU-intensive export runs.
-       Waiting here leaves the HTTP reactor and video threads available. */
-    pthread_mutex_lock(&detection_export_lock);
+    /* Serialize compression only. A single TXT snapshot must not wait behind
+       a large archive while the HTTP reactor and video remain available. */
+    if (job->archive) pthread_mutex_lock(&detection_export_lock);
     int source = job->archive ? yolo_events_pack_reports(NULL) :
         yolo_events_export_report(job->relative);
     int export_error = errno;
-    pthread_mutex_unlock(&detection_export_lock);
+    if (job->archive) pthread_mutex_unlock(&detection_export_lock);
     uint64_t started = download_now_ms();
     download_clock_t clock = {.started = started, .progress = started};
     if (source < 0) {
@@ -121,7 +121,7 @@ static void *detection_download_worker(void *argument)
     }
     const char *filename = job->archive ? "detections_pack.tar.gz" : job->relative + 9;
     const char *mime = job->archive ? "application/gzip" :
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        "text/plain; charset=utf-8";
     char header[512];
     int header_length = snprintf(header, sizeof(header),
         "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %" PRIuMAX "\r\n"

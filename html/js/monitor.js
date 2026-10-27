@@ -121,8 +121,9 @@
   var mseGeneration = 0, mseCancelUpdate = null, mseLastTrim = 0;
   var msePrimed = false, mseClockAgeMs = null, mseClockAt = 0;
   var chromePlayback = typeof navigator !== 'undefined' && /(?:Chrome|Chromium)\//.test(navigator.userAgent || '');
-  var mseTargetLead = chromePlayback ? 0.04 : 0.2;
-  var mseMaxLead = chromePlayback ? 0.12 : 0.7;
+  var mseTargetLead = chromePlayback ? 0.08 : 0.2;
+  var mseMaxLead = chromePlayback ? 0.25 : 0.7;
+  var mseOverLeadSince = null;
   var mseFrameCallback = null, msePresentedMediaTime = null, mseDecodeMs = null;
   var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0, lastError: '' };
 
@@ -141,6 +142,7 @@
       vid.cancelVideoFrameCallback(mseFrameCallback);
     mseFrameCallback = null;
     msePresentedMediaTime = null;
+    mseOverLeadSince = null;
     /* Invalidate callbacks before aborting the old session. Its rejected read
        must never stop the replacement stream. */
     mseGeneration++;
@@ -219,26 +221,40 @@
   }
 
   function mseCatchUp() {
-    if (!mseRunning || !mseSb || document.hidden) return;
+    if (!mseRunning || !mseSb) return;
     var vid = document.getElementById('stream_video');
-    if (!vid || vid.paused || vid.seeking) return;
+    if (!vid || document.hidden || vid.paused || vid.seeking) {
+      mseOverLeadSince = null;
+      if (vid) vid.playbackRate = 1;
+      return;
+    }
     try {
       var b = mseSb.buffered;
-      if (!b.length) return;
+      if (!b.length) { mseOverLeadSince = null; return; }
       var end = b.end(b.length - 1), start = b.start(b.length - 1);
       var ahead = end - vid.currentTime;
+      var now = Date.now();
+      if (chromePlayback && ahead > mseMaxLead) {
+        if (mseOverLeadSince === null) mseOverLeadSince = now;
+      } else mseOverLeadSince = null;
       /* Prime close to the live edge after enough media arrives. A small,
-         bounded buffer absorbs frame jitter without retaining a historical GOP. */
-      var primeSpan = chromePlayback ? 0.08 : 0.2;
+         bounded buffer absorbs frame jitter without retaining a historical GOP.
+         Chrome receives frame batches on Wi-Fi: seeking on each 120 ms burst
+         discarded valid frames. Drain brief bursts at a gentle rate; seek only
+         after sustained backlog, or immediately for a large stale buffer. */
+      var primeSpan = chromePlayback ? 0.12 : 0.2;
+      var overdue = chromePlayback ? ahead > 0.75 ||
+        (mseOverLeadSince !== null && now - mseOverLeadSince >= 400) : ahead > mseMaxLead;
       if ((!msePrimed && end - start >= primeSpan && ahead > mseTargetLead + 0.03) ||
-          ahead > mseMaxLead || vid.currentTime < start) {
+          overdue || vid.currentTime < start) {
         vid.currentTime = Math.max(start, end - mseTargetLead);
         mseDiag.catchups++;
         msePrimed = true;
+        mseOverLeadSince = null;
         vid.playbackRate = 1;
-      } else if (ahead > mseTargetLead + (chromePlayback ? 0.03 : 0.1)) {
-        vid.playbackRate = 1.05;
-      } else if (ahead < mseTargetLead + (chromePlayback ? 0.01 : 0.02)) {
+      } else if (ahead > mseTargetLead + (chromePlayback ? 0.04 : 0.1)) {
+        vid.playbackRate = chromePlayback && ahead <= mseMaxLead ? 1.03 : 1.05;
+      } else if (ahead < mseTargetLead + 0.02) {
         vid.playbackRate = 1;
       }
     } catch(e) {}
@@ -266,6 +282,7 @@
     mseLastData = Date.now();
     mseLastTrim = Date.now();
     msePrimed = false;
+    mseOverLeadSince = null;
     mseClockAgeMs = null;
     mseClockAt = 0;
     msePresentedMediaTime = null;
@@ -373,7 +390,8 @@
   };
 
   function mseWatchdog() {
-    if (!mseRunning || document.hidden) return;
+    if (!mseRunning) return;
+    if (document.hidden) { mseCatchUp(); return; }
     /* Include connection setup: a stalled fetch/sourceopen has no buffer yet. */
     if (Date.now() - mseLastData > 5000) {
       mseFail(mseGeneration, new Error('No video data for 5 seconds'));
@@ -389,6 +407,16 @@
         mseFail(mseGeneration, new Error('Video decoder error ' + playerVideo.error.code));
     });
     playerVideo.addEventListener('seeked', function() { mseCatchUp(); });
+    function resetCatchUp() {
+      mseOverLeadSince = null;
+      if (mseRunning) playerVideo.playbackRate = 1;
+    }
+    playerVideo.addEventListener('pause', resetCatchUp);
+    playerVideo.addEventListener('seeking', resetCatchUp);
+    if (document.addEventListener)
+      document.addEventListener('visibilitychange', function() {
+        if (document.hidden) resetCatchUp();
+      });
   }
 
   function barColor(p) { return p < 60 ? 'green' : p < 85 ? 'yellow' : 'red'; }

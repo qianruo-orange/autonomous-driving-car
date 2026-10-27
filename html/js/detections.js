@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 (function () {
   var reports = document.getElementById('rows_detection_reports');
-  var panel = document.getElementById('detections_panel');
   var packButton = document.getElementById('pack_detections_btn');
   var clearButton = document.getElementById('clear_detections_btn');
   var busy = false;
@@ -28,7 +27,7 @@
   }
   function reportBusy(response) {
     if (response.status!==409 && response.status!==503) return false;
-    window.fileToast('识别结果正在更新或导出，请稍后重试',false);
+    window.fileToast('识别结果正在更新，请稍后重试',false);
     return true;
   }
   function message(key) {
@@ -57,7 +56,7 @@
     cell.appendChild(link);
   }
   async function load() {
-    if (document.hidden || panel.style.display === 'none') return;
+    if (document.hidden) return;
     if (busy) { refreshPending = true; return; }
     busy = true;
     try {
@@ -135,7 +134,7 @@
       if (error.message !== 'auth cancelled') window.fileToast('清空识别结果失败，请重试', false);
     } finally { setBulkBusy(false); }
   });
-  document.addEventListener('filestabchange', function (event) { if (event.detail.tab === 'detections') load(); });
+  load();
   var timer = setInterval(load, 5000);
   window.addEventListener('pagehide', function () { clearInterval(timer); });
 })();

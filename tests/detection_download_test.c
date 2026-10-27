@@ -7,12 +7,13 @@
 static pthread_mutex_t fixture_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fixture_changed = PTHREAD_COND_INITIALIZER;
 static int fixture_block, fixture_entered, fixture_release, fixture_error, fixture_archive;
+static int fixture_archive_only;
 static size_t fixture_size;
 static unsigned callbacks;
 
 int yolo_report_rel_valid(const char *relative)
 {
-    return relative && !strcmp(relative, "20261027/detections_20261027.xlsx");
+    return relative && !strcmp(relative, "20261027/detections_20261027.txt");
 }
 
 static int fixture_export(int archive)
@@ -20,7 +21,8 @@ static int fixture_export(int archive)
     pthread_mutex_lock(&fixture_lock);
     fixture_entered = 1; fixture_archive = archive;
     pthread_cond_broadcast(&fixture_changed);
-    while (fixture_block && !fixture_release) pthread_cond_wait(&fixture_changed, &fixture_lock);
+    while (fixture_block && (!fixture_archive_only || archive) && !fixture_release)
+        pthread_cond_wait(&fixture_changed, &fixture_lock);
     int failure = fixture_error;
     size_t length = fixture_size;
     pthread_mutex_unlock(&fixture_lock);
@@ -83,6 +85,7 @@ static void reset_fixture(size_t size, int error, int block)
     pthread_mutex_lock(&fixture_lock);
     fixture_size = size; fixture_error = error; fixture_block = block;
     fixture_entered = fixture_release = fixture_archive = 0;
+    fixture_archive_only = 0;
     pthread_mutex_unlock(&fixture_lock);
 }
 
@@ -112,7 +115,7 @@ static void check_success(int archive, size_t body_size, int blocking_export)
     unsigned expected = callbacks + 1;
     uint64_t before = download_now_ms();
     assert(!http_detection_download_start(pair[0], archive ? "/api/detections/reports/pack" :
-        "/detectionfile/20261027/detections_20261027.xlsx", closed));
+        "/detectionfile/20261027/detections_20261027.txt", closed));
     /* Export waits on a condition; returning here proves the caller is free. */
     assert(download_now_ms() - before < 500u);
     wait_entered();
@@ -121,7 +124,7 @@ static void check_success(int archive, size_t body_size, int blocking_export)
         for (unsigned i=0; i<DETECTION_DOWNLOAD_MAX-1u; ++i) {
             assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, queued[i]));
             assert(!http_detection_download_start(queued[i][0], archive ? "/api/detections/reports/pack" :
-                "/detectionfile/20261027/detections_20261027.xlsx", closed));
+                "/detectionfile/20261027/detections_20261027.txt", closed));
             expected++;
         }
         int second[2]; assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, second));
@@ -135,8 +138,8 @@ static void check_success(int archive, size_t body_size, int blocking_export)
     size_t length;
     char *response = read_response(pair[1], &length);
     assert(strstr(response, "HTTP/1.1 200 OK\r\n"));
-    assert(strstr(response, archive ? "application/gzip" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
-    assert(strstr(response, archive ? "filename=\"detections_pack.tar.gz\"" : "filename=\"detections_20261027.xlsx\""));
+    assert(strstr(response, archive ? "application/gzip" : "text/plain; charset=utf-8"));
+    assert(strstr(response, archive ? "filename=\"detections_pack.tar.gz\"" : "filename=\"detections_20261027.txt\""));
     char *body = strstr(response, "\r\n\r\n"); assert(body); body += 4;
     assert(length - (size_t)(body - response) == body_size);
     for (size_t i = 0; i < body_size; i++) assert(body[i] == 'A' + i % 26);
@@ -150,15 +153,40 @@ static void check_success(int archive, size_t body_size, int blocking_export)
     assert(fixture_archive == archive);
 }
 
+static void check_txt_bypasses_archive(void)
+{
+    reset_fixture(64, 0, 1);
+    fixture_archive_only = 1;
+    int package[2], text[2];
+    assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, package));
+    assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, text));
+    unsigned expected = callbacks + 2;
+    assert(!http_detection_download_start(package[0], "/api/detections/reports/pack", closed));
+    wait_entered(); /* Compression remains blocked until after the TXT response. */
+    assert(!http_detection_download_start(text[0],
+        "/detectionfile/20261027/detections_20261027.txt", closed));
+    size_t length;
+    char *response = read_response(text[1], &length);
+    assert(length && strstr(response, "HTTP/1.1 200 OK\r\n"));
+    free(response); close(text[1]);
+    pthread_mutex_lock(&fixture_lock);
+    fixture_release = 1; pthread_cond_broadcast(&fixture_changed);
+    pthread_mutex_unlock(&fixture_lock);
+    response = read_response(package[1], &length);
+    assert(length && strstr(response, "HTTP/1.1 200 OK\r\n"));
+    free(response); close(package[1]); wait_closed(expected);
+}
+
 int main(void)
 {
     int pair[2]; assert(!socketpair(AF_UNIX, SOCK_STREAM, 0, pair));
     assert(http_detection_download_start(pair[0], "/detectionfile/../../secret", closed) < 0 && errno == EINVAL);
-    assert(http_detection_download_start(pair[0], "/detectionfile/20261027/detections_20261027.txt", closed) < 0 && errno == EINVAL);
+    assert(http_detection_download_start(pair[0], "/detectionfile/20261027/detections_20261027.xlsx", closed) < 0 && errno == EINVAL);
     assert(fcntl(pair[0], F_GETFD) >= 0); close(pair[0]); close(pair[1]);
     check_success(0, 64, 1);
     check_success(1, 2u * 1024u * 1024u, 0); /* Repeated partial socket writes. */
     check_success(0, 0, 0);
+    check_txt_bypasses_archive();
 
     const int failures[] = {ENOENT, EINVAL, EAGAIN, EFBIG, EIO};
     const char *statuses[] = {"404 Not Found", "400 Bad Request", "409 Conflict", "413 Payload Too Large", "500 Internal Server Error"};
@@ -188,6 +216,6 @@ int main(void)
     assert(!http_detection_download_start(pair[0], "/api/detections/reports/pack", closed));
     wait_closed(expected); close(pair[1]);
     check_success(0, 128, 0); /* Timeout and disconnect both release concurrency. */
-    puts("PASS: asynchronous Excel export, bounded send, partial writes, status mapping, disconnect and callback ownership");
+    puts("PASS: asynchronous TXT download, bounded send, partial writes, status mapping, disconnect and callback ownership");
     return 0;
 }
