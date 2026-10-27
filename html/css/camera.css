@@ -4,6 +4,7 @@
 .camera-page .top-bar{gap:12px;flex-wrap:wrap}
 .camera-page .tb-right{flex-wrap:wrap}
 .camera-fields{display:grid;gap:8px;margin:16px 0}
+.can-grid #camera_form{align-self:start}
 .camera-fields .row{margin:0}
 .camera-fields .row label{width:120px;flex:none}
 .camera-fields .row select{max-width:none;min-width:0}

@@ -62,6 +62,7 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
     JSON_ADD(json, off, ",\"video_width\":%d,\"video_height\":%d,\"video_fps\":%d",
              cfg->video_width, cfg->video_height, cfg->video_fps);
     JSON_ADD(json, off, ",\"video_codec\":\"%s\"", cfg->video_codec);
+    JSON_ADD(json, off, ",\"video_decoder\":\"%s\"", cfg->video_decoder[0] ? cfg->video_decoder : "software");
     /* AI 检测配置（必要流程：推理不可关停，前端默认展示画框流） */
     JSON_ADD(json, off, ",\"ai_model\":\"%s\",\"ai_names\":\"%s\",\"ai_input_size\":%d,"
         "\"ai_conf\":%.2f,\"ai_nms\":%.2f,\"ai_interval_ms\":0,\"ai_threads\":%d,\"ai_threads_auto\":true",
@@ -251,10 +252,23 @@ static void apply_net(app_ctx_t *app, const http_form_field_t *fields, int count
 #define APPLY_VIDEO_CAPTURE  0x1   /* 采集参数变化：重启视频流 */
 #define APPLY_VIDEO_ENCODER  0x2   /* 编码参数变化：滚动录制会话（编码器随会话创建） */
 
+/* This build has no hardware capture decoder. Reject unsupported requests
+   before applying any fields, including a mixed request with other changes. */
+static int video_decoder_fields_valid(const http_form_field_t *fields, int count)
+{
+    for (int i = 0; i < count; i++)
+        if (strcmp(fields[i].key, "video_decoder") == 0 &&
+            strcmp(fields[i].val, "software") != 0) return 0;
+    return 1;
+}
+
 static int apply_video(app_ctx_t *app, const http_form_field_t *fields, int count)
 {
     struct app_config_t *cfg = app->cfg;
     int changed = 0;
+
+    const char *decoder = http_form_find(fields, count, "video_decoder");
+    if (decoder) safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), decoder);
 
     const char *v = http_form_find(fields, count, "video_device");
     if (v && strcmp(v, cfg->video_device) != 0) {
@@ -376,6 +390,13 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
 
     /* target 指定只应用并重启哪个模块；缺省为全量（向后兼容） */
     const char *target = http_form_find(fields, count, "target");
+
+    if ((!target || strcmp(target, "all") == 0 || strcmp(target, "video") == 0) &&
+        !video_decoder_fields_valid(fields, count)) {
+        http_err(fd, 400, "Bad Request", "Only software video decoding is available");
+        pthread_mutex_unlock(&app->can_mutex);
+        return;
+    }
 
     if (!target || strcmp(target, "all") == 0 || strcmp(target, "can") == 0)
         apply_can(app, fields, count);

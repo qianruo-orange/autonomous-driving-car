@@ -96,6 +96,18 @@ static void video_focus_init(video_ctx_t *vs)
     }
 }
 
+/* Keep the negotiated capture cadence in low light. Automatic exposure and
+ * autofocus remain enabled; only permission to extend the frame interval is
+ * disabled. UVC exposes this as "exposure_dynamic_framerate". */
+static void video_capture_timing_init(video_ctx_t *vs)
+{
+    int writable = 0;
+    if (!video_focus_query(vs->fd, V4L2_CID_EXPOSURE_AUTO_PRIORITY, &writable) || !writable) return;
+    struct v4l2_control priority = {.id = V4L2_CID_EXPOSURE_AUTO_PRIORITY, .value = 0};
+    if (ioctl(vs->fd, VIDIOC_S_CTRL, &priority) < 0)
+        LOG_ERROR("video_stream: unable to disable dynamic frame intervals: %s", strerror(errno));
+}
+
 /* Measured on the UGREEN camera: both G_CTRL calls take about 0.18 ms.
  * Keep them outside the frame ring lock. Their completion timestamp explicitly
  * distinguishes this lens sample from the sensor's earlier exposure timestamp. */
@@ -214,6 +226,7 @@ static int init_video_device(video_ctx_t *vs, int verbose)
     }
 
     video_focus_init(vs);
+    video_capture_timing_init(vs);
 
     struct v4l2_requestbuffers req = {0};
     /* 8 个驱动缓冲：零拷贝延迟 QBUF 模式下，缓冲占用 = 推理解码在途 +

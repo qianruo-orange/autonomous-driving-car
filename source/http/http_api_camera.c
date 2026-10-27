@@ -86,7 +86,8 @@ static void camera_send_status(app_ctx_t *app, int client, int device)
     char json[768];
     int n = snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"focus_auto\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},"
-        "\"focus_absolute\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},\"hardware_encoder_available\":%s}",
+        "\"focus_absolute\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},\"hardware_encoder_available\":%s,"
+        "\"software_decoder_available\":true,\"hardware_decoder_available\":false}",
         app->cfg->video_device,
         automatic.supported ? "true" : "false", automatic.value, automatic.min, automatic.max, automatic.step,
         automatic.read_only ? "true" : "false", automatic.active ? "true" : "false",

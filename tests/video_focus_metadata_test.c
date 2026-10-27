@@ -8,7 +8,7 @@ static int video_test_ioctl(int fd, unsigned long request, ...);
 #include "video/video_stream.c"
 #undef ioctl
 
-static int automatic_value, writes, gets, unsupported, fail_position;
+static int automatic_value, writes, gets, unsupported, fail_position, timing_writes;
 static int video_test_ioctl(int fd, unsigned long request, ...)
 {
     (void)fd;
@@ -32,7 +32,13 @@ static int video_test_ioctl(int fd, unsigned long request, ...)
         }
         return 0;
     }
-    assert(request == VIDIOC_S_CTRL && control->id == V4L2_CID_FOCUS_AUTO);
+    assert(request == VIDIOC_S_CTRL);
+    if (control->id == V4L2_CID_EXPOSURE_AUTO_PRIORITY) {
+        assert(control->value == 0);
+        timing_writes++;
+        return 0;
+    }
+    assert(control->id == V4L2_CID_FOCUS_AUTO);
     assert(control->value == 1); /* The capture path must never request manual focus. */
     writes++;
     automatic_value = control->value;
@@ -49,6 +55,8 @@ int main(void)
     video_focus_init(&context);
     assert(writes == 1 && automatic_value == 1);
     assert(context.focus_auto_supported && context.focus_absolute_supported);
+    video_capture_timing_init(&context);
+    assert(timing_writes == 1 && automatic_value == 1);
     video_focus_sample_t sample;
     video_focus_sample(&context, &sample);
     assert(sample.valid && sample.position == 525 && sample.autofocus == 1);
@@ -64,6 +72,8 @@ int main(void)
     assert(!sample.valid && sample.position == 0 && sample.autofocus == 1);
     unsupported = 1;
     video_focus_init(&context);
+    video_capture_timing_init(&context);
+    assert(timing_writes == 1);
     int previous_gets = gets;
     video_focus_sample(&context, &sample);
     assert(!sample.valid && sample.autofocus == -1 && gets == previous_gets);

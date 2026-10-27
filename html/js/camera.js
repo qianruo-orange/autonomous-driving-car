@@ -5,10 +5,9 @@
   var form = document.getElementById('camera_form');
   var device = document.getElementById('camera_device');
   var codec = document.getElementById('camera_codec');
-  var size = document.getElementById('camera_size');
-  var fps = document.getElementById('camera_fps');
+  var decoder = document.getElementById('camera_decoder');
+  var mode = document.getElementById('camera_mode');
   var save = document.getElementById('camera_save');
-  var refresh = document.getElementById('camera_refresh');
   var status = document.getElementById('camera_status');
   var sizes = [];
   var generation = 0;
@@ -17,7 +16,7 @@
   var currentFps = 30;
 
   function message(key, error, values) {
-    status.className = 'camera-status' + (error ? ' err' : '');
+    status.className = 'card-status' + (error ? ' err' : '');
     setI18nText(status, key, values);
   }
   function option(select, value, label) {
@@ -28,9 +27,8 @@
     return item;
   }
   function updateDisabled() {
-    device.disabled = codec.disabled = size.disabled = fps.disabled = busy;
-    refresh.disabled = busy;
-    save.disabled = busy || !size.value || !fps.value ||
+    device.disabled = codec.disabled = decoder.disabled = mode.disabled = busy;
+    save.disabled = busy || !mode.value ||
       (codec.value === 'hardware' && hardwareAvailable !== true);
   }
   function setBusy(value) { busy = value; updateDisabled(); }
@@ -38,13 +36,6 @@
     var response = await fetch(url, {cache: 'no-store'});
     if (!response.ok) throw new Error('HTTP ' + response.status);
     return response.json();
-  }
-  function rebuildFps(preferred) {
-    fps.replaceChildren();
-    var selected = sizes.find(function (item) { return item.w + 'x' + item.h === size.value; });
-    if (selected) selected.fps.forEach(function (rate) { option(fps, rate, String(rate)); });
-    if (selected && selected.fps.indexOf(Number(preferred)) >= 0) fps.value = String(preferred);
-    updateDisabled();
   }
 
   /* Capture always prefers MJPEG; use that format's rates when it is available.
@@ -70,8 +61,7 @@
   async function loadCapabilities(preferredSize, preferredFps) {
     var version = ++generation;
     setBusy(true);
-    size.replaceChildren();
-    fps.replaceChildren();
+    mode.replaceChildren();
     try {
       if (!/^\/dev\/video\d+$/.test(device.value)) throw new Error('No capture device');
       var responses = await Promise.all([
@@ -80,10 +70,16 @@
       ]);
       if (version !== generation) return;
       sizes = intersectCaps(responses[0], responses[1]);
-      sizes.forEach(function (item) { option(size, item.w + 'x' + item.h, item.w + ' × ' + item.h); });
-      if (sizes.some(function (item) { return item.w + 'x' + item.h === preferredSize; })) size.value = preferredSize;
-      else if (sizes.some(function (item) { return item.w === 1280 && item.h === 720; })) size.value = '1280x720';
-      rebuildFps(preferredFps);
+      sizes.forEach(function (item) {
+        item.fps.forEach(function (rate) {
+          option(mode, item.w + 'x' + item.h + '@' + rate, item.w + ' × ' + item.h + ' · ' + rate + ' FPS');
+        });
+      });
+      var choices = Array.from(mode.options).map(function (item) { return item.value; });
+      var preferred = preferredSize + '@' + preferredFps;
+      mode.value = choices.indexOf(preferred) >= 0 ? preferred :
+        choices.find(function (item) { return item.indexOf(preferredSize + '@') === 0; }) ||
+        choices.find(function (item) { return item.indexOf('1280x720@') === 0; }) || choices[0] || '';
       message(sizes.length ? '' : '相机与编码器没有共同支持的采集模式', !sizes.length);
     } catch (error) {
       if (version === generation) { sizes = []; message('无法读取相机能力，请重试', true); }
@@ -109,35 +105,36 @@
       device.value = cfg.video_device || (devices[0] && devices[0].path) || '';
       hardwareAvailable = responses[2] && typeof responses[2].hardware_encoder_available === 'boolean' ?
         responses[2].hardware_encoder_available : null;
-      var focus = responses[2] && responses[2].focus_absolute;
-      setI18nText(document.getElementById('camera_focus_status'), focus && focus.supported ?
-        '镜头位置：{value}（设备原始值）' : '相机调焦不可用', {value: focus ? focus.value : ''});
       codec.querySelector('option[value="hardware"]').disabled = hardwareAvailable !== true;
       codec.value = cfg.video_codec === 'hardware' ? 'hardware' : 'software';
-      setI18nText(document.getElementById('camera_encoder_hint'), hardwareAvailable === true ? '' :
-        hardwareAvailable === false ? '当前系统没有可用的硬件编码器。' : '无法确认硬件编码器状态。');
+      var decoderAvailable = responses[2] && responses[2].hardware_decoder_available === true;
+      decoder.querySelector('option[value="hardware"]').disabled = !decoderAvailable;
+      decoder.value = cfg.video_decoder === 'hardware' && decoderAvailable ? 'hardware' : 'software';
       currentFps = Number(cfg.video_fps) || 30;
       await loadCapabilities(Number(cfg.video_width) + 'x' + Number(cfg.video_height), currentFps);
     } catch (error) { message('无法读取相机配置，请重试', true); }
     finally { setBusy(false); }
   }
-  device.addEventListener('change', function () { loadCapabilities(size.value, Number(fps.value) || currentFps); });
-  codec.addEventListener('change', function () { loadCapabilities(size.value, Number(fps.value) || currentFps); });
-  size.addEventListener('change', function () { rebuildFps(Number(fps.value) || currentFps); });
-  refresh.addEventListener('click', loadConfig);
+  function modeChanged() {
+    var parts = mode.value.split('@');
+    loadCapabilities(parts[0] || '1280x720', Number(parts[1]) || currentFps);
+  }
+  device.addEventListener('change', modeChanged);
+  codec.addEventListener('change', modeChanged);
   form.addEventListener('submit', async function (event) {
     event.preventDefault();
     if (save.disabled) return;
-    var dimensions = size.value.split('x');
+    var parts = mode.value.split('@');
+    var dimensions = parts[0].split('x');
     setBusy(true);
     message('正在保存相机配置…');
     try {
       var response = await authFetch('/api/config', {method: 'POST', body: new URLSearchParams({
         target: 'video', video_device: device.value, video_codec: codec.value,
-        video_width: dimensions[0], video_height: dimensions[1], video_fps: fps.value
+        video_decoder: decoder.value, video_width: dimensions[0], video_height: dimensions[1], video_fps: parts[1]
       })});
       if (!response.ok) { message('请求失败 ({status})', true, {status: response.status}); return; }
-      currentFps = Number(fps.value);
+      currentFps = Number(parts[1]);
       message('✓ 已保存');
       document.dispatchEvent(new CustomEvent('camerachange'));
     } catch (error) { message('请求失败', true); }

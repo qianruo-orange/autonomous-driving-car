@@ -182,3 +182,10 @@ target_include_directories(yolo_events_test PRIVATE ${PROJECT_SOURCE_DIR}/source
 target_compile_options(yolo_events_test PRIVATE -UNDEBUG)
 target_link_libraries(yolo_events_test PRIVATE pthread m)
 add_test(NAME yolo_events COMMAND yolo_events_test)
+
+add_executable(decoder_config_test tests/decoder_config_test.c source/http/http_util.c)
+target_include_directories(decoder_config_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(decoder_config_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+set_property(TARGET decoder_config_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+target_link_libraries(decoder_config_test PRIVATE pthread)
+add_test(NAME decoder_config COMMAND decoder_config_test)

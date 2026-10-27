@@ -70,6 +70,7 @@ struct app_config_t {
     int           video_height;
     int           video_fps;       /* expected frame rate; 0 = driver default */
     char          video_codec[16]; /* encode backend: "software" (libx264, default) or "hardware" (RKMPP/rkVENC); switchable */
+    char          video_decoder[16]; /* Current capture decode implementation: "software" (libjpeg-turbo). */
 
     /* ---- RKNN AI 检测（YOLO26，必要流程）---- */
     char          ai_model[256];    /* .rknn 模型文件路径 */
