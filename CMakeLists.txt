@@ -210,3 +210,10 @@ target_include_directories(detection_download_test PRIVATE ${PROJECT_SOURCE_DIR}
 target_compile_options(detection_download_test PRIVATE -UNDEBUG)
 target_link_libraries(detection_download_test PRIVATE pthread)
 add_test(NAME detection_download COMMAND detection_download_test)
+
+add_executable(cpufreq_test tests/cpufreq_test.c source/http/http_util.c)
+target_include_directories(cpufreq_test PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(cpufreq_test PRIVATE -UNDEBUG -ffunction-sections -fdata-sections)
+set_property(TARGET cpufreq_test APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+target_link_libraries(cpufreq_test PRIVATE pthread)
+add_test(NAME cpufreq COMMAND cpufreq_test)

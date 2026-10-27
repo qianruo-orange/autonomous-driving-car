@@ -96,3 +96,4 @@ Thumbs.db
 # 运行时/设备专属配置与生成物（不应入库，避免每次构建/部署产生噪音）
 config/config.txt
 include/core/version.h
+config/cpu_freq.conf

@@ -996,6 +996,7 @@ void *http_server_task(void *arg)
 int http_server_start(void *arg)
 {
     (void)arg;
+    http_cpufreq_restore();
     /* HTTP 端口固定为 80（见 http.h 的 HTTP_DEFAULT_PORT） */
     LOG_INFO("HTTP port = %d", HTTP_DEFAULT_PORT);
     return 0;

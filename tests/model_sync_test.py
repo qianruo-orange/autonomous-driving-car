@@ -143,6 +143,13 @@ class ModelSyncTests(unittest.TestCase):
             self.assertIn("video_fps 25\nai_conf 70\n", contents)
             self.assertIn("ai_model " + self.relative.as_posix() + "\n", contents)
 
+    def test_install_preserves_device_cpu_frequency_settings(self):
+        self.establish()
+        self.put(self.project, "config/cpu_freq.conf", b"stale development settings")
+        saved = self.put(self.deployment, "config/cpu_freq.conf", b"device policy settings")
+        sync.install_config(self.project, self.deployment, self.platform)
+        self.assertEqual(saved.read_bytes(), b"device policy settings")
+
     def test_upload_after_preflight_is_rechecked_before_install(self):
         self.establish()
         self.put(self.deployment, self.relative, self.c)
