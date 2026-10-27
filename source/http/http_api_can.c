@@ -112,12 +112,24 @@ void http_can_toggle(app_ctx_t *app, int fd, const char *body)
 
     /* 串行化接口状态操作与 CAN 配置热更新 / CAN 重连 */
     pthread_mutex_lock(&app->can_mutex);
+    if (!app->cfg->args.can_enabled) {
+        pthread_mutex_unlock(&app->can_mutex);
+        rtnl_link_put(ln);
+        nl_socket_free(sk);
+        http_err(fd, 409, "Conflict", "Enable the CAN feature first");
+        return;
+    }
     if (strcmp(action, "up") == 0)
         rtnl_link_set_flags(ln, IFF_UP);
     else
         rtnl_link_set_flags(ln, 0);
 
     int rc = rtnl_link_change(sk, ln, ln, 0);
+    if (rc >= 0) {
+        int idx = can_iface_index(app->can->ifaces, app->can->count, ifname);
+        if (idx >= 0) app->can->ifaces[idx].up = !strcmp(action, "up");
+        config_save(app);
+    }
     pthread_mutex_unlock(&app->can_mutex);
     rtnl_link_put(ln);
     nl_socket_free(sk);
@@ -354,6 +366,10 @@ void http_can_send(app_ctx_t *app, int fd, const char *method, const char *uri, 
 
     int rc = can_tx_frame(app, ifname, &frame);
     if (rc < 0) {
+        if (errno == EACCES || errno == ENETDOWN) {
+            http_err(fd, 409, "Conflict", "Enable CAN and its interface before sending");
+            return;
+        }
         http_err(fd, 502, "Bad Gateway", NULL);
         return;
     }

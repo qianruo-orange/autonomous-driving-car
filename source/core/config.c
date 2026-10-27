@@ -67,6 +67,7 @@ static void config_defaults(struct app_config_t *cfg)
         c->bitrate = 500000; c->dbitrate = 2000000; c->fd_mode = 1; c->up = 1;
     }
 
+    args->can_enabled = args->can_count > 0;
     LOG_INFO("config: defaults loaded (%d can iface(s))", args->can_count);
 }
 
@@ -85,6 +86,7 @@ int config_load(struct app_config_t *cfg)
     cfg->ai_input_size = 640; cfg->ai_conf = 0.25f; cfg->ai_nms = 0.45f;
     cfg->ai_interval_ms = 10; { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->ai_threads = _c; } /* 默认每核 1 个推理线程 */
     app_args_t *a = &cfg->args;
+    int can_feature_configured = 0;
 
     char line[256];
     while (fgets(line, sizeof(line), fp)) {
@@ -96,7 +98,10 @@ int config_load(struct app_config_t *cfg)
         char key[64], val[256];
         if (sscanf(line, "%63s %255[^\n]", key, val) != 2) continue;
 
-        if (strcmp(key, "can_ifname") == 0 && a->can_count < CAN_MAX_IFACES) {
+        if (strcmp(key, "can_enabled") == 0 && (!strcmp(val, "on") || !strcmp(val, "off"))) {
+            a->can_enabled = !strcmp(val, "on");
+            can_feature_configured = 1;
+        } else if (strcmp(key, "can_ifname") == 0 && a->can_count < CAN_MAX_IFACES) {
             can_iface_t *ifc = &a->can_ifaces[a->can_count++];
             memset(ifc, 0, sizeof(*ifc)); ifc->sock_fd = -1;
             safe_strncpy(ifc->ifname, sizeof(ifc->ifname), val);
@@ -167,6 +172,8 @@ int config_load(struct app_config_t *cfg)
         }
     }
     fclose(fp);
+    /* Preserve existing installations; without any CAN interface start hidden. */
+    if (!can_feature_configured) a->can_enabled = a->can_count > 0;
     /* 只有个别字段缺省时回退默认值；无 CAN 接口不代表配置无效
        （用户可能只配了 TCP/视频），不能整体重置为默认值 */
     if (a->tcp_port <= 0) a->tcp_port = 6666;
@@ -198,6 +205,7 @@ void config_save(app_ctx_t *app)
     }
 
     fprintf(fp, "# %s — auto-saved\n", APP_NAME);
+    fprintf(fp, "can_enabled %s\n", cfg->args.can_enabled ? "on" : "off");
     for (int i = 0; i < can->count; i++)
         fprintf(fp, "can_ifname %s\n", can->ifaces[i].ifname);
 

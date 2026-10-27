@@ -12,6 +12,9 @@ h1{font-size:24px;margin-bottom:0}
 .card h3{color:var(--accent);border-left:3px solid var(--accent);border-bottom:1px solid var(--card-border);padding-left:10px;padding-bottom:6px;display:flex;align-items:center;gap:8px}
 #card_ai h3{border-left-color:#34d399}
 #card_can h3{border-left-color:#fbbf24;flex-wrap:wrap}
+#card_can[hidden]{display:none}
+#can_feature_toggle[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+#can_feature_toggle:disabled,#card_can button:disabled,#card_can select:disabled,#card_can input:disabled{opacity:.5;cursor:default}
 #card_can .can-dbc-link{margin:0 0 0 auto;padding:4px 14px;white-space:nowrap}
 #card_net h3{border-left-color:#38bdf8}
 #card_video h3{border-left-color:#818cf8}
@@ -93,6 +96,10 @@ h1{font-size:24px;margin-bottom:0}
 #card_video{grid-column:2;grid-row:3}
 #card_cpufreq{grid-column:1;grid-row:4}
 #card_nettest{grid-column:2;grid-row:4}
+@media(min-width:641px){
+  .can-grid.can-disabled #card_net{grid-row:2}
+  .can-grid.can-disabled #card_cpufreq,.can-grid.can-disabled #card_nettest{grid-row:3}
+}
 /* 网络测试卡片 */
 .nt-section{display:grid;grid-template-columns:100px 1fr auto;gap:10px 12px;align-items:center;margin-top:8px}
 .nt-row{display:contents}
@@ -107,10 +114,10 @@ h1{font-size:24px;margin-bottom:0}
 .nt-result .nt-ok{color:#4cc9a0}
 .nt-result .nt-fail{color:#e0556a}
 .nt-result .nt-val{color:var(--text);font-weight:600}
-.can-grid .card{max-width:none;width:100%;margin-bottom:0}
+.can-grid .card{max-width:none;min-width:0;width:100%;margin-bottom:0}
 .can-grid .card h3{min-height:38px;display:flex;align-items:center;gap:8px}
 @media(max-width:640px){
-  .can-grid{grid-template-columns:1fr}
+  .can-grid{grid-template-columns:minmax(0,1fr)}
   #card_can,#card_net,#card_video,#card_cpufreq,#card_nettest{grid-column:1;grid-row:auto}
   body{padding:12px}
   .top{flex-wrap:wrap;gap:8px}
@@ -120,5 +127,8 @@ h1{font-size:24px;margin-bottom:0}
   .row input,.row select{max-width:none;width:100%}
   .cfg-grid{grid-template-columns:1fr}
   .cfg-grid.ai-upload{grid-template-columns:1fr}
+  .nt-section{grid-template-columns:minmax(0,1fr) auto}
+  .nt-row>label{grid-column:1 / -1;text-align:left}
+  .nt-input-group{min-width:0}
   .card{padding:14px}
 }

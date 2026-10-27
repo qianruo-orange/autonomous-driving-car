@@ -366,6 +366,7 @@ Web configuration changes are saved to `config/config.txt` and applied to the ru
 
 | Key | Format | Description |
 | --- | --- | --- |
+| `can_enabled` | `on\|off` | Global gateway CAN RX/TX switch. Preserves per-interface settings when off. If omitted, enabled only when CAN interfaces are configured or discovered. |
 | `can_ifname` | `<name>` | CAN interface name; repeatable. When no configuration file exists, discover the system's actual CAN interfaces. |
 | `can_bitrate` | `<name> <bps>` | Bitrate; default 500000. |
 | `can_dbitrate` | `<name> <bps>` | CAN FD data bitrate; default 2000000. |
@@ -434,7 +435,7 @@ Daily TXT reports use the same Download/Delete controls as recordings. Logs, Rec
 
 In the **Recordings** section, **Download** on the active row saves the current MP4 and continues into a new file at the next keyframe, normally within one GOP. It waits for the new recording to receive frames before downloading the completed segment, with a ten-second split wait limit. The encoder and live-stream connection remain active. The list refreshes after completion; the saved segment becomes directly downloadable and the new segment remains marked Recording. Deleting an active recording is disabled. The operation requires administrator access and rejects stale filenames or duplicate pending requests. There is no separate split button in the toolbar.
 
-AI is required and has no disable switch. Inference concurrency is automatic; confidence/NMS and model uploads remain configurable. The CAN card displays bitrate, DBC, CAN FD, and FD bitrate controls, with FD capability shown in the channel selector. Static IP fields are visible only in static mode. Export Config packages the config directory, including configuration, DBC files, class labels, and the RKNN model.
+AI is required and has no disable switch. Inference concurrency is automatic; confidence/NMS and model uploads remain configurable. The toolbar's Enable CAN / Disable CAN button immediately saves the global CAN switch; the CAN card appears only while enabled. Disabling closes the gateway's CAN sockets and clears pending frames without erasing interface settings. Enabling reapplies the saved bitrate, filters, FD mode and interface state; unavailable hardware is reported as an error. The switch also works without any CAN devices so their discovery message can be viewed. Use `POST /api/config` with `target=can_feature&can_enabled=on` or `off`; `GET /api/config` returns the confirmed `can_enabled` boolean. The CAN card displays bitrate, DBC, CAN FD, and FD bitrate controls, with FD capability shown in the channel selector. Static IP fields are visible only in static mode. Export Config packages the config directory, including configuration, DBC files, class labels, and the RKNN model.
 
 The language button switches between English and Chinese; in English mode it is labeled `Chinese` and in Chinese mode it is labeled `English`. Theme switching is independent of language. Header navigation, language, theme, reboot, and shutdown controls share the same height and rounded shape across pages.
 

@@ -31,7 +31,10 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
 
     char json[4096]; int off = 0;
 
-    JSON_ADD(json, off, "{\"cans\":{");
+    pthread_mutex_lock(&app->can_mutex);
+    int can_enabled = cfg->args.can_enabled;
+    pthread_mutex_unlock(&app->can_mutex);
+    JSON_ADD(json, off, "{\"can_enabled\":%s,\"cans\":{", can_enabled ? "true" : "false");
     for (int i = 0; i < can->count; i++) {
         can_iface_t *iface = &can->ifaces[i];
         JSON_ADD(json, off, "%s\"%s\":{\"bitrate\":%d,\"fd\":\"%s\",\"dbitrate\":%d,\"up\":\"%s\",\"filters\":[",
@@ -142,6 +145,9 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
             }
         }
     }
+
+    /* Keep edited interface settings while the global feature is off. */
+    if (!app->cfg->args.can_enabled) return;
 
     /* -- 应用 CAN 参数到系统接口 -- */
     for (int i = 0; i < can->count; i++) {
@@ -390,6 +396,24 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
 
     /* target 指定只应用并重启哪个模块；缺省为全量（向后兼容） */
     const char *target = http_form_find(fields, count, "target");
+
+    if (target && strcmp(target, "can_feature") == 0) {
+        const char *value = http_form_find(fields, count, "can_enabled");
+        if (!value || (strcmp(value, "on") && strcmp(value, "off"))) {
+            pthread_mutex_unlock(&app->can_mutex);
+            http_err(fd, 400, "Bad Request", "can_enabled must be on or off");
+            return;
+        }
+        if (can_feature_set_locked(app, !strcmp(value, "on")) < 0) {
+            pthread_mutex_unlock(&app->can_mutex);
+            http_err(fd, 503, "Service Unavailable", "Unable to enable CAN interfaces");
+            return;
+        }
+        config_save(app);
+        pthread_mutex_unlock(&app->can_mutex);
+        http_ok_text(fd, "saved");
+        return;
+    }
 
     if ((!target || strcmp(target, "all") == 0 || strcmp(target, "video") == 0) &&
         !video_decoder_fields_valid(fields, count)) {

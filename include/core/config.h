@@ -49,6 +49,7 @@ static inline int can_iface_index(const can_iface_t *ifaces, int count, const ch
 typedef struct {
     can_iface_t can_ifaces[CAN_MAX_IFACES];
     int         can_count;
+    int         can_enabled; /* Gateway-wide CAN RX/TX switch; preserves interface settings. */
     int         tcp_port;
     int         max_clients;
     char        tcp_bind[IFNAMSIZ]; /* TCP 监听绑定网卡名（空 = 绑定所有网卡 INADDR_ANY） */

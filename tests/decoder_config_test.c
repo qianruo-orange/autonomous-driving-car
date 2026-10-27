@@ -22,6 +22,8 @@ int rknn_yolo_active_workers(void) { return 4; }
 int rknn_yolo_reload(void) { assert(!"Unexpected model reload"); return -1; }
 int can_enumerate_system(char names[][IFNAMSIZ], int maximum)
 { (void)names; (void)maximum; return 0; }
+int can_feature_set_locked(app_ctx_t *app, int enabled)
+{ (void)app; (void)enabled; assert(!"Unexpected CAN feature change"); return -1; }
 int net_ip_get_current(const char *ifname, char *address, size_t address_size,
                        char *mask, size_t mask_size, char *gateway, size_t gateway_size)
 {
@@ -89,6 +91,13 @@ int main(void)
     assert(mkdir("config", 0700) == 0);
     struct app_config_t cfg;
     assert(config_load(&cfg) == 0 && !strcmp(cfg.video_decoder, "software"));
+    assert(!cfg.args.can_enabled);
+    write_config("can_ifname can0\ncan_up can0 on\n");
+    assert(!config_load(&cfg) && cfg.args.can_enabled && cfg.args.can_count == 1);
+    write_config("can_enabled off\ncan_ifname can0\ncan_up can0 on\n");
+    assert(!config_load(&cfg) && !cfg.args.can_enabled && cfg.args.can_ifaces[0].up);
+    write_config("can_enabled on\n");
+    assert(!config_load(&cfg) && cfg.args.can_enabled && !cfg.args.can_count);
     assert(!strcmp(cfg.ai_model, "config/yolo26.rknn"));
     write_config("ai_model config/yolo26.rknn\n");
     assert(config_load(&cfg) == 0 && !strcmp(cfg.ai_model, "config/yolo26.rknn"));
@@ -114,9 +123,11 @@ int main(void)
     char persisted[8192]; size_t size = fread(persisted, 1, sizeof(persisted) - 1, file);
     persisted[size] = '\0'; fclose(file);
     assert(strstr(persisted, "video_decoder software\n"));
+    assert(strstr(persisted, "can_enabled off\n"));
     assert(strstr(persisted, "ai_model config/yolo26.rknn\n"));
     http_config_get(&app, 0, "GET", "/api/config", "");
     assert(response_code == 200 && strstr(response_body, "\"video_decoder\":\"software\""));
+    assert(strstr(response_body, "\"can_enabled\":false"));
 
     const char *invalid[] = {
         "target=video&video_width=640&video_decoder=hardware",

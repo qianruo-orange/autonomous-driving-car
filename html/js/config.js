@@ -6,6 +6,43 @@
   var canNames = [];   /* 通道名列表（由 /api/config 动态读取） */
   var cansCfg = {};    /* 各通道配置缓存 { can0:{...}, ... } */
   var canFD = {};      /* 系统接口 CAN FD 支持映射 { can0: 1, ... } */
+  var canEnabled = null; /* Confirmed global state; loaded from the device. */
+  var canFeatureBusy = false;
+
+  function renderCanFeature() {
+    var enabled = canEnabled === true;
+    var button = document.getElementById('can_feature_toggle');
+    button.disabled = canFeatureBusy || canEnabled === null;
+    button.setAttribute('aria-pressed', String(enabled));
+    setI18nText(button.firstElementChild, enabled ? '停用 CAN' : '启用 CAN');
+    document.getElementById('card_can').hidden = !enabled;
+    document.querySelector('.can-grid').classList.toggle('can-disabled', !enabled);
+    var unavailable = !enabled || canFeatureBusy || canNames.length === 0;
+    document.querySelectorAll('#card_can input,#card_can select,#card_can button').forEach(function(control) {
+      control.disabled = unavailable;
+    });
+  }
+
+  window.toggleCanFeature = async function() {
+    if (canFeatureBusy || canEnabled === null) return;
+    var next = !canEnabled;
+    canFeatureBusy = true;
+    renderCanFeature();
+    try {
+      var response = await authFetch('/api/config', {
+        method: 'POST',
+        body: new URLSearchParams({target: 'can_feature', can_enabled: next ? 'on' : 'off'})
+      });
+      if (!response.ok) throw new Error('CAN setting rejected');
+      canEnabled = next;
+      cardStatus('can_feature', 'ok', next ? 'CAN 已启用' : 'CAN 已停用');
+    } catch(e) {
+      cardStatus('can_feature', 'err', 'CAN 开关保存失败，请重试');
+    } finally {
+      canFeatureBusy = false;
+      renderCanFeature();
+    }
+  };
 
   function curName() { return canNames[curCan] || ('can' + curCan); }
 
@@ -59,6 +96,7 @@
 
   /* 把当前表单内容写入 cansCfg[curName()] */
   function collectCan() {
+    if (!canNames.length) return;
     var f = cansCfg[curName()] || (cansCfg[curName()] = {});
     f.bitrate = document.getElementById('br').value;
     f.fd = document.getElementById('fd').value;
@@ -83,6 +121,12 @@
     setFilters(f.filters || []);
     document.getElementById('dbc').value = '';
     updateFileName(document.getElementById('dbc'));
+    if (!canNames.length) {
+      document.getElementById('cfg').style.display = 'none';
+      document.getElementById('hint').style.display = 'block';
+      setI18nText(document.getElementById('hint'), '系统未检测到 CAN 设备');
+    }
+    renderCanFeature();
   }
 
   window.onCanSel = function() {
@@ -92,20 +136,25 @@
   };
 
   window.toggleCan = async function(on) {
+    if (!canEnabled || !canNames.length || canFeatureBusy) return;
     var n = curName();
     var tg = document.getElementById('tg');
+    var previous = (cansCfg[n] || {}).up === 'on';
     tg.disabled = true;
     try {
-      await authFetch('/api/can/toggle', {
+      var response = await authFetch('/api/can/toggle', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'ifname=' + n + '&action=' + (on ? 'up' : 'down')
+        body: 'ifname=' + encodeURIComponent(n) + '&action=' + (on ? 'up' : 'down')
       });
-    } catch(e) {}
-    setSwitch(on);
-    cansCfg[n] = cansCfg[n] || {};
-    cansCfg[n].up = on ? 'on' : 'off';
-    tg.disabled = false;
+      if (!response.ok) throw new Error('CAN interface setting rejected');
+      cansCfg[n] = cansCfg[n] || {};
+      cansCfg[n].up = on ? 'on' : 'off';
+      setSwitch(on);
+    } catch(e) {
+      setSwitch(previous);
+      cardStatus('can', 'err', '请求失败');
+    } finally { renderCanFeature(); }
   };
 
   window.chkFd = chkFd;
@@ -166,8 +215,14 @@
   }
 
   async function loadCfg() {
+    if (canFeatureBusy) return;
+    canFeatureBusy = true;
+    renderCanFeature();
     try {
-      var cfg = await (await fetch('/api/config')).json();
+      var response = await fetch('/api/config');
+      if (!response.ok) throw new Error('Settings unavailable');
+      var cfg = await response.json();
+      if (typeof cfg.can_enabled !== 'boolean') throw new Error('CAN state unavailable');
       document.getElementById('tp').value = cfg.tcp_port || '';
       document.getElementById('mc').value = cfg.max_clients || '';
       document.getElementById('bind').value = cfg.tcp_bind || '';
@@ -233,8 +288,14 @@
           filters: f.filters || []
         };
       }
+      canEnabled = cfg.can_enabled;
       renderCan();
-    } catch(e) {}
+    } catch(e) {
+      cardStatus('can_feature', 'err', '配置加载失败，请点击查询重试');
+    } finally {
+      canFeatureBusy = false;
+      renderCanFeature();
+    }
   }
   window.loadCfg = loadCfg;
 

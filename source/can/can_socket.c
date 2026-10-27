@@ -252,16 +252,28 @@ int can_tx_frame(app_ctx_t *app, const char *ifname, const struct canfd_frame *f
     if (!app || !app->can || !ifname || !frame) { errno = EINVAL; return -1; }
     can_ctx_t *ctx = app->can;
 
+    pthread_mutex_lock(&app->can_mutex);
+    if (!app->cfg || !app->cfg->args.can_enabled) {
+        pthread_mutex_unlock(&app->can_mutex);
+        errno = EACCES;
+        return -1;
+    }
     int idx = can_iface_index(ctx->ifaces, ctx->count, ifname);
-    if (idx < 0) { LOG_ERROR("can_tx: unknown interface '%s'", ifname); errno = ENODEV; return -1; }
+    if (idx < 0 || ctx->ifaces[idx].sock_fd < 0 || !ctx->ifaces[idx].up) {
+        pthread_mutex_unlock(&app->can_mutex);
+        errno = idx < 0 ? ENODEV : ENETDOWN;
+        return -1;
+    }
 
     /* 发送统一走 TX 队列：由 can_send_task 弹出写 socket 并做发送方向 DBC 解析 */
     can_queue_t *txq = &ctx->ifaces[idx].txq;
     if (can_queue_push(txq, frame) != CAN_QUEUE_ERR_OK) {
+        pthread_mutex_unlock(&app->can_mutex);
         errno = ENOBUFS;
         return -1;
     }
     eventfd_signal(ctx->tx_efd);
+    pthread_mutex_unlock(&app->can_mutex);
     return 0;
 }
 
@@ -273,6 +285,10 @@ static void handle_can_output(app_ctx_t *app)
 {
     can_ctx_t *ctx = app->can;
     pthread_mutex_lock(&app->can_mutex);
+    if (!app->cfg->args.can_enabled) {
+        pthread_mutex_unlock(&app->can_mutex);
+        return;
+    }
 
     for (int idx = 0; idx < ctx->count; idx++) {
         int fd = ctx->ifaces[idx].sock_fd;
@@ -321,6 +337,11 @@ static void handle_can_input(app_ctx_t *app, int can_idx)
 {
     can_ctx_t *ctx = app->can;
     pthread_mutex_lock(&app->can_mutex);
+    /* An epoll batch may outlive the switch-off that closed these sockets. */
+    if (!app->cfg->args.can_enabled || ctx->ifaces[can_idx].sock_fd < 0) {
+        pthread_mutex_unlock(&app->can_mutex);
+        return;
+    }
     int fd = ctx->ifaces[can_idx].sock_fd;
     can_queue_t *rxq = &ctx->ifaces[can_idx].rxq;
     const char *ifname = ctx->ifaces[can_idx].ifname;
@@ -352,6 +373,7 @@ static void handle_can_input(app_ctx_t *app, int can_idx)
             if (errno == EAGAIN || errno == EWOULDBLOCK) break;
             LOG_ERROR("can read %s: %s", ifname, strerror(errno));
             can_socket_close(fd);
+            ctx->ifaces[can_idx].sock_fd = -1;
             int new_fd = can_socket_open(ifname, ctx->ifaces[can_idx].fd_mode);
             if (new_fd >= 0) {
                 ctx->ifaces[can_idx].sock_fd = new_fd;
@@ -530,6 +552,8 @@ int can_init(void *arg)
 
     for (int i = 0; i < args->can_count; i++) {
         can_iface_t *iface = &args->can_ifaces[i];
+        iface->sock_fd = -1;
+        if (!args->can_enabled) continue;
         if (can_socket_configure(iface->ifname, iface->bitrate, iface->dbitrate,
                                  iface->fd_mode, iface->restart_ms, iface->up) < 0) {
             /* 无 CAN 硬件/驱动未加载时接口无法配置：跳过该接口，不阻塞整体启动，

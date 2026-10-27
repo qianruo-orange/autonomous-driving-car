@@ -13,6 +13,8 @@
     <button type="button" class="btn btn-back" onclick="exportCfg()"> <span data-i18n="导出配置">导出配置</span></button>
     <span class="card-status" id="status_export"></span>
     <button type="button" class="btn btn-back" onclick="loadCfg()">🔄 <span data-i18n="查询">查询</span></button>
+    <button type="button" id="can_feature_toggle" class="btn btn-back" onclick="toggleCanFeature()" aria-controls="card_can" aria-pressed="false" disabled><span data-i18n="启用 CAN">启用 CAN</span></button>
+    <span class="card-status" id="status_can_feature" role="status" aria-live="polite"></span>
   </div>
   <div class="tb-right">
     <a href="/" class="btn btn-back"> <span data-i18n="主界面">主界面</span></a>
@@ -23,7 +25,7 @@
 </div>
 
 <div id="f">
-<div class="can-grid">
+<div class="can-grid can-disabled">
   <form class="card" id="camera_form">
     <h3><span data-i18n="视频采集">视频采集</span><span id="camera_status" class="card-status" role="status" aria-live="polite"></span><button class="btn btn-save" type="submit" id="camera_save" style="margin-left:auto;padding:4px 14px" data-i18n="保存">保存</button></h3>
     <div class="camera-fields">
@@ -52,7 +54,7 @@
 </div>
 </div>
 
-<div class="card" id="card_can"><h3><select id="canSel" onchange="onCanSel()"></select> <span id="st"></span> <label class="toggle"><input type="checkbox" id="tg" onchange="toggleCan(this.checked)"><span class="slider"></span></label><span class="card-status" id="status_can"></span><a href="/dbc" class="btn btn-back can-dbc-link"><span data-i18n="DBC解析">DBC解析</span></a><button type="button" class="btn btn-save" style="margin-left:0;padding:4px 14px" onclick="saveCan()">💾 <span data-i18n="保存">保存</span></button></h3>
+<div class="card" id="card_can" hidden><h3><select id="canSel" onchange="onCanSel()"></select> <span id="st"></span> <label class="toggle"><input type="checkbox" id="tg" onchange="toggleCan(this.checked)"><span class="slider"></span></label><span class="card-status" id="status_can"></span><a href="/dbc" class="btn btn-back can-dbc-link"><span data-i18n="DBC解析">DBC解析</span></a><button type="button" class="btn btn-save" style="margin-left:0;padding:4px 14px" onclick="saveCan()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div id="cfg">
 <div class="cfg-grid can-basic">
 <div class="row"><label data-i18n="波特率">波特率</label><input name="br" id="br" type="number"><span class="unit">bps</span></div>

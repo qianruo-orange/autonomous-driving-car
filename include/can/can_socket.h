@@ -48,6 +48,10 @@ int  can_socket_configure(const char *ifname, int bitrate, int dbitrate,
 int  can_init(void *arg);
 void can_cleanup(void *ctx);
 
+/* Caller holds app->can_mutex. Disabling closes gateway sockets and preserves
+ * interface settings; enabling reapplies them. Socket activation is transactional. */
+int can_feature_set_locked(app_ctx_t *app, int enabled);
+
 /* 枚举系统中实际存在的 CAN 接口（netlink 路由，kind=="can"），返回写入的数量 */
 int  can_enumerate_system(char names[][IFNAMSIZ], int max);
 

@@ -5,6 +5,12 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    '启用 CAN': 'Enable CAN',
+    '停用 CAN': 'Disable CAN',
+    'CAN 已启用': 'CAN enabled',
+    'CAN 已停用': 'CAN disabled',
+    'CAN 开关保存失败，请重试': 'Unable to save the CAN setting. Please retry.',
+    '配置加载失败，请点击查询重试': 'Unable to load settings. Select Refresh to retry.',
     '预览': 'Preview',
     '文件预览': 'File preview',
     '文件操作': 'File actions',
