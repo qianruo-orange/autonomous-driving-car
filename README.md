@@ -118,6 +118,8 @@ YOLO_WEIGHTS=config/my_model.pt bash scripts/build.sh -R
 
 Without PT input, the build reuses a valid existing RKNN model. Conversion needs the Ultralytics CLI and compatible RKNN tooling, normally in `.venv`. Successful builds clean the selected project-owned PT input and conversion cache copies. Failed builds retain inputs; externally supplied weights are preserved. PT conversion inputs are not deployed.
 
+Source-side synchronization state lives in `config/.model-sync.lock` and `config/.last-deployed.sha256`. Downloaded conversion inputs are staged in `config/weights/` and cleaned after a successful build. Build/deploy tools no longer create `config/models/`; old paths remain readable for migration, existing model/weight files are preserved, and only empty legacy directories are removed. Internal synchronization files and conversion inputs are not installed on the board.
+
 In **System Configuration / 系统配置**, select camera, resolution/FPS combination, encoder, and decoder. Modes come from device capabilities; 1280×720 at 30 FPS is a selectable configuration, not a fixed assumption. Drivers can negotiate a different effective rate. Capture decoding currently uses software; continuous autofocus is enabled where supported.
 
 The frame ring moves buffer ownership between stages and reuses pools. Inference results remain associated with their captured frame. The renderer favors newer completed results instead of waiting indefinitely for out-of-order workers. H.264 live streaming and MP4 share encoded output; browser playback uses a bounded MSE buffer with catch-up logic.
@@ -259,6 +261,8 @@ Paths are relative to the runtime working directory (`/opt/autonomous-driving-ca
 
 Use the deployed configuration for runtime changes. Keep models, device settings, logs, and recordings when moving an existing installation. Do not replace them with a clean checkout merely to update source code.
 
+Configuration downloads contain regular files, including the current RKNN model, labels, hidden/zero-byte configuration files, and any retained model or weight files in subdirectories. Empty directories and the internal `.model-sync.lock` / `.last-deployed.sha256` bookkeeping files are omitted; export does not delete files or folders. The 64 MiB uncompressed limit includes files in subdirectories.
+
 ## API and diagnostics
 
 These are selected endpoints; [http.c](source/http/http.c) and individual HTTP handlers define routing and authorization. Paths are relative to the board's HTTP origin.
@@ -297,6 +301,7 @@ curl -s http://127.0.0.1/api/video/stats
 | No motor output | Enabled state, selected target, profile validation, CAN, FIFO error, feedback freshness |
 | Motor socket online but no wheel speed | Feedback IDs/format/offsets/endian order/scaling and actual incoming frames |
 | VOFA cannot connect | Saved port, enabled/listening state, board IP, firewall, client mode |
+| VOFA reports `The proxy type is invalid for this operation` | Check the PC's proxy settings; use a direct connection to the board's current IP, then restart VOFA+. Qt TCP connections require a proxy with tunneling support. See [Qt proxy capabilities](https://doc.qt.io/qt-6/qnetworkproxy.html#ProxyType-enum). |
 | VOFA actual curves absent | `feedback_valid`, real wheel feedback; unavailable values are `NaN` |
 | CPU clock below requested value | Selected policy, effective limits, temperature and kernel thermal controls |
 | Model synchronization conflict | Resolve independent project/deployment changes before retrying |

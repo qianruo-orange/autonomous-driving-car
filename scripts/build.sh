@@ -57,12 +57,12 @@ sync_model() {
         return 1
     fi
     wbase=$(basename "$weights")
-    weights_cache="$PROJECT_DIR/config/models/weights/$wbase"
+    weights_cache="$PROJECT_DIR/config/weights/$wbase"
     if [[ "$weights" == */* ]] && [ ! -f "$weights" ]; then
         echo "[MODEL] explicit weight file not found: $weights"
         return 1
     fi
-    mkdir -p "$PROJECT_DIR/config/models/weights"
+    mkdir -p "$PROJECT_DIR/config/weights"
     workdir=$(mktemp -d /tmp/yolo_rknn_XXXXXX)
     # An explicit weight path takes precedence over a same-named cached weight.
     if [ -f "$weights" ]; then

@@ -17,6 +17,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <limits.h>
+#include <spawn.h>
+#include <sys/wait.h>
 
 void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
@@ -436,40 +439,100 @@ static void config_dir_of(char *out, size_t out_size)
     }
 }
 
-/* config 目录总体积（仅顶层常规文件；config 目录为扁平结构，无子目录） */
-static int64_t config_dir_size(const char *dir)
+/* Write only regular-file names to the NUL-delimited tar manifest. Empty legacy
+ * directories have no entries, while retained models/weights remain exportable.
+ * Return 1 for the size limit, -1 for an I/O error. Takes ownership of dir_fd. */
+static int config_pack_files(int dir_fd, const char *prefix, FILE *files,
+                             uint64_t *total, unsigned depth)
 {
-    int64_t total = 0;
-    DIR *d = opendir(dir);
-    if (!d) return 0;
-    struct dirent *de;
-    while ((de = readdir(d)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        char path[512];
-        snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+    DIR *directory = fdopendir(dir_fd);
+    if (!directory) { close(dir_fd); return -1; }
+    int result = 0;
+    for (;;) {
+        errno = 0;
+        struct dirent *de = readdir(directory);
+        if (!de) {
+            if (errno) result = -1;
+            break;
+        }
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..") ||
+            !strcmp(de->d_name, ".model-sync.lock") ||
+            !strcmp(de->d_name, ".last-deployed.sha256")) continue;
+        char relative[PATH_MAX];
+        int length = snprintf(relative, sizeof(relative), "%s%s%s", prefix,
+                              *prefix ? "/" : "", de->d_name);
+        if (length < 0 || (size_t)length >= sizeof(relative)) { result = -1; break; }
         struct stat st;
-        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) total += (int64_t)st.st_size;
+        if (fstatat(dir_fd, de->d_name, &st, AT_SYMLINK_NOFOLLOW)) { result = -1; break; }
+        if (S_ISDIR(st.st_mode)) {
+            if (depth >= 64) { result = -1; break; }
+            int child = openat(dir_fd, de->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            if (child < 0) { result = -1; break; }
+            result = config_pack_files(child, relative, files, total, depth + 1);
+            if (result) break;
+        } else if (S_ISREG(st.st_mode)) {
+            if ((uint64_t)st.st_size > CONFIG_PACK_MAX - *total) { result = 1; break; }
+            *total += (uint64_t)st.st_size;
+            if (fwrite(relative, (size_t)length + 1, 1, files) != 1) { result = -1; break; }
+        }
     }
-    closedir(d);
-    return total;
+    closedir(directory);
+    return result;
+}
+
+static int config_pack_tar(const char *config_dir, const char *archive, FILE *files)
+{
+    if (fflush(files) || fseek(files, 0, SEEK_SET)) return -1;
+    posix_spawn_file_actions_t actions;
+    int error = posix_spawn_file_actions_init(&actions);
+    if (error) return -1;
+    error = posix_spawn_file_actions_adddup2(&actions, fileno(files), STDIN_FILENO);
+    if (!error)
+        error = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+    char *args[] = {"tar", "--null", "--verbatim-files-from", "--no-recursion", "-czf",
+                    (char *)archive, "-C", (char *)config_dir, "-T", "-", NULL};
+    pid_t child;
+    extern char **environ;
+    if (!error) error = posix_spawnp(&child, "tar", &actions, NULL, args, environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (error) return -1;
+    int status, waited;
+    do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+    return waited >= 0 && WIFEXITED(status) && !WEXITSTATUS(status) ? 0 : -1;
 }
 
 /* 打包下载整个 config 目录（tar.gz）：与日志打包相同模式——
    先打成临时文件，再复用 http_serve_stream 流式发送（发送后自动清理） */
 static void serve_config_pack(int fd, const char *config_dir)
 {
-    if (config_dir_size(config_dir) > (int64_t)CONFIG_PACK_MAX) {
-        LOG_INFO("config pack: total size exceeds %lld bytes, rejected", (long long)CONFIG_PACK_MAX);
-        http_err(fd, 413, "Payload Too Large", "config too large");
+    FILE *files = tmpfile();
+    int dir_fd = open(config_dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (!files || dir_fd < 0) {
+        if (files) fclose(files);
+        if (dir_fd >= 0) close(dir_fd);
+        http_err(fd, 500, "Internal Error", NULL);
         return;
     }
-
-    char tmppath[512];
-    snprintf(tmppath, sizeof(tmppath), "/tmp/rockchip_config_pack_%d.tar.gz", (int)getpid());
-    char cmd[1400];
-    snprintf(cmd, sizeof(cmd), "tar -czf %s -C %s . 2>/dev/null", tmppath, config_dir);
-    if (system(cmd) != 0 || access(tmppath, F_OK) != 0) {
-        unlink(tmppath);
+    uint64_t total = 0;
+    int result = config_pack_files(dir_fd, "", files, &total, 0);
+    if (result) {
+        fclose(files);
+        if (result > 0)
+            http_err(fd, 413, "Payload Too Large", "config too large");
+        else
+            http_err(fd, 500, "Internal Error", NULL);
+        return;
+    }
+    char tmppath[] = "/tmp/rockchip_config_pack_XXXXXX";
+    int archive_fd = mkstemp(tmppath);
+    int failed = archive_fd < 0;
+    if (archive_fd >= 0) {
+        close(archive_fd);
+        failed = config_pack_tar(config_dir, tmppath, files);
+    }
+    fclose(files);
+    if (failed) {
+        if (archive_fd >= 0) unlink(tmppath);
         http_err(fd, 500, "Internal Error", NULL);
         return;
     }

@@ -64,6 +64,10 @@ __pycache__/
 
 # 模型权重与转换缓存（RKNN 模型与平台绑定、权重可自动下载，均不入库，由 build.sh 在板端生成）
 config/yolo26.rknn
+config/.model-sync.lock
+config/.last-deployed.sha256
+config/weights/
+# Legacy model inputs are read only for migration; new builds do not create this directory.
 config/models/
 
 # 本地配置信息

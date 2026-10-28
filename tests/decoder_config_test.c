@@ -9,6 +9,7 @@ static int response_code, restart_calls, cycle_calls, unsupported_logs, ip_calls
 static char response_body[8192];
 static char video_actions[8];
 static size_t video_action_count;
+static unsigned config_pack_calls;
 
 void _log_info(const char *file, int line, const char *format, ...)
 { (void)file; (void)line; (void)format; }
@@ -71,6 +72,23 @@ void http_send_response(int fd, int code, const char *status, const char *mime,
     response_body[length] = '\0';
 }
 
+void http_serve_stream(int fd, const char *mime, const char *extra, FILE *source,
+                       size_t size, const char *unlink_after)
+{
+    (void)fd;
+    assert(!strcmp(mime, "application/gzip") && strstr(extra, "config_pack.tar.gz"));
+    FILE *archive = fopen("export.tar.gz", "wb"); assert(archive);
+    size_t copied = 0, bytes;
+    char buffer[4096];
+    while ((bytes = fread(buffer, 1, sizeof(buffer), source)) > 0) {
+        assert(fwrite(buffer, 1, bytes, archive) == bytes);
+        copied += bytes;
+    }
+    assert(!ferror(source) && copied == size && copied > 0);
+    assert(!fclose(archive) && !fclose(source) && !unlink(unlink_after));
+    config_pack_calls++;
+}
+
 static void write_config(const char *text)
 {
     FILE *file = fopen(PATH_CONFIG, "w"); assert(file);
@@ -85,6 +103,76 @@ static void expect_video_actions(app_ctx_t *app, const char *form, const char *e
     assert(response_code == 200 && !strcmp(video_actions, expected));
     assert(cycle_calls - prior_cycles == (strchr(expected, 'C') != NULL));
     assert(restart_calls - prior_restarts == (strchr(expected, 'R') != NULL));
+}
+
+static void pack_file(const char *path, const char *text)
+{
+    FILE *file = fopen(path, "w"); assert(file);
+    assert(fputs(text, file) >= 0 && !fclose(file));
+}
+
+static void pack_listing(char *listing, size_t size)
+{
+    FILE *tar = popen("tar --quoting-style=literal -tzf export.tar.gz", "r"); assert(tar);
+    size_t bytes = fread(listing, 1, size - 1, tar);
+    assert(bytes < size - 1 && !ferror(tar));
+    listing[bytes] = 0;
+    assert(!pclose(tar));
+}
+
+static void test_config_pack(app_ctx_t *app)
+{
+    assert(!mkdir("config/model", 0700) && !mkdir("config/models", 0700));
+    pack_file("config/models/.model-sync.lock", "");
+    pack_file("config/models/.last-deployed.sha256", "internal bookkeeping");
+    pack_file("config/yolo26.rknn", "RKNN current model");
+    pack_file("config/coco.names", "person\n");
+    pack_file("config/.extra.conf", ""); /* Real zero-byte/hidden config is retained. */
+    pack_file("config/--keep.conf", "option-like file name");
+    assert(!symlink("/etc/passwd", "config/outside"));
+    char listing[4096];
+    http_config_export(app, 0, "GET", "/api/config/export", "");
+    assert(config_pack_calls == 1);
+    pack_listing(listing, sizeof(listing));
+    assert(strstr(listing, "config.txt\n") && strstr(listing, "yolo26.rknn\n"));
+    assert(strstr(listing, "coco.names\n") && strstr(listing, ".extra.conf\n"));
+    assert(strstr(listing, "--keep.conf\n"));
+    assert(!strstr(listing, "model") && !strstr(listing, "outside"));
+    assert(!access("config/model", F_OK) && !access("config/models", F_OK));
+
+    /* A nonempty legacy folder can still contain the user's only old model
+     * or conversion input. Export files without including empty directories. */
+    assert(!mkdir("config/models/rk3576", 0700) && !mkdir("config/models/weights", 0700));
+    assert(!mkdir("config/models/empty", 0700));
+    pack_file("config/models/rk3576/old.rknn", "RKNN retained model");
+    pack_file("config/models/weights/custom model.pt", "user conversion input");
+    http_config_export(app, 0, "GET", "/api/config/export", "");
+    assert(config_pack_calls == 2);
+    pack_listing(listing, sizeof(listing));
+    assert(strstr(listing, "models/rk3576/old.rknn\n"));
+    assert(strstr(listing, "models/weights/custom model.pt\n"));
+    assert(!strstr(listing, "empty") && !strstr(listing, "model/\n"));
+    assert(!strstr(listing, "models/\n") && !strstr(listing, ".model-sync.lock"));
+    assert(!strstr(listing, ".last-deployed.sha256"));
+
+    /* The same recursive selection must enforce the size limit on weights. */
+    int large = open("config/models/weights/too-large.pt", O_WRONLY | O_CREAT, 0600);
+    assert(large >= 0 && !ftruncate(large, CONFIG_PACK_MAX + 1)); close(large);
+    http_config_export(app, 0, "GET", "/api/config/export", "");
+    assert(response_code == 413 && config_pack_calls == 2);
+    assert(!access("config/models/rk3576/old.rknn", F_OK));
+    assert(!access("config/models/weights/custom model.pt", F_OK));
+    assert(!unlink("config/models/weights/too-large.pt"));
+    assert(!unlink("config/models/rk3576/old.rknn"));
+    assert(!unlink("config/models/weights/custom model.pt"));
+    assert(!rmdir("config/models/rk3576") && !rmdir("config/models/weights"));
+    assert(!rmdir("config/models/empty"));
+    assert(!unlink("config/models/.model-sync.lock"));
+    assert(!unlink("config/models/.last-deployed.sha256"));
+    assert(!rmdir("config/models") && !rmdir("config/model"));
+    assert(!unlink("config/yolo26.rknn") && !unlink("config/coco.names"));
+    assert(!unlink("config/.extra.conf") && !unlink("config/--keep.conf"));
+    assert(!unlink("config/outside") && !unlink("export.tar.gz"));
 }
 
 int main(void)
@@ -178,9 +266,10 @@ int main(void)
     assert(fread(saved_text, 1, sizeof(saved_text) - 1, saved) > 0);
     fclose(saved);
     assert(!strstr(saved_text, "tcp_port") && !strstr(saved_text, "tcp_bind") && !strstr(saved_text, "max_clients"));
+    test_config_pack(&app);
     pthread_mutex_destroy(&app.can_mutex);
     assert(unlink(PATH_CONFIG) == 0 && rmdir("config") == 0);
     assert(fchdir(original_directory) == 0); close(original_directory); assert(rmdir(directory) == 0);
-    puts("PASS: decoder rejection/persistence and ordered shared-encoder rebuild for capture changes");
+    puts("PASS: configuration persistence, ordered encoder rebuild and file-only configuration export");
     return 0;
 }

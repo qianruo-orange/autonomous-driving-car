@@ -56,7 +56,7 @@ def canonical_relative(platform):
 
 
 def baseline_relative():
-    return Path("config/models/.last-deployed.sha256")
+    return Path("config/.last-deployed.sha256")
 
 
 def checked(root, relative):
@@ -182,18 +182,108 @@ def normalize_config(root, platform, source_owner=None):
         atomic_bytes(path, changed, source_owner, stat.S_IMODE(path.stat().st_mode))
 
 
+def prune_legacy_directories(root):
+    """Remove empty legacy directories only; never delete model/user files."""
+    legacy = checked(root, Path("config/models"))
+    if not legacy.exists():
+        return
+    for directory, _, _ in os.walk(legacy, topdown=False, followlinks=False):
+        path = Path(directory)
+        if path.is_symlink():
+            continue
+        try:
+            path.rmdir()
+        except OSError:
+            pass  # A nonempty directory, including unknown files, is retained.
+
+
+def migrate_weight_cache(project):
+    """Move legacy conversion inputs without replacing different user bytes."""
+    legacy = checked(project, Path("config/models/weights"))
+    if not legacy.exists():
+        return
+    if not legacy.is_dir():
+        raise ModelSyncError("Expected a regular conversion-cache directory: " + str(legacy))
+    moves = []
+    for candidate in legacy.iterdir():
+        if candidate.suffix != ".pt":
+            continue
+        source = checked_weight(candidate)
+        destination = checked(project, Path("config/weights") / candidate.name)
+        if destination.exists():
+            checked_weight(destination)
+            if source.read_bytes() != destination.read_bytes():
+                raise ModelSyncError("Conflicting legacy conversion weights were preserved: " + str(candidate))
+        moves.append((source, destination))
+    # Validate all names/destinations before moving any input.
+    for source, destination in moves:
+        ensure_directory(destination.parent, owner(project))
+        if destination.exists():
+            source.unlink()  # An identical cache copy already exists.
+        else:
+            os.replace(source, destination)
+
+
+def migrate_baseline(project, platform=None):
+    baseline = checked(project, baseline_relative())
+    previous = [checked(project, Path("config/models/.last-deployed.sha256"))]
+    if platform is not None:
+        previous.append(checked(project, Path("config/models") / platform_name(platform) / ".last-deployed.sha256"))
+    existing = [path for path in [baseline, *previous] if path.exists()]
+    if not existing:
+        return
+    shared = None
+    for source in existing:
+        if not source.is_file():
+            raise ModelSyncError("Expected a regular model baseline: " + str(source))
+        checksum = source.read_text().strip()
+        if not SHA.fullmatch(checksum):
+            raise ModelSyncError("Invalid model synchronization baseline: " + str(source))
+        if shared is not None and shared != checksum:
+            raise ModelSyncError("Conflicting model synchronization baselines were preserved: " +
+                                 ", ".join(map(str, existing)))
+        shared = checksum
+    if not baseline.exists():
+        atomic_bytes(baseline, (shared + "\n").encode(), owner(project))
+    # Only known internal bookkeeping is retired, never legacy RKNN artifacts.
+    for path in previous:
+        if path.exists() and path.is_file():
+            path.unlink()
+
+
 @contextmanager
-def sync_lock(project):
-    path = checked(project, Path("config/models/.model-sync.lock"))
+def sync_lock(project, platform=None):
+    path = checked(project, Path("config/.model-sync.lock"))
     ensure_directory(path.parent, owner(project))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, 0o644)
+    old_fd = None
+    migrated = False
     try:
         if os.geteuid() == 0:
             os.fchown(fd, *owner(project))
         fcntl.flock(fd, fcntl.LOCK_EX)
+        previous = checked(project, Path("config/models/.model-sync.lock"))
+        if previous.exists():
+            old_fd = os.open(previous, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            if not stat.S_ISREG(os.fstat(old_fd).st_mode):
+                raise ModelSyncError("Expected a regular model lock: " + str(previous))
+            try:
+                fcntl.flock(old_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise ModelSyncError("Legacy model synchronization is active; wait for it to finish and retry") from error
+            previous.unlink()
+        migrate_baseline(project, platform)
+        migrate_weight_cache(project)
+        migrated = True
         yield
     finally:
-        os.close(fd)
+        try:
+            if migrated:
+                prune_legacy_directories(project)
+        finally:
+            if old_fd is not None:
+                os.close(old_fd)
+            os.close(fd)
 
 
 def source_candidate(project, platform):
@@ -241,10 +331,9 @@ def _reconcile(project, deployment, platform):
     deployed = deployed_candidate(deployment, platform)
     source_sha = validate_model(source, platform) if source is not None else None
     deployed_sha = validate_model(deployed, platform) if deployed is not None else None
+    migrate_baseline(project, platform)
     baseline = checked(project, baseline_relative())
-    legacy_baseline = checked(project, Path("config/models") / platform_name(platform) / ".last-deployed.sha256")
-    baseline_source = baseline if baseline.exists() else legacy_baseline
-    shared = baseline_source.read_text().strip() if baseline_source.exists() else None
+    shared = baseline.read_text().strip() if baseline.exists() else None
     if shared is not None and not SHA.fullmatch(shared):
         raise ModelSyncError("Invalid model synchronization baseline: " + str(baseline))
     selected, selected_sha, action, new_baseline = source, source_sha, "source-only", None
@@ -274,13 +363,13 @@ def _reconcile(project, deployment, platform):
 
 
 def reconcile(project, deployment, platform):
-    with sync_lock(project):
+    with sync_lock(project, platform):
         return _reconcile(project, deployment, platform)
 
 
 def install_config(project, deployment, platform):
     """Run after the service stops, and recheck uploads before copying config."""
-    with sync_lock(project):
+    with sync_lock(project, platform):
         state = _reconcile(project, deployment, platform)
         if state["sha256"] is None:
             raise ModelSyncError("No canonical model is available for deployment")
@@ -293,7 +382,9 @@ def install_config(project, deployment, platform):
         # Conversion inputs, old caches and SHA bookkeeping never enter /opt.
         for source in source_root.rglob("*"):
             relative = source.relative_to(source_root)
-            if relative.parts[0] == "models" or source.suffix.lower() in (".rknn", ".pt", ".onnx"):
+            if (relative.parts[0] in ("models", "weights") or
+                relative.name in (".model-sync.lock", ".last-deployed.sha256") or
+                source.suffix.lower() in (".rknn", ".pt", ".onnx")):
                 continue
             if relative.as_posix() in ("cpu_freq.conf", "follow.conf", "car_motor_can.conf", "vofa.conf") and checked(deployment, Path("config") / relative).exists():
                 continue  # Preserve device-specific frequency, control, motor and telemetry settings.
@@ -310,12 +401,13 @@ def install_config(project, deployment, platform):
         normalize_config(deployment, platform)
         atomic_bytes(checked(project, baseline_relative()),
                      (state["sha256"] + "\n").encode(), owner(project))
+        prune_legacy_directories(deployment)
         return {**state, "action": "deployed"}
 
 
 def publish_converted(project, platform, artifact):
     checksum = validate_model(artifact, platform)
-    with sync_lock(project):
+    with sync_lock(project, platform):
         destination = checked(project, canonical_relative(platform))
         atomic_copy(Path(artifact), destination, checksum, owner(project))
         normalize_config(project, platform, owner(project))
@@ -354,6 +446,11 @@ def config_weights(project):
 
 
 def discover_weights(project, explicit=None):
+    with sync_lock(project):
+        return _discover_weights(project, explicit)
+
+
+def _discover_weights(project, explicit=None):
     """Select a user-specified weight or the sole PT anywhere under config/."""
     if explicit is None:
         explicit = os.environ.get("YOLO_WEIGHTS") or None
@@ -361,6 +458,10 @@ def discover_weights(project, explicit=None):
         selected = Path(explicit)
         possibilities = [selected] if selected.is_absolute() else [Path.cwd() / selected, Path(project) / selected]
         for possibility in possibilities:
+            # Explicit pre-migration cache paths remain usable after relocation.
+            legacy = Path(project).resolve() / "config/models/weights"
+            if possibility.is_relative_to(legacy) and not possibility.exists():
+                possibility = Path(project) / "config/weights" / possibility.relative_to(legacy)
             if possibility.exists() or possibility.is_symlink():
                 path = checked_weight(possibility)
                 return {"path": str(path), "source": "explicit", "requires_conversion": True}
@@ -378,9 +479,14 @@ def discover_weights(project, explicit=None):
 
 
 def cleanup_weights(project, used_weight=None):
+    with sync_lock(project):
+        return _cleanup_weights(project, used_weight)
+
+
+def _cleanup_weights(project, used_weight=None):
     """Delete cache copies and the selected config/ PT after successful build."""
     config = checked(project, Path("config"))
-    cache = checked(project, Path("config/models/weights"))
+    cache = checked(project, Path("config/weights"))
     if cache.exists() and (not cache.is_dir() or cache.is_symlink()):
         raise ModelSyncError("Expected a regular conversion-cache directory: " + str(cache))
     candidates = set()

@@ -123,16 +123,89 @@ class ModelSyncTests(unittest.TestCase):
     def test_fresh_install_excludes_conversion_weights_and_sha_bookkeeping(self):
         self.put(self.project, self.relative, self.a)
         self.config(self.project)
-        self.put(self.project, "config/models/weights/yolo26n.pt", b"conversion input")
+        self.put(self.project, "config/weights/yolo26n.pt", b"conversion input")
         self.put(self.project, "config/models/rk3576/yolo26.rknn", self.a)
         self.put(self.project, "config/coco.names", b"person\n")
         self.put(self.project, "config/can0.dbc", b"dbc template")
         sync.install_config(self.project, self.deployment, self.platform)
         self.assertEqual((self.deployment / self.relative).read_bytes(), self.a)
-        self.assertFalse((self.deployment / "config/models/weights").exists())
+        self.assertFalse((self.deployment / "config/weights").exists())
         self.assertFalse((self.deployment / "config/models/rk3576/yolo26.rknn").exists())
         self.assertFalse((self.deployment / sync.baseline_relative()).exists())
+        self.assertFalse((self.deployment / "config/.model-sync.lock").exists())
+        self.assertFalse((self.deployment / "config/models").exists())
         self.assertEqual((self.deployment / "config/coco.names").read_bytes(), b"person\n")
+
+    def test_sync_metadata_does_not_create_a_models_directory(self):
+        self.establish()
+        self.assertTrue((self.project / "config/.model-sync.lock").is_file())
+        self.assertTrue((self.project / "config/.last-deployed.sha256").is_file())
+        self.assertFalse((self.project / "config/models").exists())
+        sync.install_config(self.project, self.deployment, self.platform)
+        self.assertFalse((self.deployment / "config/models").exists())
+
+    def test_legacy_metadata_and_weights_migrate_without_creating_models_again(self):
+        self.put(self.project, self.relative, self.a)
+        self.put(self.deployment, self.relative, self.a)
+        old_baseline = self.put(self.project, "config/models/.last-deployed.sha256",
+                                (sync.digest(self.project / self.relative) + "\n").encode())
+        self.put(self.project, "config/models/.model-sync.lock", b"")
+        old_weight = self.put(self.project, "config/models/weights/input.pt", b"input")
+        result = sync.discover_weights(self.project, explicit=str(old_weight))
+        self.assertEqual(result["path"], str(self.project / "config/weights/input.pt"))
+        self.assertFalse(old_baseline.exists() or (self.project / "config/models").exists())
+        self.assertEqual((self.project / sync.baseline_relative()).read_text().strip(),
+                         sync.digest(self.project / self.relative))
+        self.reconcile()
+        self.assertFalse((self.project / "config/models").exists())
+        sync.cleanup_weights(self.project)
+        self.assertFalse((self.project / "config/weights").exists())
+
+    def test_empty_legacy_deployment_directories_are_removed(self):
+        self.establish()
+        (self.deployment / "config/models/rk3576").mkdir(parents=True)
+        sync.install_config(self.project, self.deployment, self.platform)
+        self.assertFalse((self.deployment / "config/models").exists())
+
+    def test_different_legacy_and_current_weights_are_both_preserved(self):
+        legacy = self.put(self.project, "config/models/weights/input.pt", b"legacy")
+        current = self.put(self.project, "config/weights/input.pt", b"current")
+        with self.assertRaisesRegex(sync.ModelSyncError, "Conflicting legacy"):
+            sync.discover_weights(self.project, explicit="")
+        self.assertEqual(legacy.read_bytes(), b"legacy")
+        self.assertEqual(current.read_bytes(), b"current")
+
+    def test_conflicting_baselines_are_rejected_without_rewriting_or_removing_any(self):
+        self.put(self.project, self.relative, self.a)
+        self.put(self.deployment, self.relative, self.a)
+        current = self.put(self.project, sync.baseline_relative(), b"a" * 64 + b"\n")
+        old = self.put(self.project, "config/models/.last-deployed.sha256", b"a" * 64 + b"\n")
+        platform = self.put(self.project, "config/models/rk3576/.last-deployed.sha256", b"b" * 64 + b"\n")
+        before = {path: path.read_bytes() for path in (current, old, platform)}
+        with self.assertRaisesRegex(sync.ModelSyncError, "Conflicting model synchronization"):
+            self.reconcile()
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_invalid_legacy_baseline_is_preserved_even_when_a_valid_current_one_exists(self):
+        current = self.put(self.project, sync.baseline_relative(), b"a" * 64 + b"\n")
+        old = self.put(self.project, "config/models/.last-deployed.sha256", b"not a checksum\n")
+        with self.assertRaisesRegex(sync.ModelSyncError, "Invalid model synchronization baseline"):
+            sync.discover_weights(self.project, explicit="")
+        self.assertEqual(current.read_bytes(), b"a" * 64 + b"\n")
+        self.assertEqual(old.read_bytes(), b"not a checksum\n")
+
+    def test_busy_legacy_lock_is_preserved_and_requires_retry(self):
+        old_lock = self.put(self.project, "config/models/.model-sync.lock", b"")
+        weight = self.put(self.project, "config/models/weights/input.pt", b"input")
+        empty = self.project / "config/models/weights/pending"
+        empty.mkdir()
+        with old_lock.open("r+") as held:
+            sync.fcntl.flock(held, sync.fcntl.LOCK_EX | sync.fcntl.LOCK_NB)
+            with self.assertRaisesRegex(sync.ModelSyncError, "Legacy model synchronization is active"):
+                sync.discover_weights(self.project, explicit="")
+            self.assertTrue(old_lock.exists())
+            self.assertEqual(weight.read_bytes(), b"input")
+            self.assertTrue(empty.is_dir())
 
     def test_current_runtime_settings_survive_normalization(self):
         self.establish()
@@ -222,8 +295,8 @@ class ModelSyncTests(unittest.TestCase):
                        (sync.digest(self.deployment / legacy) + "\n").encode())
         self.assertEqual(self.reconcile()["action"], "source-changed")
         migrated = self.project / sync.baseline_relative()
-        self.assertEqual(migrated.read_bytes(), old.read_bytes())
-        old.unlink()  # Later user-authorized cleanup of the obsolete platform cache.
+        self.assertEqual(migrated.read_text().strip(), sync.digest(self.deployment / legacy))
+        self.assertFalse(old.exists())
         sync.install_config(self.project, self.deployment, self.platform)
         self.assertEqual((self.project / self.relative).read_bytes(), self.b)
         self.assertEqual((self.deployment / self.relative).read_bytes(), self.b)
@@ -240,21 +313,21 @@ class ModelSyncTests(unittest.TestCase):
         self.assertEqual((self.project / sync.baseline_relative()).read_text().strip(), sync.digest(self.deployment / self.relative))
 
     def test_weight_cleanup_is_limited_to_regular_cache_pt_files(self):
-        cached = self.put(self.project, "config/models/weights/yolo26n.pt", b"cached input")
-        other = self.put(self.project, "config/models/weights/notes.txt", b"keep")
+        cached = self.put(self.project, "config/weights/yolo26n.pt", b"cached input")
+        other = self.put(self.project, "config/weights/notes.txt", b"keep")
         external = self.put(self.root, "external.pt", b"external input")
         self.assertEqual(sync.cleanup_weights(self.project)["removed"], 1)
         self.assertFalse(cached.exists())
         self.assertTrue(other.exists() and external.exists())
 
     def test_weight_cleanup_removes_an_empty_cache_directory(self):
-        cached = self.put(self.project, "config/models/weights/yolo26n.pt", b"cached input")
+        cached = self.put(self.project, "config/weights/yolo26n.pt", b"cached input")
         self.assertEqual(sync.cleanup_weights(self.project)["removed"], 1)
         self.assertFalse(cached.parent.exists())
         self.assertEqual(sync.cleanup_weights(self.project)["removed"], 0)
 
     def test_weight_cleanup_rejects_symlinks_before_deleting_anything(self):
-        cached = self.put(self.project, "config/models/weights/safe.pt", b"cached input")
+        cached = self.put(self.project, "config/weights/safe.pt", b"cached input")
         external = self.put(self.root, "external.pt", b"external input")
         (cached.parent / "escape.pt").symlink_to(external)
         with self.assertRaises(sync.ModelSyncError):
@@ -263,7 +336,7 @@ class ModelSyncTests(unittest.TestCase):
 
     def test_weight_cleanup_rejects_an_escaped_cache_directory(self):
         external = self.put(self.root, "outside/weight.pt", b"external input")
-        cache = self.project / "config/models/weights"
+        cache = self.project / "config/weights"
         cache.parent.mkdir(parents=True)
         cache.symlink_to(external.parent)
         with self.assertRaises(sync.ModelSyncError):
@@ -320,7 +393,7 @@ class ModelSyncTests(unittest.TestCase):
     def test_selected_config_input_and_cache_are_deleted_but_other_inputs_remain(self):
         selected = self.put(self.project, "config/imported/custom.pt", b"selected")
         other = self.put(self.project, "config/keep.pt", b"unselected")
-        cached = self.put(self.project, "config/models/weights/custom.pt", b"cache")
+        cached = self.put(self.project, "config/weights/custom.pt", b"cache")
         result = sync.cleanup_weights(self.project, str(selected))
         self.assertEqual(result["removed"], 2)
         self.assertFalse(selected.exists() or cached.exists())
@@ -328,14 +401,14 @@ class ModelSyncTests(unittest.TestCase):
 
     def test_selected_external_weight_is_reported_and_preserved(self):
         selected = self.put(self.root, "external.pt", b"external")
-        cached = self.put(self.project, "config/models/weights/external.pt", b"cache")
+        cached = self.put(self.project, "config/weights/external.pt", b"cache")
         result = sync.cleanup_weights(self.project, str(selected))
         self.assertEqual(result["protected_external"], str(selected))
         self.assertTrue(selected.exists())
         self.assertFalse(cached.exists())
 
     def test_unsafe_selected_input_does_not_delete_any_cached_weight(self):
-        cached = self.put(self.project, "config/models/weights/safe.pt", b"cache")
+        cached = self.put(self.project, "config/weights/safe.pt", b"cache")
         outside = self.put(self.root, "outside.pt", b"external")
         selected = self.project / "config/escape.pt"
         selected.symlink_to(outside)
@@ -349,7 +422,7 @@ class ModelSyncTests(unittest.TestCase):
             self.put(self.project, "scripts/" + name, (source_scripts / name).read_bytes())
         self.put(self.project, self.relative, self.a)
         self.config(self.project)
-        self.put(self.project, "config/models/weights/yolo26n.pt", b"cached input")
+        self.put(self.project, "config/weights/yolo26n.pt", b"cached input")
         commands = self.project / "fake-bin"
         for name, script in {
             "cmake": "#!/bin/sh\nexit 0\n",
@@ -384,37 +457,37 @@ class ModelSyncTests(unittest.TestCase):
         result = self.run_build(environment, force=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(external.exists())
-        self.assertFalse((self.project / "config/models/weights").exists())
+        self.assertFalse((self.project / "config/weights").exists())
         self.assertIn(b"newly-converted", (self.project / self.relative).read_bytes())
 
     @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_compilation_keeps_cached_weights(self):
         result = self.run_build(self.build_fixture(make_status=7))
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
-        self.assertTrue((self.project / "config/models/weights/yolo26n.pt").exists())
+        self.assertTrue((self.project / "config/weights/yolo26n.pt").exists())
 
     @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_conversion_keeps_cached_weights(self):
         result = self.run_build(self.build_fixture(yolo_status=9), force=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertTrue((self.project / "config/models/weights/yolo26n.pt").exists())
+        self.assertTrue((self.project / "config/weights/yolo26n.pt").exists())
         self.assertFalse((self.project / "make-was-run").exists())
 
     @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_existing_model_is_reconverted_from_the_single_discovered_weight(self):
         environment = self.build_fixture()
-        (self.project / "config/models/weights/yolo26n.pt").unlink()
+        (self.project / "config/weights/yolo26n.pt").unlink()
         selected = self.put(self.project, "config/imported/my weights.pt", b"selected")
         result = self.run_build(environment)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("model=my weights.pt", (self.project / "export.log").read_text())
         self.assertIn(b"newly-converted", (self.project / self.relative).read_bytes())
-        self.assertFalse(selected.exists() or (self.project / "config/models/weights").exists())
+        self.assertFalse(selected.exists() or (self.project / "config/weights").exists())
 
     @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_existing_model_without_weights_is_reused_without_export(self):
         environment = self.build_fixture()
-        (self.project / "config/models/weights/yolo26n.pt").unlink()
+        (self.project / "config/weights/yolo26n.pt").unlink()
         result = self.run_build(environment)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual((self.project / self.relative).read_bytes(), self.a)
@@ -428,7 +501,7 @@ class ModelSyncTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Multiple .pt weights", result.stderr)
         self.assertFalse((self.project / "export.log").exists() or (self.project / "make-was-run").exists())
-        self.assertTrue(selected.exists() and (self.project / "config/models/weights/yolo26n.pt").exists())
+        self.assertTrue(selected.exists() and (self.project / "config/weights/yolo26n.pt").exists())
 
     @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_explicit_weight_overrides_multiple_inputs_and_preserves_unselected_config_pt(self):
@@ -444,20 +517,20 @@ class ModelSyncTests(unittest.TestCase):
     @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_compilation_preserves_the_discovered_config_input(self):
         environment = self.build_fixture(make_status=7)
-        (self.project / "config/models/weights/yolo26n.pt").unlink()
+        (self.project / "config/weights/yolo26n.pt").unlink()
         selected = self.put(self.project, "config/custom.pt", b"selected")
         result = self.run_build(environment)
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
-        self.assertTrue(selected.exists() and (self.project / "config/models/weights/custom.pt").exists())
+        self.assertTrue(selected.exists() and (self.project / "config/weights/custom.pt").exists())
 
     @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_export_preserves_a_newly_downloaded_weight_for_retry(self):
         environment = self.build_fixture(yolo_status=9)
-        (self.project / "config/models/weights/yolo26n.pt").unlink()
+        (self.project / "config/weights/yolo26n.pt").unlink()
         environment["YOLO_WEIGHTS"] = "new-download.pt"
         result = self.run_build(environment)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual((self.project / "config/models/weights/new-download.pt").read_bytes(), b"downloaded input")
+        self.assertEqual((self.project / "config/weights/new-download.pt").read_bytes(), b"downloaded input")
         self.assertFalse((self.project / "make-was-run").exists())
 
 
