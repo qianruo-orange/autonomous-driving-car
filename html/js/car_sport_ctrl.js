@@ -28,14 +28,15 @@
         turn_kp: '比例系数',
         turn_kd: '微分系数',
         wheel_kp: '比例系数',
-        wheel_ki: '积分系数'
+        wheel_ki: '积分系数',
+        wheel_integral_limit: '积分限幅'
     };
     const groups = [
         ['tracking', '跟踪设置', ['enabled', 'target']],
         ['speed', '速度模式与限速', ['manual', 'max_speed']],
-        ['automatic', '自动调速', ['speed_kp', 'speed_kd']],
         ['steering', '转向参数', ['max_turn_delta', 'deadband', 'turn_kp', 'turn_kd']],
-        ['wheels', '手动调速', ['setpoint', 'wheel_kp', 'wheel_ki']]
+        ['automatic', '自动调速', ['speed_kp', 'speed_kd']],
+        ['wheels', '手动调速', ['setpoint', 'wheel_kp', 'wheel_ki', 'wheel_integral_limit']]
     ];
     const containers = {};
     groups.forEach(([id, title, keys]) => {
@@ -105,6 +106,12 @@
             if (key === 'max_speed' || key === 'setpoint') input.max = '2';
             if (key === 'max_turn_delta') input.max = '4';
             if (key === 'deadband') input.max = '.5';
+            if (key === 'wheel_integral_limit') {
+                input.max = '1';
+                const help = '限制积分项输出，范围 0–1；0 禁用积分';
+                input.setAttribute('data-i18n-title', help);
+                input.title = t(help);
+            }
         }
         input.id = 'car_' + key;
         input.name = key;
@@ -115,6 +122,9 @@
 
     function translate() {
         card.querySelectorAll('[data-i18n]').forEach(el => setI18nText(el, el.getAttribute('data-i18n')));
+        card.querySelectorAll('[data-i18n-title]').forEach(el => {
+            el.title = t(el.getAttribute('data-i18n-title'));
+        });
     }
     translate();
     function updateSpeedMode() {

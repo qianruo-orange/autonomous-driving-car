@@ -12,6 +12,10 @@ typedef struct {
 } follow_pid_t;
 double follow_pid_step(follow_pid_t *pid, follow_gains_t gains, double error, double dt,
                        double limit);
+/* Bound the absolute I-term contribution independently from the total output.
+ * An integral limit of zero clears/disables accumulation; wheel loops use 0..1. */
+double follow_pid_step_limited(follow_pid_t *pid, follow_gains_t gains, double error, double dt,
+                               double output_limit, double integral_limit);
 /* Differential correction and both wheel targets are in m/s; no wheel track is needed. */
 void follow_mix(double speed, double correction, double limit, double *left, double *right);
 /* Motor protocol adapter, intentionally absent until the motor protocol is known.

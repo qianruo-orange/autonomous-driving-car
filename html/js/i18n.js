@@ -5,6 +5,8 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    '积分限幅': 'Integral limit',
+    '限制积分项输出，范围 0–1；0 禁用积分': 'I-term output limit 0–1; 0 disables integration',
     '自动调速': 'Automatic speed control',
     '手动调速': 'Manual speed control',
     '转向参数': 'Steering parameters',

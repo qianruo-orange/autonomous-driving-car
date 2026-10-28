@@ -29,16 +29,20 @@ enum {
     MANUAL,
     SETPOINT,
     AREA,
+    WHEEL_I_LIMIT,
     N
 };
-static const char *keys[N] = {
-    "enabled",  "class_id", "max_speed", "max_turn_delta", "deadband", "timeout_ms",    "speed_kp",
-    "speed_ki", "speed_kd", "turn_kp",   "turn_ki",        "turn_kd",  "wheel_kp",      "wheel_ki",
-    "wheel_kd", "seed_x",   "seed_y",    "manual",         "setpoint", "reference_area"};
-static const double defaults[N] = {0, 0,    .3, .15, .04, 300, .4, 0, 0,   .15,
-                                   0, .003, 1,  .1,  0,   .5,  .5, 0, .15, 0};
+static const char *keys[N] = {"enabled",        "class_id",       "max_speed",
+                              "max_turn_delta", "deadband",       "timeout_ms",
+                              "speed_kp",       "speed_ki",       "speed_kd",
+                              "turn_kp",        "turn_ki",        "turn_kd",
+                              "wheel_kp",       "wheel_ki",       "wheel_kd",
+                              "seed_x",         "seed_y",         "manual",
+                              "setpoint",       "reference_area", "wheel_integral_limit"};
+static const double defaults[N] = {0,    0, .3, .15, .04, 300, .4, 0,   0, .15, 0,
+                                   .003, 1, .1, 0,   .5,  .5,  0,  .15, 0, 1};
 static struct {
-    pthread_mutex_t lock, feedback_lock;
+    pthread_mutex_t lock, feedback_lock, save_lock;
     pthread_cond_t changed;
     pthread_t thread;
     atomic_int ready;
@@ -48,7 +52,7 @@ static struct {
     double cfg[N], ex, ey, area_error, left_target, right_target, left_output, right_output;
     double measured_left, measured_right, cx, cy;
     unsigned long long feedback_ms, accepted, processed, previous_ms;
-    unsigned long generation, handled;
+    unsigned long generation, handled, capture_epoch;
     yolo_event_meta_t frame;
     follow_pid_t pid[4];
     const char *reason;
@@ -72,7 +76,7 @@ static int valid(const double *v)
            v[SPEED] > .0 && v[SPEED] <= 2 && v[TURN_DELTA] > 0 && v[TURN_DELTA] <= 4 &&
            v[DEAD] <= .5 && v[TIMEOUT] >= 100 && v[TIMEOUT] <= 1000 && v[SEED_X] <= 1 &&
            v[SEED_Y] <= 1 && v[MANUAL] <= 1 && floor(v[MANUAL]) == v[MANUAL] && v[SETPOINT] <= 2 &&
-           (!v[MANUAL] || v[SETPOINT] <= v[SPEED]) && v[AREA] <= 1;
+           (!v[MANUAL] || v[SETPOINT] <= v[SPEED]) && v[AREA] <= 1 && v[WHEEL_I_LIMIT] <= 1;
 }
 static void reset(void)
 {
@@ -94,6 +98,14 @@ static void halt(const char *reason)
     if (g.motor.stop && g.motor.stop(g.app) < 0)
         g.reason = "motor_stop_failed";
 }
+static void stop_wheels(const char *reason)
+{
+    memset(&g.pid[2], 0, 2 * sizeof(g.pid[0]));
+    g.left_output = g.right_output = 0;
+    g.reason = reason;
+    if (g.motor.stop && g.motor.stop(g.app) < 0)
+        g.reason = "motor_stop_failed";
+}
 static void tick(unsigned long long now, int can_enabled)
 {
     if (!g.app->running) {
@@ -109,6 +121,23 @@ static void tick(unsigned long long now, int can_enabled)
         halt("stale_detection");
         return;
     }
+    double left, right;
+    unsigned long long stamp;
+    pthread_mutex_lock(&g.feedback_lock);
+    left = g.measured_left;
+    right = g.measured_right;
+    stamp = g.feedback_ms;
+    pthread_mutex_unlock(&g.feedback_lock);
+    const char *interlock = !g.motor.send  ? "adapter_not_connected"
+                            : !g.fifo      ? "fifo_unavailable"
+                            : !can_enabled ? "can_disabled"
+                            : (!stamp || now < stamp || now - stamp > g.cfg[TIMEOUT])
+                                ? "stale_wheel_feedback"
+                                : NULL;
+    /* Check actuator safety at idle wakes too, without resetting vision timing
+     * or preventing target/setpoint preview when no motor is connected. */
+    if (g.motor.send && interlock)
+        stop_wheels(interlock);
     if (g.handled == g.generation)
         return; /* PID follows new inference timestamps, not polling ticks. */
     g.handled = g.generation;
@@ -147,7 +176,8 @@ static void tick(unsigned long long now, int can_enabled)
         g.ex = 0;
     if (fabs(g.ey) < g.cfg[DEAD])
         g.ey = 0;
-    if (fabs(g.area_error) < g.cfg[DEAD])
+    /* The steering UI's center deadband must not change automatic speed. */
+    if (fabs(g.area_error) < .04)
         g.area_error = 0;
     double dt = g.previous_ms && g.frame.capture_monotonic_ms > g.previous_ms
                     ? (g.frame.capture_monotonic_ms - g.previous_ms) / 1000.0
@@ -165,32 +195,18 @@ static void tick(unsigned long long now, int can_enabled)
     double correction = follow_pid_step(&g.pid[1], (follow_gains_t){g.cfg[TP], 0, g.cfg[TD]}, g.ex,
                                         dt, g.cfg[TURN_DELTA]);
     follow_mix(v, correction, g.cfg[SPEED], &g.left_target, &g.right_target);
-    double left, right;
-    unsigned long long stamp;
-    pthread_mutex_lock(&g.feedback_lock);
-    left = g.measured_left;
-    right = g.measured_right;
-    stamp = g.feedback_ms;
-    pthread_mutex_unlock(&g.feedback_lock);
     /* No synthetic feedback and no assumed motor encoding. Preview keeps wheel
      * setpoints visible; actuator output requires every interlock below. */
-    const char *reason = !g.motor.send  ? "adapter_not_connected"
-                         : !g.fifo      ? "fifo_unavailable"
-                         : !can_enabled ? "can_disabled"
-                         : (!stamp || now < stamp || now - stamp > g.cfg[TIMEOUT])
-                             ? "stale_wheel_feedback"
-                             : NULL;
-    if (reason) {
-        memset(&g.pid[2], 0, 2 * sizeof(g.pid[0]));
-        g.left_output = g.right_output = 0;
-        g.reason = reason;
-        if (g.motor.stop && g.motor.stop(g.app) < 0)
-            g.reason = "motor_stop_failed";
+    if (interlock) {
+        if (!g.motor.send)
+            stop_wheels(interlock);
         return;
     }
     follow_gains_t wheel_pi = {g.cfg[WP], g.cfg[WI], 0};
-    g.left_output = follow_pid_step(&g.pid[2], wheel_pi, g.left_target - left, dt, 1);
-    g.right_output = follow_pid_step(&g.pid[3], wheel_pi, g.right_target - right, dt, 1);
+    g.left_output = follow_pid_step_limited(&g.pid[2], wheel_pi, g.left_target - left, dt, 1,
+                                            g.cfg[WHEEL_I_LIMIT]);
+    g.right_output = follow_pid_step_limited(&g.pid[3], wheel_pi, g.right_target - right, dt, 1,
+                                             g.cfg[WHEEL_I_LIMIT]);
     if (g.motor.send(g.app, g.left_output, g.right_output) < 0)
         halt("motor_send_failed");
     else
@@ -251,6 +267,7 @@ int follow_init(void *app)
     pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_INHERIT);
     pthread_mutex_init(&g.lock, &ma);
     pthread_mutex_init(&g.feedback_lock, &ma);
+    pthread_mutex_init(&g.save_lock, &ma);
     pthread_mutexattr_destroy(&ma);
     pthread_condattr_t ca;
     pthread_condattr_init(&ca);
@@ -321,6 +338,7 @@ void follow_destroy(void *app)
     pthread_cond_destroy(&g.changed);
     pthread_mutex_destroy(&g.lock);
     pthread_mutex_destroy(&g.feedback_lock);
+    pthread_mutex_destroy(&g.save_lock);
 }
 int follow_bind_motor(const follow_motor_ops_t *ops)
 {
@@ -360,6 +378,7 @@ void follow_submit(const yolo_event_meta_t *frame)
         /* Capture restart may reset its sequence counter. Require explicit
          * re-enable rather than carrying a motor command into a new session. */
         if (frame->seq <= g.accepted) {
+            g.capture_epoch++;
             g.cfg[ENABLED] = 0;
             reset();
         }
@@ -380,37 +399,91 @@ void http_follow_get(app_ctx_t *app, int fd, const char *method, const char *uri
         http_err(fd, 503, "Unavailable", "Controller starting");
         return;
     }
+    struct {
+        double cfg[N], ex, ey, area_error, left_target, right_target, left_output, right_output;
+        int fifo, rt_kernel, rt_error, selected, adapter;
+        unsigned long long processed;
+        const char *reason;
+        yolo_event_meta_t frame;
+    } s;
+    pthread_mutex_lock(&g.lock);
+    memcpy(s.cfg, g.cfg, sizeof(s.cfg));
+    s.ex = g.ex;
+    s.ey = g.ey;
+    s.area_error = g.area_error;
+    s.left_target = g.left_target;
+    s.right_target = g.right_target;
+    s.left_output = g.left_output;
+    s.right_output = g.right_output;
+    s.fifo = g.fifo;
+    s.rt_kernel = g.rt_kernel;
+    s.rt_error = g.rt_error;
+    s.selected = g.selected;
+    s.adapter = g.motor.send != NULL;
+    s.processed = g.processed;
+    s.reason = g.reason;
+    s.frame = g.frame;
+    pthread_mutex_unlock(&g.lock);
+    /* Polling the UI must not hold the controller lock during JSON encoding. */
     char json[32768];
     int off = 0;
-    pthread_mutex_lock(&g.lock);
     off += snprintf(json + off, sizeof(json) - off, "{\"config\":{");
     for (int i = 0; i < N; i++)
         off += snprintf(json + off, sizeof(json) - off, "%s\"%s\":%.6f", i ? "," : "", keys[i],
-                        g.cfg[i]);
+                        s.cfg[i]);
     off += snprintf(json + off, sizeof(json) - off,
                     "},\"status\":{\"reason\":\"%s\",\"fifo\":%s,\"priority\":%d,\"rt_kernel\":%s,"
                     "\"rt_error\":%d,\"adapter\":%s,\"seq\":%llu,\"selected\":%d,\"error_x\":%.5f,"
                     "\"error_y\":%.5f,\"area_error\":%.5f,\"left_target\":%.5f,\"right_target\":%."
                     "5f,\"left_output\":%.5f,\"right_output\":%.5f},\"targets\":[",
-                    g.reason, g.fifo ? "true" : "false", g.fifo ? 20 : 0,
-                    g.rt_kernel ? "true" : "false", g.rt_error, g.motor.send ? "true" : "false",
-                    g.processed, g.selected, g.ex, g.ey, g.area_error, g.left_target,
-                    g.right_target, g.left_output, g.right_output);
-    for (int i = 0; i < g.frame.count; i++) {
-        yolo_event_object_t *d = &g.frame.objects[i];
+                    s.reason, s.fifo ? "true" : "false", s.fifo ? 20 : 0,
+                    s.rt_kernel ? "true" : "false", s.rt_error, s.adapter ? "true" : "false",
+                    s.processed, s.selected, s.ex, s.ey, s.area_error, s.left_target,
+                    s.right_target, s.left_output, s.right_output);
+    for (int i = 0; i < s.frame.count; i++) {
+        yolo_event_object_t *d = &s.frame.objects[i];
         char name[600];
         http_json_escape(d->name, name, sizeof(name));
         off +=
             snprintf(json + off, sizeof(json) - off,
                      "%s{\"class_id\":%d,\"name\":\"%s\",\"x\":%.5f,\"y\":%.5f,\"area\":%.7f}",
-                     i ? "," : "", d->cls, name, (d->x1 + d->x2) * .5 / g.frame.width,
-                     (d->y1 + d->y2) * .5 / g.frame.height,
-                     (d->x2 - d->x1) * (d->y2 - d->y1) / (g.frame.width * (double)g.frame.height));
+                     i ? "," : "", d->cls, name, (d->x1 + d->x2) * .5 / s.frame.width,
+                     (d->y1 + d->y2) * .5 / s.frame.height,
+                     (d->x2 - d->x1) * (d->y2 - d->y1) / (s.frame.width * (double)s.frame.height));
     }
-    pthread_mutex_unlock(&g.lock);
     off += snprintf(json + off, sizeof(json) - off, "]}");
     http_ok_json(fd, json, (size_t)off);
 }
+/* Apply only posted settings; runtime-learned reference and capture-stop state
+ * are owned by the inference path. Ordinary tuning never restarts tracking. */
+static void apply_settings(const double *values, const unsigned char *present)
+{
+    unsigned char changed[N] = {0};
+    for (int i = 0; i < N; i++) {
+        if (!present[i])
+            continue;
+        changed[i] = g.cfg[i] != values[i];
+        g.cfg[i] = values[i];
+    }
+    int new_target = present[CLASS] || present[SEED_X] || present[SEED_Y];
+    if (new_target || changed[ENABLED]) {
+        halt(g.cfg[ENABLED] ? "settings_changed" : "disabled");
+        reset();
+        return;
+    }
+    if (changed[VP] || changed[VI] || changed[VD] || changed[AREA] || changed[MANUAL])
+        memset(&g.pid[0], 0, sizeof(g.pid[0]));
+    if (changed[TP] || changed[TI] || changed[TD] || changed[TURN_DELTA] || changed[DEAD])
+        memset(&g.pid[1], 0, sizeof(g.pid[1]));
+    if (changed[WP] || changed[WI] || changed[WD] || changed[SPEED] || changed[MANUAL])
+        memset(&g.pid[2], 0, 2 * sizeof(g.pid[0]));
+    if (changed[WHEEL_I_LIMIT]) {
+        double bound = g.cfg[WI] > 0 ? g.cfg[WHEEL_I_LIMIT] / g.cfg[WI] : 0;
+        for (int i = 2; i <= 3; i++)
+            g.pid[i].integral = fmax(-bound, fmin(bound, g.pid[i].integral));
+    }
+}
+
 void http_follow_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body)
 {
     (void)app;
@@ -426,36 +499,56 @@ void http_follow_post(app_ctx_t *app, int fd, const char *method, const char *ur
     }
     http_form_field_t fields[32];
     int n = http_form_parse(body, fields, 32);
-    double values[N];
     if (n <= 0 || n == 32) {
         http_err(fd, 400, "Bad Request", "Invalid tracking form");
         return;
     }
-    pthread_mutex_lock(&g.lock);
-    memcpy(values, g.cfg, sizeof(values));
+    double requested[N] = {0}, values[N];
+    unsigned char present[N] = {0};
     for (int i = 0; i < n; i++) {
-        int found = 0;
+        int key = -1;
         for (int k = 0; k < N; k++)
             if (!strcmp(fields[i].key, keys[k])) {
-                char *end;
-                errno = 0;
-                values[k] = strtod(fields[i].val, &end);
-                found = 1;
-                if (errno || end == fields[i].val || *end)
-                    found = 0;
+                key = k;
                 break;
             }
-        if (!found) {
-            pthread_mutex_unlock(&g.lock);
-            http_err(fd, 400, "Bad Request", "Unknown or invalid tracking parameter");
+        if (key < 0 || present[key]) {
+            http_err(fd, 400, "Bad Request", "Unknown or duplicate tracking parameter");
             return;
         }
+        char *end;
+        errno = 0;
+        requested[key] = strtod(fields[i].val, &end);
+        if (errno || end == fields[i].val || *end || !isfinite(requested[key])) {
+            http_err(fd, 400, "Bad Request", "Invalid numeric tracking parameter");
+            return;
+        }
+        present[key] = 1;
     }
+
+    /* Serialize saves separately; the control worker never takes save_lock. */
+    pthread_mutex_lock(&g.save_lock);
+    pthread_mutex_lock(&g.lock);
+    memcpy(values, g.cfg, sizeof(values));
+    for (int i = 0; i < N; i++)
+        if (present[i])
+            values[i] = requested[i];
     if (!valid(values)) {
         pthread_mutex_unlock(&g.lock);
+        pthread_mutex_unlock(&g.save_lock);
         http_err(fd, 400, "Bad Request", "Tracking parameters outside limits");
         return;
     }
+    unsigned long capture_epoch = g.capture_epoch;
+    if (present[ENABLED] && !values[ENABLED]) {
+        /* A valid explicit stop does not wait for storage to finish. */
+        g.cfg[ENABLED] = 0;
+        halt("disabled");
+    }
+    pthread_mutex_unlock(&g.lock);
+
+    /* All formatting, buffered writes and close/flush happen off the control
+     * lock. Only the final atomic rename and runtime commit need that lock. */
     FILE *f = fopen("config/follow.conf.tmp", "w");
     int failed = !f;
     if (f) {
@@ -464,27 +557,35 @@ void http_follow_post(app_ctx_t *app, int fd, const char *method, const char *ur
                 failed = 1;
         if (fclose(f))
             failed = 1;
-        if (!failed && rename("config/follow.conf.tmp", "config/follow.conf"))
-            failed = 1;
     }
     if (failed) {
         remove("config/follow.conf.tmp");
-        pthread_mutex_unlock(&g.lock);
+        pthread_mutex_unlock(&g.save_lock);
         http_err(fd, 500, "Error", "Cannot save tracking settings");
         return;
     }
-    double previous_x = g.cx, previous_y = g.cy;
-    int preserve_target =
-        g.tracked && !http_form_find(fields, n, "seed_x") && !http_form_find(fields, n, "class_id");
-    halt("settings_changed");
-    memcpy(g.cfg, values, sizeof(values));
-    reset();
-    if (preserve_target) {
-        g.cx = previous_x;
-        g.cy = previous_y;
+
+    pthread_mutex_lock(&g.lock);
+    int session_sensitive = present[CLASS] || present[SEED_X] || present[SEED_Y] || present[AREA] ||
+                            (present[ENABLED] && values[ENABLED]);
+    if (session_sensitive && capture_epoch != g.capture_epoch) {
+        pthread_mutex_unlock(&g.lock);
+        remove("config/follow.conf.tmp");
+        pthread_mutex_unlock(&g.save_lock);
+        http_err(fd, 409, "Conflict", "Camera session changed; select target and retry");
+        return;
     }
+    if (rename("config/follow.conf.tmp", "config/follow.conf")) {
+        pthread_mutex_unlock(&g.lock);
+        remove("config/follow.conf.tmp");
+        pthread_mutex_unlock(&g.save_lock);
+        http_err(fd, 500, "Error", "Cannot commit tracking settings");
+        return;
+    }
+    apply_settings(values, present);
     pthread_cond_signal(&g.changed);
     pthread_mutex_unlock(&g.lock);
+    pthread_mutex_unlock(&g.save_lock);
     http_ok_text(fd, "saved");
 }
 
@@ -495,12 +596,22 @@ static double clamp(double v, double n)
 }
 double follow_pid_step(follow_pid_t *p, follow_gains_t g, double e, double dt, double limit)
 {
+    return follow_pid_step_limited(p, g, e, dt, limit, limit);
+}
+
+double follow_pid_step_limited(follow_pid_t *p, follow_gains_t g, double e, double dt, double limit,
+                               double integral_limit)
+{
     if (!p || !isfinite(e) || !isfinite(dt) || dt <= 0 || dt > .5 || !isfinite(limit) ||
-        limit <= 0 || !isfinite(g.kp) || !isfinite(g.ki) || !isfinite(g.kd))
+        limit <= 0 || !isfinite(integral_limit) || integral_limit < 0 || !isfinite(g.kp) ||
+        !isfinite(g.ki) || !isfinite(g.kd))
         return 0;
     double derivative = p->valid ? (e - p->previous) / dt : 0;
     p->derivative += (dt / (.05 + dt)) * (derivative - p->derivative);
-    double integral = clamp(p->integral + e * dt, g.ki > 0 ? limit / g.ki : 0);
+    double accumulator_limit = g.ki > 0 ? fmin(limit, integral_limit) / g.ki : 0;
+    /* Enforce a lowered limit even when output saturation blocks integration. */
+    p->integral = clamp(p->integral, accumulator_limit);
+    double integral = clamp(p->integral + e * dt, accumulator_limit);
     double output = g.kp * e + g.ki * integral + g.kd * p->derivative;
     /* Conditional integration prevents saturation from winding up the loop. */
     if (fabs(output) <= limit || e * output < 0)
