@@ -10,17 +10,27 @@ h1{font-size:24px;margin-bottom:0}
 .tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
 .top-bar .theme-btn{position:static;margin-left:0;flex:none}
 .card{border-radius:18px;padding:20px;margin-bottom:16px;max-width:700px;transition:border-color .25s}
-.card h3{color:var(--accent);border-left:3px solid var(--accent);border-bottom:1px solid var(--card-border);padding-left:10px;padding-bottom:6px;display:flex;align-items:center;gap:8px}
-#card_yolo h3{border-left-color:#34d399}
-#card_can h3{border-left-color:#fbbf24;flex-wrap:wrap}
+.card h3{color:var(--accent);border-left:3px solid var(--section-mark,var(--accent));border-bottom:1px solid var(--card-border);padding-left:10px;padding-bottom:6px;display:flex;align-items:center;gap:8px}
+#camera_form{--section-mark:#a5b4fc}
+#card_yolo{--section-mark:#5bd5ae}
+#card_can{--section-mark:#e9bd63}
+#card_net{--section-mark:#61c4e6}
+#card_cpufreq{--section-mark:#e99ab9}
+#card_nettest{--section-mark:#efa875}
+#card_car_ctrl{--section-mark:#bc9aef}
+/* Deeper accents remain distinct on the light card background. */
+html[data-theme="light"] #camera_form{--section-mark:#6366c7}
+html[data-theme="light"] #card_yolo{--section-mark:#16866b}
+html[data-theme="light"] #card_can{--section-mark:#a87518}
+html[data-theme="light"] #card_net{--section-mark:#167fa5}
+html[data-theme="light"] #card_cpufreq{--section-mark:#b9507e}
+html[data-theme="light"] #card_nettest{--section-mark:#ba652e}
+html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
+#card_can h3{flex-wrap:wrap}
 #card_can[hidden]{display:none}
 #can_feature_toggle[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 #can_feature_toggle:disabled,#card_can button:disabled,#card_can select:disabled,#card_can input:disabled{opacity:.5;cursor:default}
 #card_can .can-dbc-link{margin:0 0 0 auto;padding:4px 14px;white-space:nowrap}
-#card_net h3{border-left-color:#38bdf8}
-#card_video h3{border-left-color:#818cf8}
-#card_cpufreq h3{border-left-color:#f472b6}
-#card_nettest h3{border-left-color:#fb923c}
 .card-status{font-size:12px;white-space:nowrap;transition:opacity .3s}
 .card-status.ok{color:#4cc9a0}
 .card-status.err{color:#e0556a}
