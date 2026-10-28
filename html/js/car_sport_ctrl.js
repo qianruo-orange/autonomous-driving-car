@@ -7,7 +7,7 @@
     card.id = 'card_car_ctrl';
     card.style.gridColumn = '1 / -1';
     card.innerHTML = '<h3><span data-i18n="小车跟随控制"></span><span id="car_save_status" role="status" class="card-status"></span></h3>' +
-        '<div class="cfg-grid vid2" id="car_fields"></div><p class="tip" data-i18n="电机 CAN 协议接口预留，未接入时仅预览；每次启动默认停止。"></p><pre id="car_runtime" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></pre>';
+        '<div class="cfg-grid vid2" id="car_fields"></div>';
     grid.appendChild(card);
     const fields = card.querySelector('#car_fields');
     const dirtyKeys = new Set();
@@ -153,7 +153,6 @@
     });
 
     function render(data) {
-        const s = data.status;
         latest = data;
         {
             for (const [key, value] of Object.entries(data.config)) {
@@ -175,27 +174,6 @@
                 });
             }
         }
-        const reason = {
-            disabled: '停止',
-            stale_detection: '识别数据过期',
-            target_lost: '目标丢失',
-            priming: '等待下一识别帧',
-            adapter_not_connected: '未接入电机协议',
-            realtime_kernel_required: '需要实时内核',
-            fifo_unavailable: '实时调度不可用',
-            can_disabled: 'CAN 已停用',
-            stale_wheel_feedback: '轮速反馈过期',
-            active: '正在控制',
-            settings_changed: '参数已更新',
-            shutdown: '停止',
-            motor_send_failed: '电机发送失败',
-            motor_stop_failed: '电机停止失败'
-        };
-        card.querySelector('#car_runtime').textContent = t(reason[s.reason] || '停止') + ' | ' + (s.fifo ? 'SCHED_FIFO / ' + s.priority : 'SCHED_OTHER') + ' | PREEMPT_RT: ' + (s.rt_kernel ? 'Yes' : 'No') +
-            (s.rt_error ? ' | ' + t('实时调度错误') + ': ' + s.rt_error : '') + '\n' +
-            t('中心误差') + ': X ' + s.error_x.toFixed(3) + ' / Y ' + s.error_y.toFixed(3) + ' | ' + t('左右轮目标速度') + ': ' + s.left_target.toFixed(3) + ' / ' + s.right_target.toFixed(3) + ' m/s\n' +
-            t('目标大小误差') + ': ' + s.area_error.toFixed(3) + ' | ' +
-            t('左右轮控制输出') + ': ' + s.left_output.toFixed(3) + ' / ' + s.right_output.toFixed(3) + ' | ' + t('识别帧') + ': ' + s.seq;
         fields.querySelectorAll('input,select,button').forEach(el => el.disabled = busy);
         loaded = true;
         updateSpeedMode();
