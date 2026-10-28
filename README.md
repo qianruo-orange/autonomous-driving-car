@@ -199,7 +199,7 @@ FIFO success does not imply PREEMPT_RT. The validation board has not been upgrad
 
 The **board is the TCP server**; VOFA+ on the PC is the **TCP client**. Telemetry reads controller snapshots and never runs a control iteration or enables motors.
 
-1. Open **系统配置 → Web与VOFA设置**. Select **启用 VOFA**, choose **VOFA端口** (default `6667`, allowed `1024..65535`) and **发送频率 (Hz)** (default `30`, allowed `1..100`), then use the top Save button.
+1. Open **系统配置 → Web与VOFA设置**. Select **启用 VOFA**, choose **VOFA端口** (default `6667`, allowed `1024..65535`) and **发送频率** (Hz; default `30`, allowed `1..100`), then use the top Save button.
 2. In VOFA+, select **TCP Client**, the board IP and saved VOFA port, and the **JustFloat** data engine. For example, a board at `192.168.1.5` with port `6667` accepts a connection to `192.168.1.5:6667`.
 3. Add two Waveform components. Use time `T` as X; bind CH0/CH1 to the speed plot and CH2/CH3 to the steering-correction plot. Set the sample interval to `1 / rate_hz` seconds: about `33.333 ms` at 30 Hz.
 4. After changing the port, reconnect the client to the new port. Update the plot interval when changing rate. Select **停用 VOFA** and save to close telemetry connections.

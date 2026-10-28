@@ -83,6 +83,9 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .net2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 .net2 .row label{min-width:96px}
 .net2 .row input,.net2 .row select{max-width:none;width:100%}
+.vofa-rate-control{display:flex;align-items:center;gap:8px;flex:1;min-width:0;width:100%}
+.vofa-rate-control input{min-width:0}
+.vofa-rate-control .unit{margin:0}
 /* Compact settings cards: two equal columns with full-width controls. */
 .vid2{grid-template-columns:repeat(2,minmax(0,1fr))}
 .vid2 .row{display:grid;grid-template-columns:1fr;gap:6px;min-width:0}

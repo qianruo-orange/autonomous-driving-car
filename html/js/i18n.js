@@ -12,7 +12,7 @@
     '停用 VOFA': 'Off',
     '启用 VOFA': 'On',
     '正在保存 VOFA 设置…': 'Saving VOFA settings...',
-    '发送频率 (Hz)': 'Send rate (Hz)',
+    '发送频率': 'Send rate',
     '无法读取 VOFA 状态': 'Unable to read VOFA status',
     'VOFA 设置已保存': 'VOFA settings saved',
     '无法保存 VOFA 设置，请检查端口是否被占用': 'Unable to save VOFA settings; check whether the port is in use',
