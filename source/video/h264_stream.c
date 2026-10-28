@@ -31,6 +31,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #include "yolo/rknn_yolo.h"
 #include "core/common.h"
@@ -111,6 +113,18 @@ static int h264s_cond_timedwait_ms(unsigned ms)
     ts.tv_nsec += (long)(ms % 1000) * 1000000L;
     if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
     return pthread_cond_timedwait(&g_h264s.cond, &g_h264s.lock, &ts);
+}
+
+/* Recheck availability while holding the condition's mutex. A producer may
+ * publish after the caller's empty-ring check but before this lock is taken;
+ * its broadcast must not be lost by sleeping with that frame already queued.
+ * Keep a bounded wait so the outer loop can still detect disconnected peers. */
+static void h264s_wait_for_frame(const h264s_client_t *c, uint64_t expected)
+{
+    pthread_mutex_lock(&g_h264s.lock);
+    if (!g_h264s.stop && g_h264s.epoch == c->epoch && expected >= g_h264s.next_seq)
+        h264s_cond_timedwait_ms(H264S_POLL_MS);
+    pthread_mutex_unlock(&g_h264s.lock);
 }
 
 /* 新帧广播可能提前唤醒等待，须重查目标时刻；stop/epoch 变更则立即退出。
@@ -660,6 +674,12 @@ static void *h264_stream_client_task(void *arg)
     int fd = c->fd;
     h264_stream_client_close_cb on_close = c->on_close;
 
+    /* Send each completed media fragment promptly instead of waiting for a
+     * previous small TCP packet to be acknowledged. Non-TCP test sockets do not
+     * support this option; the stream remains usable if the option is absent. */
+    int nodelay = 1;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
     /* YOLO 为必要流程（与录像同源）：无 YOLO 直接 503（与 mjpeg_yolo 行为对齐） */
     if (!rknn_yolo_enabled()) {
         h264s_fail(c, 503, "Service Unavailable", "YOLO 推理不可用（无 YOLO）\n");
@@ -834,10 +854,7 @@ static void *h264_stream_client_task(void *arg)
         if (c->oom) break;   /* 片段缓冲分配失败：致命，断连 */
         if (!have) {
             /* 无新帧：等待（被 stop/epoch 变更/新帧广播唤醒） */
-            pthread_mutex_lock(&g_h264s.lock);
-            if (!g_h264s.stop && g_h264s.epoch == c->epoch)
-                h264s_cond_timedwait_ms(H264S_POLL_MS);
-            pthread_mutex_unlock(&g_h264s.lock);
+            h264s_wait_for_frame(c, expected);
             continue;
         }
         if (flen == 0) {   /* 纯 SEI/AUD 等无 VCL 帧：游标推进跳过，不占 mfhd 序号 */

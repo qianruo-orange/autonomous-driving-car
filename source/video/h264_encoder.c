@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sched.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -303,6 +304,14 @@ static int ff_encoder_open_sw(h264_encoder_t *e, int fps, int bitrate_bps)
     ctx->rc_max_rate = (int64_t)bitrate_bps * 5 / 4;
     ctx->gop_size    = (fps > 0 ? fps : 30) * 2;  /* GOP = 2s */
     ctx->max_b_frames = 0;
+    /* Size the software pool from the recording worker's allowed CPU group,
+       rather than relying on library-specific automatic thread selection.
+       Encoder helpers inherit this mask and share it with inference workers.
+       Keep preset, bitrate, pixel format and zerolatency behavior unchanged. */
+    cpu_set_t allowed;
+    ctx->thread_count = sched_getaffinity(0, sizeof(allowed), &allowed) == 0
+                      ? CPU_COUNT(&allowed) : 1;
+    if (ctx->thread_count < 1) ctx->thread_count = 1;
     ctx->flags      |= AV_CODEC_FLAG_LOW_DELAY;
     /* SPS/PPS inlined with every IDR (no GLOBAL_HEADER) so the downstream
        Annex-B / avcC path matches the hardware backend. */
