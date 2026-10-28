@@ -21,10 +21,12 @@
 void http_send_response(int fd, int code, const char *status, const char *mime, const void *body, size_t len);
 void http_handle_404(int fd, const char *path);
 void http_serve_file(int fd, const char *uri);
-/* On success a detached worker owns fd; caller must detach its reactor entry. */
+/* On success a detached worker owns fd; caller must detach its reactor entry.
+ * Worker invokes on_close immediately BEFORE close(fd); callback must not close. */
 int http_detection_download_start(int fd, const char *uri, void (*on_close)(int));
 int http_files_video_authorized(const char *uri, const char *request);
 int http_files_download_authorized(const char *request);
+/* Same callback/close ordering as http_detection_download_start above. */
 int http_files_start(app_ctx_t *app, int fd, const char *method, const char *uri,
                      const char *request, void (*on_close)(int));
 void http_cpufreq_restore(void);

@@ -48,7 +48,7 @@ HTTP :80 -> pages, configuration APIs, status, and protected file operations
 | `source/control/car_sport_ctrl.c` | Target association, speed/steering control, wheel PI, motion interlocks, following API |
 | `source/can/`, `include/can/` | Shared SocketCAN transport, CAN enable/disable, filters, DBC parsing, motor profile mapping |
 | `source/tcp/`, `include/tcp/` | VOFA TCP listener/client lifecycle and event loop; system interface IP helpers |
-| `source/telemetry/`, `include/telemetry/` | Read-only controller sampling, JustFloat encoding, VOFA configuration/API |
+| `source/telemetry/`, `include/telemetry/` | Read-only controller sampling, simulated link-test signals, JustFloat encoding, VOFA configuration/API |
 | `source/http/`, `include/http/` | HTTP reactor, authentication, configuration, monitoring, video/file APIs |
 | `source/watchdog/`, `include/watchdog/` | Worker heartbeat supervision and systemd notification |
 | `html/` | Browser pages, shared themes, bilingual labels, configuration and player logic |
@@ -137,7 +137,9 @@ Management pages, writes, and protected file operations use local administrator 
 
 **Web & VOFA Settings / Web与VOFA设置** configures the system interface used to reach the Web UI: Web interface, static/DHCP mode, IP, netmask, and gateway. HTTP remains on port 80 and listens on the board's configured IPv4 interfaces; selecting a management interface does not restrict HTTP to that interface. IP changes affect the actual system interface and can disconnect the browser.
 
-The same continuous field area contains VOFA enable state, **VOFA端口**, and send rate. Its **one Save button** saves VOFA first and applies IP last. If VOFA saving fails, IP is not applied. These are sequential saves: an IP-save failure does not roll back an already saved VOFA change.
+The same continuous field area contains VOFA enable state, **VOFA端口**, send rate, and **VOFA测试**. Its **one Save button** saves VOFA first and applies IP last. If VOFA saving fails, IP is not applied. These are sequential saves: an IP-save failure does not roll back an already saved VOFA change.
+
+Web and VOFA each admit at most **two clients**, independently. Web counts source IPv4 addresses: a device's pages, API requests, downloads, and video connections share one slot. A Web slot becomes available 30 seconds after that address's last connection closes; requests from a third address receive HTTP 503 with `Retry-After`. Devices sharing a NAT address count as one Web client. VOFA counts TCP connections and closes excess connections; disconnecting a client releases its slot immediately.
 
 The former ordinary TCP **6666** service, client buffers, transmit queue, and configuration fields have been removed. Legacy `tcp_port`/`max_clients` file entries are ignored. Legacy `tcp_bind` is read only to migrate a management interface when `ip_ifname` is absent; subsequent saves omit these legacy keys.
 
@@ -197,7 +199,7 @@ FIFO success does not imply PREEMPT_RT. The validation board has not been upgrad
 
 ## VOFA+ setup
 
-The **board is the TCP server**; VOFA+ on the PC is the **TCP client**. Telemetry reads controller snapshots and never runs a control iteration or enables motors.
+The **board is the TCP server**; VOFA+ on the PC is the **TCP client**. Normal telemetry reads controller snapshots; test mode generates signals for the same transport. Neither mode runs a control iteration or enables motors.
 
 1. Open **系统配置 → Web与VOFA设置**. Select **启用 VOFA**, choose **VOFA端口** (default `6667`, allowed `1024..65535`) and **发送频率** (Hz; default `30`, allowed `1..100`), then use the top Save button.
 2. In VOFA+, select **TCP Client**, the board IP and saved VOFA port, and the **JustFloat** data engine. For example, a board at `192.168.1.5` with port `6667` accepts a connection to `192.168.1.5:6667`.
@@ -211,11 +213,13 @@ The **board is the TCP server**; VOFA+ on the PC is the **TCP client**. Telemetr
 | CH2 | Target steering correction / 目标转向修正 | `(left_target - right_target) / 2` | m/s |
 | CH3 | Actual steering correction / 实际转向修正 | `(measured_left - measured_right) / 2` | m/s |
 
-Steering channels are differential wheel-speed correction, not steering angle or yaw rate. Missing/stale wheel feedback produces IEEE `NaN` for actual channels; the HTTP snapshot uses `null`. No fabricated zero-speed measurements are supplied.
+In **关闭测试（实际数据）** mode (the default), steering channels are differential wheel-speed correction, not steering angle or yaw rate. Missing/stale wheel feedback produces IEEE `NaN` for actual channels; the HTTP snapshot uses `null`. No fabricated zero-speed measurements are supplied.
 
-Each packet contains four little-endian 32-bit floats and the tail `00 00 80 7F`: **20 bytes**, with no text header or channel names. Samples repeat the current state between inference updates. Up to four clients are supported; pending application output is bounded, and slow clients may lose samples or be disconnected. Sampling rate is subject to scheduling.
+To test the link without a camera, motor, or wheel feedback, select **VOFA测试 → 模拟波形**, keep **启用 VOFA** selected, and save. The existing port and send rate apply. CH0 is a sine wave, CH1 a cosine wave, CH2 a triangle wave, and CH3 a square wave; all have a four-second period and amplitude from -1 to +1. These are normalized test values with no physical unit. The separate backend `vofa_test` module generates them using monotonic elapsed time and only replaces outgoing telemetry. It never injects controller feedback or sends CAN commands. `/api/vofa` reports `config.test_mode=1`, `status.test_active=true`, and `status.data_source="simulation"`; `feedback_valid` remains false for simulated output. Select **关闭测试（实际数据）** and save to restore controller data on the same connection.
 
-The webpage shows configuration only; view plots in VOFA+. A busy replacement port rejects the save and retains previous settings/connections. Settings persist in `config/vofa.conf` and are preserved by normal deployment.
+Each packet contains four little-endian 32-bit floats and the tail `00 00 80 7F`: **20 bytes**, with no text header or channel names. Normal samples repeat the current state between inference updates; test signals advance independently of inference. Up to **two TCP clients** are supported; pending application output is bounded, and slow clients may lose samples or be disconnected. Sampling rate is subject to scheduling.
+
+The webpage shows configuration only; view plots in VOFA+. A busy replacement port rejects the save and retains previous settings/connections. Settings, including `test_mode` (`0` for controller data, `1` for simulated signals), persist in `config/vofa.conf` and are preserved by normal deployment. Existing files without `test_mode` use controller data. Disabling VOFA closes its connections and stops output even when test mode is selected.
 
 ## Recordings and detection reports
 
@@ -247,7 +251,7 @@ Paths are relative to the runtime working directory (`/opt/autonomous-driving-ca
 | `config/config.txt` | Camera, YOLO, CAN, and Web interface IP configuration |
 | `config/follow.conf` | Following parameters; moving state is not restored at startup |
 | `config/car_motor_can.conf` | Actual motor protocol profile; not supplied/enabled by default |
-| `config/vofa.conf` | VOFA enable state, port, and sample rate |
+| `config/vofa.conf` | VOFA enable state, port, sample rate, and link-test mode |
 | `config/cpu_freq.conf` | CPU governor/min/max values per policy |
 | `config/yolo26.rknn` | Canonical model |
 | `config/coco.names` | Default class labels |
@@ -297,7 +301,7 @@ curl -s http://127.0.0.1/api/video/stats
 | CPU clock below requested value | Selected policy, effective limits, temperature and kernel thermal controls |
 | Model synchronization conflict | Resolve independent project/deployment changes before retrying |
 
-CTest covers frame ownership/queues, H.264 timeline, color conversion, recording splits, reports, model synchronization, files, CPU settings, CAN lifecycle, Web configuration, and VOFA TCP lifecycle. Passing these checks does not establish real-motor protocol compatibility, long-term video stability, PREEMPT_RT readiness, or PC VOFA+ UI acceptance.
+CTest covers frame ownership/queues, H.264 timeline, color conversion, recording splits, reports, model synchronization, files, CPU settings, CAN lifecycle, Web configuration/client admission, and VOFA TCP lifecycle/simulated signals. Passing these checks does not establish real-motor protocol compatibility, long-term video stability, PREEMPT_RT readiness, or PC VOFA+ UI acceptance.
 
 ## License
 

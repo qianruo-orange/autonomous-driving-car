@@ -12,13 +12,16 @@
         '<div class="row"><label for="vofa_port" data-i18n="VOFA端口"></label>' +
         '<input id="vofa_port" name="port" type="number" min="1024" max="65535" step="1" required disabled></div>' +
         '<div class="row"><label for="vofa_rate_hz" data-i18n="发送频率"></label>' +
-        '<div class="field-unit"><input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" aria-describedby="vofa_rate_unit" required disabled><span class="unit" id="vofa_rate_unit">Hz</span></div></div>';
+        '<div class="field-unit"><input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" aria-describedby="vofa_rate_unit" required disabled><span class="unit" id="vofa_rate_unit">Hz</span></div></div>' +
+        '<div class="row"><label for="vofa_test_mode" data-i18n="VOFA测试"></label>' +
+        '<select id="vofa_test_mode" name="test_mode" disabled><option value="0" data-i18n="关闭测试（实际数据）"></option>' +
+        '<option value="1" data-i18n="模拟波形"></option></select></div>';
     networkCard.querySelector('.net2').append(...card.childNodes);
     applyI18n(networkCard);
 
     const status = networkCard.querySelector('#status_net');
     const save = networkCard.querySelector('#network_save');
-    const inputs = ['enabled', 'port', 'rate_hz'].map(key => networkCard.querySelector('#vofa_' + key));
+    const inputs = ['enabled', 'port', 'rate_hz', 'test_mode'].map(key => networkCard.querySelector('#vofa_' + key));
     const dirty = new Set();
     let loaded = false;
     let busy = false;
@@ -38,7 +41,8 @@
         if (!data || !data.config || !data.status) throw new Error('Invalid VOFA response');
         if (!Number.isInteger(data.config.port) || data.config.port < 1024 || data.config.port > 65535 ||
             !Number.isInteger(data.config.rate_hz) || data.config.rate_hz < 1 || data.config.rate_hz > 100 ||
-            ![true, false, 0, 1].includes(data.config.enabled)) throw new Error('Invalid VOFA configuration');
+            ![true, false, 0, 1].includes(data.config.enabled) ||
+            ![true, false, 0, 1].includes(data.config.test_mode)) throw new Error('Invalid VOFA configuration');
         return data;
     }
     function render(data, acceptAll) {
@@ -46,7 +50,8 @@
         latest = data;
         inputs.forEach(input => {
             if (acceptAll || !dirty.has(input.name)) {
-                input.value = input.name === 'enabled' ? (data.config.enabled ? '1' : '0') : String(data.config[input.name]);
+                const value = data.config[input.name];
+                input.value = input.name === 'enabled' || input.name === 'test_mode' ? (value ? '1' : '0') : String(value);
             }
         });
         loaded = true;

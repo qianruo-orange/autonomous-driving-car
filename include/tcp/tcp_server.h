@@ -5,7 +5,7 @@
 #include <pthread.h>
 #include "core/config.h"
 
-#define TCP_VOFA_CLIENTS 4
+#define TCP_VOFA_CLIENTS 2
 #define TCP_VOFA_FRAME_BYTES 20
 
 typedef struct {

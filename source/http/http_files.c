@@ -458,7 +458,8 @@ static void *file_worker(void *argument)
         else if(!strcmp(job->uri,"/api/files/clear")&&!strcmp(job->method,"POST"))file_bulk(job,1);
         else file_response(job,405,"text/plain",NULL,NULL,0);
     }
-    close(job->fd);if(job->on_close)job->on_close(job->fd);free(job->request);free(job);
+    /* Return admission before close: the OS may immediately reuse the fd. */
+    if(job->on_close)job->on_close(job->fd);close(job->fd);free(job->request);free(job);
     pthread_mutex_lock(&file_worker_lock);file_workers--;pthread_mutex_unlock(&file_worker_lock);return NULL;
 }
 

@@ -142,11 +142,12 @@ static void *detection_download_worker(void *argument)
     }
     close(source);
 done:
-    close(job->fd);
     pthread_mutex_lock(&detection_download_lock);
     detection_download_active--;
     pthread_mutex_unlock(&detection_download_lock);
+    /* The callback releases Web admission while this socket still owns fd. */
     if (job->on_close) job->on_close(job->fd);
+    close(job->fd);
     free(job);
     return NULL;
 }

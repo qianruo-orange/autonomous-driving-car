@@ -47,9 +47,8 @@ int yolo_events_pack_reports(unsigned *count)
 
 static void closed(int fd)
 {
-    /* The peer's EOF checks closure. Other workers can reuse this fd number
-       before the notification arrives, so do not inspect its current owner. */
-    (void)fd;
+    /* Admission must be returned before close makes this fd reusable. */
+    assert(fcntl(fd, F_GETFD) >= 0);
     pthread_mutex_lock(&fixture_lock);
     callbacks++; pthread_cond_broadcast(&fixture_changed);
     pthread_mutex_unlock(&fixture_lock);

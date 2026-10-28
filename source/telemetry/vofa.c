@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
 #include "telemetry/vofa.h"
+#include "telemetry/vofa_test.h"
 #include "control/car_sport_ctrl.h"
 #include "http/http_internal.h"
 #include "tcp/tcp_server.h"
@@ -12,7 +13,7 @@
 #define VOFA_CONFIG "config/vofa.conf"
 
 typedef struct {
-    int enabled, port, rate_hz;
+    int enabled, port, rate_hz, test_mode;
 } vofa_config_t;
 
 static pthread_mutex_t vofa_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -23,6 +24,7 @@ static struct {
     vofa_config_t config;
     unsigned epoch;
     unsigned long long samples, last_sample_ms, next_sample_ms;
+    unsigned long long test_started_ms;
     follow_telemetry_t latest;
     const char *error;
 } vofa;
@@ -71,6 +73,11 @@ static int apply_field(vofa_config_t *config, const char *key, const char *value
         destination = &config->rate_hz;
         low = 1;
         high = 100;
+    } else if (!strcmp(key, "test_mode")) {
+        bit = 8;
+        destination = &config->test_mode;
+        low = 0;
+        high = 1;
     } else {
         return -1;
     }
@@ -143,8 +150,9 @@ static int save_config(const vofa_config_t *config)
         unlink(temporary);
         return -1;
     }
-    int failed = fprintf(file, "enabled %d\nport %d\nrate_hz %d\n", config->enabled,
-                         config->port, config->rate_hz) < 0;
+    int failed = fprintf(file, "enabled %d\nport %d\nrate_hz %d\ntest_mode %d\n",
+                         config->enabled, config->port, config->rate_hz,
+                         config->test_mode) < 0;
     failed |= fflush(file) != 0;
     failed |= fsync(fd) != 0;
     failed |= fclose(file) != 0;
@@ -175,6 +183,20 @@ static void expire_feedback(follow_telemetry_t *sample, unsigned long long now)
         sample->feedback_valid = 0;
         sample->speed_actual = sample->steering_actual = NAN;
     }
+}
+
+static void simulate_sample(follow_telemetry_t *sample, unsigned long long started,
+                            unsigned long long now)
+{
+    float channels[4];
+    vofa_test_sample(now >= started ? now - started : 0, channels);
+    sample->speed_target = channels[0];
+    sample->speed_actual = channels[1];
+    sample->steering_target = channels[2];
+    sample->steering_actual = channels[3];
+    /* Synthetic output must never be reported as measured wheel feedback. */
+    sample->feedback_valid = 0;
+    sample->feedback_ms = sample->feedback_valid_until_ms = 0;
 }
 
 
@@ -208,6 +230,8 @@ void vofa_tick(app_ctx_t *app)
      * state at every configured period, even when inference has not advanced;
      * sampling never executes a PID iteration or invents measured feedback. */
     if (vofa.config.enabled) {
+        if (vofa.config.test_mode)
+            simulate_sample(&sample, vofa.test_started_ms, now);
         unsigned char frame[VOFA_FRAME_BYTES];
         encode_sample(&sample, frame);
         if (!tcp_vofa_publish(app->tcp, frame)) {
@@ -257,6 +281,7 @@ int vofa_init(void *arg)
         vofa.error = "invalid_saved_settings";
     else
         vofa.config = saved;
+    vofa.test_started_ms = vofa_now_ms();
     tcp_vofa_stage_t stage;
     if (tcp_vofa_stage(app->tcp, vofa.config.enabled, vofa.config.port, &stage))
         vofa.error = "listen_failed";
@@ -306,29 +331,36 @@ void http_vofa_get(app_ctx_t *app, int fd, const char *method, const char *uri, 
     vofa_config_t config = vofa.config;
     follow_telemetry_t latest = vofa.latest;
     unsigned long long samples = vofa.samples, last_sample = vofa.last_sample_ms;
+    unsigned long long test_started = vofa.test_started_ms;
     const char *module_error = vofa.error ? vofa.error : "";
     int ready = atomic_load(&vofa.ready);
     pthread_mutex_unlock(&vofa_lock);
-    expire_feedback(&latest, vofa_now_ms());
+    unsigned long long now = vofa_now_ms();
+    expire_feedback(&latest, now);
+    int test_active = ready && config.enabled && config.test_mode;
+    if (test_active)
+        simulate_sample(&latest, test_started, now);
     tcp_vofa_status_t transport;
     tcp_vofa_get_status(app ? app->tcp : NULL, &transport);
     int length = snprintf(
         json, sizeof(json),
-        "{\"config\":{\"enabled\":%s,\"port\":%d,\"rate_hz\":%d},"
+        "{\"config\":{\"enabled\":%s,\"port\":%d,\"rate_hz\":%d,\"test_mode\":%d},"
         "\"status\":{\"running\":%s,\"listening\":%s,\"bind\":\"0.0.0.0\",\"clients\":%d,"
         "\"samples\":%llu,\"sent_frames\":%llu,\"dropped_frames\":%llu,\"errors\":%llu,"
-        "\"feedback_valid\":%s,\"last_sample_ms\":%llu,\"error\":\"%s\"},"
+        "\"feedback_valid\":%s,\"test_active\":%s,\"data_source\":\"%s\","
+        "\"last_sample_ms\":%llu,\"error\":\"%s\"},"
         "\"channels\":{\"speed_target\":%s,\"speed_actual\":%s,\"steering_target\":%s,"
-        "\"steering_actual\":%s},\"protocol\":\"JustFloat\",\"frame_bytes\":20,\"max_clients\":4}",
-        config.enabled ? "true" : "false", config.port, config.rate_hz,
+        "\"steering_actual\":%s},\"protocol\":\"JustFloat\",\"frame_bytes\":20,\"max_clients\":%d}",
+        config.enabled ? "true" : "false", config.port, config.rate_hz, config.test_mode,
         ready && transport.running ? "true" : "false", transport.listening ? "true" : "false",
         transport.clients, samples, transport.sent_frames, transport.dropped_frames, transport.errors,
-        latest.feedback_valid ? "true" : "false", last_sample,
+        latest.feedback_valid ? "true" : "false", test_active ? "true" : "false",
+        test_active ? "simulation" : "controller", last_sample,
         *module_error ? module_error : transport.error,
         json_channel(latest.speed_target, channels[0], 48),
         json_channel(latest.speed_actual, channels[1], 48),
         json_channel(latest.steering_target, channels[2], 48),
-        json_channel(latest.steering_actual, channels[3], 48));
+        json_channel(latest.steering_actual, channels[3], 48), TCP_VOFA_CLIENTS);
     http_ok_json(fd, json, (size_t)length);
 }
 
@@ -395,6 +427,8 @@ void http_vofa_post(app_ctx_t *app, int fd, const char *method, const char *uri,
     }
     pthread_mutex_lock(&vofa_lock);
     tcp_vofa_commit(app->tcp, next.enabled, next.port, &stage);
+    if (next.enabled && next.test_mode && (!vofa.config.enabled || !vofa.config.test_mode))
+        vofa.test_started_ms = vofa_now_ms();
     vofa.config = next;
     vofa.epoch++;
     vofa.next_sample_ms = 0;

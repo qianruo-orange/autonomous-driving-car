@@ -32,6 +32,7 @@
 #include <grp.h>
 
 #include "http/http_internal.h"
+#include "http/http_client_limit.h"
 #include "yolo/yolo_events.h"
 #include "video/h264_stream.h"
 #include "video/video_stream.h"
@@ -83,6 +84,8 @@ static void http_can_send_wrap(app_ctx_t *app, int fd, const char *method, const
 
 typedef struct http_conn {
     int fd;
+    int client_rejected;
+    unsigned long long reject_close_ms;
     struct http_conn *next;
 
     /* 读缓冲 */
@@ -155,6 +158,7 @@ static void conn_close(http_conn_t *c)
     if (c->src_unlink) { unlink(c->src_unlink); free(c->src_unlink); c->src_unlink = NULL; }
     if (c->up_fp) { fclose(c->up_fp); c->up_fp = NULL; }
     if (c->up_path[0]) { unlink(c->up_path); c->up_path[0] = 0; }
+    http_client_release(c->fd, http_client_now_ms());
     close(c->fd);
     c->fd = -1;
     free(c->wbuf);
@@ -275,6 +279,16 @@ static void conn_drain(http_conn_t *c)
             if (c->closed) return;
             if (c->wlen > 0) { conn_drain(c); return; }
             if (!c->src) { conn_close(c); return; }   /* 源读完：连接结束 */
+            return;
+        }
+        if (c->client_rejected) {
+            /* Send FIN after the 503, then discard an already in-flight request
+             * briefly. Closing with unread upload bytes could reset the socket
+             * and hide the useful response from the browser. */
+            if (!c->reject_close_ms) {
+                c->reject_close_ms = http_client_now_ms() + 1000;
+                shutdown(c->fd, SHUT_WR);
+            }
             return;
         }
         conn_close(c);   /* 响应发送完成 */
@@ -591,14 +605,16 @@ void http_serve_file(int fd, const char *uri)
 /* 视频推流线程退出回调：关闭 fd 并归还连接计数 */
 static void http_video_client_closed(int fd)
 {
+    http_client_release(fd, http_client_now_ms());
     close(fd);
     __atomic_fetch_sub(&g_http_active, 1, __ATOMIC_RELAXED);
 }
 
-/* File workers close their own socket; only return the connection count here. */
+/* File workers invoke this BEFORE closing their socket. Release the mapping
+ * while fd still belongs to this connection, before the OS can reuse it. */
 static void http_detection_client_closed(int fd)
 {
-    (void)fd;
+    http_client_release(fd, http_client_now_ms());
     __atomic_fetch_sub(&g_http_active, 1, __ATOMIC_RELAXED);
 }
 
@@ -625,7 +641,7 @@ static void http_process_request(http_conn_t *c)
         if (http_files_start(app, fd, c->method, c->uri, req, http_detection_client_closed)) {
             static const char busy[] = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 10\r\nConnection: close\r\n\r\nFiles busy";
             (void)send(fd, busy, sizeof(busy)-1, MSG_NOSIGNAL);
-            close(fd); http_detection_client_closed(fd);
+            http_detection_client_closed(fd); close(fd);
         }
         return;
     }
@@ -772,6 +788,13 @@ finish:
 /* 读事件：累积请求缓冲，收齐 header+body 后触发处理 */
 static void conn_read(http_conn_t *c)
 {
+    if (c->client_rejected && c->done) {
+        char discard[8192];
+        ssize_t count = recv(c->fd, discard, sizeof(discard), MSG_DONTWAIT);
+        if (!count || (count < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK))
+            conn_close(c);
+        return;
+    }
     if (c->done) return;
     if (c->body_cl < 0) return;   /* 请求已被拒绝（413），不再接收数据 */
     if (c->rlen >= sizeof(c->rbuf) - 1) {   /* 读缓冲满仍未收齐：拒绝 */
@@ -799,6 +822,21 @@ static void conn_read(http_conn_t *c)
         if (sep) {
             c->hdr_done = 1;
             c->hdr_len = (size_t)(sep - c->rbuf) + (sep[0] == '\r' ? 4 : 2);
+            if (c->client_rejected) {
+                /* Reject before parsing/authenticating any endpoint or opening
+                 * an upload file. The connection never acquired a client slot. */
+                static const char body[] = "Web client limit reached (2). Retry after a client disconnects.\n";
+                char header[256];
+                int length = snprintf(header, sizeof(header),
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\n"
+                    "Content-Length: %zu\r\nRetry-After: 30\r\nConnection: close\r\n\r\n", sizeof(body) - 1);
+                c->done = 1;
+                if (conn_append(c, header, (size_t)length) ||
+                    conn_append(c, body, sizeof(body) - 1)) return;
+                conn_drain(c);
+                if (!c->closed) conn_update_events(c);
+                return;
+            }
             sscanf(c->rbuf, "%15s %255s", c->method, c->uri);
             long cl = http_content_length(c->rbuf);
             if (cl > 0) c->body_cl = cl;
@@ -855,10 +893,12 @@ static void conn_read(http_conn_t *c)
 /* 空闲超时清理：长时间无 IO 进展的连接直接断开 */
 static void conn_sweep(time_t now)
 {
+    unsigned long long monotonic_ms = http_client_now_ms();
     http_conn_t *c = g_conns;
     while (c) {
         http_conn_t *nxt = c->next;
-        if (now - c->last_active > HTTP_CONN_IDLE) conn_close(c);
+        if ((c->reject_close_ms && monotonic_ms >= c->reject_close_ms) ||
+            now - c->last_active > HTTP_CONN_IDLE) conn_close(c);
         c = nxt;
     }
 }
@@ -971,6 +1011,8 @@ void *http_server_task(void *arg)
                         __atomic_fetch_sub(&g_http_active, 1, __ATOMIC_RELAXED);
                         continue;
                     }
+                    c->client_rejected = http_client_acquire(client_fd, client.sin_addr.s_addr,
+                                                             http_client_now_ms()) != 0;
                     struct epoll_event cev;
                     cev.events = EPOLLIN | EPOLLRDHUP | EPOLLHUP;
                     cev.data.fd = client_fd;

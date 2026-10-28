@@ -27,7 +27,7 @@ void http_send_response(int fd,int code,const char *status,const char *mime,cons
 { (void)fd;(void)code;(void)status;(void)mime;(void)body;(void)size;assert(!"unexpected reactor response"); }
 
 static void finished(int fd)
-{ (void)fd;__atomic_add_fetch(&closed_count,1,__ATOMIC_RELAXED); }
+{ assert(fcntl(fd,F_GETFD)>=0);__atomic_add_fetch(&closed_count,1,__ATOMIC_RELAXED); }
 static void put(const char *name,const void *body,size_t n)
 { int fd=open(name,O_WRONLY|O_CREAT|O_TRUNC,0600);assert(fd>=0);assert(!file_write(fd,body,n));close(fd); }
 static const unsigned char mp4[]={0,0,0,8,'f','t','y','p',0,0,0,8,'m','d','a','t',0,0,0,8,'m','o','o','v'};
