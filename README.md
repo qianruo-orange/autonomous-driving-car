@@ -201,25 +201,11 @@ FIFO success does not imply PREEMPT_RT. The validation board has not been upgrad
 
 ## Anonymous Assistant 2.0.1
 
-The **board is the TCP server** and the PC runs **Anonymous Assistant / 匿名助手 2.0.1** as a **TCP client**. It uses ANO V8, including its length field and two checksums. The [official application releases](https://gitee.com/anotc/AnoAssistant/blob/master/1.匿名助手安装包/README.md) document TCP support; the [official protocol definitions](https://gitee.com/anotc/AnoPTv8/wikis/21-协议帧定义大全) define flexible frames and device queries.
+Official website: [ANO Tech / 匿名科创](https://www.anotc.com/). Downloads and software documentation: [Anonymous Assistant official repository](https://gitee.com/anotc/AnoAssistant).
 
-1. Open **系统配置 → Web与匿名助手设置**. Select **启用匿名助手**, set **匿名助手端口** (default `8080`, range `1024..65535`) and **发送频率** (default `30 Hz`, range `1..100`), then save.
-2. In Anonymous Assistant 2.0.1, choose its network **TCP client** mode, enter the board's current IP and configured port, and connect. The assistant receives ANO V8 directly; no text handshake is required.
-3. In **灵活数据 / 灵活帧**, define frame ID **`0xF1`** with four consecutive **Float32** fields in the order below, totaling **16 data bytes**. Names and field types are configured in the assistant; the protocol does not automatically declare them.
-4. Add the four fields to a waveform view. If setting a fixed time interval, use approximately `1 / rate_hz` seconds (`33.333 ms` at 30 Hz); actual scheduling may vary. Reconnect after changing the port.
+Supports **Anonymous Assistant 2.0.1** using **ANO V8 over TCP**: the board is the server and the PC is the client. The default port is **8080**. Enable the service, adjust the port/send rate, or select simulated signals under **系统配置 → Web与匿名助手设置**.
 
-| F1 field | Suggested name | Normal telemetry | Unit |
-| --- | --- | --- | --- |
-| 0 | `speed_target` | `(left_target + right_target) / 2` | m/s |
-| 1 | `speed_actual` | `(measured_left + measured_right) / 2` | m/s |
-| 2 | `steering_target` | `(left_target - right_target) / 2` | m/s |
-| 3 | `steering_actual` | `(measured_left - measured_right) / 2` | m/s |
-
-Steering is a differential wheel-speed correction, not an angle. Missing/stale real feedback gives IEEE `NaN` in actual fields (`null` in the HTTP API). A sample is **24 bytes**: `AB 01 FE F1 10 00`, four little-endian IEEE-754 floats, then SUM and ADD checksums. Device address is `0x01`, PC address is `0xFE`, and broadcast requests to `0xFF` are accepted. The board announces `AutonomousCar` on connection and answers device-information queries plus zero parameter/command counts. Writes, flight commands, and motion commands from the assistant are not implemented.
-
-For a connection check, select **链路测试 → 模拟波形** and save. Fields 0–3 become sine, cosine, triangle, and square waves with a four-second period and normalized range `-1..1`; they have no physical unit. Select **关闭测试（实际数据）** to restore controller snapshots on the same connection. Both modes are read-only: simulation never injects feedback or enables motors. `/api/ano` reports the selected mode and data source; disabling telemetry stops output and closes clients.
-
-Settings persist in `config/ano.conf` and survive deployment. When upgrading from the previous telemetry service, valid existing port/rate/enable/test settings are migrated before its retired configuration is removed; an existing `ano.conf` is preserved. A busy port rejects saving and leaves the current listener/settings intact. The webpage contains configuration fields; plots are shown in the PC assistant.
+Configure flexible frame **`0xF1`** as four **Float32** fields: target speed, actual speed, target steering correction, and actual steering correction. Software usage details are available from the official links above.
 
 ## Recordings and detection reports
 
