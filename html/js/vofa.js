@@ -8,9 +8,9 @@
     card.id = 'network_vofa';
     card.className = 'network-vofa';
     card.innerHTML =
-        '<h4><span data-i18n="VOFA 上位机"></span>' +
+        '<div class="vofa-actions">' +
         '<span id="vofa_save_status" class="card-status" role="status" aria-live="polite"></span>' +
-        '<button class="btn btn-save" type="submit" id="vofa_save" disabled data-i18n="保存"></button></h4>' +
+        '<button class="btn btn-save" type="submit" id="vofa_save" disabled data-i18n="保存"></button></div>' +
         '<div class="cfg-grid vid2 vofa-fields">' +
         '<div class="row"><label for="vofa_enabled" data-i18n="通信状态"></label>' +
         '<select id="vofa_enabled" name="enabled" disabled><option value="0" data-i18n="停用 VOFA"></option>' +

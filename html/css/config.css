@@ -77,7 +77,7 @@ h1{font-size:24px;margin-bottom:0}
 .car-param-group h4{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;color:var(--accent)}
 .car-param-group h4 button{margin:0;padding:6px 12px}
 .network-vofa{margin-top:16px;padding-top:16px;border-top:1px solid var(--card-border)}
-.network-vofa h4{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:0 0 14px;color:var(--accent)}
+.vofa-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px}
 #vofa_save{margin-left:auto;padding:4px 14px}
 #vofa_save_status{white-space:normal;overflow-wrap:anywhere;flex:1 1 160px}
 .vofa-fields{gap:12px 16px}
