@@ -128,10 +128,12 @@ static void tick(unsigned long long now, int can_enabled)
     right = g.measured_right;
     stamp = g.feedback_ms;
     pthread_mutex_unlock(&g.feedback_lock);
+    /* Publication rejects future feedback. A sample arriving after this tick's
+     * timestamp was taken is new, rather than stale due to unsigned subtraction. */
     const char *interlock = !g.motor.send  ? "adapter_not_connected"
                             : !g.fifo      ? "fifo_unavailable"
                             : !can_enabled ? "can_disabled"
-                            : (!stamp || now < stamp || now - stamp > g.cfg[TIMEOUT])
+                            : (!stamp || (now >= stamp && now - stamp > g.cfg[TIMEOUT]))
                                 ? "stale_wheel_feedback"
                                 : NULL;
     /* Check actuator safety at idle wakes too, without resetting vision timing
