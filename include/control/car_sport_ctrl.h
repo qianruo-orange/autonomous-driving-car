@@ -12,7 +12,8 @@ typedef struct {
 } follow_pid_t;
 double follow_pid_step(follow_pid_t *pid, follow_gains_t gains, double error, double dt,
                        double limit);
-void follow_mix(double speed, double yaw, double track, double limit, double *left, double *right);
+/* Differential correction and both wheel targets are in m/s; no wheel track is needed. */
+void follow_mix(double speed, double correction, double limit, double *left, double *right);
 /* Motor protocol adapter, intentionally absent until the motor protocol is known.
  * send receives bounded normalized actuator commands [-1,1], not raw speed.
  * Implement CAN packing using can_tx_frame(). stop MUST encode the documented

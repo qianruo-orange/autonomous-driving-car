@@ -5,6 +5,10 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    '自动调速': 'Automatic speed control',
+    '手动调速': 'Manual speed control',
+    '转向参数': 'Steering parameters',
+    '最大转向修正量 (m/s)': 'Maximum steering correction (m/s)',
     '比例系数': 'Proportional coefficient',
     '积分系数': 'Integral coefficient',
     '微分系数': 'Derivative coefficient',

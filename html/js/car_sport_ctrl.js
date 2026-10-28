@@ -21,8 +21,7 @@
         target: '跟踪目标',
         max_speed: '最大轮速 (m/s)',
         setpoint: '手动目标速度 (m/s)',
-        max_yaw: '最大转向角速度 (rad/s)',
-        wheel_track: '左右轮间距 (m)',
+        max_turn_delta: '最大转向修正量 (m/s)',
         deadband: '中心误差死区',
         speed_kp: '比例系数',
         speed_kd: '微分系数',
@@ -33,15 +32,16 @@
     };
     const groups = [
         ['tracking', '跟踪设置', ['enabled', 'target']],
-        ['speed', '速度模式与限速', ['manual', 'max_speed', 'setpoint']],
-        ['automatic', '自动调速 PD', ['speed_kp', 'speed_kd']],
-        ['steering', '转向 PD', ['max_yaw', 'deadband', 'turn_kp', 'turn_kd']],
-        ['wheels', '轮速 PI', ['wheel_track', 'wheel_kp', 'wheel_ki']]
+        ['speed', '速度模式与限速', ['manual', 'max_speed']],
+        ['automatic', '自动调速', ['speed_kp', 'speed_kd']],
+        ['steering', '转向参数', ['max_turn_delta', 'deadband', 'turn_kp', 'turn_kd']],
+        ['wheels', '手动调速', ['setpoint', 'wheel_kp', 'wheel_ki']]
     ];
     const containers = {};
     groups.forEach(([id, title, keys]) => {
         const section = document.createElement('section');
         section.className = 'car-param-group';
+        section.dataset.carGroup = id;
         const heading = document.createElement('h4');
         const text = document.createElement('span');
         setI18nText(text, title);
@@ -103,11 +103,7 @@
                 input.step = '1';
             }
             if (key === 'max_speed' || key === 'setpoint') input.max = '2';
-            if (key === 'max_yaw') input.max = '4';
-            if (key === 'wheel_track') {
-                input.min = '.05';
-                input.max = '2';
-            }
+            if (key === 'max_turn_delta') input.max = '4';
             if (key === 'deadband') input.max = '.5';
         }
         input.id = 'car_' + key;
@@ -127,6 +123,13 @@
         input.closest('.row').style.display = manual ? '' : 'none';
         input.disabled = !loaded || busy || !manual;
         input.max = card.querySelector('[name=max_speed]').value || '2';
+        for (const [id, show] of [['automatic', !manual], ['wheels', manual]]) {
+            const section = card.querySelector('[data-car-group="' + id + '"]');
+            section.style.display = show ? '' : 'none';
+            section.querySelectorAll('input,button').forEach(control => {
+                control.disabled = !loaded || busy || !show;
+            });
+        }
     }
     updateSpeedMode();
     card.addEventListener('input', event => {

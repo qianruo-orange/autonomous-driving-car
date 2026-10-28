@@ -12,8 +12,7 @@ enum {
     ENABLED,
     CLASS,
     SPEED,
-    YAW,
-    TRACK,
+    TURN_DELTA,
     DEAD,
     TIMEOUT,
     VP,
@@ -33,11 +32,11 @@ enum {
     N
 };
 static const char *keys[N] = {
-    "enabled",  "class_id", "max_speed", "max_yaw", "wheel_track", "deadband", "timeout_ms",
-    "speed_kp", "speed_ki", "speed_kd",  "turn_kp", "turn_ki",     "turn_kd",  "wheel_kp",
-    "wheel_ki", "wheel_kd", "seed_x",    "seed_y",  "manual",      "setpoint", "reference_area"};
-static const double defaults[N] = {0, 0,   .3, 1,  .3, .04, 300, .4, 0,   0, 1,
-                                   0, .02, 1,  .1, 0,  .5,  .5,  0,  .15, 0};
+    "enabled",  "class_id", "max_speed", "max_turn_delta", "deadband", "timeout_ms",    "speed_kp",
+    "speed_ki", "speed_kd", "turn_kp",   "turn_ki",        "turn_kd",  "wheel_kp",      "wheel_ki",
+    "wheel_kd", "seed_x",   "seed_y",    "manual",         "setpoint", "reference_area"};
+static const double defaults[N] = {0, 0,    .3, .15, .04, 300, .4, 0, 0,   .15,
+                                   0, .003, 1,  .1,  0,   .5,  .5, 0, .15, 0};
 static struct {
     pthread_mutex_t lock, feedback_lock;
     pthread_cond_t changed;
@@ -70,10 +69,10 @@ static int valid(const double *v)
             return 0;
     return v[VI] == 0 && v[TI] == 0 && v[WD] == 0 && v[ENABLED] <= 1 &&
            floor(v[ENABLED]) == v[ENABLED] && v[CLASS] <= 99 && floor(v[CLASS]) == v[CLASS] &&
-           v[SPEED] > .0 && v[SPEED] <= 2 && v[YAW] > 0 && v[YAW] <= 4 && v[TRACK] >= .05 &&
-           v[TRACK] <= 2 && v[DEAD] <= .5 && v[TIMEOUT] >= 100 && v[TIMEOUT] <= 1000 &&
-           v[SEED_X] <= 1 && v[SEED_Y] <= 1 && v[MANUAL] <= 1 && floor(v[MANUAL]) == v[MANUAL] &&
-           v[SETPOINT] <= 2 && (!v[MANUAL] || v[SETPOINT] <= v[SPEED]) && v[AREA] <= 1;
+           v[SPEED] > .0 && v[SPEED] <= 2 && v[TURN_DELTA] > 0 && v[TURN_DELTA] <= 4 &&
+           v[DEAD] <= .5 && v[TIMEOUT] >= 100 && v[TIMEOUT] <= 1000 && v[SEED_X] <= 1 &&
+           v[SEED_Y] <= 1 && v[MANUAL] <= 1 && floor(v[MANUAL]) == v[MANUAL] && v[SETPOINT] <= 2 &&
+           (!v[MANUAL] || v[SETPOINT] <= v[SPEED]) && v[AREA] <= 1;
 }
 static void reset(void)
 {
@@ -163,9 +162,9 @@ static void tick(unsigned long long now, int can_enabled)
                    ? g.cfg[SETPOINT]
                    : fmax(0, follow_pid_step(&g.pid[0], (follow_gains_t){g.cfg[VP], 0, g.cfg[VD]},
                                              g.area_error, dt, g.cfg[SPEED]));
-    double yaw =
-        follow_pid_step(&g.pid[1], (follow_gains_t){g.cfg[TP], 0, g.cfg[TD]}, g.ex, dt, g.cfg[YAW]);
-    follow_mix(v, yaw, g.cfg[TRACK], g.cfg[SPEED], &g.left_target, &g.right_target);
+    double correction = follow_pid_step(&g.pid[1], (follow_gains_t){g.cfg[TP], 0, g.cfg[TD]}, g.ex,
+                                        dt, g.cfg[TURN_DELTA]);
+    follow_mix(v, correction, g.cfg[SPEED], &g.left_target, &g.right_target);
     double left, right;
     unsigned long long stamp;
     pthread_mutex_lock(&g.feedback_lock);
@@ -264,11 +263,30 @@ int follow_init(void *app)
         memcpy(loaded, g.cfg, sizeof(loaded));
         char key[48];
         double value;
-        while (fscanf(f, "%47s %lf", key, &value) == 2)
+        double legacy_yaw = 1, legacy_track = .3, legacy_kp = 1, legacy_kd = .02;
+        int has_correction = 0;
+        while (fscanf(f, "%47s %lf", key, &value) == 2) {
+            if (!strcmp(key, "max_yaw") && isfinite(value) && value > 0 && value <= 4)
+                legacy_yaw = value;
+            if (!strcmp(key, "wheel_track") && isfinite(value) && value >= .05 && value <= 2)
+                legacy_track = value;
+            if (!strcmp(key, "max_turn_delta"))
+                has_correction = 1;
+            if (!strcmp(key, "turn_kp"))
+                legacy_kp = value;
+            if (!strcmp(key, "turn_kd"))
+                legacy_kd = value;
             for (int i = 1; i < N; i++)
                 if (!strcmp(key, keys[i]))
                     loaded[i] = value;
+        }
         fclose(f);
+        if (!has_correction) {
+            /* Convert legacy rad/s gains and limit to wheel-speed correction. */
+            loaded[TURN_DELTA] = legacy_yaw * legacy_track * .5;
+            loaded[TP] = legacy_kp * legacy_track * .5;
+            loaded[TD] = legacy_kd * legacy_track * .5;
+        }
         /* Retire the former automatic-speed integral gain without discarding
          * the remaining saved settings from an older configuration. */
         loaded[VI] = 0;
@@ -491,17 +509,16 @@ double follow_pid_step(follow_pid_t *p, follow_gains_t g, double e, double dt, d
     p->valid = 1;
     return clamp(g.kp * e + g.ki * p->integral + g.kd * p->derivative, limit);
 }
-void follow_mix(double speed, double yaw, double track, double limit, double *l, double *r)
+void follow_mix(double speed, double correction, double limit, double *l, double *r)
 {
     if (!l || !r)
         return;
     *l = *r = 0;
-    if (!isfinite(speed) || !isfinite(yaw) || !isfinite(track) || !isfinite(limit) || track <= 0 ||
-        limit <= 0)
+    if (!isfinite(speed) || !isfinite(correction) || !isfinite(limit) || limit <= 0)
         return;
     /* Positive image-X error means target right: left wheel runs faster. */
-    *l = speed + yaw * track * .5;
-    *r = speed - yaw * track * .5;
+    *l = speed + correction;
+    *r = speed - correction;
     double peak = fmax(fabs(*l), fabs(*r));
     if (peak > limit) {
         *l *= limit / peak;
