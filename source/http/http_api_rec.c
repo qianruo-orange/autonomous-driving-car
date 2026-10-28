@@ -168,54 +168,47 @@ static void serve_rec_delete(int fd, const char *req)
         http_err(fd, 400, "Bad Request", NULL);
         return;
     }
-    /* 拒绝删除正在录制的文件：unlink 后录制句柄仍在写，数据丢失且磁盘不释放 */
-    video_rec_status_t st;
-    video_rec_status(&st);
-    if (st.recording && st.file[0] && strcmp(st.file, name) == 0) {
-        http_err(fd, 409, "Conflict", "recording in progress");
-        return;
-    }
-    char path[512];
-    snprintf(path, sizeof(path), "%s/%s/%s", REC_DIR, subdir, fname);
-    if (unlink(path) == 0)
-        http_ok_text(fd, "ok");
-    else
-        http_err(fd, 404, "Not Found", NULL);
+    int root = open(REC_DIR, O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+    int day = root < 0 ? -1 : openat(root,subdir,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+    if(root>=0)close(root);
+    if(day<0){http_err(fd,404,"Not Found",NULL);return;}
+    int removed = video_rec_delete_file(day,name);
+    int error = errno;
+    close(day);
+    errno = error;
+    if(removed==1)http_err(fd,409,"Conflict","recording in progress");
+    else if(!removed)http_ok_text(fd,"ok");
+    else http_err(fd,removed==2||errno==ENOENT?404:500,removed==2||errno==ENOENT?"Not Found":"Error",NULL);
 }
 
 /* 一键清空录像：删除全部录像文件，保留正在录制的文件 */
 static void serve_rec_clear(int fd)
 {
-    video_rec_status_t st;
-    video_rec_status(&st);
-    const char *active = (st.recording && st.file[0]) ? st.file : NULL;
-
-    int del = 0;
-    DIR *dir = opendir(REC_DIR);
-    if (!dir) { http_err(fd, 500, "Error", NULL); return; }
+    int del = 0, failed = 0;
+    int root = open(REC_DIR,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+    DIR *dir = root < 0 ? NULL : fdopendir(root);
+    if(!dir){if(root>=0)close(root);http_err(fd,500,"Error",NULL);return;}
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        char subdir[512];
-        snprintf(subdir, sizeof(subdir), "%s/%s", REC_DIR, de->d_name);
-        struct stat dst;
-        if (stat(subdir, &dst) < 0 || !S_ISDIR(dst.st_mode)) continue;
-        DIR *sd = opendir(subdir);
-        if (!sd) continue;
+        if (strlen(de->d_name) != 8 || strspn(de->d_name,"0123456789") != 8) continue;
+        int day = openat(root,de->d_name,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
+        if(day<0)continue;
+        DIR *sd = fdopendir(day);
+        if(!sd){close(day);failed=1;continue;}
         struct dirent *fde;
         while ((fde = readdir(sd)) != NULL) {
             if (fde->d_name[0] == '.') continue;
             if (!rec_file_valid(fde->d_name)) continue;   /* 跳过打包临时文件等 */
             char rel[160];
             snprintf(rel, sizeof(rel), "%s/%s", de->d_name, fde->d_name);
-            if (active && strcmp(rel, active) == 0) continue;   /* 保留录制中的文件 */
-            char path[512];
-            snprintf(path, sizeof(path), "%s/%s/%s", REC_DIR, de->d_name, fde->d_name);
-            if (unlink(path) == 0) del++;
+            int removed = video_rec_delete_file(dirfd(sd),rel);
+            if (!removed) del++;
+            else if (removed < 0) failed = 1;
         }
         closedir(sd);
     }
     closedir(dir);
+    if(failed){http_err(fd,500,"Error","Some recordings could not be deleted");return;}
     char json[64];
     int off = snprintf(json, sizeof(json), "{\"deleted\":%d}", del);
     http_ok_json(fd, json, (size_t)off);

@@ -7,6 +7,15 @@ static char active_file[128]="20261027/video_20261027_120000_000.mp4";
 static unsigned closed_count;
 int video_rec_status(video_rec_status_t *out)
 { memset(out,0,sizeof(*out));out->recording=1;safe_strncpy(out->file,sizeof(out->file),active_file);return 0; }
+int video_rec_delete_file(int day_fd,const char *relative)
+{
+    if(!strcmp(active_file,relative))return 1;
+    struct stat st;
+    if(fstatat(day_fd,relative+9,&st,AT_SYMLINK_NOFOLLOW))return errno==ENOENT?2:-1;
+    if(!S_ISREG(st.st_mode)){errno=EINVAL;return -1;}
+    if(unlinkat(day_fd,relative+9,0))return errno==ENOENT?2:-1;
+    return 0;
+}
 int yolo_events_export_report(const char *name)
 { return file_open_relative(YOLO_EVENTS_DIR,name); }
 int yolo_events_clear_reports(unsigned *deleted)
@@ -50,6 +59,10 @@ int main(void)
     put("recordings/20261027/rec_120001.mp4",mp4,sizeof(mp4));
     const unsigned char open_mp4[]={0,0,0,8,'f','t','y','p',0,0,0,8,'m','d','a','t'};
     put("recordings/20261027/video_20261027_120002_000.mp4",open_mp4,sizeof(open_mp4));
+    put("recordings/20261027/video_20261027_120003_000.mp4","",0);
+    put("recordings/20261027/video_20261027_120004_000.mp4","broken MP4",10);
+    put("recordings/20261027/keep.txt","not a recording",15);
+    assert(!symlink("/etc/passwd","recordings/20261027/rec_999999.mp4"));
     const char result_text[]="time：num[0] size[1280 720] FocalLength[unknown]\n";
     put("recordings/detections/20261027/result_20261027.txt",result_text,sizeof(result_text)-1);
     assert(!symlink("/etc/passwd","logs/20261027/unsafe.log"));
@@ -83,6 +96,8 @@ int main(void)
     assert(strstr(response,"Content-Length: 24\r\n"));assert(strstr(response,"\r\n\r\n")[4]==0);free(response);
     response=request("GET","/api/files/video?name=20261027%2Frec_120001.mp4","Range: bytes=99-\r\n",NULL,&length);
     assert(strstr(response,"416 Range Not Satisfiable")&&strstr(response,"Content-Range: bytes */24"));free(response);
+    response=request("GET","/api/files/video?name=20261027%2Fvideo_20261027_120002_000.mp4",NULL,NULL,&length);
+    assert(strstr(response,"409 Conflict"));free(response);
     uint64_t first,last;assert(file_range("bytes=-4",24,&first,&last)==1&&first==20&&last==23);
     assert(file_range("bytes=0-1,4-5",24,&first,&last)<0);assert(file_range("bytes=18446744073709551616-",24,&first,&last)<0);
     response=request("DELETE","/api/files/video-session",headers,NULL,&length);assert(strstr(response,"Max-Age=0"));free(response);
@@ -102,14 +117,19 @@ int main(void)
     assert(system("python3 -m zipfile -l archive.zip > archive.list")==0);
     FILE *list=fopen("archive.list","r");assert(list);char names[8192]={0};assert(fread(names,1,sizeof(names)-1,list)>0);fclose(list);
     assert(strstr(names,"logs/20261027/log_info_")&&strstr(names,"recordings/20261027/rec_120001.mp4")&&strstr(names,"results/20261027/result_20261027.txt"));
-    assert(!strstr(names,"120000_000.mp4")&&!strstr(names,"120002_000.mp4")&&!strstr(names,"unsafe.log"));
-    response=request("POST","/api/files/clear",NULL,NULL,&length);assert(strstr(response,"200 OK")&&strstr(response,"\"kept_active\":true"));free(response);
+    assert(!strstr(names,"120000_000.mp4")&&!strstr(names,"120002_000.mp4")&&!strstr(names,"120003_000.mp4")&&!strstr(names,"120004_000.mp4")&&!strstr(names,"unsafe.log"));
+    response=request("POST","/api/files/clear",NULL,NULL,&length);
+    assert(strstr(response,"200 OK")&&strstr(response,"\"kept_active\":true")&&strstr(response,"\"recordings\":4"));free(response);
     assert(!access("recordings/20261027/video_20261027_120000_000.mp4",F_OK));
-    assert(!access("recordings/20261027/video_20261027_120002_000.mp4",F_OK));
+    assert(access("recordings/20261027/video_20261027_120002_000.mp4",F_OK)<0);
+    assert(access("recordings/20261027/video_20261027_120003_000.mp4",F_OK)<0);
+    assert(access("recordings/20261027/video_20261027_120004_000.mp4",F_OK)<0);
+    assert(!access("recordings/20261027/keep.txt",F_OK));
+    struct stat link_info;assert(!lstat("recordings/20261027/rec_999999.mp4",&link_info)&&S_ISLNK(link_info.st_mode));
     assert(access("recordings/20261027/rec_120001.mp4",F_OK)<0);
     assert(access("recordings/detections/20261027/result_20261027.txt",F_OK)<0);
     struct stat st;assert(!lstat("logs/20261027/unsafe.log",&st)&&S_ISLNK(st.st_mode));
     assert(!chdir("/tmp"));file_remove_tree(scratch);
-    puts("PASS: bounded previews, MP4 ranges, file-bound expiring sessions, archive safety and active-recording preservation");
+    puts("PASS: bounded previews, MP4 ranges, file-bound expiring sessions, archive safety, orphan-video cleanup and active-recording preservation");
     return 0;
 }

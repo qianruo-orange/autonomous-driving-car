@@ -63,6 +63,53 @@ static struct {
     int split_pending, split_error;
 } g_rec;
 
+/* Serialize publication/finalization of file paths with file deletion. This
+ * lock is never held during frame encoding, network writes, or idle waits.
+ * If both locks are needed, acquire files_lock before g_rec.lock. */
+static pthread_mutex_t g_rec_files_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int video_rec_delete_file(int day_fd, const char *relative)
+{
+    size_t length = relative ? strlen(relative) : 0;
+    if (length < 14 || length >= 256 || relative[8] != '/' ||
+        strstr(relative, "..") ||
+        (strncmp(relative + 9, "video_", 6) && strncmp(relative + 9, "rec_", 4)) ||
+        strcmp(relative + length - 4, ".mp4")) {
+        errno = EINVAL;
+        return -1;
+    }
+    for (size_t i = 0; i < length; i++) {
+        unsigned char ch = (unsigned char)relative[i];
+        if (i < 8 ? ch < '0' || ch > '9'
+                  : i != 8 && !isalnum(ch) && ch != '_' && ch != '-' && ch != '.') {
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    pthread_mutex_lock(&g_rec_files_lock);
+    pthread_mutex_lock(&g_rec.lock);
+    /* recording may already be zero while the file is still being finalized. */
+    int active = g_rec.file[0] && !strcmp(g_rec.file, relative);
+    pthread_mutex_unlock(&g_rec.lock);
+    int result = 1;
+    if (!active) {
+        struct stat st;
+        if (fstatat(day_fd, relative + 9, &st, AT_SYMLINK_NOFOLLOW))
+            result = errno == ENOENT ? 2 : -1;
+        else if (!S_ISREG(st.st_mode)) {
+            errno = EINVAL;
+            result = -1;
+        } else if (unlinkat(day_fd, relative + 9, 0))
+            result = errno == ENOENT ? 2 : -1;
+        else
+            result = 0;
+    }
+    int error = errno;
+    pthread_mutex_unlock(&g_rec_files_lock);
+    errno = error;
+    return result;
+}
+
 static uint64_t now_ms(void)
 {
     struct timespec ts;
@@ -264,9 +311,11 @@ void *video_rec_task(void *arg)
             snprintf(dir, sizeof(dir), "%s/%s", REC_DIR, day);
 
             char fname[128] = "";
+            pthread_mutex_lock(&g_rec_files_lock);
             rec_mp4_t *s = rec_mp4_create(dir, "video", pw, ph,
                                           fname, sizeof(fname));
             if (!s) {
+                pthread_mutex_unlock(&g_rec_files_lock);
                 h264_encoder_destroy(enc);
                 pthread_mutex_lock(&g_rec.lock);
                 g_rec.start_fail = 3;
@@ -289,6 +338,7 @@ void *video_rec_task(void *arg)
             g_rec.split_error = 0;
             safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
             pthread_mutex_unlock(&g_rec.lock);
+            pthread_mutex_unlock(&g_rec_files_lock);
 
             /* ---- 录制内层循环：快照轮询 20ms ---- */
             if (ring) frame_ring_set_rec_active(ring, 1);   /* 会话开始：释放规则走编码路径 */
@@ -357,6 +407,7 @@ void *video_rec_task(void *arg)
                     localtime_r(&split_time, &split_tm);
                     strftime(next_day, sizeof(next_day), "%Y%m%d", &split_tm);
                     snprintf(next_dir, sizeof(next_dir), "%s/%s", REC_DIR, next_day);
+                    pthread_mutex_lock(&g_rec_files_lock);
                     rec_mp4_t *next = rec_mp4_create(next_dir, "video", pw, ph,
                                                     next_name, sizeof(next_name));
                     if (next) {
@@ -379,6 +430,7 @@ void *video_rec_task(void *arg)
                         pthread_mutex_unlock(&g_rec.lock);
                         LOG_ERROR("rec: split file creation failed; continuing current recording");
                     }
+                    pthread_mutex_unlock(&g_rec_files_lock);
                 }
                 if (rec_mp4_write_frame(s, h264, hlen, keyframe, ts) != 0) {
                     free(h264);
@@ -398,15 +450,17 @@ void *video_rec_task(void *arg)
             if (ring) frame_ring_set_rec_active(ring, 0);   /* 会话结束：回池 nv12 等 */
             uint32_t n_frames = rec_mp4_frames(s);
             uint32_t n_bytes  = rec_mp4_bytes(s);
+            pthread_mutex_lock(&g_rec_files_lock);
             rec_mp4_finalize(s);
-            h264_encoder_destroy(enc);
-            h264_stream_push_end();   /* 直播扇出：会话结束断流（新连接 503，同 mjpeg_yolo 无 YOLO 行为） */
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
             g_rec.split_pending = 0;
             g_rec.start_fail = 0;
             g_rec.file[0] = '\0';
             pthread_mutex_unlock(&g_rec.lock);
+            pthread_mutex_unlock(&g_rec_files_lock);
+            h264_encoder_destroy(enc);
+            h264_stream_push_end();
             if (n_frames > 0)
                 LOG_INFO("rec: recording finished -> %s (%u frames, %u bytes)",
                          rel, n_frames, n_bytes);

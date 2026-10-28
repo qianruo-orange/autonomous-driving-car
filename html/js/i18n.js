@@ -214,7 +214,7 @@
     '(无 CAN-FD)': '(no CAN-FD)',
 
     /* ---- network card ---- */
-    '网络设置': 'Network',
+    'Web与VOFA设置': 'Web & VOFA Settings',
     '绑定网卡': 'Bind interface',
     '所有网卡': 'All interfaces',
     'TCP端口': 'TCP port',

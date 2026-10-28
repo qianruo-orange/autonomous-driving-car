@@ -135,7 +135,7 @@ The frame ring moves buffer ownership between stages and reuses pools. Inference
 
 Management pages, writes, and protected file operations use local administrator authentication (`root` or an account in the `sudo` group). Authentication uses HTTP Basic; provide a trusted network or a separately configured secure access layer. Some status APIs are publicly readable. Native protected video/archive downloads use scoped, short-lived session cookies.
 
-**Network Settings / 网络设置** configures the system interface used to reach the Web UI: Web interface, static/DHCP mode, IP, netmask, and gateway. HTTP remains on port 80 and listens on the board's configured IPv4 interfaces; selecting a management interface does not restrict HTTP to that interface. IP changes affect the actual system interface and can disconnect the browser.
+**Web & VOFA Settings / Web与VOFA设置** configures the system interface used to reach the Web UI: Web interface, static/DHCP mode, IP, netmask, and gateway. HTTP remains on port 80 and listens on the board's configured IPv4 interfaces; selecting a management interface does not restrict HTTP to that interface. IP changes affect the actual system interface and can disconnect the browser.
 
 The same continuous field area contains VOFA enable state, **VOFA端口**, and send rate. Its **one Save button** saves VOFA first and applies IP last. If VOFA saving fails, IP is not applied. These are sequential saves: an IP-save failure does not roll back an already saved VOFA change.
 
@@ -199,7 +199,7 @@ FIFO success does not imply PREEMPT_RT. The validation board has not been upgrad
 
 The **board is the TCP server**; VOFA+ on the PC is the **TCP client**. Telemetry reads controller snapshots and never runs a control iteration or enables motors.
 
-1. Open **系统配置 → 网络设置**. Select **启用 VOFA**, choose **VOFA端口** (default `6667`, allowed `1024..65535`) and **发送频率 (Hz)** (default `30`, allowed `1..100`), then use the top Save button.
+1. Open **系统配置 → Web与VOFA设置**. Select **启用 VOFA**, choose **VOFA端口** (default `6667`, allowed `1024..65535`) and **发送频率 (Hz)** (default `30`, allowed `1..100`), then use the top Save button.
 2. In VOFA+, select **TCP Client**, the board IP and saved VOFA port, and the **JustFloat** data engine. For example, a board at `192.168.1.5` with port `6667` accepts a connection to `192.168.1.5:6667`.
 3. Add two Waveform components. Use time `T` as X; bind CH0/CH1 to the speed plot and CH2/CH3 to the steering-correction plot. Set the sample interval to `1 / rate_hz` seconds: about `33.333 ms` at 30 Hz.
 4. After changing the port, reconnect the client to the new port. Update the plot interval when changing rate. Select **停用 VOFA** and save to close telemetry connections.
@@ -219,7 +219,7 @@ The webpage shows configuration only; view plots in VOFA+. A busy replacement po
 
 ## Recordings and detection reports
 
-Driving Logs combines logs, MP4 recordings, and daily TXT results. It supports text preview, finalized video preview, individual download/delete, category packs/clears, and a whole-page ZIP. Active-recording download closes its current segment and continues in a new segment; bulk deletion retains the active recording. Historical migration tools do not imply automatic deletion of all old artifacts.
+Driving Logs combines logs, MP4 recordings, and daily TXT results. It supports text preview, finalized video preview, individual download/delete, category packs/clears, and a whole-page ZIP. Active-recording download closes its current segment and continues in a new segment; bulk deletion retains the active recording, including its finalization window. Inactive interrupted or malformed MP4 files are deleted too; they remain excluded from preview and whole-page archives. Historical migration tools do not imply automatic deletion of all old artifacts.
 
 | Output | Location / naming |
 | --- | --- |

@@ -108,12 +108,13 @@ static uint64_t file_be64(const unsigned char *s)
 static uint32_t file_be32(const unsigned char *s)
 { return (uint32_t)s[0]<<24 | (uint32_t)s[1]<<16 | (uint32_t)s[2]<<8 | s[3]; }
 
-/* A new MP4 can exist briefly before its status is published. A complete moov
- * atom, not merely a status comparison, prevents packing/deleting that file. */
+/* Preview/archive require a complete MP4. Creation may precede status
+ * publication; a complete moov protects those readers as well. Deletion uses
+ * the recorder's lifecycle guard and does not require a valid container. */
 static int file_mp4_closed(int fd,const char *relative)
 {
     video_rec_status_t status={0};video_rec_status(&status);
-    if(status.recording && !strcmp(status.file,relative))return 0;
+    if(status.file[0] && !strcmp(status.file,relative))return 0;
     struct stat st;if(fstat(fd,&st)||st.st_size<16)return 0;
     off_t offset=0;int moov=0,ftyp=0;
     for(int count=0;offset<st.st_size && count<10000;count++){
@@ -373,8 +374,16 @@ static int file_walk(const char *root,const char *stage,const char *category,int
             char relative[256];if(snprintf(relative,sizeof(relative),"%s/%s",day->d_name,entry->d_name)>=(int)sizeof(relative)||!file_relative(relative))continue;
             int source=openat(d,entry->d_name,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);if(source<0)continue;
             struct stat info;if(fstat(source,&info)||!S_ISREG(info.st_mode)){close(source);continue;}
+            if(clear){
+                close(source);
+                /* Incomplete orphan MP4s are deletable too. Only the recorder
+                   knows whether a path is open, being published or finalized. */
+                int removed = kind==1 ? video_rec_delete_file(d,relative) : unlinkat(d,entry->d_name,0);
+                if(removed<0){if(errno==ENOENT)continue;result=-1;break;}
+                if(!removed)(*count)++;
+                continue;
+            }
             if(kind==1&&!file_mp4_closed(source,relative)){close(source);continue;}
-            if(clear){close(source);if(unlinkat(d,entry->d_name,0)){result=-1;break;}(*count)++;continue;}
             if(kind==2){close(source);source=yolo_events_export_report(relative);if(source<0){result=-1;break;}
                 if(fstat(source,&info)){close(source);result=-1;break;}}
             if((uint64_t)info.st_size>FILE_PACK_LIMIT-*total){close(source);errno=EFBIG;result=-1;break;}
