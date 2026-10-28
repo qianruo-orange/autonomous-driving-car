@@ -65,7 +65,11 @@
     if (input.files && input.files.length) {
       label.removeAttribute('data-i18n');
       label.textContent = input.files[0].name;
-    } else setI18nText(label, '未选择文件');
+      label.title = input.files[0].name;
+    } else {
+      label.removeAttribute('title');
+      setI18nText(label, '未选择文件');
+    }
   }
   document.querySelectorAll('[data-file-picker]').forEach(function(button) {
     var input = document.getElementById(button.getAttribute('data-file-picker'));

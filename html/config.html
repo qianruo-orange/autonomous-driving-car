@@ -40,15 +40,23 @@
 <div class="yolo-col">
 <div class="grp-t" data-i18n="推理参数">推理参数</div>
 <div class="cfg-grid yolo-basic">
-<div class="row"><label data-i18n="置信度">置信度</label><input id="yolo_cf" type="number" min="1" max="100" step="1"><span class="unit">%</span></div>
-<div class="row"><label>NMS IoU</label><input id="yolo_nm" type="number" min="1" max="100" step="1"><span class="unit">%</span></div>
+<div class="row"><label for="yolo_cf" data-i18n="置信度">置信度</label><div class="yolo-number"><input id="yolo_cf" type="number" min="1" max="100" step="1"><span class="unit">%</span></div></div>
+<div class="row"><label for="yolo_nm">NMS IoU</label><div class="yolo-number"><input id="yolo_nm" type="number" min="1" max="100" step="1"><span class="unit">%</span></div></div>
 </div>
 </div>
 <div class="yolo-col">
 <div class="grp-t" data-i18n="模型文件">模型文件</div>
 <div class="cfg-grid yolo-upload">
-<div class="row"><label data-i18n="上传模型">上传模型</label><input type="file" id="yolo_model_f" accept=".rknn" hidden><button type="button" class="add-btn" data-file-picker="yolo_model_f" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="yolo_model_f" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadYolo('model')" data-i18n="上传">上传</button></div>
-<div class="row"><label data-i18n="上传标签">上传标签</label><input type="file" id="yolo_names_f" accept=".names,.txt" hidden><button type="button" class="add-btn" data-file-picker="yolo_names_f" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="yolo_names_f" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadYolo('names')" data-i18n="上传">上传</button></div>
+<div class="row">
+<label for="yolo_model_f" data-i18n="上传模型">上传模型</label>
+<div class="yolo-file-choice"><input type="file" id="yolo_model_f" accept=".rknn" hidden><button type="button" class="add-btn" data-file-picker="yolo_model_f" data-i18n="选择文件">选择文件</button><span data-file-name="yolo_model_f" data-i18n="未选择文件">未选择文件</span></div>
+<button type="button" class="add-btn yolo-upload-btn" onclick="uploadYolo('model')" data-i18n="上传">上传</button>
+</div>
+<div class="row">
+<label for="yolo_names_f" data-i18n="上传标签">上传标签</label>
+<div class="yolo-file-choice"><input type="file" id="yolo_names_f" accept=".names,.txt" hidden><button type="button" class="add-btn" data-file-picker="yolo_names_f" data-i18n="选择文件">选择文件</button><span data-file-name="yolo_names_f" data-i18n="未选择文件">未选择文件</span></div>
+<button type="button" class="add-btn yolo-upload-btn" onclick="uploadYolo('names')" data-i18n="上传">上传</button>
+</div>
 </div>
 </div>
 </div>
