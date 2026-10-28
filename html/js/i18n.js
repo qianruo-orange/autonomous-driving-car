@@ -130,7 +130,7 @@
     '正在保存相机配置…': 'Saving camera settings...',
     /* ---- brand / navigation / common ---- */
     '自动驾驶小车': 'Autonomous Driving Car',
-    '配置': 'Configuration',
+    '系统配置': 'System Configuration',
     '仪表盘': 'Dashboard',
     '主界面': 'Home',
     '识别结果正在更新，请稍后重试': 'Detection reports are updating; please retry shortly',
