@@ -19,9 +19,9 @@
         enabled: '控制状态',
         manual: '速度模式',
         target: '跟踪目标',
-        max_speed: '最大轮速 (m/s)',
-        setpoint: '手动目标速度 (m/s)',
-        max_turn_delta: '最大转向修正量 (m/s)',
+        max_speed: '最大轮速',
+        setpoint: '手动目标速度',
+        max_turn_delta: '最大转向修正量',
         deadband: '中心误差死区',
         speed_kp: '比例系数',
         speed_kd: '微分系数',
@@ -31,6 +31,7 @@
         wheel_ki: '积分系数',
         wheel_integral_limit: '积分限幅'
     };
+    const units = {max_speed: 'm/s', setpoint: 'm/s', max_turn_delta: 'm/s'};
     const groups = [
         ['tracking', '跟踪设置', ['enabled', 'target']],
         ['speed', '速度策略', ['manual', 'max_speed']],
@@ -116,7 +117,17 @@
         input.id = 'car_' + key;
         input.name = key;
         input.disabled = true;
-        row.appendChild(input);
+        if (units[key]) {
+            const control = document.createElement('div');
+            control.className = 'field-unit';
+            const unit = document.createElement('span');
+            unit.className = 'unit';
+            unit.id = input.id + '_unit';
+            unit.textContent = units[key];
+            input.setAttribute('aria-describedby', unit.id);
+            control.append(input, unit);
+            row.appendChild(control);
+        } else row.appendChild(input);
         containers[key].appendChild(row);
     }
 

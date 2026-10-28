@@ -72,7 +72,7 @@
       sizes = intersectCaps(responses[0], responses[1]);
       sizes.forEach(function (item) {
         item.fps.forEach(function (rate) {
-          option(mode, item.w + 'x' + item.h + '@' + rate, item.w + ' × ' + item.h + ' · ' + rate + ' FPS');
+          option(mode, item.w + 'x' + item.h + '@' + rate, item.w + ' × ' + item.h + ' · ' + rate);
         });
       });
       var choices = Array.from(mode.options).map(function (item) { return item.value; });

@@ -12,7 +12,7 @@
         '<div class="row"><label for="vofa_port" data-i18n="VOFA端口"></label>' +
         '<input id="vofa_port" name="port" type="number" min="1024" max="65535" step="1" required disabled></div>' +
         '<div class="row"><label for="vofa_rate_hz" data-i18n="发送频率"></label>' +
-        '<div class="vofa-rate-control"><input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" aria-describedby="vofa_rate_unit" required disabled><span class="unit" id="vofa_rate_unit">Hz</span></div></div>';
+        '<div class="field-unit"><input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" aria-describedby="vofa_rate_unit" required disabled><span class="unit" id="vofa_rate_unit">Hz</span></div></div>';
     networkCard.querySelector('.net2').append(...card.childNodes);
     applyI18n(networkCard);
 

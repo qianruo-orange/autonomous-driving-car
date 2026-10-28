@@ -30,7 +30,7 @@
     <h3><span data-i18n="视频采集">视频采集</span><span id="camera_status" class="card-status" role="status" aria-live="polite"></span><button class="btn btn-save" type="submit" id="camera_save" style="margin-left:auto;padding:4px 14px" data-i18n="保存">保存</button></h3>
     <div class="camera-fields">
       <div class="row"><label for="camera_device" data-i18n="相机设备">相机设备</label><select id="camera_device"></select></div>
-      <div class="row"><label for="camera_mode" data-i18n="分辨率与帧率">分辨率与帧率</label><select id="camera_mode"></select></div>
+      <div class="row"><label for="camera_mode" data-i18n="分辨率与帧率">分辨率与帧率</label><div class="field-unit"><select id="camera_mode" aria-describedby="camera_mode_unit"></select><span class="unit" id="camera_mode_unit">FPS</span></div></div>
       <div class="row"><label for="camera_codec" data-i18n="视频编码">视频编码</label><select id="camera_codec"><option value="software" data-i18n="软件编码">软件编码</option><option value="hardware" data-i18n="硬件编码">硬件编码</option></select></div>
       <div class="row"><label for="camera_decoder" data-i18n="视频解码">视频解码</label><select id="camera_decoder"><option value="software" data-i18n="软件解码">软件解码</option><option value="hardware" disabled data-i18n="硬件解码（不可用）">硬件解码（不可用）</option></select></div>
     </div>
@@ -40,8 +40,8 @@
 <div class="yolo-col">
 <div class="grp-t" data-i18n="推理参数">推理参数</div>
 <div class="cfg-grid yolo-basic">
-<div class="row"><label for="yolo_cf" data-i18n="置信度">置信度</label><div class="yolo-number"><input id="yolo_cf" type="number" min="1" max="100" step="1"><span class="unit">%</span></div></div>
-<div class="row"><label for="yolo_nm">NMS IoU</label><div class="yolo-number"><input id="yolo_nm" type="number" min="1" max="100" step="1"><span class="unit">%</span></div></div>
+<div class="row"><label for="yolo_cf" data-i18n="置信度">置信度</label><div class="field-unit"><input id="yolo_cf" type="number" min="1" max="100" step="1" aria-describedby="yolo_cf_unit"><span class="unit" id="yolo_cf_unit">%</span></div></div>
+<div class="row"><label for="yolo_nm">NMS IoU</label><div class="field-unit"><input id="yolo_nm" type="number" min="1" max="100" step="1" aria-describedby="yolo_nm_unit"><span class="unit" id="yolo_nm_unit">%</span></div></div>
 </div>
 </div>
 <div class="yolo-col">
@@ -65,10 +65,10 @@
 <div class="card" id="card_can" hidden><h3><select id="canSel" onchange="onCanSel()"></select> <span id="st"></span> <label class="toggle"><input type="checkbox" id="tg" onchange="toggleCan(this.checked)"><span class="slider"></span></label><span class="card-status" id="status_can"></span><a href="/dbc" class="btn btn-back can-dbc-link"><span data-i18n="DBC解析">DBC解析</span></a><button type="button" class="btn btn-save" style="margin-left:0;padding:4px 14px" onclick="saveCan()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div id="cfg">
 <div class="cfg-grid can-basic">
-<div class="row"><label data-i18n="波特率">波特率</label><input name="br" id="br" type="number"><span class="unit">bps</span></div>
+<div class="row"><label for="br" data-i18n="波特率">波特率</label><div class="field-unit"><input name="br" id="br" type="number" aria-describedby="br_unit"><span class="unit" id="br_unit">bps</span></div></div>
 <div class="row"><label data-i18n="DBC 文件">DBC 文件</label><input type="file" id="dbc" accept=".dbc" hidden><button type="button" class="add-btn" data-file-picker="dbc" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="dbc" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadDbc()" data-i18n="上传">上传</button></div>
 <div class="row"><label>CAN FD</label><select name="fd" id="fd" onchange="chkFd()"><option value="on">on</option><option value="off">off</option></select></div>
-<div class="row" id="dbr"><label data-i18n="FD波特率">FD波特率</label><input name="db" id="db" type="number"><span class="unit">bps</span></div>
+<div class="row" id="dbr"><label for="db" data-i18n="FD波特率">FD波特率</label><div class="field-unit"><input name="db" id="db" type="number" aria-describedby="db_unit"><span class="unit" id="db_unit">bps</span></div></div>
 </div>
 <div class="filters">
 <h4><span data-i18n="CAN-ID 过滤器">CAN-ID 过滤器</span><button type="button" class="add-btn" onclick="addFilter()" data-i18n="+ 添加">+ 添加</button></h4>
@@ -90,8 +90,8 @@
 <div class="cfg-grid vid2">
 <div class="row"><label data-i18n="CPU 策略组">CPU 策略组</label><select id="cf_policy"></select></div>
 <div class="row"><label data-i18n="调度策略">调度策略</label><select id="cf_gov"></select></div>
-<div class="row"><label data-i18n="最低频率">最低频率</label><select id="cf_min"></select></div>
-<div class="row"><label data-i18n="最高频率">最高频率</label><select id="cf_max"></select></div>
+<div class="row"><label for="cf_min" data-i18n="最低频率">最低频率</label><div class="field-unit"><select id="cf_min" aria-describedby="cf_min_unit"></select><span class="unit" id="cf_min_unit">MHz</span></div></div>
+<div class="row"><label for="cf_max" data-i18n="最高频率">最高频率</label><div class="field-unit"><select id="cf_max" aria-describedby="cf_max_unit"></select><span class="unit" id="cf_max_unit">MHz</span></div></div>
 </div>
 <div class="ip-cur" id="cf_cur" data-i18n="当前未读取">当前未读取</div>
 </div>

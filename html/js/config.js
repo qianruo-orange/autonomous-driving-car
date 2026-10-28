@@ -472,7 +472,7 @@
         values.sort(function (a,b) { return a-b; });
         values.forEach(function (frequency) {
           var option = document.createElement('option'); option.value = String(frequency);
-          option.textContent = (frequency / 1000).toFixed(0) + ' MHz'; select.appendChild(option);
+          option.textContent = (frequency / 1000).toFixed(0); select.appendChild(option);
         });
         select.value = String(current);
       }
