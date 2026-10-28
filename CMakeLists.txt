@@ -245,3 +245,10 @@ target_include_directories(can_feature_test PRIVATE ${PROJECT_SOURCE_DIR}/includ
 target_compile_options(can_feature_test PRIVATE -UNDEBUG)
 target_link_libraries(can_feature_test PRIVATE pthread)
 add_test(NAME can_feature COMMAND can_feature_test)
+
+add_executable(tcp_vofa_test tests/tcp_vofa_test.c source/tcp/tcp_queue.c)
+target_include_directories(tcp_vofa_test PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_compile_options(tcp_vofa_test PRIVATE -UNDEBUG)
+target_link_libraries(tcp_vofa_test PRIVATE pthread)
+add_test(NAME tcp_vofa COMMAND tcp_vofa_test)
+set_tests_properties(tcp_vofa PROPERTIES TIMEOUT 15)

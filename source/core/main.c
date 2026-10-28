@@ -33,6 +33,7 @@
 #include "yolo/rknn_yolo.h"
 #include "tcp/net_ip.h"
 #include "control/car_sport_ctrl.h"
+#include "telemetry/vofa.h"
 
 /* 模块生命周期函数 */
 typedef struct {
@@ -135,6 +136,11 @@ static module_t g_modules[] = {
     {
         .name = "car_sport_ctrl",
         .ops = { .init = follow_init, .dtor = follow_destroy, .task = NULL },
+    },
+    /* Read-only telemetry shuts down before the controller it observes. */
+    {
+        .name = "vofa",
+        .ops = { .init = vofa_init, .dtor = vofa_destroy, .task = NULL },
     },
     /* video */
     {

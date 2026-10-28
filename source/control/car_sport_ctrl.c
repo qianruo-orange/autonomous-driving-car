@@ -2,7 +2,6 @@
 #define _GNU_SOURCE
 #include "control/car_sport_ctrl.h"
 #include "can/can_socket.h"
-#include "control/car_motor_can.h"
 #include "core/cpu_affinity.h"
 #include "core/log.h"
 #include "http/http_internal.h"
@@ -296,6 +295,41 @@ static void *worker(void *unused)
     }
     return NULL;
 }
+void follow_invalidate_feedback(void)
+{
+    if (!atomic_load(&g.ready))
+        return;
+    pthread_mutex_lock(&g.feedback_lock);
+    g.feedback_ms = 0;
+    pthread_mutex_unlock(&g.feedback_lock);
+}
+
+int follow_telemetry_snapshot(follow_telemetry_t *out)
+{
+    if (!out || !atomic_load(&g.ready) || pthread_mutex_trylock(&g.lock))
+        return -1;
+    if (pthread_mutex_trylock(&g.feedback_lock)) {
+        pthread_mutex_unlock(&g.lock);
+        return -1;
+    }
+    unsigned long long now = now_ms();
+    int fresh = g.feedback_ms && now >= g.feedback_ms &&
+                now - g.feedback_ms <= (unsigned long long)g.cfg[TIMEOUT];
+    *out = (follow_telemetry_t){
+        .speed_target = (g.left_target + g.right_target) * .5,
+        .speed_actual = fresh ? (g.measured_left + g.measured_right) * .5 : NAN,
+        .steering_target = (g.left_target - g.right_target) * .5,
+        .steering_actual = fresh ? (g.measured_left - g.measured_right) * .5 : NAN,
+        .control_seq = g.processed,
+        .feedback_ms = g.feedback_ms,
+        .feedback_valid = fresh,
+        .feedback_valid_until_ms = g.feedback_ms
+                                      ? g.feedback_ms + (unsigned long long)g.cfg[TIMEOUT] : 0,
+    };
+    pthread_mutex_unlock(&g.feedback_lock);
+    pthread_mutex_unlock(&g.lock);
+    return 0;
+}
 int follow_init(void *app)
 {
     if (atomic_load(&g.ready))
@@ -364,11 +398,11 @@ int follow_init(void *app)
     atomic_store(&g.ready, 1);
     /* The profile remains disabled unless explicitly configured. Binding occurs
      * before the controller worker starts; the FIFO interlock stays mandatory. */
-    (void)car_motor_can_init(g.app);
+    (void)can_motor_init(g.app);
     if (pthread_create(&g.thread, NULL, worker, NULL)) {
         atomic_store(&g.ready, 0);
         g.running = 0;
-        car_motor_can_destroy();
+        can_motor_cleanup();
         return -1;
     }
     return 0;
@@ -386,7 +420,7 @@ void follow_destroy(void *app)
     /* A transient nonblocking send failure must not discard the final stop.
      * Retry on the owner thread before closing transport, with a bounded wait. */
     finish_motor_stop();
-    car_motor_can_destroy();
+    can_motor_cleanup();
     pthread_cond_destroy(&g.changed);
     pthread_mutex_destroy(&g.lock);
     pthread_mutex_destroy(&g.feedback_lock);
@@ -478,8 +512,8 @@ void http_follow_get(app_ctx_t *app, int fd, const char *method, const char *uri
     s.reason = g.reason;
     s.frame = g.frame;
     pthread_mutex_unlock(&g.lock);
-    car_motor_can_status_t motor_status;
-    car_motor_can_get_status(&motor_status);
+    can_motor_status_t motor_status;
+    can_motor_get_status(&motor_status);
     char motor_error[1024], motor_interface[IFNAMSIZ * 6 + 1];
     http_json_escape(motor_status.error, motor_error, sizeof(motor_error));
     http_json_escape(motor_status.interface_name, motor_interface, sizeof(motor_interface));

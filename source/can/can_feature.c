@@ -14,6 +14,7 @@ int can_feature_set_locked(app_ctx_t *app, int enabled)
     can_ctx_t *ctx = app->can;
     if (!!app->cfg->args.can_enabled == enabled) return 0;
     if (!enabled) {
+        can_motor_prepare_close_locked(app, NULL);
         app->cfg->args.can_enabled = 0;
         for (int i = 0; i < ctx->count; i++) {
             can_iface_t *iface = &ctx->ifaces[i];
@@ -39,8 +40,7 @@ int can_feature_set_locked(app_ctx_t *app, int enabled)
                                  iface->fd_mode, iface->restart_ms, iface->up) < 0) goto fail;
         staged[i] = can_socket_open(iface->ifname, iface->fd_mode);
         if (staged[i] < 0) goto fail;
-        for (int k = 0; k < iface->filter_count; k++)
-            if (can_socket_set_filter(staged[i], iface->filters[k].id, iface->filters[k].mask) < 0) goto fail;
+        if (can_socket_apply_filters(app, iface, staged[i]) < 0) goto fail;
         struct epoll_event ev = {.events = EPOLLIN, .data.u32 = (uint32_t)(i + 1)};
         if (epoll_ctl(ctx->recv_epfd, EPOLL_CTL_ADD, staged[i], &ev) < 0) goto fail;
     }

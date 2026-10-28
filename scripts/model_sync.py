@@ -295,8 +295,8 @@ def install_config(project, deployment, platform):
             relative = source.relative_to(source_root)
             if relative.parts[0] == "models" or source.suffix.lower() in (".rknn", ".pt", ".onnx"):
                 continue
-            if relative.as_posix() in ("cpu_freq.conf", "follow.conf", "car_motor_can.conf") and checked(deployment, Path("config") / relative).exists():
-                continue  # Preserve device-specific frequency, control and motor settings.
+            if relative.as_posix() in ("cpu_freq.conf", "follow.conf", "car_motor_can.conf", "vofa.conf") and checked(deployment, Path("config") / relative).exists():
+                continue  # Preserve device-specific frequency, control, motor and telemetry settings.
             if source.is_symlink():
                 raise ModelSyncError("Refusing a symlink in configuration: " + str(source))
             if source.is_file():

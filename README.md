@@ -21,6 +21,7 @@ The system follows a unified perception/reasoning/control design on a Linux real
 
 - Select a detected target and configure automatic or manual forward speed, steering PD, and shared wheel-speed PI from the browser.
 - Connect compatible motor drives through a configurable SocketCAN adapter with explicit command, feedback, and stop-frame formats.
+- Send target/measured speed and steering-correction channels to VOFA+ over a separate TCP telemetry connection.
 - Capture V4L2 video, run YOLO26 inference, and display the corresponding annotated frames through H.264/MSE or MJPEG.
 - Record annotated MP4 video and save every completed inference to a daily TXT report, including frames with no detections.
 - Manage logs, recordings, and results together: preview, individual download/delete, per-section archives, and whole-page ZIP download/delete.
@@ -79,13 +80,13 @@ YOLO_WEIGHTS=config/my_model.pt bash scripts/build.sh -R
 
 After a successful build, the selected project-owned PT input and conversion cache copies are removed. Failed builds retain their inputs, and externally supplied weight files are preserved. Conversion weights are not deployed. Source/deployed model conflicts are reported rather than silently overwritten.
 
-Choose the camera, combined resolution/frame-rate mode, encoder, and decoder in Configuration. Resolution and FPS come from device capabilities and saved settings: **1280 x 720 at 30 FPS is configurable, not hardcoded**. The active mode may differ if the driver negotiates a lower frame rate. Available capture decoding is software; hardware encoding is offered only when a usable backend exists. Continuous autofocus is used when the camera supports it.
+Choose the camera, combined resolution/frame-rate mode, encoder, and decoder in System Configuration. Resolution and FPS come from device capabilities and saved settings: **1280 x 720 at 30 FPS is configurable, not hardcoded**. The active mode may differ if the driver negotiates a lower frame rate. Available capture decoding is software; hardware encoding is offered only when a usable backend exists. Continuous autofocus is used when the camera supports it.
 
 ## Browser interface
 
-Open `http://<board-ip>/` for Home, `/config` for Configuration, and `/logs` for Driving Logs. Management pages, writes, and protected downloads require a local administrator account: `root` or an account in the `sudo` group. The browser uses HTTP Basic authentication; use the application on a trusted network or behind a separately configured secure access layer.
+Open `http://<board-ip>/` for Home, `/config` for System Configuration, and `/logs` for Driving Logs. Management pages, writes, and protected downloads require a local administrator account: `root` or an account in the `sudo` group. The browser uses HTTP Basic authentication; use the application on a trusted network or behind a separately configured secure access layer.
 
-The vehicle controls are grouped and saved independently:
+In System Configuration, **Intelligent Following** groups and saves the vehicle controls independently:
 
 | Group | Settings |
 | --- | --- |
@@ -131,7 +132,7 @@ New inference results trigger controller updates using capture-time differences.
 
 ## CAN motor integration
 
-The motor transport is `source/control/car_motor_can.c` with its public interface in `include/control/car_motor_can.h`. It owns a nonblocking SocketCAN socket and feedback receive worker, separate from the application's ordinary CAN queues and DBC receive filters.
+Motor protocol mapping belongs to the shared CAN module under `source/can/` and `include/can/`. Motor commands and measured feedback use the application's common CAN transmit/receive path, alongside its ordinary CAN traffic and DBC decoding. There is no separate motor CAN socket or receiver module.
 
 No real motor profile is supplied. A missing, disabled, or invalid `config/car_motor_can.conf` does not bind a motor adapter or transmit motor frames. Start with the **disabled** [example profile](config/car_motor_can.example.conf), then replace its illustrative values with the drive manufacturer's documented protocol.
 
@@ -169,6 +170,29 @@ The validation board currently runs a kernel with `CONFIG_PREEMPT_RT` disabled. 
 
 Investigate scheduling permissions and RT-group/cgroup restrictions separately from kernel replacement. Enabling PREEMPT_RT requires a compatible kernel and a planned, validated reboot; this deployment does not change boot parameters or reboot the board. `GET /api/follow` exposes scheduling readiness and a top-level `motor` object containing `configured`, `online`, `interface`, `error`, and transmit/receive counters. A physical emergency stop and motor-drive watchdog remain necessary because a failed CAN link cannot deliver a stop frame.
 
+## VOFA+ telemetry
+
+System Configuration includes a VOFA card for enabling telemetry, selecting its TCP port, and setting a sampling limit of `1..100 Hz`. It is disabled by default and uses port **6667**, independently of the application's CAN/TCP data port. The board is a TCP server; VOFA+ on the computer is the TCP client. Saving the card persists these settings in `config/vofa.conf`. Telemetry configuration does not enable following or motor output.
+
+The stream uses the official [JustFloat format](https://www.vofa.plus/docs/learning/dataengines/justfloat/): each 20-byte frame contains four little-endian 32-bit floats followed by `00 00 80 7F`. There are no text headers or channel-name packets. Channel positions are fixed:
+
+| Channel | Curve | Source | Unit |
+| --- | --- | --- | --- |
+| 0 | Speed target | `(left_target + right_target) / 2` | m/s |
+| 1 | Speed actual | `(measured_left + measured_right) / 2` | m/s |
+| 2 | Steering target | `(left_target - right_target) / 2` | m/s |
+| 3 | Steering actual | `(measured_left - measured_right) / 2` | m/s |
+
+Steering here is the differential wheel-speed correction already used by the controller. It is not a steering angle or yaw rate. Actual channels require fresh, signed wheel-speed feedback from the motor adapter. Missing or stale feedback produces IEEE `NaN` in the TCP stream and `null` in the HTTP snapshot; it is never replaced by a fabricated zero-speed measurement.
+
+To create the two comparison plots in VOFA+:
+
+1. Enable the VOFA card, choose a free port, and save it. On the computer, select **TCP Client**, connect to the board's IP and the saved port, and select the **JustFloat** data engine.
+2. Add two Waveform widgets. In each widget's right-click axis settings, use time `T` for X. Bind channels **0 and 1** to the first widget's Y axis for target/actual speed, and channels **2 and 3** to the second for target/actual steering correction.
+3. Set the VOFA sampling interval to `1 / rate_hz` seconds (about `33.333 ms` at 30 Hz). Use Auto scale and keep the displayed sample window at its latest position. The official [waveform guide](https://www.vofa.plus/docs/learning/widgets/wave/) describes axis bindings and the sampling-interval control.
+
+The existing TCP module manages both the ordinary data endpoint and the VOFA endpoint in its shared event loop. Their configurable ports keep CAN data and JustFloat frames separate. Telemetry periodically samples the current control state, holding target values between control updates; it does not trigger PID updates or change the inference-driven control period. Sampling follows the configured rate subject to Linux scheduling. Up to four VOFA clients can connect. A slow client may lose telemetry samples or be disconnected so that it cannot build an unbounded application backlog or delay control.
+
 ## Video, files, and detection records
 
 The H.264 stream and MP4 recorder share encoded output. The browser presents frames with their matching YOLO overlays. Inference concurrency adapts automatically; camera resolution/FPS, confidence/NMS, and model uploads remain configurable.
@@ -194,11 +218,13 @@ Lens position is reported as calibrated millimeters only when calibration is ava
 | `config/config.txt` | Device-specific camera, CAN, TCP/IP, and inference settings. |
 | `config/follow.conf` | Following parameters; enabled/moving state is not restored on restart. |
 | `config/car_motor_can.conf` | Actual motor protocol profile; absent/disabled by default. |
+| `config/vofa.conf` | Persisted VOFA enable state, TCP port, and sampling rate. |
 | `config/cpu_freq.conf` | Per-policy CPU governor and requested limits. |
 | `config/yolo26.rknn`, `config/coco.names` | Canonical RKNN model and labels. |
-| `source/control/`, `include/control/` | Controller and motor transport. |
+| `source/control/`, `include/control/` | Motion-control algorithms and interfaces. |
+| `source/telemetry/`, `include/telemetry/` | Nonblocking VOFA TCP telemetry service. |
 | `source/video/`, `source/yolo/` | Capture, frame ring, inference, overlays, encoding, and results. |
-| `source/can/`, `source/tcp/`, `source/http/` | Data transport and browser/API service. |
+| `source/can/`, `source/tcp/`, `source/http/` | Shared CAN/motor transport, TCP data, and browser/API service. |
 | `html/`, `scripts/` | Web interface and build/deployment utilities. |
 
 Heavy capture/inference/encoding work uses the detected higher-capacity CPU group; control/network/background work uses the lower-capacity group. Unknown or homogeneous CPU layouts retain the allowed CPU set. CPU-frequency policies are handled independently, and effective thermal limits can be lower than requested limits.
@@ -209,6 +235,7 @@ Key HTTP endpoints:
 | --- | --- |
 | `GET /api/follow` | Control configuration, current targets, readiness, and motor-adapter diagnostics. |
 | `POST /api/follow` | Save a validated subset of control parameters. |
+| `GET/POST /api/vofa` | Read telemetry status/channels or save its enable state, port, and rate. |
 | `GET/POST /api/config` | Read/apply the selected configuration module. |
 | `GET /api/system`, `GET/POST /api/cpu_freq` | Monitoring and CPU policy controls. |
 | `GET /api/can/ifaces`, `/api/can/frames`, `/api/can/decoded` | Discover CAN and inspect received data. |
@@ -228,6 +255,8 @@ Management writes and protected file operations require administrator authentica
 | Service fails during YOLO startup | Correct `librknnrt.so`, NPU driver, target platform, model path, model format, and labels. |
 | No motor output | Stopped state, profile validation, SocketCAN interface, FIFO error, feedback age, target selection, and CAN enable state in `/api/follow`. |
 | Adapter is online but wheels do not report speed | Online means the socket is open; verify feedback IDs, frame formats, offsets, endian order, scaling, and real traffic. |
+| VOFA has no actual-speed or actual-steering curve | Check `feedback_valid` and real motor feedback; unavailable measurements are transmitted as `NaN`. |
+| VOFA cannot connect or plots incorrect values | Confirm telemetry is listening, use its saved port and the JustFloat engine, and bind channels 0/1 and 2/3 to separate plots. |
 | Video stalls or delay grows | Negotiated camera mode, processing age, browser buffer/drop measurements, thermal throttling, and network conditions. |
 | CPU frequency differs from the request | Selected policy, effective min/max limits, temperature, and kernel thermal controls. |
 | Model synchronization stops | Resolve independent source/device changes; do not overwrite one side blindly. |

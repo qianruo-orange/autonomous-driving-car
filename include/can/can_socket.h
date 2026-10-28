@@ -58,4 +58,26 @@ int  can_enumerate_system(char names[][IFNAMSIZ], int max);
 /* 查询指定 CAN 接口是否支持 CAN FD，支持返回 1，不支持或查询失败返回 0 */
 int  can_fd_supported(const char *ifname);
 
+
+/* Apply the OR-union of ordinary filters and configured motor-feedback IDs.
+ * Caller holds app.can_mutex; also works for a staged replacement descriptor. */
+int can_socket_apply_filters(app_ctx_t *app, can_iface_t *iface, int fd);
+
+#define CAN_MOTOR_CONFIG "config/car_motor_can.conf"
+typedef struct {
+    int configured, online;
+    unsigned long long tx_frames, tx_errors, rx_frames, decode_errors;
+    char interface_name[IFNAMSIZ];
+    char error[160];
+} can_motor_status_t;
+/* Optional payload mapping on the existing CAN interfaces, no extra socket or
+ * receiver. Initialize after the stopped controller is ready; clean up after
+ * joining its worker, before destroying its feedback lock. */
+int can_motor_init(app_ctx_t *app);
+void can_motor_cleanup(void);
+void can_motor_get_status(can_motor_status_t *out);
+/* Caller holds app.can_mutex. Try the documented stop before interface down,
+ * reconnect or global disable, then invalidate old feedback and queued IDs. */
+void can_motor_prepare_close_locked(app_ctx_t *app, const char *ifname);
+
 #endif /* CAN_SOCKET_H */

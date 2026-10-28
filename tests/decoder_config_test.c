@@ -39,8 +39,10 @@ int can_socket_configure(const char *name, int bitrate, int dbitrate, int fd, in
 int can_socket_open(const char *name, int fd)
 { (void)name; (void)fd; assert(!"Unexpected CAN change"); return -1; }
 void can_socket_close(int fd) { (void)fd; assert(!"Unexpected CAN change"); }
-int can_socket_set_filter(int fd, canid_t id, canid_t mask)
-{ (void)fd; (void)id; (void)mask; assert(!"Unexpected CAN change"); return -1; }
+int can_socket_apply_filters(app_ctx_t *app, can_iface_t *iface, int fd)
+{ (void)app; (void)iface; (void)fd; assert(!"Unexpected CAN change"); return -1; }
+void can_motor_prepare_close_locked(app_ctx_t *app, const char *ifname)
+{ (void)app; (void)ifname; assert(!"Unexpected CAN change"); }
 int watchdog_feed_thread(pthread_t tid, const char *name) { (void)tid; (void)name; return 0; }
 int tcp_listen(int port, const char *bind)
 { (void)port; (void)bind; assert(!"Unexpected TCP listener change"); return -1; }

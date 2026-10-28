@@ -6,7 +6,7 @@
     card.className = 'card';
     card.id = 'card_car_ctrl';
     card.style.gridColumn = '1 / -1';
-    card.innerHTML = '<h3><span data-i18n="小车跟随控制"></span><span id="car_save_status" role="status" class="card-status"></span></h3>' +
+    card.innerHTML = '<h3><span data-i18n="智能跟随"></span><span id="car_save_status" role="status" class="card-status"></span></h3>' +
         '<div class="cfg-grid vid2" id="car_fields"></div>';
     grid.appendChild(card);
     const fields = card.querySelector('#car_fields');

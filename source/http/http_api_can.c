@@ -119,10 +119,12 @@ void http_can_toggle(app_ctx_t *app, int fd, const char *body)
         http_err(fd, 409, "Conflict", "Enable the CAN feature first");
         return;
     }
+    if (!strcmp(action, "down"))
+        can_motor_prepare_close_locked(app, ifname);
     if (strcmp(action, "up") == 0)
         rtnl_link_set_flags(ln, IFF_UP);
     else
-        rtnl_link_set_flags(ln, 0);
+        rtnl_link_unset_flags(ln, IFF_UP);
 
     int rc = rtnl_link_change(sk, ln, ln, 0);
     if (rc >= 0) {
@@ -366,6 +368,10 @@ void http_can_send(app_ctx_t *app, int fd, const char *method, const char *uri, 
 
     int rc = can_tx_frame(app, ifname, &frame);
     if (rc < 0) {
+        if (errno == EBUSY) {
+            http_err(fd, 409, "Conflict", "CAN ID is reserved for vehicle control");
+            return;
+        }
         if (errno == EACCES || errno == ENETDOWN) {
             http_err(fd, 409, "Conflict", "Enable CAN and its interface before sending");
             return;

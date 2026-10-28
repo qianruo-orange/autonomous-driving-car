@@ -19,10 +19,11 @@ double follow_pid_step_limited(follow_pid_t *pid, follow_gains_t gains, double e
 /* Differential correction and both wheel targets are in m/s; no wheel track is needed. */
 void follow_mix(double speed, double correction, double limit, double *left, double *right);
 /* Motor protocol adapter: a validated car_motor_can.conf binds the built-in
- * SocketCAN transport; custom drivers can bind through the same interface.
+ * shared CAN service; custom drivers can bind through the same interface.
  * send receives bounded normalized actuator commands [-1,1], not raw speed.
- * Implement CAN packing using can_tx_frame(). stop MUST encode the documented
- * motor stop command. Callbacks must be nonblocking and finish within 1 ms;
+ * Built-in mapping sends bounded batches through the shared CAN socket without
+ * queueing stale commands. stop MUST encode the documented motor stop command.
+ * Custom callbacks must provide the same guarantees and finish within 1 ms;
  * they must not reenter follow APIs. Bind once during startup, before enabling. */
 typedef struct {
     int (*send)(app_ctx_t *app, double left, double right);
@@ -32,6 +33,18 @@ int follow_bind_motor(const follow_motor_ops_t *ops);
 /* Motor CAN decoder publishes measured signed wheel speeds in m/s, using the
  * CLOCK_MONOTONIC reception timestamp. Never inject fabricated feedback. */
 int follow_feedback(double left_mps, double right_mps, unsigned long long monotonic_ms);
+/* Read-only, nonblocking snapshot for telemetry; available between init/destroy.
+ * Steering is half the left/right speed difference in m/s, not a measured angle.
+ * Missing or stale real wheel feedback is represented by NaN actual values. */
+typedef struct {
+    double speed_target, speed_actual, steering_target, steering_actual;
+    unsigned long long control_seq, feedback_ms;
+    unsigned long long feedback_valid_until_ms;
+    int feedback_valid;
+} follow_telemetry_t;
+int follow_telemetry_snapshot(follow_telemetry_t *out);
+/* Shared CAN close/reconfigure invalidates measured feedback without taking the control lock. */
+void follow_invalidate_feedback(void);
 int follow_init(void *app);
 void follow_destroy(void *app);
 /* Called once for each completed inference; ignores reordered/duplicate frames.

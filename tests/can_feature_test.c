@@ -47,13 +47,17 @@ void can_socket_close(int fd)
     ++close_calls;
 }
 
-int can_socket_set_filter(int fd, canid_t id, canid_t mask)
+int can_socket_apply_filters(app_ctx_t *app, can_iface_t *iface, int fd)
 {
+    assert(app && iface && iface->filter_count == 1);
     assert(fcntl(fd, F_GETFD) >= 0);
-    assert(id == 0x123 && mask == 0x7ff);
+    assert(iface->filters[0].id == 0x123 && iface->filters[0].mask == 0x7ff);
     if (++filter_calls == fail_filter) { errno = EINVAL; return -1; }
     return 0;
 }
+
+void can_motor_prepare_close_locked(app_ctx_t *app, const char *ifname)
+{ assert(app); if (ifname) assert(ifname_valid(ifname)); }
 
 static void reset_stubs(void)
 {

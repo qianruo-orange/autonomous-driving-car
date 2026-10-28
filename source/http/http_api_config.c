@@ -86,6 +86,10 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
 {
     can_ctx_t *can = app->can;
 
+    /* Stop against the current descriptor/mode/up state before editing it. */
+    if (app->cfg->args.can_enabled)
+        can_motor_prepare_close_locked(app, NULL);
+
     for (int i = 0; i < CAN_MAX_IFACES; i++) {
         char kn[32];
         snprintf(kn, sizeof(kn), "ifname%d", i);
@@ -183,13 +187,17 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
             continue;
         }
 
+        if (can_socket_apply_filters(app, iface, new_fd)) {
+            can_socket_close(new_fd);
+            if (old_fd >= 0 && can->recv_epfd >= 0) {
+                struct epoll_event ev = {.events=EPOLLIN, .data.u32=(uint32_t)(i+1)};
+                epoll_ctl(can->recv_epfd, EPOLL_CTL_ADD, old_fd, &ev);
+            }
+            continue;
+        }
         /* 关闭旧 socket，更新为新 fd */
         if (old_fd >= 0) can_socket_close(old_fd);
         iface->sock_fd = new_fd;
-
-        /* 重新设置过滤器 */
-        for (int k = 0; k < iface->filter_count; k++)
-            can_socket_set_filter(new_fd, iface->filters[k].id, iface->filters[k].mask);
 
         /* 重新加入 CAN 接收 epoll */
         if (can->recv_epfd >= 0) {
@@ -206,7 +214,7 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
 }
 
 /* 网络：TCP 监听端口 / 绑定网卡（变化才重建监听）；max_clients 直接生效 */
-static void apply_net(app_ctx_t *app, const http_form_field_t *fields, int count)
+static int apply_net(app_ctx_t *app, const http_form_field_t *fields, int count)
 {
     tcp_ctx_t *tcp = app->tcp;
 
@@ -219,27 +227,33 @@ static void apply_net(app_ctx_t *app, const http_form_field_t *fields, int count
     else   safe_strncpy(want_bind, sizeof(want_bind), tcp->bind_ifname);
 
     if (want_port <= 0) want_port = tcp->port;
+    if (want_port > 65535) { errno = EINVAL; return -1; }
     int changed = (want_port != tcp->port) || (strcmp(want_bind, tcp->bind_ifname) != 0);
 
     if (changed) {
         /* 加锁串行化与 tcp_task 的 listen 事件管理，避免 fd/epoll 竞态 */
         pthread_mutex_lock(&tcp->client_mutex);
-        if (tcp->listen_fd >= 0 && tcp->epfd >= 0)
-            epoll_ctl(tcp->epfd, EPOLL_CTL_DEL, tcp->listen_fd, NULL);
-        if (tcp->listen_fd >= 0) close(tcp->listen_fd);
-
-        tcp->listen_fd = tcp_listen(want_port, want_bind);
-        if (tcp->listen_fd >= 0) {
-            tcp->port = want_port;
-            safe_strncpy(tcp->bind_ifname, sizeof(tcp->bind_ifname), want_bind);
+        int candidate = tcp_listen(want_port, want_bind);
+        if (candidate < 0) {
+            pthread_mutex_unlock(&tcp->client_mutex);
+            return -1;
         }
-
-        if (tcp->listen_fd >= 0 && tcp->epfd >= 0) {
-            struct epoll_event ev;
-            ev.events = EPOLLIN;
-            ev.data.u32 = 0;
-            if (epoll_ctl(tcp->epfd, EPOLL_CTL_ADD, tcp->listen_fd, &ev) < 0)
-                LOG_ERROR("config: epoll add listen failed");
+        struct epoll_event ev = {.events = EPOLLIN, .data.u32 = 0};
+        if (tcp->epfd < 0 || epoll_ctl(tcp->epfd, EPOLL_CTL_ADD, candidate, &ev) < 0) {
+            int saved = tcp->epfd < 0 ? EBADF : errno;
+            close(candidate);
+            pthread_mutex_unlock(&tcp->client_mutex);
+            errno = saved;
+            return -1;
+        }
+        /* The replacement is bound and registered. Existing clients are kept. */
+        int previous = tcp->listen_fd;
+        tcp->listen_fd = candidate;
+        tcp->port = want_port;
+        safe_strncpy(tcp->bind_ifname, sizeof(tcp->bind_ifname), want_bind);
+        if (previous >= 0) {
+            (void)epoll_ctl(tcp->epfd, EPOLL_CTL_DEL, previous, NULL);
+            close(previous);
         }
         pthread_mutex_unlock(&tcp->client_mutex);
         LOG_INFO("config: TCP listen changed to %s:%d", want_bind[0] ? want_bind : "*", want_port);
@@ -252,6 +266,7 @@ static void apply_net(app_ctx_t *app, const http_form_field_t *fields, int count
         if (mc > TCP_MAX_CLIENTS) mc = TCP_MAX_CLIENTS;   /* clamp，防越界 */
         tcp->max_clients = mc;
     }
+    return 0;
 }
 
 /* 视频：更新设备/分辨率/码率系数，返回 APPLY_VIDEO_* 位组合标识需要重启的部件 */
@@ -422,10 +437,14 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
         return;
     }
 
+    if ((!target || strcmp(target, "all") == 0 || strcmp(target, "net") == 0) &&
+        apply_net(app, fields, count) < 0) {
+        pthread_mutex_unlock(&app->can_mutex);
+        http_err(fd, 409, "Conflict", "TCP listener is unavailable; settings unchanged");
+        return;
+    }
     if (!target || strcmp(target, "all") == 0 || strcmp(target, "can") == 0)
         apply_can(app, fields, count);
-    if (!target || strcmp(target, "all") == 0 || strcmp(target, "net") == 0)
-        apply_net(app, fields, count);
     if (!target || strcmp(target, "all") == 0 || strcmp(target, "ip") == 0)
         apply_ip(app, fields, count);
 
