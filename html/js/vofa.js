@@ -15,7 +15,7 @@
         '<div class="row"><label for="vofa_enabled" data-i18n="通信状态"></label>' +
         '<select id="vofa_enabled" name="enabled" disabled><option value="0" data-i18n="停用 VOFA"></option>' +
         '<option value="1" data-i18n="启用 VOFA"></option></select></div>' +
-        '<div class="row"><label for="vofa_port" data-i18n="TCP端口"></label>' +
+        '<div class="row"><label for="vofa_port" data-i18n="VOFA端口"></label>' +
         '<input id="vofa_port" name="port" type="number" min="1024" max="65535" step="1" required disabled></div>' +
         '<div class="row"><label for="vofa_rate_hz" data-i18n="发送频率 (Hz)"></label>' +
         '<input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" required disabled></div>' +

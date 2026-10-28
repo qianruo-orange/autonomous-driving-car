@@ -172,7 +172,7 @@ Investigate scheduling permissions and RT-group/cgroup restrictions separately f
 
 ## VOFA+ telemetry
 
-System Configuration includes a VOFA section inside Network Settings for enabling telemetry, selecting its TCP port, and setting a sampling limit of `1..100 Hz`. It is disabled by default and uses port **6667**, independently of the application's CAN/TCP data port. The board is a TCP server; VOFA+ on the computer is the TCP client. Saving the card persists these settings in `config/vofa.conf`. Telemetry configuration does not enable following or motor output.
+System Configuration includes a VOFA section inside Network Settings for enabling telemetry, selecting its **VOFA port** (`VOFA端口` in Chinese), and setting a sampling limit of `1..100 Hz`. It is disabled by default and uses port **6667**, independently of the application's CAN/TCP data port. The board is a TCP server; VOFA+ on the computer is the TCP client. Saving the VOFA settings persists these settings in `config/vofa.conf`. Telemetry configuration does not enable following or motor output.
 
 The stream uses the official [JustFloat format](https://www.vofa.plus/docs/learning/dataengines/justfloat/): each 20-byte frame contains four little-endian 32-bit floats followed by `00 00 80 7F`. There are no text headers or channel-name packets. Channel positions are fixed:
 
@@ -190,6 +190,20 @@ To create the two comparison plots in VOFA+:
 1. Enable VOFA in Network Settings, choose a free port, and save it. On the computer, select **TCP Client**, connect to the board's IP and the saved port, and select the **JustFloat** data engine.
 2. Add two Waveform widgets. In each widget's right-click axis settings, use time `T` for X. Bind channels **0 and 1** to the first widget's Y axis for target/actual speed, and channels **2 and 3** to the second for target/actual steering correction.
 3. Set the VOFA sampling interval to `1 / rate_hz` seconds (about `33.333 ms` at 30 Hz). Use Auto scale and keep the displayed sample window at its latest position. The official [waveform guide](https://www.vofa.plus/docs/learning/widgets/wave/) describes axis bindings and the sampling-interval control.
+
+### VOFA+ 中文使用说明
+
+1. 打开小车网页的 **系统配置 → 网络设置**，在“通信状态”中选择 **启用 VOFA**。设置 **VOFA端口**（默认 `6667`，范围 `1024..65535`）和 **发送频率 (Hz)**（默认 `30`，范围 `1..100`），点击该配置区域的保存按钮。网络设置顶部的保存按钮用于普通 TCP/IP 配置。
+2. 电脑与小车网络连通后，在 VOFA+ 中选择 **TCP Client**，服务器地址填写小车 IP，端口填写刚保存的 **VOFA端口**；数据引擎选择 **JustFloat**，然后连接。本机小车监听连接，电脑上的 VOFA+ 主动连接。例如小车 IP 为 `192.168.1.5`、VOFA端口为 `6667` 时，连接 `192.168.1.5:6667`。
+3. 添加两个 Waveform 波形组件：第一个绑定 **CH0 目标速度、CH1 实际速度**；第二个绑定 **CH2 目标转向修正、CH3 实际转向修正**。四个通道单位均为 `m/s`，转向通道表示左右轮速差的一半。X 轴选择时间 `T`，采样间隔设置为 `1 / 发送频率` 秒，例如 `30 Hz` 对应约 `33.333 ms`。
+4. 修改 VOFA端口并保存后，已有 VOFA 连接会断开，需要在 VOFA+ 中改用新端口重连。发送频率改变后同步调整波形组件的时间间隔。停止使用时选择 **停用 VOFA** 并保存。
+
+使用与排查：
+
+- **两个端口用途不同**：“TCP端口”用于普通 CAN/TCP 数据，“VOFA端口”用于 JustFloat 遥测；启用时应使用不同且未被占用的端口。端口占用导致保存失败时，原有 VOFA 设置和连接保持不变。
+- **实际曲线没有数据**：CH1/CH3 依赖真实且未过期的电机轮速反馈。无有效反馈时发送 `NaN`，不会以目标值或零值代替实际测量。目标曲线可在没有轮速反馈时查看，查看遥测不会启用电机输出。
+- **连接失败**：检查小车 IP、保存的 VOFA端口、通信开关及网络连通性，确保防火墙允许该 TCP 端口。服务运行状态可用 `systemctl status autonomous-driving-car --no-pager` 查看；`GET /api/vofa` 可查看保存配置、监听状态、连接数及发送计数。
+- 设置持久化在 `config/vofa.conf`，正常部署保留设备已有配置。网页仅保留通信开关、VOFA端口和发送频率；波形在 VOFA+ 中查看。
 
 The existing TCP module manages both the ordinary data endpoint and the VOFA endpoint in its shared event loop. Their configurable ports keep CAN data and JustFloat frames separate. Telemetry periodically samples the current control state, holding target values between control updates; it does not trigger PID updates or change the inference-driven control period. Sampling follows the configured rate subject to Linux scheduling. Up to four VOFA clients can connect. A slow client may lose telemetry samples or be disconnected so that it cannot build an unbounded application backlog or delay control.
 

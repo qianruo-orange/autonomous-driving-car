@@ -5,6 +5,7 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    'VOFA端口': 'VOFA port',
     '通信状态': 'Connection',
     '停用 VOFA': 'Off',
     '启用 VOFA': 'On',
