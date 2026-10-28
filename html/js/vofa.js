@@ -11,7 +11,7 @@
         '<h3><span data-i18n="VOFA 上位机"></span>' +
         '<span id="vofa_save_status" class="card-status" role="status" aria-live="polite"></span>' +
         '<button class="btn btn-save" type="submit" id="vofa_save" disabled data-i18n="保存"></button></h3>' +
-        '<div class="vofa-layout"><div class="cfg-grid vid2 vofa-fields">' +
+        '<div class="cfg-grid vid2 vofa-fields">' +
         '<div class="row"><label for="vofa_enabled" data-i18n="通信状态"></label>' +
         '<select id="vofa_enabled" name="enabled" disabled><option value="0" data-i18n="停用 VOFA"></option>' +
         '<option value="1" data-i18n="启用 VOFA"></option></select></div>' +
@@ -19,12 +19,7 @@
         '<input id="vofa_port" name="port" type="number" min="1024" max="65535" step="1" required disabled></div>' +
         '<div class="row"><label for="vofa_rate_hz" data-i18n="发送频率 (Hz)"></label>' +
         '<input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" required disabled></div>' +
-        '<div class="row"><label data-i18n="数据协议"></label><div class="vofa-protocol">TCP / JustFloat</div></div>' +
-        '</div><div class="vofa-connection">' +
-        '<div class="vofa-endpoint-label" data-i18n="VOFA 连接地址"></div><output id="vofa_endpoint" class="vofa-endpoint">--</output>' +
-        '<div class="vofa-status-line"><span id="vofa_connection_status" role="status" data-i18n="正在读取 VOFA 状态…"></span>' +
-        '<span id="vofa_clients"></span></div>' +
-        '</div></div>';
+        '</div>';
     grid.appendChild(card);
     applyI18n(card);
 
@@ -46,12 +41,6 @@
         inputs.forEach(input => { input.disabled = busy || !loaded; });
         save.disabled = busy || !loaded;
     }
-    function endpoint() {
-        const port = inputs[1].value;
-        const hostname = location.hostname;
-        const host = hostname.includes(':') && hostname[0] !== '[' ? '[' + hostname + ']' : hostname;
-        card.querySelector('#vofa_endpoint').textContent = port ? host + ':' + port : '--';
-    }
     function validSnapshot(data) {
         if (!data || !data.config || !data.status) throw new Error('Invalid VOFA response');
         if (!Number.isInteger(data.config.port) || data.config.port < 1024 || data.config.port > 65535 ||
@@ -69,23 +58,6 @@
         });
         loaded = true;
         disabled();
-        // Show the saved endpoint; edits do not change the active listener until saved.
-        const hostname = location.hostname;
-        const host = hostname.includes(':') && hostname[0] !== '[' ? '[' + hostname + ']' : hostname;
-        card.querySelector('#vofa_endpoint').textContent = host + ':' + data.config.port;
-        let connection = 'VOFA 已关闭';
-        if (data.config.enabled) {
-            if (data.status.listening) connection = Number(data.status.clients) > 0 ? 'VOFA 已连接' : 'VOFA 等待连接';
-            else connection = 'VOFA 未启动，请检查端口';
-        }
-        const connectionStatus = card.querySelector('#vofa_connection_status');
-        setI18nText(connectionStatus, connection);
-        connectionStatus.className = data.config.enabled && !data.status.listening ? 'err' : '';
-        setI18nText(card.querySelector('#vofa_clients'), '客户端：{count} / {max}', {
-            count: Number(data.status.clients) || 0,
-            max: Number(data.max_clients) || 4
-        });
-
     }
     async function poll() {
         if (!busy && !document.hidden) {
@@ -147,6 +119,5 @@
     document.addEventListener('languagechange', () => {
         if (latest) render(latest, false);
     });
-    endpoint();
     poll();
 })();
