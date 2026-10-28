@@ -49,12 +49,10 @@ int main(void)
     static tcp_ctx_t ctx;
     static struct app_config_t config;
     app_ctx_t app = {.tcp = &ctx, .cfg = &config};
-    config.args.max_clients = TCP_MAX_CLIENTS;
     atomic_store(&app.running, 1);
-    config.args.tcp_port = 6666; /* Even a legacy configuration must not listen. */
     assert(!tcp_init(&app));
-    assert(ctx.listen_fd == -1);
-    int reserved = tcp_listen(0, NULL);
+    assert(ctx.vofa_listener == -1);
+    int reserved = tcp_listen(0);
     assert(reserved >= 0);
     int first_port = port_of(reserved);
     tcp_vofa_stage_t stage;
@@ -76,7 +74,7 @@ int main(void)
     assert(!memcmp(received, frame, sizeof(frame)));
     assert(recv(telemetry, received, 1, MSG_DONTWAIT) == -1 && errno == EAGAIN);
 
-    reserved = tcp_listen(0, NULL);
+    reserved = tcp_listen(0);
     assert(reserved >= 0);
     int next_port = port_of(reserved);
     close(reserved);
@@ -96,7 +94,7 @@ int main(void)
     tcp_vofa_stop(&ctx);
     assert(recv(telemetry, received, 1, 0) == 0);
     atomic_store(&app.running, 0);
-    eventfd_signal(ctx.tx_efd);
+    eventfd_signal(ctx.wake_fd);
     assert(!pthread_join(worker, NULL));
     close(telemetry);
     tcp_cleanup(&app);

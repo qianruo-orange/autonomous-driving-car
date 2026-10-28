@@ -265,7 +265,7 @@ int vofa_init(void *arg)
     atomic_store(&vofa.ready, 1);
     pthread_mutex_unlock(&vofa_lock);
     pthread_mutex_unlock(&vofa_save_lock);
-    eventfd_signal(app->tcp->tx_efd);
+    eventfd_signal(app->tcp->wake_fd);
     return 0;
 }
 
@@ -401,6 +401,6 @@ void http_vofa_post(app_ctx_t *app, int fd, const char *method, const char *uri,
     vofa.error = "";
     pthread_mutex_unlock(&vofa_lock);
     pthread_mutex_unlock(&vofa_save_lock);
-    eventfd_signal(app->tcp->tx_efd);
+    eventfd_signal(app->tcp->wake_fd);
     http_vofa_get(app, fd, method, uri, req);
 }

@@ -17,16 +17,14 @@
 #include <arpa/inet.h>
 #include <time.h>
 #include "tcp/tcp_server.h"
-#include "tcp/tcp_queue.h"
 #include "core/common.h"
 #include "core/epoll_util.h"
 #include "core/log.h"
 #include "watchdog/watchdog.h"
 #include "telemetry/vofa.h"
 
-/* epoll 事件 tag：listen_fd 用 0，TX eventfd 用高位标识，客户端用 0x80000000|(idx+1) */
-#define TCP_TXEFD_TAG 0x40000000u
-#define TCP_CLIENT_TAG(idx) (0x80000000u | (uint32_t)((idx) + 1))
+/* Shared TCP loop: configuration wakeups and VOFA connections. */
+#define TCP_WAKE_TAG 0x40000000u
 #define TCP_VOFA_LISTEN_TAG 0x20000000u
 #define TCP_VOFA_CLIENT_TAG(idx) (0x10000000u | (uint32_t)((idx) + 1))
 #define TCP_VOFA_PENDING_MS 100
@@ -114,7 +112,7 @@ int tcp_vofa_stage(tcp_ctx_t *ctx, int enabled, int port, tcp_vofa_stage_t *stag
     stage->replace = 1;
     if (!enabled)
         return 0;
-    stage->fd = tcp_listen(port, NULL);
+    stage->fd = tcp_listen(port);
     if (stage->fd < 0)
         return -1;
     pthread_mutex_lock(&ctx->vofa_mutex);
@@ -163,7 +161,7 @@ void tcp_vofa_commit(tcp_ctx_t *ctx, int enabled, int port, tcp_vofa_stage_t *st
     ctx->vofa_refresh = 1;
     ctx->vofa_listener_error = 0;
     pthread_mutex_unlock(&ctx->vofa_mutex);
-    eventfd_signal(ctx->tx_efd);
+    eventfd_signal(ctx->wake_fd);
 }
 
 void tcp_vofa_stop(tcp_ctx_t *ctx)
@@ -316,7 +314,7 @@ static void tcp_vofa_deadlines(tcp_ctx_t *ctx)
     pthread_mutex_unlock(&ctx->vofa_mutex);
 }
 
-int tcp_listen(int port, const char *bind_ifname)
+int tcp_listen(int port)
 {
     int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0) { LOG_ERROR("tcp socket"); return -1; }
@@ -324,17 +322,6 @@ int tcp_listen(int port, const char *bind_ifname)
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse))) {
         close(fd);
         return -1;
-    }
-
-    /* 指定网卡时用 SO_BINDTODEVICE 绑定到该接口（否则 INADDR_ANY 绑定所有网卡） */
-    if (bind_ifname && bind_ifname[0]) {
-        struct ifreq ifr;
-        memset(&ifr, 0, sizeof(ifr));
-        ifreq_set_name(&ifr, bind_ifname);
-        if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
-            LOG_ERROR("tcp bind device %s: %s", bind_ifname, strerror(errno));
-            close(fd); return -1;
-        }
     }
 
     struct sockaddr_in addr;
@@ -354,234 +341,32 @@ int tcp_listen(int port, const char *bind_ifname)
         LOG_ERROR("tcp fcntl O_NONBLOCK: %s", strerror(errno));
         close(fd); return -1;
     }
-    if (bind_ifname && bind_ifname[0])
-        LOG_INFO("TCP listening on %s:%d", bind_ifname, port);
-    else
-        LOG_INFO("TCP listening on port %d", port);
+    LOG_INFO("VOFA TCP listening on port %d", port);
     return fd;
 }
 
-static int tcp_accept(int listen_fd)
-{
-    struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &addr_len);
-    if (client_fd < 0) {
-        /* 非阻塞监听 fd 下 EAGAIN/EWOULDBLOCK 属正常无连接，不刷错误日志 */
-        if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-            LOG_ERROR("tcp accept: %s", strerror(errno));
-        return -1;
-    }
-    if (set_nonblock(client_fd) < 0) {
-        LOG_ERROR("tcp client fcntl O_NONBLOCK: %s", strerror(errno));
-        close(client_fd);
-        return -1;
-    }
-    char ip_str[INET_ADDRSTRLEN];
-    if (inet_ntop(AF_INET, &client_addr.sin_addr, ip_str, sizeof(ip_str)) == NULL)
-        safe_strncpy(ip_str, sizeof(ip_str), "?");
-    LOG_INFO("TCP client connected: %s:%d  fd=%d", ip_str, ntohs(client_addr.sin_port), client_fd);
-    return client_fd;
-}
-
-/* ---- eventfd 跨线程唤醒：TX 队列有数据压入时通知 tcp_task ----
-   写/读 eventfd 的公共实现见 core/common.h（eventfd_signal / eventfd_consume） */
-
-/*
- * tcp_tx_packet - 异步发送数据到客户端：压入 TX 队列，写 eventfd 唤醒 tcp_task。
- * client_idx < 0 表示广播所有已连接客户端。返回 0 成功，-1 失败。
- */
-static int tcp_tx_packet(tcp_ctx_t *ctx, int client_idx, const void *buf, size_t len)
-{
-    if (!ctx || !buf || len == 0 || len > WBUF_SIZE) { errno = EINVAL; return -1; }
-
-    int pushed = 0;
-
-    if (client_idx < 0) {
-        /* 广播：先快照已连接客户端索引，再统一压入 TX 队列 */
-        int idxs[TCP_MAX_CLIENTS];
-        int n = 0;
-        pthread_mutex_lock(&ctx->client_mutex);
-        for (int i = 0; i < ctx->client_count && n < TCP_MAX_CLIENTS; i++)
-            if (ctx->clients[i].fd >= 0) idxs[n++] = i;
-        pthread_mutex_unlock(&ctx->client_mutex);
-
-        pthread_mutex_lock(&ctx->tx_mutex);
-        for (int i = 0; i < n; i++)
-            if (tcp_queue_push(&ctx->txq, idxs[i], buf, len) == 0) pushed++;
-        pthread_mutex_unlock(&ctx->tx_mutex);
-    } else {
-        pthread_mutex_lock(&ctx->tx_mutex);
-        if (tcp_queue_push(&ctx->txq, client_idx, buf, len) == 0) pushed++;
-        pthread_mutex_unlock(&ctx->tx_mutex);
-    }
-
-    if (pushed > 0)
-        eventfd_signal(ctx->tx_efd);
-
-    return pushed > 0 ? 0 : -1;
-}
-
-/* 读取单个客户端数据并丢弃（不再转发到 CAN）；返回 1 表示客户端已断开 */
-static int handle_tcp_input(tcp_ctx_t *ctx, int client_idx)
-{
-    char buf[WBUF_SIZE];
-
-    pthread_mutex_lock(&ctx->client_mutex);
-    if (client_idx < 0 || client_idx >= TCP_MAX_CLIENTS) {
-        pthread_mutex_unlock(&ctx->client_mutex);
-        return 1;
-    }
-    client_t *c = &ctx->clients[client_idx];
-    if (c->fd < 0) { pthread_mutex_unlock(&ctx->client_mutex); return 1; }
-    ssize_t n = recv(c->fd, buf, sizeof(buf), 0);
-    pthread_mutex_unlock(&ctx->client_mutex);
-
-    if (n == 0) return 1;                                   /* 对端正常关闭 */
-    if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return 1;
-    return 0;
-}
-
-/* 弹出 TX 队列并写客户端 socket，处理部分写（用每客户端 wbuf 暂存未发完的字节） */
-static void tcp_flush_tx(tcp_ctx_t *ctx)
-{
-    pthread_mutex_lock(&ctx->tx_mutex);
-    pthread_mutex_lock(&ctx->client_mutex);
-
-    /* 1) 先推进每个客户端尚未发完的 wbuf */
-    for (int i = 0; i < ctx->client_count; i++) {
-        client_t *c = &ctx->clients[i];
-        if (c->fd < 0 || c->wlen <= 0) continue;
-        ssize_t n = send(c->fd, c->wbuf, (size_t)c->wlen, MSG_NOSIGNAL);
-        if (n > 0) {
-            memmove(c->wbuf, c->wbuf + n, (size_t)(c->wlen - n));
-            c->wlen -= (int)n;
-        } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            c->wlen = 0; /* 连接异常，丢弃残留 */
-        }
-    }
-
-    /* 2) 再把 TX 队列里的包搬到客户端 wbuf 并发送。
-          队头包的目标客户端若暂时写不出去（wbuf 未排空），不阻塞其他客户端：
-          把该包转回队尾稍后再试，继续处理后续包；每个目标客户端的包保持 FIFO。 */
-    int remaining = ctx->txq.count;   /* 本次尝试处理的包数上限（旋转可能把包放回队尾） */
-    int examined = 0;
-    while (examined < remaining) {
-        tcp_pkt_t p;
-        if (tcp_queue_peek(&ctx->txq, &p) != 0) break;   /* 队列已空 */
-        examined++;
-        int idx = p.client_idx;
-        if (idx < 0 || idx >= TCP_MAX_CLIENTS || idx >= ctx->client_count) { tcp_queue_pop(&ctx->txq, &p); continue; }
-        client_t *c = &ctx->clients[idx];
-        if (c->fd < 0) { tcp_queue_pop(&ctx->txq, &p); continue; }   /* 客户端已断开，丢弃 */
-        if (c->wlen > 0) {
-            /* 慢客户端：队头包转回队尾，避免队头阻塞拖垮整个广播 */
-            tcp_queue_pop(&ctx->txq, &p);
-            tcp_queue_push(&ctx->txq, p.client_idx, p.data, p.len);
-            continue;
-        }
-        tcp_queue_pop(&ctx->txq, &p);
-        memcpy(c->wbuf, p.data, p.len);
-        c->wlen = (int)p.len;
-        ssize_t n = send(c->fd, c->wbuf, (size_t)c->wlen, MSG_NOSIGNAL);
-        if (n > 0) {
-            memmove(c->wbuf, c->wbuf + n, (size_t)(c->wlen - n));
-            c->wlen -= (int)n;
-        } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            c->wlen = 0;
-        }
-    }
-
-    /* 3) 按 wbuf 是否非空更新 EPOLLOUT 状态 */
-    for (int i = 0; i < ctx->client_count; i++) {
-        client_t *c = &ctx->clients[i];
-        if (c->fd < 0) continue;
-        struct epoll_event ev;
-        ev.events = EPOLLIN | EPOLLRDHUP | (c->wlen > 0 ? EPOLLOUT : 0);
-        ev.data.u32 = TCP_CLIENT_TAG(i);
-        epoll_ctl(ctx->epfd, EPOLL_CTL_MOD, c->fd, &ev);
-    }
-
-    pthread_mutex_unlock(&ctx->client_mutex);
-    pthread_mutex_unlock(&ctx->tx_mutex);
-}
-
-/* tcp_client_add / tcp_client_del 定义在文件末尾，此处提前声明供 tcp_task 使用 */
-static void tcp_client_add(tcp_ctx_t *ctx, int fd);
-static void tcp_client_del(tcp_ctx_t *ctx, int idx);
-
+/* Networking stays in one worker; telemetry sampling owns no socket thread. */
 void *tcp_task(void *arg)
 {
-    app_ctx_t *app = (app_ctx_t *)arg;
+    app_ctx_t *app = arg;
     tcp_ctx_t *ctx = app->tcp;
     if (!ctx) return NULL;
-
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.u32 = 0;
-    if (ctx->listen_fd >= 0)
-        epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->listen_fd, &ev);
-
-    ev.events = EPOLLIN;
-    ev.data.u32 = TCP_TXEFD_TAG;
-    if (ctx->tx_efd >= 0)
-        epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->tx_efd, &ev);
-
-    pthread_mutex_lock(&ctx->client_mutex);
-    for (int i = 0; i < TCP_MAX_CLIENTS; i++) {
-        if (ctx->clients[i].fd < 0) continue;
-        ev.events = EPOLLIN | EPOLLRDHUP;
-        ev.data.u32 = TCP_CLIENT_TAG(i);
-        epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->clients[i].fd, &ev);
-    }
-    pthread_mutex_unlock(&ctx->client_mutex);
-
     atomic_store(&ctx->task_running, 1);
     LOG_INFO("tcp_task started");
     while (app->running) {
-        /* Sampling runs outside transport locks; it only reads controller state. */
         vofa_tick(app);
         tcp_vofa_deadlines(ctx);
-        struct epoll_event events[64];
+        struct epoll_event events[16];
         int timeout = vofa_wait_ms(app);
-        if (timeout > 100)
-            timeout = 100;
-        int nfds = epoll_wait_feed(ctx->epfd, events, 64, timeout, "tcp");
-        if (nfds < 0) break;
-        for (int i = 0; i < nfds; i++) {
+        if (timeout > 100) timeout = 100;
+        int count = epoll_wait_feed(ctx->epfd, events, 16, timeout, "tcp");
+        if (count < 0) break;
+        for (int i = 0; i < count; i++) {
             uint32_t tag = events[i].data.u32;
-            if (tag == TCP_VOFA_LISTEN_TAG || (tag & 0xf0000000u) == 0x10000000u) {
+            if (tag == TCP_WAKE_TAG)
+                eventfd_consume(ctx->wake_fd);
+            else if (tag == TCP_VOFA_LISTEN_TAG || (tag & 0xf0000000u) == 0x10000000u)
                 tcp_vofa_events(ctx, events[i].data.u64, events[i].events);
-                continue;
-            }
-            if (tag == 0) {
-                for (int accepted = 0; accepted <= TCP_MAX_CLIENTS; accepted++) {
-                    /* HTTP swaps/closes the listener under the same mutex.
-                     * Keep the descriptor stable through nonblocking accept,
-                     * then release before tcp_client_add takes this lock. */
-                    pthread_mutex_lock(&ctx->client_mutex);
-                    int fd = ctx->listen_fd >= 0 ? tcp_accept(ctx->listen_fd) : -1;
-                    pthread_mutex_unlock(&ctx->client_mutex);
-                    if (fd < 0)
-                        break;
-                    tcp_client_add(ctx, fd);
-                }
-                continue;
-            }
-            if (tag == TCP_TXEFD_TAG) {
-                eventfd_consume(ctx->tx_efd);
-                tcp_flush_tx(ctx);
-                continue;
-            }
-            int client_idx = (int)(tag & 0x7FFFFFFFu) - 1;
-            if (client_idx < 0 || client_idx >= TCP_MAX_CLIENTS) continue;
-            uint32_t e = events[i].events;
-            int dead = 0;
-            if (e & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR))
-                dead = handle_tcp_input(ctx, client_idx);
-            if (!dead && (e & EPOLLOUT))
-                tcp_flush_tx(ctx);
-            if (dead) tcp_client_del(ctx, client_idx);
         }
     }
     atomic_store(&ctx->task_running, 0);
@@ -591,76 +376,31 @@ void *tcp_task(void *arg)
 
 int tcp_init(void *arg)
 {
-    app_ctx_t *app = (app_ctx_t *)arg;
+    app_ctx_t *app = arg;
     tcp_ctx_t *ctx = app->tcp;
     if (!ctx) return -1;
     memset(ctx, 0, sizeof(*ctx));
-    ctx->listen_fd = -1;
-    ctx->epfd = -1;
-    ctx->tx_efd = -1;
-    ctx->vofa_listener = -1;
-    pthread_mutex_init(&ctx->client_mutex, NULL);
-    pthread_mutex_init(&ctx->tx_mutex, NULL);
+    ctx->epfd = ctx->wake_fd = ctx->vofa_listener = -1;
     pthread_mutex_init(&ctx->vofa_mutex, NULL);
     ctx->vofa_initialized = 1;
-    for (int i = 0; i < TCP_MAX_CLIENTS; i++) ctx->clients[i].fd = -1;
     for (int i = 0; i < TCP_VOFA_CLIENTS; i++) ctx->vofa_clients[i].fd = -1;
-    /* Web management uses HTTP :80. No legacy ordinary TCP listener is opened;
-       this shared event loop now serves only the configurable VOFA endpoint. */
-    /* TCP 数据收发专用 epoll（listen + 客户端 + TX eventfd，与 CAN 分开管理） */
-    ctx->epfd = epoll_create1(0);
-    if (ctx->epfd < 0) { LOG_ERROR("tcp: epoll_create1 failed"); return -1; }
-    ctx->tx_efd = eventfd(0, EFD_NONBLOCK);
-    if (ctx->tx_efd < 0) { LOG_ERROR("tcp: eventfd failed"); return -1; }
-    for (int i = 0; i < TCP_MAX_CLIENTS; i++) ctx->clients[i].fd = -1;
-    tcp_queue_reset(&ctx->txq);
-    return 0;
+    ctx->epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (ctx->epfd < 0) return -1;
+    ctx->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (ctx->wake_fd < 0) return -1;
+    struct epoll_event event = {.events = EPOLLIN, .data.u64 = TCP_WAKE_TAG};
+    return epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->wake_fd, &event);
 }
 
 void tcp_cleanup(void *arg)
 {
-    app_ctx_t *app = (app_ctx_t *)arg;
+    app_ctx_t *app = arg;
     tcp_ctx_t *ctx = app->tcp;
     if (!ctx || !ctx->vofa_initialized) return;
-
     tcp_vofa_stop(ctx);
-
-    for (int i = 0; i < TCP_MAX_CLIENTS; i++)
-        if (ctx->clients[i].fd >= 0) { close(ctx->clients[i].fd); ctx->clients[i].fd = -1; }
-    if (ctx->listen_fd >= 0) close(ctx->listen_fd);
-    if (ctx->tx_efd >= 0) close(ctx->tx_efd);
+    if (ctx->wake_fd >= 0) close(ctx->wake_fd);
     if (ctx->epfd >= 0) close(ctx->epfd);
-    pthread_mutex_destroy(&ctx->client_mutex);
-    pthread_mutex_destroy(&ctx->tx_mutex);
     pthread_mutex_destroy(&ctx->vofa_mutex);
+    ctx->wake_fd = ctx->epfd = -1;
     ctx->vofa_initialized = 0;
-}
-
-static void tcp_client_add(tcp_ctx_t *ctx, int fd)
-{
-    pthread_mutex_lock(&ctx->client_mutex);
-    int idx = -1;
-    int limit = ctx->max_clients > 0 ? ctx->max_clients : TCP_MAX_CLIENTS;
-    if (limit > TCP_MAX_CLIENTS) limit = TCP_MAX_CLIENTS;   /* clamp，防止数组越界 */
-    for (int i = 0; i < limit; i++) { if (ctx->clients[i].fd == -1) { idx = i; break; } }
-    if (idx < 0 && ctx->client_count < limit) idx = ctx->client_count;
-    if (idx < 0) { LOG_ERROR("too many clients, rejecting fd=%d", fd); close(fd); pthread_mutex_unlock(&ctx->client_mutex); return; }
-    client_t *c = &ctx->clients[idx]; memset(c, 0, sizeof(*c)); c->fd = fd;
-    if (idx >= ctx->client_count) ctx->client_count = idx + 1;
-    struct epoll_event ev; ev.events = EPOLLIN | EPOLLRDHUP; ev.data.u32 = TCP_CLIENT_TAG(idx);
-    epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, fd, &ev);
-    LOG_INFO("client added fd=%d idx=%d", fd, idx);
-    pthread_mutex_unlock(&ctx->client_mutex);
-}
-
-static void tcp_client_del(tcp_ctx_t *ctx, int idx)
-{
-    pthread_mutex_lock(&ctx->client_mutex);
-    if (idx < 0 || idx >= TCP_MAX_CLIENTS) { pthread_mutex_unlock(&ctx->client_mutex); return; }
-    client_t *c = &ctx->clients[idx];
-    if (c->fd < 0) { pthread_mutex_unlock(&ctx->client_mutex); return; }
-    epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, c->fd, NULL);
-    close(c->fd); LOG_INFO("client removed fd=%d idx=%d", c->fd, idx);
-    c->fd = -1;
-    pthread_mutex_unlock(&ctx->client_mutex);
 }

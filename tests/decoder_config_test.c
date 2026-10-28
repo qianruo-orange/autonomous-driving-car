@@ -49,8 +49,6 @@ int can_socket_apply_filters(app_ctx_t *app, can_iface_t *iface, int fd)
 void can_motor_prepare_close_locked(app_ctx_t *app, const char *ifname)
 { (void)app; (void)ifname; assert(!"Unexpected CAN change"); }
 int watchdog_feed_thread(pthread_t tid, const char *name) { (void)tid; (void)name; return 0; }
-int tcp_listen(int port, const char *bind)
-{ (void)port; (void)bind; assert(!"Unexpected TCP listener change"); return -1; }
 void video_stream_restart(void)
 {
     restart_calls++;
@@ -124,7 +122,7 @@ int main(void)
     assert(config_load(&cfg) == 0 && !strcmp(cfg.video_decoder, "software") && unsupported_logs == 1);
 
     can_ctx_t can = {.count = 0};
-    tcp_ctx_t tcp = {.port = 6666, .max_clients = 16, .listen_fd = -1, .epfd = -1};
+    tcp_ctx_t tcp = {.epfd = -1, .vofa_listener = -1};
     app_ctx_t app = {.cfg = &cfg, .can = &can, .tcp = &tcp};
     pthread_mutex_init(&app.can_mutex, NULL);
     config_save(&app);
@@ -147,7 +145,7 @@ int main(void)
     for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
         http_config_post(&app, 0, "POST", "/api/config", invalid[i]);
         assert(response_code == 400 && cfg.video_width == 1280 && cfg.video_height == 720);
-        assert(!strcmp(cfg.video_decoder, "software") && tcp.max_clients == 16 && !restart_calls && !cycle_calls);
+        assert(!strcmp(cfg.video_decoder, "software") && !restart_calls && !cycle_calls);
     }
     expect_video_actions(&app, "target=video&video_decoder=software", "CR");
     assert(!strcmp(cfg.video_decoder, "software"));
@@ -166,7 +164,7 @@ int main(void)
     assert(!strcmp(cfg.video_codec, "software") && cfg.video_width == 1280 && cfg.video_height == 720 && cfg.video_fps == 30);
     expect_video_actions(&app, "target=all", "");
     http_config_post(&app, 0, "POST", "/api/config", "target=net&tcp_port=7777&max_clients=12");
-    assert(response_code == 400 && tcp.max_clients == 16 && tcp.listen_fd == -1);
+    assert(response_code == 400 && tcp.vofa_listener == -1);
     http_config_get(&app, 0, "GET", "/api/config", "");
     assert(response_code == 200 && strstr(response_body, "\"http_port\":80"));
     assert(!strstr(response_body, "tcp_port") && !strstr(response_body, "max_clients"));

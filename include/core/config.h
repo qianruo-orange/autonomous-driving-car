@@ -50,10 +50,6 @@ typedef struct {
     can_iface_t can_ifaces[CAN_MAX_IFACES];
     int         can_count;
     int         can_enabled; /* Gateway-wide CAN RX/TX switch; preserves interface settings. */
-    int         tcp_port;
-    int         max_clients;
-    char        tcp_bind[IFNAMSIZ]; /* TCP 监听绑定网卡名（空 = 绑定所有网卡 INADDR_ANY） */
-
     /* ---- 网卡 IP 设置（配置页 IP 卡片，static/dhcp） ---- */
     char        ip_ifname[IFNAMSIZ]; /* 管理的网卡（空 = 不管理） */
     char        ip_mode[8];          /* "static" / "dhcp" / "" */

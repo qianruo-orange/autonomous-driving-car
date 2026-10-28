@@ -53,8 +53,6 @@ static void config_defaults(struct app_config_t *cfg)
     { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->yolo_threads = _c; } /* 默认每核 1 个推理线程 */
 
     app_args_t *args = &cfg->args;
-    args->tcp_port    = 6666;
-    args->max_clients = 16;
 
     /* 可配置 CAN 通道：只使用系统中实际存在的 CAN 接口；无硬件时保持 0 个 */
     char names[CAN_MAX_IFACES][IFNAMSIZ];
@@ -86,6 +84,7 @@ int config_load(struct app_config_t *cfg)
     cfg->yolo_input_size = 640; cfg->yolo_conf = 0.25f; cfg->yolo_nms = 0.45f;
     cfg->yolo_interval_ms = 10; { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->yolo_threads = _c; } /* 默认每核 1 个推理线程 */
     app_args_t *a = &cfg->args;
+    char legacy_web_ifname[IFNAMSIZ] = "";
     int can_feature_configured = 0;
 
     char line[256];
@@ -134,9 +133,8 @@ int config_load(struct app_config_t *cfg)
                     flt->id = (canid_t)id; flt->mask = (canid_t)mask;
                 }
             }
-        } else if (strcmp(key, "tcp_port") == 0) a->tcp_port = parse_int_clamped(val, 1, 65535, 6666);
-        else if (strcmp(key, "max_clients") == 0) a->max_clients = parse_int_clamped(val, 1, TCP_MAX_CLIENTS, 16);
-        else if (strcmp(key, "tcp_bind") == 0) safe_strncpy(a->tcp_bind, sizeof(a->tcp_bind), val);
+        } else if (strcmp(key, "tcp_bind") == 0)
+            safe_strncpy(legacy_web_ifname, sizeof(legacy_web_ifname), val);
         else if (strcmp(key, "ip_ifname") == 0) safe_strncpy(a->ip_ifname, sizeof(a->ip_ifname), val);
         else if (strcmp(key, "ip_mode") == 0) safe_strncpy(a->ip_mode, sizeof(a->ip_mode), val);
         else if (strcmp(key, "ip_addr") == 0) safe_strncpy(a->ip_addr, sizeof(a->ip_addr), val);
@@ -175,10 +173,9 @@ int config_load(struct app_config_t *cfg)
     /* Preserve existing installations; without any CAN interface start hidden. */
     if (!can_feature_configured) a->can_enabled = a->can_count > 0;
     /* 只有个别字段缺省时回退默认值；无 CAN 接口不代表配置无效
-       （用户可能只配了 TCP/视频），不能整体重置为默认值 */
-    if (!a->ip_ifname[0] && a->tcp_bind[0])
-        safe_strncpy(a->ip_ifname, sizeof(a->ip_ifname), a->tcp_bind);
-    if (a->max_clients <= 0) a->max_clients = 16;
+       （用户可能只配了 Web/视频），不能整体重置为默认值 */
+    if (!a->ip_ifname[0] && legacy_web_ifname[0])
+        safe_strncpy(a->ip_ifname, sizeof(a->ip_ifname), legacy_web_ifname);
     if (cfg->video_width <= 0) cfg->video_width = 640;
     if (cfg->video_height <= 0) cfg->video_height = 480;
     config_normalize_model_path(cfg);
