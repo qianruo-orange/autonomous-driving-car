@@ -5,7 +5,7 @@
 #include "core/config.c"
 #include "http/http_api_config.c"
 
-static int response_code, restart_calls, cycle_calls, unsupported_logs;
+static int response_code, restart_calls, cycle_calls, unsupported_logs, ip_calls;
 static char response_body[8192];
 static char video_actions[8];
 static size_t video_action_count;
@@ -32,7 +32,12 @@ int net_ip_get_current(const char *ifname, char *address, size_t address_size,
 }
 void net_ip_apply_async(const char *ifname, const char *mode, const char *address,
                         const char *mask, const char *gateway)
-{ (void)ifname; (void)mode; (void)address; (void)mask; (void)gateway; assert(!"Unexpected IP change"); }
+{
+    assert(!strcmp(ifname, "eth7") && !strcmp(mode, "static"));
+    assert(!strcmp(address, "192.168.7.5") && !strcmp(mask, "255.255.255.0"));
+    assert(!strcmp(gateway, "192.168.7.1"));
+    ip_calls++;
+}
 int can_queue_init(can_queue_t *queue) { (void)queue; assert(!"Unexpected CAN change"); return -1; }
 int can_socket_configure(const char *name, int bitrate, int dbitrate, int fd, int restart, int up)
 { (void)name; (void)bitrate; (void)dbitrate; (void)fd; (void)restart; (void)up; assert(!"Unexpected CAN change"); return -1; }
@@ -94,6 +99,8 @@ int main(void)
     struct app_config_t cfg;
     assert(config_load(&cfg) == 0 && !strcmp(cfg.video_decoder, "software"));
     assert(!cfg.args.can_enabled);
+    write_config("tcp_port 7777\nmax_clients 5\ntcp_bind eth7\n");
+    assert(!config_load(&cfg) && !strcmp(cfg.args.ip_ifname, "eth7"));
     write_config("can_ifname can0\ncan_up can0 on\n");
     assert(!config_load(&cfg) && cfg.args.can_enabled && cfg.args.can_count == 1);
     write_config("can_enabled off\ncan_ifname can0\ncan_up can0 on\n");
@@ -158,9 +165,21 @@ int main(void)
     expect_video_actions(&app, "target=all&video_codec=software&video_width=1280&video_height=720&video_fps=30", "CR");
     assert(!strcmp(cfg.video_codec, "software") && cfg.video_width == 1280 && cfg.video_height == 720 && cfg.video_fps == 30);
     expect_video_actions(&app, "target=all", "");
-    expect_video_actions(&app, "target=net&max_clients=12", "");
-    assert(tcp.max_clients == 12);
+    http_config_post(&app, 0, "POST", "/api/config", "target=net&tcp_port=7777&max_clients=12");
+    assert(response_code == 400 && tcp.max_clients == 16 && tcp.listen_fd == -1);
+    http_config_get(&app, 0, "GET", "/api/config", "");
+    assert(response_code == 200 && strstr(response_body, "\"http_port\":80"));
+    assert(!strstr(response_body, "tcp_port") && !strstr(response_body, "max_clients"));
+    expect_video_actions(&app, "target=net&ip_ifname=eth7&ip_mode=static&ip_addr=192.168.7.5&ip_mask=255.255.255.0&ip_gw=192.168.7.1", "");
+    assert(ip_calls == 1 && !strcmp(cfg.args.ip_ifname, "eth7"));
     assert(config_load(&cfg) == 0 && !strcmp(cfg.video_decoder, "software"));
+    assert(!strcmp(cfg.args.ip_addr, "192.168.7.5"));
+    FILE *saved = fopen(PATH_CONFIG, "r");
+    assert(saved);
+    char saved_text[8192] = {0};
+    assert(fread(saved_text, 1, sizeof(saved_text) - 1, saved) > 0);
+    fclose(saved);
+    assert(!strstr(saved_text, "tcp_port") && !strstr(saved_text, "tcp_bind") && !strstr(saved_text, "max_clients"));
     pthread_mutex_destroy(&app.can_mutex);
     assert(unlink(PATH_CONFIG) == 0 && rmdir("config") == 0);
     assert(fchdir(original_directory) == 0); close(original_directory); assert(rmdir(directory) == 0);

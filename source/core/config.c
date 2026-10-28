@@ -176,7 +176,8 @@ int config_load(struct app_config_t *cfg)
     if (!can_feature_configured) a->can_enabled = a->can_count > 0;
     /* 只有个别字段缺省时回退默认值；无 CAN 接口不代表配置无效
        （用户可能只配了 TCP/视频），不能整体重置为默认值 */
-    if (a->tcp_port <= 0) a->tcp_port = 6666;
+    if (!a->ip_ifname[0] && a->tcp_bind[0])
+        safe_strncpy(a->ip_ifname, sizeof(a->ip_ifname), a->tcp_bind);
     if (a->max_clients <= 0) a->max_clients = 16;
     if (cfg->video_width <= 0) cfg->video_width = 640;
     if (cfg->video_height <= 0) cfg->video_height = 480;
@@ -190,7 +191,6 @@ void config_save(app_ctx_t *app)
     if (!app || !app->cfg || !app->can || !app->tcp) return;
     struct app_config_t *cfg = app->cfg;
     can_ctx_t *can = app->can;
-    tcp_ctx_t *tcp = app->tcp;
     config_normalize_model_path(cfg);
 
     pthread_mutex_lock(&g_config_mutex);
@@ -221,9 +221,6 @@ void config_save(app_ctx_t *app)
                     (unsigned)iface->filters[k].id, (unsigned)iface->filters[k].mask);
     }
 
-    fprintf(fp, "\ntcp_port %d\nmax_clients %d\n", tcp->port, tcp->max_clients);
-    if (tcp->bind_ifname[0])
-        fprintf(fp, "tcp_bind %s\n", tcp->bind_ifname);
     fprintf(fp, "\n# --- 网卡 IP ---\n");
     if (cfg->args.ip_ifname[0]) fprintf(fp, "ip_ifname %s\n", cfg->args.ip_ifname);
     if (cfg->args.ip_mode[0])   fprintf(fp, "ip_mode %s\n", cfg->args.ip_mode);

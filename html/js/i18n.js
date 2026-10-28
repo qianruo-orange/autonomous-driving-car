@@ -5,6 +5,8 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    'Web网卡': 'Web interface',
+    '选择网卡': 'Select interface',
     'VOFA端口': 'VOFA port',
     '通信状态': 'Connection',
     '停用 VOFA': 'Off',

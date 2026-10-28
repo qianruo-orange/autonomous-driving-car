@@ -27,7 +27,6 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
     }
     struct app_config_t *cfg = app->cfg;
     can_ctx_t *can = app->can;
-    tcp_ctx_t *tcp = app->tcp;
 
     char json[4096]; int off = 0;
 
@@ -48,11 +47,10 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
     }
     JSON_ADD(json, off, "},");
 
-    JSON_ADD(json, off, "\"tcp_port\":%d,\"max_clients\":%d,\"tcp_bind\":\"%s\"", tcp->port, tcp->max_clients, tcp->bind_ifname);
+    JSON_ADD(json, off, "\"http_port\":%d", HTTP_DEFAULT_PORT);
 
-    /* IP 设置：保存的配置 + 网卡当前运行时地址 */
-    const char *ip_if = cfg->args.ip_ifname[0] ? cfg->args.ip_ifname
-                                                : (tcp->bind_ifname[0] ? tcp->bind_ifname : "eth0");
+    /* Web management address belongs to the selected system interface. */
+    const char *ip_if = cfg->args.ip_ifname[0] ? cfg->args.ip_ifname : "eth0";
     JSON_ADD(json, off, ",\"ip_ifname\":\"%s\",\"ip_mode\":\"%s\",\"ip_addr\":\"%s\",\"ip_mask\":\"%s\",\"ip_gw\":\"%s\"",
         cfg->args.ip_ifname, cfg->args.ip_mode, cfg->args.ip_addr,
         cfg->args.ip_mask, cfg->args.ip_gw);
@@ -213,62 +211,6 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
     }
 }
 
-/* 网络：TCP 监听端口 / 绑定网卡（变化才重建监听）；max_clients 直接生效 */
-static int apply_net(app_ctx_t *app, const http_form_field_t *fields, int count)
-{
-    tcp_ctx_t *tcp = app->tcp;
-
-    const char *pv = http_form_find(fields, count, "tcp_port");
-    const char *bv = http_form_find(fields, count, "tcp_bind");
-
-    int  want_port = pv ? atoi(pv) : tcp->port;
-    char want_bind[IFNAMSIZ];
-    if (bv) safe_strncpy(want_bind, sizeof(want_bind), bv);
-    else   safe_strncpy(want_bind, sizeof(want_bind), tcp->bind_ifname);
-
-    if (want_port <= 0) want_port = tcp->port;
-    if (want_port > 65535) { errno = EINVAL; return -1; }
-    int changed = (want_port != tcp->port) || (strcmp(want_bind, tcp->bind_ifname) != 0);
-
-    if (changed) {
-        /* 加锁串行化与 tcp_task 的 listen 事件管理，避免 fd/epoll 竞态 */
-        pthread_mutex_lock(&tcp->client_mutex);
-        int candidate = tcp_listen(want_port, want_bind);
-        if (candidate < 0) {
-            pthread_mutex_unlock(&tcp->client_mutex);
-            return -1;
-        }
-        struct epoll_event ev = {.events = EPOLLIN, .data.u32 = 0};
-        if (tcp->epfd < 0 || epoll_ctl(tcp->epfd, EPOLL_CTL_ADD, candidate, &ev) < 0) {
-            int saved = tcp->epfd < 0 ? EBADF : errno;
-            close(candidate);
-            pthread_mutex_unlock(&tcp->client_mutex);
-            errno = saved;
-            return -1;
-        }
-        /* The replacement is bound and registered. Existing clients are kept. */
-        int previous = tcp->listen_fd;
-        tcp->listen_fd = candidate;
-        tcp->port = want_port;
-        safe_strncpy(tcp->bind_ifname, sizeof(tcp->bind_ifname), want_bind);
-        if (previous >= 0) {
-            (void)epoll_ctl(tcp->epfd, EPOLL_CTL_DEL, previous, NULL);
-            close(previous);
-        }
-        pthread_mutex_unlock(&tcp->client_mutex);
-        LOG_INFO("config: TCP listen changed to %s:%d", want_bind[0] ? want_bind : "*", want_port);
-    }
-
-    const char *v = http_form_find(fields, count, "max_clients");
-    if (v) {
-        int mc = atoi(v);
-        if (mc < 1) mc = 1;
-        if (mc > TCP_MAX_CLIENTS) mc = TCP_MAX_CLIENTS;   /* clamp，防越界 */
-        tcp->max_clients = mc;
-    }
-    return 0;
-}
-
 /* 视频：更新设备/分辨率/码率系数，返回 APPLY_VIDEO_* 位组合标识需要重启的部件 */
 #define APPLY_VIDEO_CAPTURE  0x1   /* 采集参数变化：重启视频流 */
 #define APPLY_VIDEO_ENCODER  0x2   /* 编码参数变化：滚动录制会话（编码器随会话创建） */
@@ -354,7 +296,6 @@ static void apply_ip(app_ctx_t *app, const http_form_field_t *fields, int count)
     char ifn[IFNAMSIZ] = "";
     if (v && v[0]) safe_strncpy(ifn, sizeof(ifn), v);
     else if (a->ip_ifname[0]) safe_strncpy(ifn, sizeof(ifn), a->ip_ifname);
-    else if (a->tcp_bind[0])  safe_strncpy(ifn, sizeof(ifn), a->tcp_bind); /* IP 针对 TCP 绑定网卡 */
     if (!ifn[0]) return;
 
     char mode[8] = "", addr[32] = "", mask[32] = "", gw[32] = "";
@@ -437,15 +378,17 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
         return;
     }
 
-    if ((!target || strcmp(target, "all") == 0 || strcmp(target, "net") == 0) &&
-        apply_net(app, fields, count) < 0) {
+    /* Retired transport settings must never reopen a second management port. */
+    if (http_form_find(fields, count, "tcp_port") ||
+        http_form_find(fields, count, "tcp_bind") ||
+        http_form_find(fields, count, "max_clients")) {
         pthread_mutex_unlock(&app->can_mutex);
-        http_err(fd, 409, "Conflict", "TCP listener is unavailable; settings unchanged");
+        http_err(fd, 400, "Bad Request", "Web management uses fixed HTTP port 80");
         return;
     }
     if (!target || strcmp(target, "all") == 0 || strcmp(target, "can") == 0)
         apply_can(app, fields, count);
-    if (!target || strcmp(target, "all") == 0 || strcmp(target, "ip") == 0)
+    if (!target || strcmp(target, "all") == 0 || strcmp(target, "ip") == 0 || strcmp(target, "net") == 0)
         apply_ip(app, fields, count);
 
     int vid_changed = 0;

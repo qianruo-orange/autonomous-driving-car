@@ -605,11 +605,8 @@ int tcp_init(void *arg)
     ctx->vofa_initialized = 1;
     for (int i = 0; i < TCP_MAX_CLIENTS; i++) ctx->clients[i].fd = -1;
     for (int i = 0; i < TCP_VOFA_CLIENTS; i++) ctx->vofa_clients[i].fd = -1;
-    ctx->port        = app->cfg->args.tcp_port;
-    ctx->max_clients = app->cfg->args.max_clients;
-    safe_strncpy(ctx->bind_ifname, sizeof(ctx->bind_ifname), app->cfg->args.tcp_bind);
-    ctx->listen_fd = tcp_listen(ctx->port, ctx->bind_ifname);
-    if (ctx->listen_fd < 0) return -1;
+    /* Web management uses HTTP :80. No legacy ordinary TCP listener is opened;
+       this shared event loop now serves only the configurable VOFA endpoint. */
     /* TCP 数据收发专用 epoll（listen + 客户端 + TX eventfd，与 CAN 分开管理） */
     ctx->epfd = epoll_create1(0);
     if (ctx->epfd < 0) { LOG_ERROR("tcp: epoll_create1 failed"); return -1; }

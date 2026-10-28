@@ -193,7 +193,7 @@
   /* 加载网络接口列表，填充"绑定网卡"下拉框 */
   async function loadIfaces() {
     var sel = document.getElementById('bind');
-    sel.innerHTML = '<option value="" data-i18n="所有网卡">' + t('所有网卡') + '</option>';
+    sel.innerHTML = '<option value="" data-i18n="选择网卡">' + t('选择网卡') + '</option>';
     try {
       var r = await fetch('/api/network/ifaces');
       if (!r.ok) return;
@@ -223,14 +223,12 @@
       if (!response.ok) throw new Error('Settings unavailable');
       var cfg = await response.json();
       if (typeof cfg.can_enabled !== 'boolean') throw new Error('CAN state unavailable');
-      document.getElementById('tp').value = cfg.tcp_port || '';
-      document.getElementById('mc').value = cfg.max_clients || '';
-      document.getElementById('bind').value = cfg.tcp_bind || '';
+      document.getElementById('bind').value = cfg.ip_ifname || '';
 
       /* YOLO thresholds are percentages; concurrency and pacing are automatic. */
       document.getElementById('yolo_cf').value = Math.round((cfg.yolo_conf || 0.25) * 100);
       document.getElementById('yolo_nm').value = Math.round((cfg.yolo_nms || 0.45) * 100);
-      /* IP 设置：IP 即 TCP 绑定网卡的 IP；回填保存配置 + 当前运行时地址 */
+      /* Web 管理网卡 IP；HTTP 固定使用 80 端口。 */
       document.getElementById('ip_mode').value = cfg.ip_mode || '';
       document.getElementById('ip_a').value = cfg.ip_addr || '';
       document.getElementById('ip_m').value = cfg.ip_mask || '';
@@ -334,7 +332,7 @@
     await postConfig(d, 'can');
   };
 
-  /* 保存网络设置：TCP 数据通道参数 + 该网卡的 IP 配置（IP 即 TCP 绑定网卡的 IP） */
+  /* 保存 Web 管理界面的网卡 IP 配置，HTTP 端口固定为 80。 */
   window.saveNet = async function() {
     var mode = document.getElementById('ip_mode').value;
     var ifn = document.getElementById('bind').value;
@@ -351,24 +349,14 @@
         if (!confirm(t('将把 ') + ifn + t(' 切换到 DHCP 自动获取。\nIP 变化后请用新地址重新访问。'))) return;
       }
     }
-    /* 1) TCP 服务参数 */
-    var ok1 = await postConfig({
-      target: 'net',
-      tcp_port: document.getElementById('tp').value,
-      max_clients: document.getElementById('mc').value,
-      tcp_bind: ifn
-    });
-    /* 2) IP 设置（mode 为空 = 关闭不管理，仍保存字段） */
-    if (ok1) {
-      await postConfig({
-        target: 'ip',
-        ip_ifname: ifn,
-        ip_mode: mode,
-        ip_addr: document.getElementById('ip_a').value.trim(),
-        ip_mask: document.getElementById('ip_m').value.trim(),
-        ip_gw: document.getElementById('ip_g').value.trim()
-      }, 'net');
-    }
+    await postConfig({
+      target: 'ip',
+      ip_ifname: ifn,
+      ip_mode: mode,
+      ip_addr: document.getElementById('ip_a').value.trim(),
+      ip_mask: document.getElementById('ip_m').value.trim(),
+      ip_gw: document.getElementById('ip_g').value.trim()
+    }, 'net');
   };
 
   /* 按 IP 模式显隐静态地址输入行 */
