@@ -24,15 +24,7 @@
         '<div class="vofa-endpoint-label" data-i18n="VOFA 连接地址"></div><output id="vofa_endpoint" class="vofa-endpoint">--</output>' +
         '<div class="vofa-status-line"><span id="vofa_connection_status" role="status" data-i18n="正在读取 VOFA 状态…"></span>' +
         '<span id="vofa_clients"></span></div>' +
-        '</div></div>' +
-        '<div class="vofa-curves">' +
-        '<section><h4 data-i18n="速度曲线 (m/s)"></h4><div class="vofa-channel-row">' +
-        '<span><span data-i18n="CH0 目标"></span><output id="vofa_speed_target">--</output></span>' +
-        '<span><span data-i18n="CH1 实际"></span><output id="vofa_speed_actual">--</output></span></div></section>' +
-        '<section><h4 data-i18n="转向曲线 (m/s)"></h4><div class="vofa-channel-row">' +
-        '<span><span data-i18n="CH2 目标"></span><output id="vofa_steering_target">--</output></span>' +
-        '<span><span data-i18n="CH3 实际"></span><output id="vofa_steering_actual">--</output></span></div></section>' +
-        '</div>';
+        '</div></div>';
     grid.appendChild(card);
     applyI18n(card);
 
@@ -93,14 +85,7 @@
             count: Number(data.status.clients) || 0,
             max: Number(data.max_clients) || 4
         });
-        const feedbackValid = data.status.feedback_valid === true || data.status.feedback_valid === 1;
-        const values = data.channels || {};
-        ['speed_target', 'speed_actual', 'steering_target', 'steering_actual'].forEach(key => {
-            const value = values[key];
-            const valid = typeof value === 'number' && Number.isFinite(value) &&
-                (!key.endsWith('_actual') || feedbackValid);
-            card.querySelector('#vofa_' + key).textContent = valid ? value.toFixed(3) : '--';
-        });
+
     }
     async function poll() {
         if (!busy && !document.hidden) {
