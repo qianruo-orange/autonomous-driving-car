@@ -7,8 +7,8 @@
  * @param dir  日志目录路径
  *
  * Info/error logs include their creation timestamp and millisecond precision:
- *   dir/YYYYMMDD/rockchip-smart-gateway_info_YYYYMMDD_HHMMSS_mmm.log
- *   dir/YYYYMMDD/rockchip-smart-gateway_error_YYYYMMDD_HHMMSS_mmm.log
+ *   dir/YYYYMMDD/log_info_YYYYMMDD_HHMMSS_mmm.log
+ *   dir/YYYYMMDD/log_error_YYYYMMDD_HHMMSS_mmm.log
  * A collision suffix preserves files created within the same millisecond.
  */
 void log_init(const char *dir);

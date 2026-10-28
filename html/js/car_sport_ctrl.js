@@ -33,7 +33,7 @@
     };
     const groups = [
         ['tracking', '跟踪设置', ['enabled', 'target']],
-        ['speed', '速度模式与限速', ['manual', 'max_speed']],
+        ['speed', '速度策略', ['manual', 'max_speed']],
         ['steering', '转向参数', ['max_turn_delta', 'deadband', 'turn_kp', 'turn_kd']],
         ['automatic', '自动调速', ['speed_kp', 'speed_kd']],
         ['wheels', '手动调速', ['setpoint', 'wheel_kp', 'wheel_ki', 'wheel_integral_limit']]

@@ -18,7 +18,7 @@ void video_stream_shutdown(void *arg);
 
 void video_stream_restart(void);
 
-/* 视频帧环形队列句柄（供 AI 推理/录像消费方直接访问槽位，见 video/frame_ring.h）；
+/* 视频帧环形队列句柄（供 YOLO 推理/录像消费方直接访问槽位，见 video/frame_ring.h）；
    模块未初始化返回 NULL */
 struct frame_ring;
 struct frame_ring *video_stream_get_ring(void);
@@ -28,9 +28,9 @@ struct frame_ring *video_stream_get_ring(void);
 typedef void (*video_stream_client_close_cb)(int fd);
 int video_stream_client_start(int fd, video_stream_client_close_cb on_close);
 
-/* 画框流版本：AI 为必要流程，推流线程直接从环形队列读标注帧；
-   AI 不可用时返回 503 不回退原始帧。接口与 video_stream_client_start 一致 */
-int video_stream_client_start_ai(int fd, video_stream_client_close_cb on_close);
+/* 画框流版本：YOLO 为必要流程，推流线程直接从环形队列读标注帧；
+   YOLO 不可用时返回 503 不回退原始帧。接口与 video_stream_client_start 一致 */
+int video_stream_client_start_yolo(int fd, video_stream_client_close_cb on_close);
 
 /* 当前 MJPEG 推流连接数（原子读）：渲染线程据此跳过无观看者时的 JPEG 编码 */
 int video_stream_client_count(void);

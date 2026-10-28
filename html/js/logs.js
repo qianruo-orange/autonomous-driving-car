@@ -16,7 +16,7 @@
     var match = String(value || fallback || '').match(/^(\d{4})-?(\d{2})-?(\d{2})(?:$|[T\s_/])/);
     return match ? match[1] + '-' + match[2] + '-' + match[3] : '—';
   }
-  var fileManager = window.gatewayFiles = window.gatewayFiles || {};
+  var fileManager = window.carFiles = window.carFiles || {};
   fileManager.formatDate = fmtDate; fileManager.formatSize = fmtSize;
   fileManager.isRecordingBusy = function() { return splitBusy; };
 

@@ -73,14 +73,14 @@ struct app_config_t {
     char          video_codec[16]; /* encode backend: "software" (libx264, default) or "hardware" (RKMPP/rkVENC); switchable */
     char          video_decoder[16]; /* Current capture decode implementation: "software" (libjpeg-turbo). */
 
-    /* ---- RKNN AI 检测（YOLO26，必要流程）---- */
-    char          ai_model[256];    /* .rknn 模型文件路径 */
-    char          ai_names[256];    /* 类别名文件（coco.names 格式，每行一个类名） */
-    int           ai_input_size;    /* 模型输入边长（动态模型用；静态模型以模型实际尺寸为准） */
-    float         ai_conf;          /* 置信度阈值 */
-    float         ai_nms;           /* NMS IoU 阈值 */
-    int           ai_interval_ms;   /* Legacy file compatibility; automatic pacing ignores this value. */
-    int           ai_threads;       /* Legacy file compatibility; the pool selects active workers adaptively. */
+    /* ---- RKNN YOLO 检测（YOLO26，必要流程）---- */
+    char          yolo_model[256];    /* .rknn 模型文件路径 */
+    char          yolo_names[256];    /* 类别名文件（coco.names 格式，每行一个类名） */
+    int           yolo_input_size;    /* 模型输入边长（动态模型用；静态模型以模型实际尺寸为准） */
+    float         yolo_conf;          /* 置信度阈值 */
+    float         yolo_nms;           /* NMS IoU 阈值 */
+    int           yolo_interval_ms;   /* Legacy file compatibility; automatic pacing ignores this value. */
+    int           yolo_threads;       /* Legacy file compatibility; the pool selects active workers adaptively. */
 };
 
 int  config_load(struct app_config_t *cfg);

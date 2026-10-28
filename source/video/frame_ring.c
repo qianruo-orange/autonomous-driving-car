@@ -125,7 +125,7 @@ static void release_raw_locked(frame_ring_t *r, frame_slot_t *s)
 
 /* 统一维护各阶段缓冲释放（遍历 32 槽，每帧若干次，开销可忽略）：
  *   raw  非最新钉住（原始流客户端锁内拷贝最新帧） + 无锁外读引用 +
- *        消费完成（AI 激活时等 infer_done；AI 停用时等编码消费或录像未激活）
+ *        消费完成（YOLO 激活时等 infer_done；YOLO 停用时等编码消费或录像未激活）
  *   rgb  worker 结果入槽后，seq 已越过最新渲染即回池（含跳帧与迟到 worker）
  *   jpeg 最新显示帧钉住（推流客户端锁内拷贝），其余回池
  *   nv12 当前显示帧钉住（rec 窃取目标），其余 encode_done 或录像未激活即回池 */
@@ -136,7 +136,7 @@ static void frame_ring_maintain_locked(frame_ring_t *r)
         if (!s->seq) continue;
 
         if (s->raw_present && s->seq != r->produce_seq && s->raw_claims == 0) {
-            int consumed = r->ai_active ? s->infer_done
+            int consumed = r->yolo_active ? s->infer_done
                                         : (s->encode_done || !r->rec_active);
             if (consumed) release_raw_locked(r, s);
         }
@@ -296,11 +296,11 @@ frame_slot_t *frame_ring_raw_newest_locked(frame_ring_t *r)
 
 /* ---- 模式标志 ---- */
 
-void frame_ring_set_ai_active(frame_ring_t *r, int on)
+void frame_ring_set_yolo_active(frame_ring_t *r, int on)
 {
     frame_ring_lock(r);
-    if (r->ai_active != on) {
-        r->ai_active = on;
+    if (r->yolo_active != on) {
+        r->yolo_active = on;
         frame_ring_maintain_locked(r);   /* 停用即放开 raw 释放条件 */
     }
     frame_ring_unlock(r);

@@ -28,7 +28,7 @@ BUILD_DEPS = build_dependencies_available()
 
 class ModelSyncTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="gateway-model-sync-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="car-model-sync-")
         self.root = Path(self.temporary.name)
         self.project = self.root / "project"
         self.deployment = self.root / "deployment"
@@ -50,7 +50,7 @@ class ModelSyncTests(unittest.TestCase):
         return path
 
     def config(self, root, extra="", model="config/yolo26.rknn"):
-        return self.put(root, "config/config.txt", ("video_width 1280\nai_model " + model + "\n" + extra).encode())
+        return self.put(root, "config/config.txt", ("video_width 1280\nyolo_model " + model + "\n" + extra).encode())
 
     def reconcile(self):
         return sync.reconcile(self.project, self.deployment, self.platform)
@@ -75,7 +75,7 @@ class ModelSyncTests(unittest.TestCase):
         sync.install_config(self.project, self.deployment, self.platform)
         for root in (self.project, self.deployment):
             self.assertEqual((root / self.relative).read_bytes(), self.a)
-            self.assertIn("ai_model " + self.relative.as_posix(), (root / "config/config.txt").read_text())
+            self.assertIn("yolo_model " + self.relative.as_posix(), (root / "config/config.txt").read_text())
 
     def test_upload_is_pulled_and_survives_subsequent_deployment(self):
         self.establish()
@@ -136,12 +136,12 @@ class ModelSyncTests(unittest.TestCase):
 
     def test_current_runtime_settings_survive_normalization(self):
         self.establish()
-        self.config(self.deployment, "video_fps 25\nai_conf 70\n", model=self.relative.as_posix())
+        self.config(self.deployment, "video_fps 25\nyolo_conf 70\n", model=self.relative.as_posix())
         sync.install_config(self.project, self.deployment, self.platform)
         for root in (self.project, self.deployment):
             contents = (root / "config/config.txt").read_text()
-            self.assertIn("video_fps 25\nai_conf 70\n", contents)
-            self.assertIn("ai_model " + self.relative.as_posix() + "\n", contents)
+            self.assertIn("video_fps 25\nyolo_conf 70\n", contents)
+            self.assertIn("yolo_model " + self.relative.as_posix() + "\n", contents)
 
     def test_install_preserves_device_cpu_frequency_settings(self):
         self.establish()
@@ -368,7 +368,7 @@ class ModelSyncTests(unittest.TestCase):
         environment = dict(os.environ)
         environment.pop("YOLO_WEIGHTS", None)
         environment["PATH"] = str(commands) + os.pathsep + environment["PATH"]
-        environment["GATEWAY_MODEL_DEPLOYMENT"] = str(self.deployment)
+        environment["CAR_MODEL_DEPLOYMENT"] = str(self.deployment)
         environment["EXPORT_LOG"] = str(self.project / "export.log")
         return environment
 
@@ -376,7 +376,7 @@ class ModelSyncTests(unittest.TestCase):
         return subprocess.run(["bash", str(self.project / "scripts/build.sh"), "-R", "-P", "rk3576"] + (["-M"] if force else []),
                               cwd=self.project, env=environment, text=True, capture_output=True)
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_successful_build_cleans_cached_weights_but_preserves_external_input(self):
         environment = self.build_fixture()
         external = self.put(self.root, "external.pt", b"external input")
@@ -387,20 +387,20 @@ class ModelSyncTests(unittest.TestCase):
         self.assertFalse((self.project / "config/models/weights").exists())
         self.assertIn(b"newly-converted", (self.project / self.relative).read_bytes())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_compilation_keeps_cached_weights(self):
         result = self.run_build(self.build_fixture(make_status=7))
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertTrue((self.project / "config/models/weights/yolo26n.pt").exists())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_conversion_keeps_cached_weights(self):
         result = self.run_build(self.build_fixture(yolo_status=9), force=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((self.project / "config/models/weights/yolo26n.pt").exists())
         self.assertFalse((self.project / "make-was-run").exists())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_existing_model_is_reconverted_from_the_single_discovered_weight(self):
         environment = self.build_fixture()
         (self.project / "config/models/weights/yolo26n.pt").unlink()
@@ -411,7 +411,7 @@ class ModelSyncTests(unittest.TestCase):
         self.assertIn(b"newly-converted", (self.project / self.relative).read_bytes())
         self.assertFalse(selected.exists() or (self.project / "config/models/weights").exists())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_existing_model_without_weights_is_reused_without_export(self):
         environment = self.build_fixture()
         (self.project / "config/models/weights/yolo26n.pt").unlink()
@@ -420,7 +420,7 @@ class ModelSyncTests(unittest.TestCase):
         self.assertEqual((self.project / self.relative).read_bytes(), self.a)
         self.assertFalse((self.project / "export.log").exists())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_multiple_inputs_stop_before_export_or_compilation(self):
         environment = self.build_fixture()
         selected = self.put(self.project, "config/second.pt", b"selected")
@@ -430,7 +430,7 @@ class ModelSyncTests(unittest.TestCase):
         self.assertFalse((self.project / "export.log").exists() or (self.project / "make-was-run").exists())
         self.assertTrue(selected.exists() and (self.project / "config/models/weights/yolo26n.pt").exists())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_explicit_weight_overrides_multiple_inputs_and_preserves_unselected_config_pt(self):
         environment = self.build_fixture()
         selected = self.put(self.root, "chosen.pt", b"external")
@@ -441,7 +441,7 @@ class ModelSyncTests(unittest.TestCase):
         self.assertIn("model=chosen.pt", (self.project / "export.log").read_text())
         self.assertTrue(selected.exists() and other.exists())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_compilation_preserves_the_discovered_config_input(self):
         environment = self.build_fixture(make_status=7)
         (self.project / "config/models/weights/yolo26n.pt").unlink()
@@ -450,7 +450,7 @@ class ModelSyncTests(unittest.TestCase):
         self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
         self.assertTrue(selected.exists() and (self.project / "config/models/weights/custom.pt").exists())
 
-    @unittest.skipUnless(BUILD_DEPS, "requires installed gateway build dependencies")
+    @unittest.skipUnless(BUILD_DEPS, "requires installed vehicle build dependencies")
     def test_failed_export_preserves_a_newly_downloaded_weight_for_retry(self):
         environment = self.build_fixture(yolo_status=9)
         (self.project / "config/models/weights/yolo26n.pt").unlink()

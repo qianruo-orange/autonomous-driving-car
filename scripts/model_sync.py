@@ -147,7 +147,7 @@ def configured_model(root):
     selected = None
     for line in config.read_text(encoding="utf-8").splitlines():
         fields = line.split("#", 1)[0].split()
-        if len(fields) >= 2 and fields[0] == "ai_model":
+        if len(fields) >= 2 and fields[0] == "yolo_model":
             selected = fields[1]
     if selected is None:
         return None
@@ -170,13 +170,13 @@ def normalize_config(root, platform, source_owner=None):
     found = False
     for i, line in enumerate(lines):
         fields = line.split("#", 1)[0].split()
-        if fields and fields[0] == "ai_model":
-            lines[i] = "ai_model " + desired + "\n"
+        if fields and fields[0] == "yolo_model":
+            lines[i] = "yolo_model " + desired + "\n"
             found = True
     if not found:
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
-        lines.append("ai_model " + desired + "\n")
+        lines.append("yolo_model " + desired + "\n")
     changed = "".join(lines).encode("utf-8")
     if changed != text.encode("utf-8"):
         atomic_bytes(path, changed, source_owner, stat.S_IMODE(path.stat().st_mode))
@@ -295,8 +295,8 @@ def install_config(project, deployment, platform):
             relative = source.relative_to(source_root)
             if relative.parts[0] == "models" or source.suffix.lower() in (".rknn", ".pt", ".onnx"):
                 continue
-            if relative.as_posix() in ("cpu_freq.conf", "follow.conf") and checked(deployment, Path("config") / relative).exists():
-                continue  # Preserve the frequency settings saved on this device.
+            if relative.as_posix() in ("cpu_freq.conf", "follow.conf", "car_motor_can.conf") and checked(deployment, Path("config") / relative).exists():
+                continue  # Preserve device-specific frequency, control and motor settings.
             if source.is_symlink():
                 raise ModelSyncError("Refusing a symlink in configuration: " + str(source))
             if source.is_file():
@@ -415,7 +415,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("reconcile", "install-config", "publish-converted", "validate", "normalize-platform", "detect-platform", "cleanup-weights", "discover-weights"))
     parser.add_argument("--project", type=Path)
-    parser.add_argument("--deployment", type=Path, default=Path("/opt/rockchip-smart-gateway"))
+    parser.add_argument("--deployment", type=Path, default=Path("/opt/autonomous-driving-car"))
     parser.add_argument("--platform")
     parser.add_argument("--compatible", type=Path, default=Path("/proc/device-tree/compatible"))
     parser.add_argument("--model", type=Path)

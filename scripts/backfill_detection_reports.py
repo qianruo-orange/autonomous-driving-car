@@ -1,6 +1,6 @@
 """Backfill legacy detection JSON into daily TSV reports; never removes input files.
 
-Run while the gateway service is stopped. The caller supplies the exact detection
+Run while the vehicle service is stopped. The caller supplies the exact detection
 directory. All writes use a temporary sibling followed by atomic replacement.
 """
 import argparse
@@ -113,7 +113,7 @@ def migrate(root, dry_run=False):
 
 
 def self_test():
-    with tempfile.TemporaryDirectory(prefix="gateway-report-backfill-") as scratch:
+    with tempfile.TemporaryDirectory(prefix="car-report-backfill-") as scratch:
         root = Path(scratch)
         directory = root / "20261027"; directory.mkdir()
         metadata = {"seq": 7, "width": 1280, "height": 720, "capture_unix_ms": 1793030400123,

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
  * http_api_rec.c — 网络录像控制路由：
- *   POST /api/rec/start   开始录制（AI 画框帧优先）
+ *   POST /api/rec/start   开始录制（YOLO 画框帧优先）
  *   POST /api/rec/stop    停止录制并 finalize
  *   GET  /api/rec/status  录制状态
  *   GET  /api/rec/list    录制文件列表

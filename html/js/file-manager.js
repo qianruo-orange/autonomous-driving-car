@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 (function() {
-  var files = window.gatewayFiles = window.gatewayFiles || {};
+  var files = window.carFiles = window.carFiles || {};
   var pack = document.getElementById('pack_all_files_btn');
   var clear = document.getElementById('clear_all_files_btn');
   var overlay = document.getElementById('file_preview_overlay');
@@ -41,7 +41,7 @@
       // Native download streams large archives to disk instead of retaining
       // all recordings in a JavaScript Blob before the save dialog appears.
       var anchor = document.createElement('a');
-      anchor.href = '/api/files/pack'; anchor.download = 'gateway_files.zip';
+      anchor.href = '/api/files/pack'; anchor.download = 'autonomous-driving-car_files.zip';
       document.body.appendChild(anchor); anchor.click(); anchor.remove();
       window.fileToast('已开始打包下载，请在浏览器下载列表查看进度', true);
     } catch(error) {

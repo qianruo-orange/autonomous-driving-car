@@ -18,16 +18,18 @@ class NamesTests(unittest.TestCase):
             fixtures = {'rec_123456.mp4': b'old video',
                         'rec_20261027_123456_789.mp4': b'new video',
                         'rockchip-smart-gateway_info_20261027_123456_789.log': b'log',
-                        'rockchip-smart-gateway_error.log': b'error'}
+                        'rockchip-smart-gateway_error.log': b'error',
+                        'autonomous-driving-car_info_20261027_234567_123.log': b'vehicle log'}
             for file, data in fixtures.items():
                 (day / file).write_bytes(data)
             (day / 'video_20261027_123456_000.mp4').write_bytes(b'collision kept')
             (day / 'rec_999999.mp4').symlink_to('/etc/passwd')
-            self.assertEqual(names.normalize(scratch), 4)
+            self.assertEqual(names.normalize(scratch), 5)
             self.assertEqual((day / 'video_20261027_123456_000.mp4').read_bytes(), b'collision kept')
             self.assertEqual((day / 'video_20261027_123456_000_1.mp4').read_bytes(), b'old video')
             self.assertEqual((day / 'video_20261027_123456_789.mp4').read_bytes(), b'new video')
             self.assertEqual((day / 'log_info_20261027_123456_789.log').read_bytes(), b'log')
+            self.assertEqual((day / 'log_info_20261027_234567_123.log').read_bytes(), b'vehicle log')
             self.assertTrue((day / 'rec_999999.mp4').is_symlink())
             self.assertEqual(names.normalize(scratch), 0)
 

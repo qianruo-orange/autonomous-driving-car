@@ -2,8 +2,8 @@
 /**
  * rknn_yolo.c — RKNN + YOLO26 检测主模块：模型管理 + 多线程推理池 + 按序渲染。
  *
- * 数据流（ai_task 采集线程 + 自适应推理 worker + 1 渲染 composer）：
- *   ai_task:  事件驱动等新帧（环条件变量，2s 超时仅用于退出检查）→ 按序
+ * 数据流（yolo_task 采集线程 + 自适应推理 worker + 1 渲染 composer）：
+ *   yolo_task:  事件驱动等新帧（环条件变量，2s 超时仅用于退出检查）→ 按序
  *             claim 槽 raw（零拷贝引用 V4L2 mmap）→ 锁外解码 RGB24 进池缓冲 →
  *             投递任务队列。claim 随任务移交 worker：任务在途期间槽位被
  *             claims 钉住，不会被采集复用/退让清空
@@ -18,19 +18,19 @@
  * 帧数据全部走视频帧环形队列（video/frame_ring.h）：采集 raw（V4L2 mmap）、
  * 解码 rgb、画框 nv12/jpeg 四个阶段缓冲只在槽位间移动指针，零拷贝。
  * 推流/录像消费方锁内拷贝或窃取最新显示槽（rknn_yolo_get_frame*），
- * 快照缓冲与按 seq 索引的完成槽（AI_SLOT_N）已随环接入删除。
+ * 快照缓冲与按 seq 索引的完成槽（YOLO_SLOT_N）已随环接入删除。
  *
  * 渲染 seq 单调不回退，画面不会抖动/闪烁；被跳过的旧结果直接回池。
- * 推流客户端在 AI 可用时只推标注帧，画面不再在标注帧/原始帧之间闪烁。
+ * 推流客户端在 YOLO 可用时只推标注帧，画面不再在标注帧/原始帧之间闪烁。
  *
  * 热重载：rknn_yolo_reload() 停止推理池（pool_running=0 → 线程退出/join，
  * 在途任务 rgb 回池 + 摘除槽 claim）→ 释放模型与 context → 重读配置
- * （ai_model/ai_names/ai_conf/ai_nms；并发度按帧率和实测耗时自动调整）
- * → 重建池。由前端上传模型/标签文件与 AI 参数保存触发。
+ * （yolo_model/yolo_names/yolo_conf/yolo_nms；并发度按帧率和实测耗时自动调整）
+ * → 重建池。由前端上传模型/标签文件与 YOLO 参数保存触发。
  *
- * 必要流程：AI 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
+ * 必要流程：YOLO 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
  * 启动路径整体失败退出；运行期热重载失败由 HTTP 接口报告 saved_reload_failed，
- * 画框流 /video/mjpeg_ai 返回 503（不回退原始帧）。所有失败路径只记日志不崩溃。
+ * 画框流 /video/mjpeg_yolo 返回 503（不回退原始帧）。所有失败路径只记日志不崩溃。
  *
  * 图像处理与后处理已拆分为独立模块（yolo_image / yolo_postprocess / yolo_draw），
  * 本文件仅保留：模型生命周期、推理线程池、任务队列、结果队列、
@@ -67,12 +67,12 @@
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 
-#define AI_MAX_WORKERS 15    /* Actual count is a multiple of detected NPU cores. */
-#define AI_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
-#define AI_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，composer 消费渲染 */
+#define YOLO_MAX_WORKERS 15    /* Actual count is a multiple of detected NPU cores. */
+#define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
+#define YOLO_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，composer 消费渲染 */
 
 /* 推理任务：解码后的 RGB 帧（池内缓冲，由消费它的 worker 写槽/回池）。
-   槽 claim 随任务移交：ai_task claim 后不摘除，worker 写槽时一并 unclaim */
+   槽 claim 随任务移交：yolo_task claim 后不摘除，worker 写槽时一并 unclaim */
 typedef struct {
     unsigned char    *rgb;
     size_t            rgb_cap;
@@ -143,23 +143,23 @@ static struct {
     size_t         model_len;
     int            in_w, in_h;
 
-    yolo_worker_t  workers[AI_MAX_WORKERS];
+    yolo_worker_t  workers[YOLO_MAX_WORKERS];
 
     /* 有界任务队列（采集线程生产 / worker 消费） */
-    yolo_job_t     jobs[AI_QUEUE_CAP];
+    yolo_job_t     jobs[YOLO_QUEUE_CAP];
     int            q_head, q_tail, q_count;
     pthread_mutex_t q_lock;
     pthread_cond_t  q_not_empty;
     pthread_cond_t  q_not_full;
 
     /* 有界结果队列（worker 生产推理结果 / composer 消费渲染） */
-    yolo_result_item_t results[AI_RESULT_CAP];
+    yolo_result_item_t results[YOLO_RESULT_CAP];
     int            r_head, r_tail, r_count;
     pthread_mutex_t r_lock;
     pthread_cond_t  r_not_empty;
     pthread_cond_t  r_not_full;
 
-    pthread_t       w_tid[AI_MAX_WORKERS];
+    pthread_t       w_tid[YOLO_MAX_WORKERS];
     pthread_t       render_tid;
     int             n_created;               /* 实际创建成功的 worker 线程数（停池据此 join） */
 
@@ -169,7 +169,7 @@ static struct {
     /* EMA 平滑状态（仅 composer 线程访问） */
     yolo_result_t   prev;
 
-    /* 类别名表（ai_names 文件，缺失回退内置 COCO 80） */
+    /* 类别名表（yolo_names 文件，缺失回退内置 COCO 80） */
     yolo_classes_t  classes;
     char            names_path[256];
 
@@ -178,11 +178,11 @@ static struct {
     /* 快照：composer 按序写入，仅当新 seq 大于当前时更新 */
     pthread_mutex_t result_mutex;
     yolo_result_t   result;
-} g_ai;
+} g_yolo;
 
 static pthread_mutex_t g_reload_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-static unsigned long long ai_now_us(void)
+static unsigned long long yolo_now_us(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -292,13 +292,13 @@ static int adaptive_controller_observe(adaptive_controller_t *control,
     return next;
 }
 
-static void ai_adapt_workers(unsigned long long worker_us)
+static void yolo_adapt_workers(unsigned long long worker_us)
 {
     frame_ring_t *ring = video_stream_get_ring();
     if (!ring) return;
     /* Serialize the snapshot and controller together so out-of-order workers
        cannot move a measurement window back to an older counter snapshot. */
-    pthread_mutex_lock(&g_ai.q_lock);
+    pthread_mutex_lock(&g_yolo.q_lock);
     frame_ring_lock(ring);
     unsigned long long captured = ring->produce_seq, rendered = ring->displayed_frames;
     unsigned long long encoded = ring->encoded_frames;
@@ -306,13 +306,13 @@ static void ai_adapt_workers(unsigned long long worker_us)
     unsigned long long sample_seq = encoding ? encoded : rendered;
     unsigned long long age = encoding ? ring->capture_to_encode_ms : ring->processing_age_ms;
     frame_ring_unlock(ring);
-    unsigned long long now = ai_now_us();
+    unsigned long long now = yolo_now_us();
     int changed = 0, selected = 0;
     double measured_fps = 0, measured_age = 0;
     int phase = 0;
-    adaptive_window_t *window = &g_ai.adaptive_window;
+    adaptive_window_t *window = &g_yolo.adaptive_window;
     if (now < window->collect_after_us) {
-        pthread_mutex_unlock(&g_ai.q_lock);
+        pthread_mutex_unlock(&g_yolo.q_lock);
         return;
     }
     if (!window->started_us || captured < window->captured || rendered < window->rendered || encoded < window->encoded) {
@@ -341,40 +341,40 @@ static void ai_adapt_workers(unsigned long long worker_us)
             .latency_ms = (double)window->latency_sum_ms / window->samples,
             .worker_ms = (double)window->worker_sum_us / window->worker_samples / 1000.0
         };
-        int current = __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED);
-        int target = adaptive_controller_observe(&g_ai.adaptive, now, &observation);
+        int current = __atomic_load_n(&g_yolo.active_workers, __ATOMIC_RELAXED);
+        int target = adaptive_controller_observe(&g_yolo.adaptive, now, &observation);
         window->started_us = 0;
         if (target != current) {
-            __atomic_store_n(&g_ai.active_workers, target, __ATOMIC_RELAXED);
+            __atomic_store_n(&g_yolo.active_workers, target, __ATOMIC_RELAXED);
             window->collect_after_us = now + 250000u;
             selected = target;
             changed = 1;
             measured_fps = observation.fps;
             measured_age = observation.latency_ms;
-            phase = g_ai.adaptive.phase;
-            pthread_cond_broadcast(&g_ai.q_not_empty);
+            phase = g_yolo.adaptive.phase;
+            pthread_cond_broadcast(&g_yolo.q_not_empty);
         }
     }
-    pthread_mutex_unlock(&g_ai.q_lock);
+    pthread_mutex_unlock(&g_yolo.q_lock);
     if (changed) LOG_INFO("yolo: adaptive workers -> %d/%d (%s; previous %.2f fps, %.1f ms)",
-                          selected, g_ai.nthreads, phase == ADAPT_TRIAL ? "trial" : "selected",
+                          selected, g_yolo.nthreads, phase == ADAPT_TRIAL ? "trial" : "selected",
                           measured_fps, measured_age);
 }
 
 int rknn_yolo_active_workers(void)
 {
-    return g_ai.enabled ? __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED) : 0;
+    return g_yolo.enabled ? __atomic_load_n(&g_yolo.active_workers, __ATOMIC_RELAXED) : 0;
 }
 
 /* ---- 环形队列访问 ---- */
 
-/* 环句柄：video 模块先于 ai 初始化，正常非 NULL；防御性判空由调用方处理 */
-static frame_ring_t *ai_ring(void)
+/* 环句柄：video 模块先于 yolo 初始化，正常非 NULL；防御性判空由调用方处理 */
+static frame_ring_t *yolo_ring(void)
 {
     return video_stream_get_ring();
 }
 
-static frame_slot_t *ai_slot(frame_ring_t *r, unsigned long long seq)
+static frame_slot_t *yolo_slot(frame_ring_t *r, unsigned long long seq)
 {
     return &r->slots[seq & (FRAME_RING_N - 1)];
 }
@@ -383,10 +383,10 @@ static frame_slot_t *ai_slot(frame_ring_t *r, unsigned long long seq)
    并把 rgb 归还池。解码已成功，作废不计 infer_dropped */
 static void yolo_job_abandon(const yolo_job_t *job)
 {
-    frame_ring_t *ring = ai_ring();
+    frame_ring_t *ring = yolo_ring();
     if (!ring) return;
     frame_ring_lock(ring);
-    frame_slot_t *s = ai_slot(ring, job->seq);
+    frame_slot_t *s = yolo_slot(ring, job->seq);
     if (s->seq == job->seq && s->raw_claims > 0)
         frame_ring_infer_unclaim_locked(ring, s, 1);
     if (job->rgb)
@@ -398,38 +398,38 @@ static void yolo_job_abandon(const yolo_job_t *job)
 
 static int yolo_queue_push(const yolo_job_t *job)
 {
-    pthread_mutex_lock(&g_ai.q_lock);
-    while (g_ai.q_count >= AI_QUEUE_CAP && g_ai.running && g_ai.pool_running)
-        pthread_cond_wait(&g_ai.q_not_full, &g_ai.q_lock);
-    if (!g_ai.running || !g_ai.pool_running) {   /* 退出/停池：拒绝投递 */
-        pthread_mutex_unlock(&g_ai.q_lock);
+    pthread_mutex_lock(&g_yolo.q_lock);
+    while (g_yolo.q_count >= YOLO_QUEUE_CAP && g_yolo.running && g_yolo.pool_running)
+        pthread_cond_wait(&g_yolo.q_not_full, &g_yolo.q_lock);
+    if (!g_yolo.running || !g_yolo.pool_running) {   /* 退出/停池：拒绝投递 */
+        pthread_mutex_unlock(&g_yolo.q_lock);
         return -1;
     }
-    g_ai.jobs[g_ai.q_tail] = *job;
-    g_ai.q_tail = (g_ai.q_tail + 1) % AI_QUEUE_CAP;
-    g_ai.q_count++;
+    g_yolo.jobs[g_yolo.q_tail] = *job;
+    g_yolo.q_tail = (g_yolo.q_tail + 1) % YOLO_QUEUE_CAP;
+    g_yolo.q_count++;
     /* Parked and active workers share this condition. A signal may select a
        parked worker, leaving the queued frame asleep until another arrives. */
-    pthread_cond_broadcast(&g_ai.q_not_empty);
-    pthread_mutex_unlock(&g_ai.q_lock);
+    pthread_cond_broadcast(&g_yolo.q_not_empty);
+    pthread_mutex_unlock(&g_yolo.q_lock);
     return 0;
 }
 
 static int yolo_queue_pop(yolo_job_t *job, int worker_index)
 {
-    pthread_mutex_lock(&g_ai.q_lock);
-    while ((g_ai.q_count == 0 || worker_index >= __atomic_load_n(&g_ai.active_workers, __ATOMIC_RELAXED)) && g_ai.running && g_ai.pool_running)
-        pthread_cond_wait(&g_ai.q_not_empty, &g_ai.q_lock);
-    if (g_ai.q_count == 0 || !g_ai.running || !g_ai.pool_running) {
-        pthread_mutex_unlock(&g_ai.q_lock);
+    pthread_mutex_lock(&g_yolo.q_lock);
+    while ((g_yolo.q_count == 0 || worker_index >= __atomic_load_n(&g_yolo.active_workers, __ATOMIC_RELAXED)) && g_yolo.running && g_yolo.pool_running)
+        pthread_cond_wait(&g_yolo.q_not_empty, &g_yolo.q_lock);
+    if (g_yolo.q_count == 0 || !g_yolo.running || !g_yolo.pool_running) {
+        pthread_mutex_unlock(&g_yolo.q_lock);
         return -1;
     }
-    *job = g_ai.jobs[g_ai.q_head];
-    g_ai.jobs[g_ai.q_head].rgb = NULL;   /* 所有权已移交，防止停池清理时 double-free */
-    g_ai.q_head = (g_ai.q_head + 1) % AI_QUEUE_CAP;
-    g_ai.q_count--;
-    pthread_cond_signal(&g_ai.q_not_full);
-    pthread_mutex_unlock(&g_ai.q_lock);
+    *job = g_yolo.jobs[g_yolo.q_head];
+    g_yolo.jobs[g_yolo.q_head].rgb = NULL;   /* 所有权已移交，防止停池清理时 double-free */
+    g_yolo.q_head = (g_yolo.q_head + 1) % YOLO_QUEUE_CAP;
+    g_yolo.q_count--;
+    pthread_cond_signal(&g_yolo.q_not_full);
+    pthread_mutex_unlock(&g_yolo.q_lock);
     return 0;
 }
 
@@ -437,34 +437,34 @@ static int yolo_queue_pop(yolo_job_t *job, int worker_index)
 
 static int yolo_result_push(const yolo_result_item_t *item)
 {
-    pthread_mutex_lock(&g_ai.r_lock);
-    while (g_ai.r_count >= AI_RESULT_CAP && g_ai.running && g_ai.pool_running)
-        pthread_cond_wait(&g_ai.r_not_full, &g_ai.r_lock);
-    if (!g_ai.running || !g_ai.pool_running) {   /* 退出/停池：拒绝入队 */
-        pthread_mutex_unlock(&g_ai.r_lock);
+    pthread_mutex_lock(&g_yolo.r_lock);
+    while (g_yolo.r_count >= YOLO_RESULT_CAP && g_yolo.running && g_yolo.pool_running)
+        pthread_cond_wait(&g_yolo.r_not_full, &g_yolo.r_lock);
+    if (!g_yolo.running || !g_yolo.pool_running) {   /* 退出/停池：拒绝入队 */
+        pthread_mutex_unlock(&g_yolo.r_lock);
         return -1;
     }
-    g_ai.results[g_ai.r_tail] = *item;
-    g_ai.r_tail = (g_ai.r_tail + 1) % AI_RESULT_CAP;
-    g_ai.r_count++;
-    pthread_cond_signal(&g_ai.r_not_empty);
-    pthread_mutex_unlock(&g_ai.r_lock);
+    g_yolo.results[g_yolo.r_tail] = *item;
+    g_yolo.r_tail = (g_yolo.r_tail + 1) % YOLO_RESULT_CAP;
+    g_yolo.r_count++;
+    pthread_cond_signal(&g_yolo.r_not_empty);
+    pthread_mutex_unlock(&g_yolo.r_lock);
     return 0;
 }
 
 /* 非阻塞出队：队列空返回 -1 */
 static int yolo_result_try_pop(yolo_result_item_t *item)
 {
-    pthread_mutex_lock(&g_ai.r_lock);
-    if (g_ai.r_count == 0) {
-        pthread_mutex_unlock(&g_ai.r_lock);
+    pthread_mutex_lock(&g_yolo.r_lock);
+    if (g_yolo.r_count == 0) {
+        pthread_mutex_unlock(&g_yolo.r_lock);
         return -1;
     }
-    *item = g_ai.results[g_ai.r_head];
-    g_ai.r_head = (g_ai.r_head + 1) % AI_RESULT_CAP;
-    g_ai.r_count--;
-    pthread_cond_signal(&g_ai.r_not_full);
-    pthread_mutex_unlock(&g_ai.r_lock);
+    *item = g_yolo.results[g_yolo.r_head];
+    g_yolo.r_head = (g_yolo.r_head + 1) % YOLO_RESULT_CAP;
+    g_yolo.r_count--;
+    pthread_cond_signal(&g_yolo.r_not_full);
+    pthread_mutex_unlock(&g_yolo.r_lock);
     return 0;
 }
 
@@ -472,27 +472,27 @@ static int yolo_result_try_pop(yolo_result_item_t *item)
    超时/停池/退出且队列空返回 -1 */
 static int yolo_result_pop(yolo_result_item_t *item, int timeout_ms)
 {
-    pthread_mutex_lock(&g_ai.r_lock);
+    pthread_mutex_lock(&g_yolo.r_lock);
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += timeout_ms / 1000;
     ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
     if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-    while (g_ai.r_count == 0 && g_ai.running && g_ai.pool_running) {
-        if (pthread_cond_timedwait(&g_ai.r_not_empty, &g_ai.r_lock, &ts) != 0) {
-            pthread_mutex_unlock(&g_ai.r_lock);
+    while (g_yolo.r_count == 0 && g_yolo.running && g_yolo.pool_running) {
+        if (pthread_cond_timedwait(&g_yolo.r_not_empty, &g_yolo.r_lock, &ts) != 0) {
+            pthread_mutex_unlock(&g_yolo.r_lock);
             return -1;
         }
     }
-    if (g_ai.r_count == 0) {
-        pthread_mutex_unlock(&g_ai.r_lock);
+    if (g_yolo.r_count == 0) {
+        pthread_mutex_unlock(&g_yolo.r_lock);
         return -1;
     }
-    *item = g_ai.results[g_ai.r_head];
-    g_ai.r_head = (g_ai.r_head + 1) % AI_RESULT_CAP;
-    g_ai.r_count--;
-    pthread_cond_signal(&g_ai.r_not_full);
-    pthread_mutex_unlock(&g_ai.r_lock);
+    *item = g_yolo.results[g_yolo.r_head];
+    g_yolo.r_head = (g_yolo.r_head + 1) % YOLO_RESULT_CAP;
+    g_yolo.r_count--;
+    pthread_cond_signal(&g_yolo.r_not_full);
+    pthread_mutex_unlock(&g_yolo.r_lock);
     return 0;
 }
 
@@ -511,9 +511,9 @@ static int yolo_result_pop_latest(yolo_result_item_t *item, int timeout_ms)
 
 static void snap_result(const yolo_result_t *res)
 {
-    pthread_mutex_lock(&g_ai.result_mutex);
-    if (res->seq > g_ai.result.seq) g_ai.result = *res;
-    pthread_mutex_unlock(&g_ai.result_mutex);
+    pthread_mutex_lock(&g_yolo.result_mutex);
+    if (res->seq > g_yolo.result.seq) g_yolo.result = *res;
+    pthread_mutex_unlock(&g_yolo.result_mutex);
 }
 
 /* 时间平滑：cur 中与 prev 同类且 IoU 足够大的框，位置/置信度做 EMA
@@ -557,34 +557,34 @@ static void *yolo_worker_task(void *arg)
 {
     int idx = (int)(intptr_t)arg;
     cpu_bind_big();
-    yolo_worker_t *wk = &g_ai.workers[idx];
-    frame_ring_t *ring = ai_ring();
+    yolo_worker_t *wk = &g_yolo.workers[idx];
+    frame_ring_t *ring = yolo_ring();
 
-    while (g_ai.running && g_ai.pool_running) {
+    while (g_yolo.running && g_yolo.pool_running) {
         if (!ring) { usleep(200000); continue; }   /* 防御：video 未初始化 */
 
         yolo_job_t job;
         if (yolo_queue_pop(&job, idx) < 0) break;
-        if (!g_ai.running || !g_ai.pool_running) { yolo_job_abandon(&job); break; }
-        unsigned long long worker_us = ai_now_us();
+        if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_abandon(&job); break; }
+        unsigned long long worker_us = yolo_now_us();
 
         /* letterbox+padding 预处理（等比例 + 114 灰边）；几何参数供后处理逆映射 */
         float lb_scale_x, lb_scale_y; int lb_pad_x, lb_pad_y;
-        yolo_rgb_letterbox(job.rgb, job.w, job.h, wk->in_buf, g_ai.in_w, g_ai.in_h,
+        yolo_rgb_letterbox(job.rgb, job.w, job.h, wk->in_buf, g_yolo.in_w, g_yolo.in_h,
                            &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
-        unsigned long long prepared_us = ai_now_us();
+        unsigned long long prepared_us = yolo_now_us();
 
         rknn_input in;
         memset(&in, 0, sizeof(in));
         in.index = 0;
         in.type  = RKNN_TENSOR_UINT8;
         in.fmt   = RKNN_TENSOR_NHWC;
-        in.size  = (uint32_t)(g_ai.in_w * g_ai.in_h * 3);
+        in.size  = (uint32_t)(g_yolo.in_w * g_yolo.in_h * 3);
         in.buf   = wk->in_buf;
         if (rknn_inputs_set(wk->ctx, 1, &in) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
-        unsigned long long inputs_us = ai_now_us();
+        unsigned long long inputs_us = yolo_now_us();
         if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
-        unsigned long long inference_us = ai_now_us();
+        unsigned long long inference_us = yolo_now_us();
 
         rknn_output output;
         memset(&output, 0, sizeof(output));
@@ -593,7 +593,7 @@ static void *yolo_worker_task(void *arg)
             yolo_job_abandon(&job);
             continue;
         }
-        unsigned long long outputs_us = ai_now_us();
+        unsigned long long outputs_us = yolo_now_us();
 
         const float *out_buf[1] = { (const float *)output.buf };
         yolo_result_t res;
@@ -603,18 +603,18 @@ static void *yolo_worker_task(void *arg)
         res.h   = job.h;
         res.count = yolo_postprocess(out_buf, &wk->out_attr, 1,
                                      lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, job.w, job.h,
-                                     res.dets, YOLO_MAX_DETS, g_ai.conf, g_ai.nms, NULL);
+                                     res.dets, YOLO_MAX_DETS, g_yolo.conf, g_yolo.nms, NULL);
         rknn_outputs_release(wk->ctx, 1, &output);
         /* Persist every completed inference before the display queue can
            coalesce it. Empty detections are records too; no photo is encoded. */
         yolo_record_result(&job, &res);
-        ai_adapt_workers(outputs_us - worker_us);
+        yolo_adapt_workers(outputs_us - worker_us);
         if (idx == 0) {
             static unsigned long long last_timing_us;
-            unsigned long long finished_us = ai_now_us();
+            unsigned long long finished_us = yolo_now_us();
             if (finished_us - last_timing_us >= 10000000u) {
                 last_timing_us = finished_us;
-                LOG_INFO("ai timing ms: capture_to_decode=%llu decode=%llu queue=%llu resize=%llu inputs=%llu run=%llu outputs=%llu post=%llu",
+                LOG_INFO("yolo timing ms: capture_to_decode=%llu decode=%llu queue=%llu resize=%llu inputs=%llu run=%llu outputs=%llu post=%llu",
                          job.decode_start_us / 1000u - job.capture_ms,
                          (job.decode_end_us - job.decode_start_us) / 1000u,
                          (worker_us - job.decode_end_us) / 1000u,
@@ -628,12 +628,12 @@ static void *yolo_worker_task(void *arg)
 
         /* 停池竞态：推理期间 pool_running 被清 → 作废任务（不写槽，
            避免停池后槽内滞留 rgb 阻碍该槽复用） */
-        if (!g_ai.running || !g_ai.pool_running) { yolo_job_abandon(&job); continue; }
+        if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_abandon(&job); continue; }
 
         /* rgb 写槽（claim 钉住槽位：任务在途期间不会被复用/清空，
            故 s->seq == job.seq 必然成立；防御分支防退让强制清空的迟到写） */
         frame_ring_lock(ring);
-        frame_slot_t *s = ai_slot(ring, job.seq);
+        frame_slot_t *s = yolo_slot(ring, job.seq);
         if (s->seq == job.seq && s->raw_claims > 0) {
             s->rgb.buf  = job.rgb;
             s->rgb.cap  = job.rgb_cap;
@@ -654,8 +654,8 @@ static void *yolo_worker_task(void *arg)
         item.seq = job.seq;
         for (int i = 0; i < res.count && i < YOLO_MAX_DETS; i++) {
             const yolo_det_t *d = &res.dets[i];
-            const char *nm = (d->cls >= 0 && d->cls < g_ai.classes.count)
-                             ? g_ai.classes.names[d->cls] : "obj";
+            const char *nm = (d->cls >= 0 && d->cls < g_yolo.classes.count)
+                             ? g_yolo.classes.names[d->cls] : "obj";
             snprintf(item.dets[i].name, sizeof(item.dets[i].name), "%s", nm);
             item.dets[i].conf = d->conf;
             item.dets[i].x1 = d->x1; item.dets[i].y1 = d->y1;
@@ -678,8 +678,8 @@ static void *yolo_worker_task(void *arg)
 /* 名称回查类别下标（条目只携带名称；正常必命中，未命中兜底 0 保着色合法） */
 static int yolo_class_index(const char *name)
 {
-    for (int i = 0; i < g_ai.classes.count; i++)
-        if (strcmp(g_ai.classes.names[i], name) == 0) return i;
+    for (int i = 0; i < g_yolo.classes.count; i++)
+        if (strcmp(g_yolo.classes.names[i], name) == 0) return i;
     return 0;
 }
 
@@ -688,7 +688,7 @@ static int yolo_class_index(const char *name)
 static int yolo_render_take_rgb_locked(frame_ring_t *ring, unsigned long long seq,
                                       ring_buf_t *rgb, int *w, int *h)
 {
-    frame_slot_t *slot = ai_slot(ring, seq);
+    frame_slot_t *slot = yolo_slot(ring, seq);
     if (ring->quiescing || slot->seq != seq || !slot->rgb_done || !slot->rgb.buf)
         return -1;
     *w = slot->w;
@@ -732,7 +732,7 @@ static int yolo_event_describe_result(yolo_event_meta_t *meta, const yolo_result
         yolo_event_object_t *object = &meta->objects[i];
         object->cls = det->cls;
         snprintf(object->name, sizeof(object->name), "%s",
-                 det->cls >= 0 && det->cls < g_ai.classes.count ? g_ai.classes.names[det->cls] : "obj");
+                 det->cls >= 0 && det->cls < g_yolo.classes.count ? g_yolo.classes.names[det->cls] : "obj");
         object->conf = det->conf;
         object->x1 = det->x1; object->y1 = det->y1;
         object->x2 = det->x2; object->y2 = det->y2;
@@ -747,9 +747,9 @@ static void yolo_record_result(const yolo_job_t *job, const yolo_result_t *resul
     struct timespec wall;
     clock_gettime(CLOCK_REALTIME, &wall);
     unsigned long long unix_ms = (unsigned long long)wall.tv_sec * 1000u + wall.tv_nsec / 1000000u;
-    if (yolo_event_describe_result(&metadata, result, ai_now_us() / 1000u, unix_ms) == 0) {
+    if (yolo_event_describe_result(&metadata, result, yolo_now_us() / 1000u, unix_ms) == 0) {
         follow_submit(&metadata);
-        if (yolo_events_due(result->count, ai_now_us() / 1000u))
+        if (yolo_events_due(result->count, yolo_now_us() / 1000u))
             yolo_events_submit_meta(&metadata);
     }
 }
@@ -758,15 +758,15 @@ static void *yolo_render_task(void *arg)
 {
     (void)arg;
     cpu_bind_big();
-    frame_ring_t *ring = ai_ring();
-    while (g_ai.running && g_ai.pool_running) {
+    frame_ring_t *ring = yolo_ring();
+    while (g_yolo.running && g_yolo.pool_running) {
         if (!ring) { usleep(200000); continue; }   /* 防御：video 未初始化 */
 
         /* 事件驱动：等推理结果入队（40ms 超时仅用于退出检查） */
         yolo_result_item_t item;
         if (yolo_result_pop_latest(&item, 40) != 0) continue;
         /* 结果须晚于已渲染 seq（渲染 seq 严格递增，绝不回退） */
-        if (item.seq <= g_ai.next_seq) continue;
+        if (item.seq <= g_yolo.next_seq) continue;
 
         unsigned long long seq = item.seq;
         int w = 0, h = 0;
@@ -776,7 +776,7 @@ static void *yolo_render_task(void *arg)
         frame_ring_lock(ring);
         /* Rendering owns RGB until it explicitly returns the buffer below.
            The slot may be cleared or reused during a camera restart. */
-        frame_slot_t *s = ai_slot(ring, seq);
+        frame_slot_t *s = yolo_slot(ring, seq);
         if (yolo_render_take_rgb_locked(ring, seq, &rgbb, &w, &h) != 0) {
             frame_ring_unlock(ring);
             continue;
@@ -785,7 +785,7 @@ static void *yolo_render_task(void *arg)
         frame_ring_buf_take_locked(ring, FRAME_RING_POOL_NV12, (size_t)w * h * 3 / 2, &nv12b);
         if (want_jpeg)
             frame_ring_buf_take_locked(ring, FRAME_RING_POOL_JPEG, 64 * 1024, &jpegb);
-        g_ai.next_seq = seq;
+        g_yolo.next_seq = seq;
         frame_ring_unlock(ring);
 
         /* 结果条目 → 渲染结果：名称回查类别下标（标签含置信度） */
@@ -806,11 +806,11 @@ static void *yolo_render_task(void *arg)
         /* 锁外渲染：EMA 平滑（prev 仅本线程访问）+ 槽内 rgb 原地画框标签。
            无 MJPEG 观看者时跳过 JPEG 编码（省 CPU）；观看者接入后下一帧
            （≤33ms）恢复编码，get_frame 对 len==0 帧返回 -1 由客户端等待 */
-        yolo_smooth(&g_ai.prev, &disp);
+        yolo_smooth(&g_yolo.prev, &disp);
         unsigned char *jbuf = jpegb.buf;
         size_t jcap = jpegb.cap, jlen = 0;
         int ok = (nv12b.buf &&
-                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_ai.classes,
+                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes,
                                         want_jpeg ? &jbuf : NULL,
                                         want_jpeg ? &jcap : NULL,
                                         want_jpeg ? &jlen : NULL) == 0);
@@ -818,7 +818,7 @@ static void *yolo_render_task(void *arg)
         if (ok) {
             yolo_rgb_to_nv12_fast(rgbb.buf, w, h, nv12b.buf);
             jpegb.len = jlen;
-            g_ai.prev = disp;
+            g_yolo.prev = disp;
             snap_result(&disp);
         }
 
@@ -948,9 +948,9 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
     wk->in_buf = NULL;
     memset(&wk->out_attr, 0, sizeof(wk->out_attr));
 
-    int ret = rknn_init(&wk->ctx, g_ai.model, (uint32_t)g_ai.model_len, 0, NULL);
+    int ret = rknn_init(&wk->ctx, g_yolo.model, (uint32_t)g_yolo.model_len, 0, NULL);
     if (ret != RKNN_SUCC) {
-        LOG_ERROR("ai: worker rknn_init failed (%d)", ret);
+        LOG_ERROR("yolo: worker rknn_init failed (%d)", ret);
         wk->ctx = 0;
         return -1;
     }
@@ -964,268 +964,268 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
     if (rknn_set_core_mask(wk->ctx, mask) != RKNN_SUCC &&
         rknn_set_core_mask(wk->ctx, RKNN_NPU_CORE_0) != RKNN_SUCC &&
         rknn_set_core_mask(wk->ctx, RKNN_NPU_CORE_AUTO) != RKNN_SUCC)
-        LOG_ERROR("ai: worker %d set_core_mask failed", idx);
+        LOG_ERROR("yolo: worker %d set_core_mask failed", idx);
 
     wk->out_attr.index = 0;
     if (rknn_query(wk->ctx, RKNN_QUERY_OUTPUT_ATTR, &wk->out_attr,
                    sizeof(wk->out_attr)) != RKNN_SUCC) {
-        LOG_ERROR("ai: worker rknn_query OUTPUT_ATTR failed");
+        LOG_ERROR("yolo: worker rknn_query OUTPUT_ATTR failed");
         return -1;
     }
-    wk->in_buf = malloc((size_t)g_ai.in_w * g_ai.in_h * 3);
+    wk->in_buf = malloc((size_t)g_yolo.in_w * g_yolo.in_h * 3);
     if (!wk->in_buf) {
-        LOG_ERROR("ai: worker input buffer alloc failed");
+        LOG_ERROR("yolo: worker input buffer alloc failed");
         return -1;
     }
     return 0;
 }
 
 /* 释放模型与全部 worker 资源（停池后调用） */
-static void ai_free_workers(void)
+static void yolo_free_workers(void)
 {
-    for (int i = 0; i < g_ai.nthreads; i++) {
-        yolo_worker_t *wk = &g_ai.workers[i];
+    for (int i = 0; i < g_yolo.nthreads; i++) {
+        yolo_worker_t *wk = &g_yolo.workers[i];
         if (wk->in_buf) { free(wk->in_buf); wk->in_buf = NULL; }
         if (wk->ctx) { rknn_destroy(wk->ctx); wk->ctx = 0; }
     }
-    free(g_ai.model);
-    g_ai.model = NULL;
+    free(g_yolo.model);
+    g_yolo.model = NULL;
 }
 
 /* 停止推理池：置 pool_running=0 → 唤醒各线程 → join → 清理队列/模型。
    可安全重入（池未启动时 n_created=0，各清理为幂等操作）。
    在途任务：worker 推理中检出停池后作废（rgb 回池 + 摘除 claim），
    队列残余任务由本函数统一作废 */
-static void ai_stop_pool(void)
+static void yolo_stop_pool(void)
 {
     /* Let a failing report writer release blocked producers before worker joins.
        Healthy storage still accepts and drains each in-flight inference. */
-    if (g_ai.events_initialized) yolo_events_prepare_stop();
-    frame_ring_t *ring = ai_ring();
-    pthread_mutex_lock(&g_ai.q_lock);
-    g_ai.pool_running = 0;
-    pthread_cond_broadcast(&g_ai.q_not_empty);
-    pthread_cond_broadcast(&g_ai.q_not_full);
-    pthread_mutex_unlock(&g_ai.q_lock);
-    /* raw 释放规则切回编码路径（ai_active=0），并唤醒等待中的
-       ai_task（wait_new）与 composer（wait_render） */
+    if (g_yolo.events_initialized) yolo_events_prepare_stop();
+    frame_ring_t *ring = yolo_ring();
+    pthread_mutex_lock(&g_yolo.q_lock);
+    g_yolo.pool_running = 0;
+    pthread_cond_broadcast(&g_yolo.q_not_empty);
+    pthread_cond_broadcast(&g_yolo.q_not_full);
+    pthread_mutex_unlock(&g_yolo.q_lock);
+    /* raw 释放规则切回编码路径（yolo_active=0），并唤醒等待中的
+       yolo_task（wait_new）与 composer（wait_render） */
     if (ring) {
-        frame_ring_set_ai_active(ring, 0);
+        frame_ring_set_yolo_active(ring, 0);
         frame_ring_signal(ring);
     }
     /* Pair shutdown with the waiters' mutexes to close the check/wait window. */
-    pthread_mutex_lock(&g_ai.r_lock);
-    pthread_cond_broadcast(&g_ai.r_not_empty);
-    pthread_cond_broadcast(&g_ai.r_not_full);
-    pthread_mutex_unlock(&g_ai.r_lock);
+    pthread_mutex_lock(&g_yolo.r_lock);
+    pthread_cond_broadcast(&g_yolo.r_not_empty);
+    pthread_cond_broadcast(&g_yolo.r_not_full);
+    pthread_mutex_unlock(&g_yolo.r_lock);
 
-    for (int i = 0; i < g_ai.n_created; i++)
-        pthread_join(g_ai.w_tid[i], NULL);
-    g_ai.n_created = 0;
-    if (g_ai.render_tid) {
-        pthread_join(g_ai.render_tid, NULL);
-        g_ai.render_tid = 0;
+    for (int i = 0; i < g_yolo.n_created; i++)
+        pthread_join(g_yolo.w_tid[i], NULL);
+    g_yolo.n_created = 0;
+    if (g_yolo.render_tid) {
+        pthread_join(g_yolo.render_tid, NULL);
+        g_yolo.render_tid = 0;
     }
 
     /* 释放队列中未被消费的任务（已消费槽位 rgb 已置 NULL） */
-    for (int i = 0; i < AI_QUEUE_CAP; i++) {
-        if (g_ai.jobs[i].rgb) {
-            yolo_job_t job = g_ai.jobs[i];
-            g_ai.jobs[i].rgb = NULL;
+    for (int i = 0; i < YOLO_QUEUE_CAP; i++) {
+        if (g_yolo.jobs[i].rgb) {
+            yolo_job_t job = g_yolo.jobs[i];
+            g_yolo.jobs[i].rgb = NULL;
             yolo_job_abandon(&job);
         }
     }
-    g_ai.q_head = g_ai.q_tail = g_ai.q_count = 0;
+    g_yolo.q_head = g_yolo.q_tail = g_yolo.q_count = 0;
 
     /* 结果队列条目为纯元数据（无缓冲/claim），直接清空即可 */
-    g_ai.r_head = g_ai.r_tail = g_ai.r_count = 0;
+    g_yolo.r_head = g_yolo.r_tail = g_yolo.r_count = 0;
 
     /* 清空快照与渲染状态（新池从干净状态开始；next_seq 保留跨 reload 连续） */
-    pthread_mutex_lock(&g_ai.result_mutex);
-    memset(&g_ai.result, 0, sizeof(g_ai.result));
-    pthread_mutex_unlock(&g_ai.result_mutex);
-    memset(&g_ai.prev, 0, sizeof(g_ai.prev));
-    g_ai.last_seq = 0;
+    pthread_mutex_lock(&g_yolo.result_mutex);
+    memset(&g_yolo.result, 0, sizeof(g_yolo.result));
+    pthread_mutex_unlock(&g_yolo.result_mutex);
+    memset(&g_yolo.prev, 0, sizeof(g_yolo.prev));
+    g_yolo.last_seq = 0;
 
-    ai_free_workers();
-    g_ai.enabled = 0;
+    yolo_free_workers();
+    g_yolo.enabled = 0;
 }
 
 /* 启动推理池：重读配置 → 加载模型 → 建 worker → 启动线程。
-   AI 为必要流程：任一失败即返回 -1 直接报错（启动路径整体失败退出；
+   YOLO 为必要流程：任一失败即返回 -1 直接报错（启动路径整体失败退出；
    热重载路径由 HTTP 接口向调用方报告），enabled=0 仅供失败后运行态空转 */
-static int ai_start_pool(void)
+static int yolo_start_pool(void)
 {
-    app_ctx_t *app = g_ai.app;
+    app_ctx_t *app = g_yolo.app;
     struct app_config_t *cfg = app->cfg;
 
     /* 重读运行时配置（支持热重载） */
-    g_ai.conf = cfg->ai_conf > 0 ? cfg->ai_conf : 0.25f;
-    g_ai.nms  = cfg->ai_nms  > 0 ? cfg->ai_nms  : 0.45f;
+    g_yolo.conf = cfg->yolo_conf > 0 ? cfg->yolo_conf : 0.25f;
+    g_yolo.nms  = cfg->yolo_nms  > 0 ? cfg->yolo_nms  : 0.45f;
     int cores = npu_core_count();
     if (cores < 1) cores = 1;
     int capacity = cores * 3;
     long cpus = sysconf(_SC_NPROCESSORS_ONLN);
     if (cpus > 0 && capacity > cpus) capacity = (int)cpus;
-    if (capacity > AI_MAX_WORKERS) capacity = AI_MAX_WORKERS;
+    if (capacity > YOLO_MAX_WORKERS) capacity = YOLO_MAX_WORKERS;
     capacity = (capacity / cores) * cores;
     if (capacity < cores) capacity = cores;
-    g_ai.nthreads = capacity;
-    __atomic_store_n(&g_ai.active_workers, adaptive_controller_init(&g_ai.adaptive, cores, capacity), __ATOMIC_RELAXED);
-    memset(&g_ai.adaptive_window, 0, sizeof(g_ai.adaptive_window));
+    g_yolo.nthreads = capacity;
+    __atomic_store_n(&g_yolo.active_workers, adaptive_controller_init(&g_yolo.adaptive, cores, capacity), __ATOMIC_RELAXED);
+    memset(&g_yolo.adaptive_window, 0, sizeof(g_yolo.adaptive_window));
 
-    safe_strncpy(g_ai.names_path, sizeof(g_ai.names_path),
-                 cfg->ai_names[0] ? cfg->ai_names : "config/coco.names");
+    safe_strncpy(g_yolo.names_path, sizeof(g_yolo.names_path),
+                 cfg->yolo_names[0] ? cfg->yolo_names : "config/coco.names");
 
     char model_path[256];
     char previous_default[256], previous_relative[256];
     snprintf(previous_default, sizeof(previous_default), "config/models/%s/yolo26.rknn", npu_platform_name());
     snprintf(previous_relative, sizeof(previous_relative), "./config/models/%s/yolo26.rknn", npu_platform_name());
-    if (cfg->ai_model[0] && strcmp(cfg->ai_model, previous_default) &&
-        strcmp(cfg->ai_model, previous_relative) && strcmp(cfg->ai_model, "./config/yolo26.rknn"))
-        safe_strncpy(model_path, sizeof(model_path), cfg->ai_model);
+    if (cfg->yolo_model[0] && strcmp(cfg->yolo_model, previous_default) &&
+        strcmp(cfg->yolo_model, previous_relative) && strcmp(cfg->yolo_model, "./config/yolo26.rknn"))
+        safe_strncpy(model_path, sizeof(model_path), cfg->yolo_model);
     else
         rknn_yolo_default_model_path(model_path, sizeof(model_path));
-    if (load_model_file(model_path, &g_ai.model, &g_ai.model_len) < 0) {
-        LOG_ERROR("ai: model '%s' not found — AI unavailable (no AI)", model_path);
-        g_ai.enabled = 0;
+    if (load_model_file(model_path, &g_yolo.model, &g_yolo.model_len) < 0) {
+        LOG_ERROR("yolo: model '%s' not found — YOLO unavailable (no YOLO)", model_path);
+        g_yolo.enabled = 0;
         return -1;
     }
 
     /* 用第一个上下文获取输入尺寸（静态模型）与输出数校验 */
     rknn_context probe = 0;
-    if (rknn_init(&probe, g_ai.model, (uint32_t)g_ai.model_len, 0, NULL) != RKNN_SUCC) {
-        LOG_ERROR("ai: rknn_init failed: model incompatible or NPU unavailable — AI unavailable");
-        ai_free_workers();
-        g_ai.enabled = 0;
+    if (rknn_init(&probe, g_yolo.model, (uint32_t)g_yolo.model_len, 0, NULL) != RKNN_SUCC) {
+        LOG_ERROR("yolo: rknn_init failed: model incompatible or NPU unavailable — YOLO unavailable");
+        yolo_free_workers();
+        g_yolo.enabled = 0;
         return -1;
     }
     rknn_input_output_num io_num;
     memset(&io_num, 0, sizeof(io_num));
     if (rknn_query(probe, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num)) != RKNN_SUCC ||
         io_num.n_input < 1 || io_num.n_output != 1) {
-        LOG_ERROR("ai: outputs=%u != 1, 需官方 rknn 单输出模型 (yolo export format=rknn) — AI unavailable",
+        LOG_ERROR("yolo: outputs=%u != 1, 需官方 rknn 单输出模型 (yolo export format=rknn) — YOLO unavailable",
                   io_num.n_output);
         rknn_destroy(probe);
-        ai_free_workers();
-        g_ai.enabled = 0;
+        yolo_free_workers();
+        g_yolo.enabled = 0;
         return -1;
     }
     rknn_tensor_attr in_attr;
     memset(&in_attr, 0, sizeof(in_attr));
     in_attr.index = 0;
     if (rknn_query(probe, RKNN_QUERY_INPUT_ATTR, &in_attr, sizeof(in_attr)) != RKNN_SUCC) {
-        LOG_ERROR("ai: rknn_query INPUT_ATTR failed — AI unavailable");
+        LOG_ERROR("yolo: rknn_query INPUT_ATTR failed — YOLO unavailable");
         rknn_destroy(probe);
-        ai_free_workers();
-        g_ai.enabled = 0;
+        yolo_free_workers();
+        g_yolo.enabled = 0;
         return -1;
     }
     rknn_destroy(probe);
 
     /* 输入尺寸：优先用模型静态尺寸；dims 全 0（动态模型）时用配置值 */
     if (in_attr.fmt == RKNN_TENSOR_NCHW && in_attr.n_dims >= 4) {
-        g_ai.in_w = (int)in_attr.dims[3];
-        g_ai.in_h = (int)in_attr.dims[2];
+        g_yolo.in_w = (int)in_attr.dims[3];
+        g_yolo.in_h = (int)in_attr.dims[2];
     } else if (in_attr.fmt == RKNN_TENSOR_NHWC && in_attr.n_dims >= 4) {
-        g_ai.in_w = (int)in_attr.dims[2];
-        g_ai.in_h = (int)in_attr.dims[1];
+        g_yolo.in_w = (int)in_attr.dims[2];
+        g_yolo.in_h = (int)in_attr.dims[1];
     }
-    if (g_ai.in_w <= 0 || g_ai.in_h <= 0) {
-        int s = cfg->ai_input_size > 0 ? cfg->ai_input_size : 640;
-        g_ai.in_w = s;
-        g_ai.in_h = s;
+    if (g_yolo.in_w <= 0 || g_yolo.in_h <= 0) {
+        int s = cfg->yolo_input_size > 0 ? cfg->yolo_input_size : 640;
+        g_yolo.in_w = s;
+        g_yolo.in_h = s;
     }
 
     /* 类别名表：官方 COCO 格式文件（缺失/为空时回退内置 80 类） */
-    int ncls = yolo_classes_load(g_ai.names_path, &g_ai.classes);
+    int ncls = yolo_classes_load(g_yolo.names_path, &g_yolo.classes);
 
     /* 每个工作线程独立上下文，绑定独立 NPU 核 */
-    for (int i = 0; i < g_ai.nthreads; i++) {
-        if (yolo_worker_setup(&g_ai.workers[i], i) < 0) {
-            ai_free_workers();
-            g_ai.enabled = 0;
-            LOG_ERROR("ai: pool start failed — AI unavailable (no AI)");
+    for (int i = 0; i < g_yolo.nthreads; i++) {
+        if (yolo_worker_setup(&g_yolo.workers[i], i) < 0) {
+            yolo_free_workers();
+            g_yolo.enabled = 0;
+            LOG_ERROR("yolo: pool start failed — YOLO unavailable (no YOLO)");
             return -1;
         }
     }
 
     /* 启动推理工作线程池 + 按序渲染线程 */
-    g_ai.pool_running = 1;
-    for (int i = 0; i < g_ai.nthreads; i++) {
-        if (pthread_create(&g_ai.w_tid[i], NULL, yolo_worker_task,
+    g_yolo.pool_running = 1;
+    for (int i = 0; i < g_yolo.nthreads; i++) {
+        if (pthread_create(&g_yolo.w_tid[i], NULL, yolo_worker_task,
                            (void *)(intptr_t)i) != 0) {
-            LOG_ERROR("ai: worker thread %d create failed", i);
-            ai_stop_pool();
+            LOG_ERROR("yolo: worker thread %d create failed", i);
+            yolo_stop_pool();
             return -1;
         }
-        g_ai.n_created = i + 1;
+        g_yolo.n_created = i + 1;
     }
-    if (pthread_create(&g_ai.render_tid, NULL, yolo_render_task, NULL) != 0) {
-        LOG_ERROR("ai: render thread create failed (annotated stream stalled)");
-        g_ai.render_tid = 0;
-        ai_stop_pool();
+    if (pthread_create(&g_yolo.render_tid, NULL, yolo_render_task, NULL) != 0) {
+        LOG_ERROR("yolo: render thread create failed (annotated stream stalled)");
+        g_yolo.render_tid = 0;
+        yolo_stop_pool();
         return -1;
     }
-    g_ai.adaptive_window.collect_after_us = ai_now_us() + 8000000u;
-    g_ai.enabled = 1;
+    g_yolo.adaptive_window.collect_after_us = yolo_now_us() + 8000000u;
+    g_yolo.enabled = 1;
     /* 环内 raw 释放规则切回推理路径（infer_done 门槛） */
-    if (ai_ring()) frame_ring_set_ai_active(ai_ring(), 1);
-    LOG_INFO("ai: model '%s' loaded, classes '%s' (%d), input %dx%d, "
+    if (yolo_ring()) frame_ring_set_yolo_active(yolo_ring(), 1);
+    LOG_INFO("yolo: model '%s' loaded, classes '%s' (%d), input %dx%d, "
              "single output, adaptive threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
-             model_path, g_ai.names_path, ncls, g_ai.in_w, g_ai.in_h,
-             rknn_yolo_active_workers(), g_ai.nthreads, cores, g_ai.conf, g_ai.nms);
+             model_path, g_yolo.names_path, ncls, g_yolo.in_w, g_yolo.in_h,
+             rknn_yolo_active_workers(), g_yolo.nthreads, cores, g_yolo.conf, g_yolo.nms);
     return 0;
 }
 
-/* 热重载：停止旧池 → 重读配置重建。由前端上传模型/标签文件、修改 AI 参数触发。
+/* 热重载：停止旧池 → 重读配置重建。由前端上传模型/标签文件、修改 YOLO 参数触发。
    失败返回 -1（enabled=0）：调用方（HTTP 接口）向客户端直接报告 reload 失败 */
 int rknn_yolo_reload(void)
 {
     pthread_mutex_lock(&g_reload_mutex);
-    if (!g_ai.running) {
+    if (!g_yolo.running) {
         pthread_mutex_unlock(&g_reload_mutex);
         return -1;
     }
-    LOG_INFO("ai: reloading inference pool...");
-    ai_stop_pool();
-    if (g_ai.events_initialized) {
+    LOG_INFO("yolo: reloading inference pool...");
+    yolo_stop_pool();
+    if (g_yolo.events_initialized) {
         yolo_events_destroy();
-        g_ai.events_initialized = 0;
+        g_yolo.events_initialized = 0;
     }
-    if (yolo_events_init(NULL) == 0) g_ai.events_initialized = 1;
+    if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable after reload");
-    ai_start_pool();
+    yolo_start_pool();
     pthread_mutex_unlock(&g_reload_mutex);
-    return g_ai.enabled ? 0 : -1;
+    return g_yolo.enabled ? 0 : -1;
 }
 
 int rknn_yolo_init(void *arg)
 {
-    memset(&g_ai, 0, sizeof(g_ai));
+    memset(&g_yolo, 0, sizeof(g_yolo));
     app_ctx_t *app = (app_ctx_t *)arg;
-    g_ai.app = app;
-    g_ai.running = 1;
-    pthread_mutex_init(&g_ai.result_mutex, NULL);
-    pthread_mutex_init(&g_ai.q_lock, NULL);
-    pthread_cond_init(&g_ai.q_not_empty, NULL);
-    pthread_cond_init(&g_ai.q_not_full, NULL);
-    pthread_mutex_init(&g_ai.r_lock, NULL);
-    pthread_cond_init(&g_ai.r_not_empty, NULL);
-    pthread_cond_init(&g_ai.r_not_full, NULL);
+    g_yolo.app = app;
+    g_yolo.running = 1;
+    pthread_mutex_init(&g_yolo.result_mutex, NULL);
+    pthread_mutex_init(&g_yolo.q_lock, NULL);
+    pthread_cond_init(&g_yolo.q_not_empty, NULL);
+    pthread_cond_init(&g_yolo.q_not_full, NULL);
+    pthread_mutex_init(&g_yolo.r_lock, NULL);
+    pthread_cond_init(&g_yolo.r_not_empty, NULL);
+    pthread_cond_init(&g_yolo.r_not_full, NULL);
 
     if (!app || !app->cfg) {
-        LOG_ERROR("ai: init without config");
+        LOG_ERROR("yolo: init without config");
         return -1;
     }
-    if (yolo_events_init(NULL) == 0) g_ai.events_initialized = 1;
+    if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable; live inference remains enabled");
-    /* AI 为必要流程：无 AI（模型缺失/NPU 不可用）直接报错，服务启动失败 */
-    if (ai_start_pool() < 0) {
-        LOG_ERROR("ai: mandatory inference pool failed to start — no AI, aborting startup");
-        if (g_ai.events_initialized) {
+    /* YOLO 为必要流程：无 YOLO（模型缺失/NPU 不可用）直接报错，服务启动失败 */
+    if (yolo_start_pool() < 0) {
+        LOG_ERROR("yolo: mandatory inference pool failed to start — no YOLO, aborting startup");
+        if (g_yolo.events_initialized) {
             yolo_events_destroy();
-            g_ai.events_initialized = 0;
+            g_yolo.events_initialized = 0;
         }
         return -1;
     }
@@ -1235,37 +1235,37 @@ int rknn_yolo_init(void *arg)
 void rknn_yolo_destroy(void *arg)
 {
     (void)arg;
-    g_ai.running = 0;
-    ai_stop_pool();
-    if (g_ai.events_initialized) {
+    g_yolo.running = 0;
+    yolo_stop_pool();
+    if (g_yolo.events_initialized) {
         yolo_events_destroy();
-        g_ai.events_initialized = 0;
+        g_yolo.events_initialized = 0;
     }
 
-    pthread_mutex_destroy(&g_ai.q_lock);
-    pthread_cond_destroy(&g_ai.q_not_empty);
-    pthread_cond_destroy(&g_ai.q_not_full);
-    pthread_mutex_destroy(&g_ai.r_lock);
-    pthread_cond_destroy(&g_ai.r_not_empty);
-    pthread_cond_destroy(&g_ai.r_not_full);
-    pthread_mutex_destroy(&g_ai.result_mutex);
-    g_ai.enabled = 0;
+    pthread_mutex_destroy(&g_yolo.q_lock);
+    pthread_cond_destroy(&g_yolo.q_not_empty);
+    pthread_cond_destroy(&g_yolo.q_not_full);
+    pthread_mutex_destroy(&g_yolo.r_lock);
+    pthread_cond_destroy(&g_yolo.r_not_empty);
+    pthread_cond_destroy(&g_yolo.r_not_full);
+    pthread_mutex_destroy(&g_yolo.result_mutex);
+    g_yolo.enabled = 0;
 }
 
 int rknn_yolo_enabled(void)
 {
-    return g_ai.enabled;
+    return g_yolo.enabled;
 }
 
 /* ---- 显示槽快照访问（供推流客户端/录像线程）---- */
 
 int rknn_yolo_get_frame(unsigned char **data, size_t *len, unsigned long long *seq)
 {
-    if (!g_ai.enabled || !data || !len || !seq) return -1;
-    frame_ring_t *ring = ai_ring();
+    if (!g_yolo.enabled || !data || !len || !seq) return -1;
+    frame_ring_t *ring = yolo_ring();
     if (!ring) return -1;
     frame_ring_lock(ring);
-    frame_slot_t *s = ai_slot(ring, ring->display_seq);
+    frame_slot_t *s = yolo_slot(ring, ring->display_seq);
     if (s->seq != ring->display_seq || !s->jpeg.buf || s->jpeg.len == 0) {
         frame_ring_unlock(ring);
         return -1;
@@ -1285,8 +1285,8 @@ int rknn_yolo_get_frame(unsigned char **data, size_t *len, unsigned long long *s
 
 unsigned long long rknn_yolo_get_frame_seq(void)
 {
-    if (!g_ai.enabled) return 0;
-    frame_ring_t *ring = ai_ring();
+    if (!g_yolo.enabled) return 0;
+    frame_ring_t *ring = yolo_ring();
     if (!ring) return 0;
     frame_ring_lock(ring);
     unsigned long long s = ring->display_seq;
@@ -1294,25 +1294,25 @@ unsigned long long rknn_yolo_get_frame_seq(void)
     return s;
 }
 
-/* ---- AI 采集线程（main 模块框架 task）：等新帧 → claim → 解码 → 投递队列 ---- */
-void *rknn_ai_task(void *arg)
+/* ---- YOLO 采集线程（main 模块框架 task）：等新帧 → claim → 解码 → 投递队列 ---- */
+void *rknn_yolo_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     if (!app) return NULL;
 
     cpu_bind_big();
-    frame_ring_t *ring = ai_ring();
+    frame_ring_t *ring = yolo_ring();
 
-    while (app->running && g_ai.running) {
-        watchdog_feed_self("ai");
+    while (app->running && g_yolo.running) {
+        watchdog_feed_self("yolo");
 
         /* 未启用 / 池未运行（重载中）/ video 未初始化：空转喂狗，不占推理资源。
            重载后 enabled 恢复时自动继续采集 */
-        if (!ring || !g_ai.enabled || !g_ai.pool_running) { usleep(200000); continue; }
+        if (!ring || !g_yolo.enabled || !g_yolo.pool_running) { usleep(200000); continue; }
 
         /* 事件驱动：阻塞等新帧（2s 超时仅用于周期性检查退出/热插拔），
            替代旧版 10ms 轮询，唤醒即处理、无帧即休眠 */
-        if (!frame_ring_wait_new(ring, g_ai.last_seq, 2000)) continue;
+        if (!frame_ring_wait_new(ring, g_yolo.last_seq, 2000)) continue;
 
         /* 按序 claim 下一个未处理帧的 raw（与旧轮询版语义一致：每帧都解码，
            队列背压即限速）。槽已被编码回退消费/退让清空时顺延跳过。
@@ -1320,10 +1320,10 @@ void *rknn_ai_task(void *arg)
            被 claims 钉住，不会被采集复用，raw 也不会被释放 */
         frame_ring_lock(ring);
         frame_slot_t *s = NULL;
-        while (g_ai.last_seq < ring->produce_seq) {
-            s = frame_ring_infer_claim_locked(ring, g_ai.last_seq + 1);
+        while (g_yolo.last_seq < ring->produce_seq) {
+            s = frame_ring_infer_claim_locked(ring, g_yolo.last_seq + 1);
             if (s) break;
-            g_ai.last_seq++;
+            g_yolo.last_seq++;
         }
         if (!s) { frame_ring_unlock(ring); continue; }
         unsigned long long seq = s->seq;
@@ -1340,14 +1340,14 @@ void *rknn_ai_task(void *arg)
 
         /* 锁外解码：槽 raw 由 claim 保护（零拷贝读 mmap，不再整帧拷贝） */
         int decode_ok = 0;
-        unsigned long long decode_start_us = ai_now_us();
+        unsigned long long decode_start_us = yolo_now_us();
         if (raw && rgbb.buf && w > 0 && h > 0) {
             if (fmt == FRAME_RING_FMT_MJPEG)
                 decode_ok = yolo_jpeg_to_rgb_buf(raw, raw_len, rgbb.buf, w, h) == 0;
             else   /* YUYV */
                 { yolo_yuyv_to_rgb(raw, w, h, rgbb.buf); decode_ok = 1; }
         }
-        g_ai.last_seq = seq;
+        g_yolo.last_seq = seq;
         if (!decode_ok) {
             frame_ring_lock(ring);
             if (rgbb.buf)
@@ -1360,7 +1360,7 @@ void *rknn_ai_task(void *arg)
 
         yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap,
                            .w = w, .h = h, .seq = seq, .capture_ms = capture_ms,
-                           .decode_start_us = decode_start_us, .decode_end_us = ai_now_us(),
+                           .decode_start_us = decode_start_us, .decode_end_us = yolo_now_us(),
                            .metadata = metadata };
         if (yolo_queue_push(&job) != 0)
             yolo_job_abandon(&job);   /* 停池/退出中：claim 摘除 + rgb 回池 */

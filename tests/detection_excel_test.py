@@ -20,7 +20,7 @@ NS = {'m':excel.MAIN_NS, 'r':excel.PACKAGE_REL_NS}
 
 class DetectionExcelTests(unittest.TestCase):
     def setUp(self):
-        self.directory = tempfile.TemporaryDirectory(prefix='gateway-excel-test-')
+        self.directory = tempfile.TemporaryDirectory(prefix='car-excel-test-')
         self.root = Path(self.directory.name)
         self.source = self.root / 'daily.rows'
         self.output = self.root / 'detections_20261027.xlsx'

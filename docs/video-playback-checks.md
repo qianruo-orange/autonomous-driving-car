@@ -1,6 +1,6 @@
-# Video playback checks
+# Autonomous Driving Car video playback checks
 
-The dashboard uses one H.264/fMP4 connection through Media Source Extensions
+The Autonomous Driving Car Home page uses one H.264/fMP4 connection through Media Source Extensions
 (MSE), with MJPEG as the fallback when MSE is unavailable.
 
 The H.264 stream emits a continuous decode timeline. For every adjacent pair of
@@ -22,7 +22,7 @@ by seeking, and drains small backlogs at 1.05x playback speed.
 
 The FPS badge reports displayed frames when playback-quality counters are
 available. Hover over the badge to compare displayed and received frame rates.
-`window.getGatewayVideoDiagnostics()` returns read-only playback counters,
+`window.getCarVideoDiagnostics()` returns read-only playback counters,
 buffer lead, decoder frame drops, reconnect count, and the most recent error.
 These counters are local to the browser and are not uploaded.
 The status line below the video shows the essential values without developer

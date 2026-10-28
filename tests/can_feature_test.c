@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Exercise the gateway feature lifecycle without requiring physical CAN. */
+/* Exercise the vehicle CAN feature lifecycle without requiring physical CAN. */
 #define _GNU_SOURCE
 #include <assert.h>
 #include <stdarg.h>

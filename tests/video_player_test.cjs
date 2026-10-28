@@ -10,7 +10,7 @@ assert(prefix.includes('async function mseAppend('));
 const exposure = `
   globalThis.api = {
     mseStart, mseStop, mseAppend, mseUpdate, mseCatchUp, mseFail, mseWatchdog,
-    diagnostics: window.getGatewayVideoDiagnostics,
+    diagnostics: window.getCarVideoDiagnostics,
     streamStart, streamStop,
     setImage: function(value) { imgEl = value; },
     state: function() { return { mseRunning, mseGeneration, mseCancelUpdate,
@@ -242,7 +242,7 @@ test('append timeout triggers exactly one current-generation reconnect', async (
 });
 test('MJPEG frame larger than 64 KiB survives repeated network chunk boundaries', async () => {
   const h = makeHarness(); const image = { src: '', onload: null, onerror: null }; h.api.setImage(image);
-  const reader = new Reader(); h.api.streamStart('/video/mjpeg_ai');
+  const reader = new Reader(); h.api.streamStart('/video/mjpeg_yolo');
   h.requests.at(-1).resolve({ ok: true, body: { getReader: () => reader } }); await flush();
   const frame = new Uint8Array(100000); frame[0] = 0xff; frame[1] = 0xd8; frame[frame.length - 2] = 0xff; frame[frame.length - 1] = 0xd9;
   for (let offset = 0; offset < frame.length; offset += 32768) { reader.push(frame.subarray(offset, offset + 32768)); await flush(); }
@@ -332,7 +332,7 @@ test('decoder failure triggers one recovery and late empty error events are igno
 
 test('oversized incomplete MJPEG input aborts the old fetch before reconnecting', async () => {
   const h = makeHarness(); h.api.setImage({ src: '' });
-  const reader = new Reader(); h.api.streamStart('/video/mjpeg_ai');
+  const reader = new Reader(); h.api.streamStart('/video/mjpeg_yolo');
   const request = h.requests.at(-1);
   request.resolve({ ok: true, body: { getReader: () => reader } }); await flush();
   const oversized = new Uint8Array(16 * 1024 * 1024 + 1);

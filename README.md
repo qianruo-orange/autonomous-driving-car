@@ -1,542 +1,238 @@
-# rockchip-smart-gateway
+# Autonomous Driving Car
 
-An epoll-based solution for CAN / CAN FD acquisition, DBC signal decoding, and TCP/IP communication, with a Web management interface, live video, AI object detection (RKNN + YOLO26), network recording, and a systemd watchdog. Implemented in C11 for Linux edge devices such as the Radxa Rock 4D and Orange Pi 5 series. **Adapts to Rockchip RKNPU platforms**, including RK3588 / RK3576 / RK356x / RV1126 / RV110x / RK3399PRO / RK1808. CPU and NPU core counts, utilization, and available GPU metrics are detected from the running platform.
+Autonomous Driving Car is a Linux vehicle platform designed around a unified perception, reasoning, and control architecture. Its hardware/system target is a shared computing platform running a Linux real-time kernel. The software design combines conventional motion-control algorithms, YOLO object detection, and a large language model (LLM) reasoning layer.
 
-## Features
+The implemented driving path currently uses YOLO26 target position and relative size to follow a selected target. Conventional PD and PI controllers produce bounded left/right wheel commands and close the speed loops using measured CAN feedback. The LLM layer is planned and reserved: no LLM provider, model invocation, or reasoning-to-control connection is implemented. The browser also provides live video, recording, per-frame detection reports, DBC decoding, and device configuration.
 
-- CAN acquisition: classic CAN and CAN FD, multiple interfaces, and automatic discovery of system CAN interfaces.
-- DBC decoding: convert received and transmitted CAN frames into physical signal values using DBC databases.
-- TCP/IP communication: configurable listening port, network interface binding, and client limit.
-- Web management: monitor data, edit configuration, inspect logs, and reboot or shut down the device.
-- Live video: V4L2 camera capture, raw and AI-annotated MJPEG, and H.264 fragmented MP4 playback through browser Media Source Extensions (MSE).
-- Video frame ring: separate capture / inference / display / encoding cursors, reusable buffer pools, and per-stage drop counters. V4L2 mmap buffers enter the ring by pointer, avoiding a full-frame copy at capture.
-- AI detection: RKNN + YOLO26 using the official Ultralytics RKNN single-output format, a parallel inference worker pool, and live detection overlays.
-- **Platform-aware NPU scheduling**: choose valid single-core masks from the detected SoC core count, avoiding `rknn_set_core_mask: unavailable core mask`. Workers are distributed across RK3588 three-core, RK3576 two-core, and supported single-core NPUs.
-- **Adaptive CPU / NPU displays**: render the actual number of cores reported by the backend, resizing and wrapping indicators as needed.
-- **Adaptive GPU monitoring**: use GPU utilization when the driver exposes `load`; otherwise display the current GPU frequency, as on some RK3576 / RK356x drivers.
-- Network recording: automatically record AI-annotated video into MP4 (`avc1`) files under `recordings/YYYYMMDD/`, using the configured resolution and H.264 encoder backend. Software encoding uses libx264; hardware encoding uses RKMPP or V4L2 rkvenc when available.
-- Shared encoding: recordings and the H.264 live stream consume the same encoder output.
-- systemd watchdog: monitor critical thread heartbeats and recover from failures.
-- Configuration updates: apply changes through the Web interface without a full service restart where the affected module supports it.
-- Operations: date- and size-based log rotation, daily log directories, cleanup scripts, and deployment scripts.
-- Data injection and extraction: REST endpoints for CAN transmission, DBC upload and reload, configuration writes, video, raw CAN frames, decoded signals, recordings, and logs.
-- English / Chinese interface: English mode covers navigation, forms, dynamic status messages, authentication dialogs, and file controls. Language changes preserve unsaved form values.
+The application uses C11, with C++/OpenCV for overlays and Rockchip RKNN for inference. Hardware capabilities are discovered from the running system. A compatible model, NPU runtime, camera, and motor protocol profile are required for their respective functions. Motor control starts stopped and remains inhibited until its real-time, CAN, detection, and feedback checks pass.
 
-## System Architecture
+## System architecture
 
-### Differential vehicle follow controller
+The system follows a unified perception/reasoning/control design on a Linux real-time kernel target. Perception and driving control share the computing platform, while scheduling and hardware capabilities are detected at runtime.
 
-`source/control/car_sport_ctrl.c` and `include/control/car_sport_ctrl.h` contain the independent C controller, control-loop implementation, worker lifecycle, and reserved motor adapter. The Configuration page provides target selection from current detections, automatic/manual speed mode, wheel-speed/steering-correction limits and three gain groups: automatic target-size PD, steering PD, and shared wheel-speed PI. Both wheel loops use the same `wheel_kp` and `wheel_ki`; their measured feedback and integral states remain independent. Parameters are saved to `config/follow.conf` and preserved by deployment. Following always starts **stopped** after a service restart; enabling is an explicit operator action.
+| Layer | Responsibility | Current implementation |
+| --- | --- | --- |
+| Linux real-time platform | Schedule the perception, communication, and periodic motion-control work. | The controller requests FIFO scheduling. The validation board still runs a kernel without PREEMPT_RT; a real-time kernel has not been installed. |
+| Conventional motion control | Combine target following, steering, wheel-speed feedback, and bounded motor commands. | Steering PD, automatic speed PD, shared wheel-speed PI parameters, and SocketCAN command/feedback transport are implemented. Real motor output remains disabled. |
+| YOLO perception | Detect the selected target and restore its coordinates to the original image. | YOLO26 runs through Rockchip RKNN and supplies frame-matched observations to the controller. |
+| LLM reasoning | Provide the planned higher-level language/reasoning component of the autonomous-driving design. | Reserved architecture only; no LLM runtime or connection is integrated, and no LLM drives the motor outputs. |
 
-For an original image of width `W` and height `H`, steering uses `ex = 2*(target_center_x/W - 0.5)`. Automatic speed uses normalized target-box area: `size_error = clamp((reference_area - current_area) / reference_area, -1, 1)`. Selecting a detected target captures its reference area divided by image area; otherwise the first matched target initializes it. A smaller target increases forward speed; a larger target reduces it toward zero. Manual mode uses only the configured speed setpoint and bypasses the size PID. The speed modes are mutually exclusive. Steering and measured wheel-speed loops apply to both modes. Positive X error turns right: `left_target = v + correction`, `right_target = v - correction`. Steering PD directly produces a wheel-speed correction in m/s, bounded by `max_turn_delta`; no wheel-track parameter is needed. On loading older settings, the old yaw limit and steering P/D gains are multiplied by half the saved wheel track, preserving their physical effect. Newly saved settings use the correction units and do not contain the old wheel-track/yaw fields. Proportional wheel-speed limiting preserves the differential ratio. Wheel PIDs compare these targets with **actual signed wheel feedback in m/s** and produce bounded actuator commands in `[-1,1]`. Automatic forward speed is nonnegative. Box area is a relative-size signal, **not a calibrated distance measurement**; target pose, occlusion and camera zoom can change it. Verify mounting, target association and motor signs before connecting motors.
+## Capabilities
 
-The chosen detection seeds a nearest-center association within the selected class, with a normalized 0.35-radius gate. This is not an identity/re-identification tracker: crossings or similar adjacent targets can be ambiguous. Missing targets stop outputs; far-away targets are not automatically substituted. Out-of-order/duplicate capture timestamps are ignored, and a capture sequence reset stops following until explicitly enabled again.
-
-Each completed inference publishes original-image metadata before rendering coalesces frames. The controller uses the capture timestamp delta for PID integration/derivatives, and consumes the latest available observation without building a stale queue. A monotonic 50 ms idle wake checks stop conditions; it does not advance PID without a new inference. The worker requests `SCHED_FIFO` priority 20, uses the detected low-load CPU group, and uses priority-inheritance mutexes. `/api/follow` reports actual FIFO status, scheduler error, and `/sys/kernel/realtime` detection. A normal preemptible Linux kernel is not reported as PREEMPT_RT. The current board's `7.3.0-npu` kernel has `CONFIG_PREEMPT_RT` disabled; this change does not replace the kernel. The existing normal preemptible kernel supports the FIFO scheduling policy; PREEMPT_RT requires a separately validated kernel replacement and is not installed by this change. Motor output is interlocked until FIFO scheduling, global CAN, fresh detections, and fresh measured wheel feedback are all available.
-
-On this board, the deployed worker's FIFO request and a root `chrt` probe both returned `EPERM`. The service remains `SCHED_OTHER` and exposes error code 1. Its kernel enables `CONFIG_RT_GROUP_SCHED` and the cgroup v2 CPU controller; this combination restricts RT scheduling in non-root CPU groups. The kernel supports the `rt_group_sched=0` boot parameter as a possible configuration remedy, requiring a planned reboot and validation; this change does not modify boot settings. See the official [cgroup v2 CPU scheduling documentation](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html) and [kernel boot parameters](https://www.kernel.org/doc/html/latest/admin-guide/kernel-parameters.html). Even successful FIFO scheduling would not turn this kernel into PREEMPT_RT.
-
-Motor CAN encoding is intentionally **reserved**, as requested. No CAN ID, wheel diameter, gear ratio, byte order, or stop packet is assumed, and the default adapter sends no motor commands. A future hardware-specific C adapter must:
-
-1. Bind `follow_motor_ops_t` through `follow_bind_motor()` once during startup while stopped. Implement both `send(app,left_command,right_command)` and `stop(app)` using the documented motor CAN protocol and `can_tx_frame()`. These callbacks must be nonblocking, complete within 1 ms, and must not reenter follow APIs. A failed send triggers the stop callback.
-2. Decode real CAN wheel feedback, convert it to signed m/s using actual wheel diameter and gearing, and call `follow_feedback(left_mps,right_mps,monotonic_ms)`. This entry point uses a separate feedback mutex and may be called by a CAN decoder. Never use the commanded speed as feedback.
-3. Configure the motor drive's independent command watchdog/stop behavior; loss of the CAN transport cannot deliver a stop packet. Stop/send failures are exposed in status. The current reserved adapter is suitable for preview and integration tests only.
-
-`GET /api/follow` returns configuration, live target options and controller status. Administrator-authenticated `POST /api/follow` validates numeric parameters and atomically saves settings. Invalid/NaN/out-of-range parameters are rejected. Integral anti-windup, filtered derivatives, output limits, stale-feedback checks and target-loss stops are implemented. These facilities do not replace a physical emergency stop or motor drive watchdog.
-
-The frontend hides the numeric class ID and selects targets through the live target list. Parameters are saved in groups: Tracking settings, Speed mode and limits, Automatic speed control, Steering parameters, and Manual speed control. On a two-column display, Steering parameters always occupy the left side of the second row; the active automatic/manual speed group occupies the right side. Narrow displays stack these groups in reading order. Automatic mode shows only Automatic speed control; manual mode shows only Manual speed control. The hidden mode's controls are disabled, and switching modes preserves their saved gains. The manual section contains the target speed, shared wheel-speed PI gains and integral limit; the wheel-speed feedback loops still operate in both modes. Both automatic speed and steering have zero integral gain; wheel loops have zero derivative gain and share P/I gains with independent state. An older saved automatic-speed Ki is normalized to zero without discarding other settings, and nonzero Ki writes are rejected. The manual speed input is visible only in manual mode. The stop-timeout control is hidden; internal stale-data stop protection remains active. Saving one group does not submit another group's unsaved edits.
-
-`wheel_integral_limit` bounds the absolute I-term contribution to each wheel's normalized actuator command. Its range is 0 to 1, where 1 is the full command range and 0 disables/clears integration. The default is 1, preserving older configurations. Each wheel retains its own accumulator; both use this shared limit. A reduced limit applies immediately even during output saturation. Conditional-integration anti-windup and the total output bound remain active. The field is saved with the Manual speed control group and persists in `config/follow.conf`.
-
-Backend updates follow these UI groups: ordinary tuning preserves the selected target, capture timing and unrelated control-loop state; saving unchanged values does not reset a loop. Steering changes reset only steering PD, size-speed gains reset only automatic PD, and common wheel-gain changes reset the two wheel loops. Reducing the integral cap clamps both accumulators without resetting vision. The steering center deadband does not affect the separate fixed 0.04 relative-size deadband. Shared wheel PI gains and its integral cap still apply to the inner feedback loops in both speed modes.
-
-Settings writes are serialized by a separate save mutex. Numeric parsing, temporary-file formatting and flushing run outside the controller mutex; only the final atomic rename and runtime field commit hold it. Only explicitly posted fields are applied, preserving runtime-learned reference/stop state. A camera-session change during staging rejects stale target/enable requests with HTTP 409 before replacing the file. Duplicate keys, invalid values and failed writes leave the previous settings in effect; a valid explicit stop takes effect immediately even if later storage fails. UI polling copies a coherent snapshot under the mutex and formats JSON afterward. Actuator interlocks are checked on idle wakes as well as new detections, while disconnected-adapter preview continues to update.
-
-
-A single process runs multiple threads. The module table `g_modules[]` in `source/core/main.c` registers modules and starts their tasks:
-
-```text
-        +--> can_recv_task --> SocketCAN RX --> raw rxq + receive-side DBC decoding
- main --+--> can_send_task --> drain raw txq --> socket + transmit-side DBC decoding
-        +--> tcp_task      --> TCP listening, connections, and I/O
-        +--> http_task     --> Web management, REST API, and stream dispatch
-        +--> video_task    --> V4L2 capture; mmap buffer pointers enter the frame ring
-        +--> ai_task       --> event-driven ring consumption --> inference workers
-        |                     --> RGB ring buffers + NMS metadata result queue
-        +--> rec_task      --> consume displayed NV12 frames --> H.264 --> MP4 (avc1)
-        |                     --> shared H.264 live-stream output
-        +--> watchdog_task --> heartbeat monitoring + sd_notify
-```
-
-| Thread | Responsibilities |
-| --- | --- |
-| `main` | Initialization, configuration and DBC loading, coordinated shutdown, and watchdog notifications. |
-| `can_recv` | Receive CAN frames, append raw frames to rxq, and decode receive-side DBC signals. |
-| `can_send` | Drain raw txq into the socket and decode transmit-side DBC signals. |
-| `tcp` | TCP listening, connection management, and data transfer. |
-| `http` | HTTP management event loop, REST API, and stream connection dispatch. |
-| `video` | Capture V4L2 frames into the ring through mmap pointers and advance the produce cursor. |
-| `ai` | Consume ring slots through the infer cursor, submit work to the inference pool, and manage models. Each worker has its own RKNN context and is bound by `i % cores`. RGB buffers enter the display path; NMS metadata (names, confidence, and coordinates) enters the composer result queue. |
-| `rec` | Consume displayed NV12 frames through the encode cursor, encode H.264, write MP4 files, and publish the same encoded output for live streaming. A sustained AI stall is fatal. |
-| `watchdog` | Monitor module heartbeats and issue `sd_notify` notifications. |
-
-The `signal` module only registers signal handlers during `init`; its `task` is empty and does not create a thread.
-
-## Data Flow and Interfaces
-
-### Video
-
-```text
-V4L2 camera (MJPEG / YUYV)
-  +--> video_task: mmap pointers enter ring --> advance produce cursor
-        +--> ai_task: consume infer cursor --> N parallel RKNN workers --> RGB slots
-              +--> NMS metadata result queue
-              |     +--> composer: latest result + bounding boxes --> display cursor
-              |            +--> /video/mjpeg_ai: annotated MJPEG
-              |            +--> rec_task: consume NV12 through encode cursor
-              |                   +--> H.264 encoder --> MP4 (avc1) recording
-              |                         +--> /video/stream: fragmented MP4 for MSE
-              +--> raw capture path --> /video/mjpeg (independent of inference)
-```
-
-- **Frame ring:** 32 slots with raw / RGB / NV12 / JPEG buffers and monotonically advancing produce / infer / display / encode cursors. Buffers are allocated as needed and returned to stage-specific pools when consumers release them. Ownership is transferred by pointer where supported.
-- **Capture:** after V4L2 DQBUF, the mmap buffer pointer enters a ring slot; QBUF is delayed until consumers release it. A full ring increments `capture_dropped`. Capture prefers MJPEG and falls back to YUYV. Resolution comes from `video_width` / `video_height`.
-- **Inference:** `ai_task` waits for the produce cursor, pins the raw slot while workers use it, and decodes to RGB. RGB output follows the display path; NMS output contains metadata only, including class names, confidence, and bounding-box coordinates.
-- **Display:** the event-driven composer drains its result queue and keeps the latest result, incrementing `render_skipped` for discarded results. It finds the matching RGB slot by sequence, draws overlays, and writes NV12 / JPEG buffers. Each MJPEG connection has an independent streaming thread that copies the latest JPEG; slow clients do not pin frame slots or block other clients.
-- **Encoding:** `rec_task` takes ownership of displayed NV12 buffers and returns them to the pool after encoding. Frames with a resolution different from the encoder are skipped and counted in `encode_skipped`.
-- **Mandatory AI:** missing models or an unavailable NPU cause startup failure. The annotated stream does not substitute raw frames when AI is unavailable. A running AI pipeline that produces no new annotated frame for more than one second sets a fatal condition and exits with status 1; systemd `Restart=on-failure` restarts the service.
-- **H.264 fan-out:** the live stream reuses recording encoder output. A client joins at an IDR frame and receives an `ftyp` / `moov` initialization segment followed by `moof` / `mdat` fragments. Recording-session changes require a new initialization segment and reconnect the client.
-
-| Endpoint | Description |
-| --- | --- |
-| `GET /video/stream` | H.264 fragmented MP4 live stream for browser MSE. An active encoded session and AI output are required; an unavailable session returns 503. |
-| `GET /video/mjpeg` | Raw MJPEG stream for a browser `<img src>` or ffplay. |
-| `GET /video/mjpeg_ai` | MJPEG stream with live AI detection overlays. |
-| `GET /api/video/caps` | Camera formats, resolutions, and frame-rate capabilities. |
-| `GET /api/video/codeccaps` | Encoder backend resolution and frame-rate capabilities. |
-| `GET /api/video/stats` | Frame-ring sequences, per-stage drop counters, and buffer-pool usage. |
-| `GET /api/video/devices` | Available video devices. |
-
-### Browser Playback and Stall Diagnostics
-
-The dashboard uses H.264 fMP4 / MSE when supported, with MJPEG as the compatibility path. Playback aims to keep up with live video while avoiding unnecessary reconnects; actual delay depends on capture, inference, encoding, transport, and browser decoding.
-
-- The fMP4 writer advances a continuous decode timeline using the previous sample's duration. Fragment decode times and sample durations stay consistent, avoiding gaps between browser buffer ranges.
-- The browser serializes SourceBuffer mutations. Each append or eviction waits for `updateend` before the next operation, so later network chunks cannot overtake earlier MP4 bytes.
-- Session generations prevent callbacks from an old aborted stream from stopping a replacement stream. Errors and transport stalls trigger controlled reconnection.
-- Already played data is periodically evicted from the MSE buffer. Ordinary playback lag is corrected within the available buffer instead of immediately reconnecting to another GOP.
-- At connection time, the server sends the historical GOP up to the newest encoded frame immediately, in decode order. Live pacing is anchored to that newest frame, rather than replaying the old GOP in real time and permanently retaining its age as delay.
-- In Chrome / Chromium, the player starts with approximately 80 ms of buffered media, then lowers the target by 10 ms after each 20 seconds of uninterrupted playback progress, down to 50 ms. A sustained wait restores headroom (80–120 ms), and gentle rate adjustment rebuilds the lead without a forced seek. Paused, background, stalled, or nonadvancing playback never earns a lower target. Brief network bursts are drained through gentle playback acceleration; backlog above 250 ms triggers a seek only after 400 ms, while backlog above 750 ms is corrected immediately. The compatibility profile retains a 200 ms target. These are playback buffer settings, not guaranteed end-to-end latency. Both paths preserve the original frame-to-AI-result association.
-- The MJPEG path uses one fetch connection for both receipt counting and display. It retains only the latest pending frame while image decoding is busy, and keeps incomplete JPEG frames across network chunks.
-- The FPS badge reports displayed frames when browser playback-quality counters are available; its tooltip distinguishes displayed FPS from received FPS. Receipt counts alone do not prove that the browser is displaying smoothly.
-
-The status line below the video shows received FPS, buffer lead, estimated total delay, and decoder frame drops, without developer tools. The total estimate combines the device's capture-to-encoder age and the estimated encoder-to-browser presentation delay. A valid monotonic V4L2 capture timestamp is preferred; otherwise the device uses capture dequeue time. Exposure, timestamp accuracy, network jitter, and compositor timing limit this estimate, so a 100 ms target is not a verified camera-to-screen guarantee.
-
-Chrome's `requestVideoFrameCallback` supplies the presented frame's media time and decoder processing time when available. The lower-level `estimatedStreamDelayMs` remains an encoder-output-to-presentation estimate. See the [frame callback specification](https://wicg.github.io/video-rvfc/) for the presentation metadata semantics.
-
-The line also shows the frame rate actually negotiated with the camera and the latest capture-to-render processing age. Requested FPS can exceed camera capability: a device may accept a 60 FPS request but negotiate 30 FPS. Decoder drops on the status line are a per-second rate; cumulative decoder counts remain available in diagnostics. Parallel inference results are coalesced by their highest capture sequence, so an older worker finishing last cannot replace a newer result.
-
-For additional details, read the current browser-side state in the browser developer console:
-
-```javascript
-window.getGatewayVideoDiagnostics()
-```
-
-| Diagnostic | Meaning |
-| --- | --- |
-| `transport` | Current transport: `H.264/MSE`, `MJPEG`, or `idle`. |
-| `receivedFps` / `displayedFps` | Received stream rate and displayed-frame rate. MSE receipt counting uses fragment signatures as an approximation. |
-| `bufferAheadSeconds` | Buffered media ahead of the current playback position; this is a playback-buffer measure, not a measurement of end-to-end camera latency. |
-| `estimatedStreamDelayMs` / `estimatedTotalDelayMs` | Approximate encoder-output-to-presentation delay and total delay including device processing, or `null` without timing headers. |
-| `playbackProfile` / `targetBufferMs` / `browserDecodeMs` | Active browser profile, buffer target, and decoder processing time when frame callbacks provide it. |
-| `paused` / `seeking` / `currentTime` / `buffered` | Playback state, position, and available media ranges. |
-| `playbackRate` / `decoderError` | Current catch-up rate and any HTML media error code. |
-| `readyState` | The video element's HTML media readiness state. |
-| `totalVideoFrames` / `droppedVideoFrames` | Browser playback-quality counters, when supported. |
-| `starts` / `reconnects` / `catchups` | MSE session starts, error-driven reconnects, and in-buffer catch-up operations. |
-| `appendErrors` / `lastError` | SourceBuffer errors and the latest recorded MSE error. |
-| `cameraFps` / `processingAgeMs` | Negotiated camera rate and latest capture-to-render processing age from the device. |
-| `droppedFramesPerSecond` / `sourceDroppedFrames` | Current decoder-drop rate and cumulative capture / driver / inference failures; intentional latest-frame replacement is counted separately by the device. |
-
-Compare these values with `GET /api/video/stats` over the same time interval. Growing capture or render drop counts point to an upstream stage; a healthy received rate with low displayed FPS or increasing browser drop counts points to playback work. Buffer growth with adequate incoming data indicates that playback is falling behind. Use service logs to correlate AI stalls, encoder errors, or session rotation.
-
-Device video statistics include `capture_fps`, `display_seq`, `displayed_frames`, `encoded_frames`, `encode_replaced`, and current / maximum `processing_age_ms`. Compare counter differences over time; cumulative counts alone do not describe current playback. `render_skipped` and `encode_replaced` include intentional latest-frame selection and should not be confused with corrupt frames or camera-driver loss.
-
-### CAN
-
-```text
-RX: SocketCAN frame --> can_recv_task (nonblocking epoll)
-       +--> raw rxq for application consumers
-       +--> http_can_record_rx --> /api/can/frames (latest 32 frames)
-       +--> receive-side DBC decoding --> /api/can/decoded
-
-TX: can_tx_frame() --> txq --> eventfd wakes can_send_task --> drain into socket
-       +--> transmit-side DBC decoding --> /api/can/decoded/tx
-       +--> EAGAIN: requeue; a full queue increments the drop count
-```
-
-- Each interface has independent rxq / txq queues of raw `canfd_frame` values. DBC decoding and the raw-frame cache are independent.
-- Read failures rebuild the socket and reapply filters. A disconnected interface does not block the entire application from starting.
-
-Data injection endpoints:
-
-| Endpoint | Description |
-| --- | --- |
-| `POST /api/can/send` | Transmit one CAN / CAN FD frame. Example body: `ifname=can0&id=0x123&data=01 02 03`. Accepts a `0x` prefix and space, comma, or hyphen separators. |
-| `POST /api/can/toggle` | Set an interface up or down. Example body: `ifname=can0&action=up`. |
-| `POST /api/can/dbc` | Upload DBC text with `?ifname=can0`; validate, reload, and save it. |
-| `POST /api/config` | Apply configuration for `target=can`, `net`, `ip`, `video`, or `ai`, restarting the affected module where needed. An omitted target applies all supported groups. |
-
-Data extraction endpoints:
-
-| Endpoint | Description |
-| --- | --- |
-| `GET /api/can` | CAN interface state, bitrate, and FD status. |
-| `GET /api/can/ifaces` | Enumerate system CAN interfaces and FD support. |
-| `GET /api/can/frames` | Recent raw received frames: ID, length, data, and flags. |
-| `GET /api/can/decoded` | Recently decoded receive-side signals. |
-| `GET /api/can/decoded/tx` | Recently decoded transmit-side signals. |
-
-### TCP
-
-```text
-Listen: tcp_task --> configured tcp_port, optionally bound to tcp_bind
-          +--> accept client --> epoll registration and per-client I/O state
-Receive: recv client data --> currently discarded; not injected into CAN
-Transmit: tcp_tx_packet() --> txq --> eventfd wakes tcp_task --> client socket
-            +--> selected client_idx or broadcast when client_idx < 0
-            +--> per-client wbuf retains unsent bytes for slow clients
-```
-
-- The external TCP server uses nonblocking sockets and epoll. `max_clients` defaults to 16; a per-client write buffer handles partial writes.
-- The TX queue, eventfd notification, and targeted / broadcast dispatch are available for application integration, such as CAN-to-TCP forwarding. The current TCP receive path does not forward data to the CAN bus.
-
-### System Monitoring
-
-`GET /api/system` returns live CPU, memory, disk, temperature, network, NPU, and GPU data:
-
-| Field | Description |
-| --- | --- |
-| `cpu_cores` | Per-core cumulative CPU accounting values; the array length is the actual core count, and the dashboard calculates utilization from successive samples. |
-| `npu_count` / `npu_cores` | NPU core count and per-core load in percent; -1 indicates an unavailable metric. Core information is derived from kernel `debugfs` data for three-core, two-core, and single-core platforms. |
-| `gpu` | GPU utilization in percent when the driver exposes `load`; otherwise -1. |
-| `gpu_freq` | Current GPU frequency in MHz, used as the displayed metric when utilization is unavailable. |
-
-## Rockchip RKNPU Platform Adaptation
-
-NPU scheduling and hardware displays adapt to the actual platform:
-
-- **NPU masks:** at startup, `source/yolo/rknn_yolo.c` reads `/proc/device-tree/compatible`. RK3588 / RK3588S use three cores, RK3576 / RK3576M use two, and supported RK356x / RV1126 / RV110x / RK3399PRO / RK1808 devices use one. Unknown platforms fall back to one core. Workers use `1u << (idx % cores)` to select legal single-core masks and distribute work.
-- **Inference workers:** after eight seconds of warmup, the controller observes one-second windows of actual rendered/encoded throughput, worker service time, and frame age. It increases core-balanced worker counts only after three sustained shortage windows; reducing workers requires measured spare capacity of at least 25% in the smaller pool. A worse trial returns to the measured best count and is not retried until demand materially changes. An eight-second cooldown prevents oscillation, with no periodic blind probing during smooth playback. A small reserve pool avoids model reloads when demand changes. Inference has no additional sleep interval, and every displayed frame retains its own AI result.
-- **CPU / NPU indicators:** the dashboard uses `cpu_cores.length` / `npu_count` to build and size core indicators dynamically, wrapping them when needed.
-- **GPU metrics:** use `gpu` when available and `gpu_freq` otherwise, as described above.
-- **Model selection:** before compilation, `build.sh` validates or converts `config/yolo26.rknn` for the platform detected through `/proc/device-tree/compatible`, or explicitly selected with `-P`.
-
-## Directory Layout
-
-```text
-rockchip-smart-gateway/
-├── CMakeLists.txt
-├── README.md
-├── rockchip-smart-gateway.service  # systemd service unit
-├── include/                       # headers
-│   ├── core/
-│   │   ├── common.h               # application context and shared utilities
-│   │   ├── config.h               # configuration structures
-│   │   ├── log.h                  # logging API
-│   │   ├── ring.h                 # lock-free queue
-│   │   ├── epoll_util.h           # epoll helpers
-│   │   └── version.h              # generated version macros; gitignored
-│   ├── can/
-│   │   ├── can_queue.h            # CAN RX / TX queues
-│   │   ├── can_socket.h           # SocketCAN API
-│   │   └── dbc_parser.h           # DBC parser API
-│   ├── tcp/
-│   │   ├── tcp_server.h           # TCP server API
-│   │   └── tcp_queue.h            # TCP TX queue
-│   ├── http/
-│   │   ├── http.h                 # HTTP server API
-│   │   ├── http_internal.h        # internal definitions
-│   │   ├── http_util.h            # HTTP form / URL helpers
-│   │   ├── http_api_can.h         # CAN API declarations
-│   │   └── http_api_dbc.h         # DBC API declarations
-│   ├── video/
-│   │   ├── video_stream.h         # V4L2 streaming API
-│   │   ├── frame_ring.h           # four-cursor frame ring and stage counters
-│   │   ├── video_rec.h            # recording API
-│   │   ├── h264_encoder.h         # software / Rockchip H.264 encoder wrapper
-│   │   ├── h264_stream.h          # shared H.264 fan-out and fMP4 stream API
-│   │   └── rec_mp4.h              # MP4 (avc1) muxer API
-│   ├── yolo/
-│   │   ├── rknn_yolo.h            # RKNN YOLO entry point and npu_core_count
-│   │   ├── yolo_types.h           # detection result structures
-│   │   ├── yolo_image.h           # JPEG / YUYV / letterbox processing
-│   │   ├── yolo_postprocess.h     # single-output model postprocessing
-│   │   └── yolo_draw.h            # detection overlay API
-│   └── watchdog/
-│       └── watchdog.h             # watchdog API
-├── source/                        # source code
-│   ├── core/      main.c / config.c / log.c
-│   ├── can/       can_queue.c / can_socket.c / dbc_parser.c
-│   ├── tcp/       tcp_server.c / tcp_queue.c
-│   ├── http/      http.c / http_util.c / http_api_*.c
-│   │              # can / dbc / config / network / system / video / rec / ai /
-│   │              # logs / reboot / cpufreq / nettest
-│   ├── video/     video_stream.c / frame_ring.c / video_rec.c / h264_encoder.c /
-│   │              # h264_stream.c / rec_mp4.c
-│   ├── yolo/        rknn_yolo.c / yolo_image.c / yolo_postprocess.c / yolo_draw.cpp
-│   └── watchdog/  watchdog.c
-├── tests/        frame_ring_test.c
-├── html/         index.html / config.html / dbc.html / logs.html + css/ + js/
-├── config/       runtime configuration, RKNN model, labels, and DBC templates
-│                 # config.txt is device-specific and gitignored
-├── docs/         documentation and screenshots
-├── scripts/      build.sh / deploy.sh
-├── bin/          generated executable; gitignored
-├── build/        generated CMake build directory; gitignored
-├── logs/         runtime logs; gitignored
-├── recordings/   runtime recording output; gitignored
-└── .gitignore
-```
+- Select a detected target and configure automatic or manual forward speed, steering PD, and shared wheel-speed PI from the browser.
+- Connect compatible motor drives through a configurable SocketCAN adapter with explicit command, feedback, and stop-frame formats.
+- Capture V4L2 video, run YOLO26 inference, and display the corresponding annotated frames through H.264/MSE or MJPEG.
+- Record annotated MP4 video and save every completed inference to a daily TXT report, including frames with no detections.
+- Manage logs, recordings, and results together: preview, individual download/delete, per-section archives, and whole-page ZIP download/delete.
+- Discover CAN/CAN FD interfaces, configure filters and bitrates, upload DBC files, and inspect raw or decoded traffic.
+- Monitor CPU, memory, disk, NPU, GPU, and network state; configure CPU frequency policies and TCP/IP settings.
+- Use an English or Chinese interface. Runtime changes preserve device-specific configuration, and systemd monitors critical worker threads.
 
 ## Requirements
 
-- gcc / g++ with C11 / C++11 support. Detection overlay rendering uses C++ and OpenCV.
-- CMake >= 3.10.
-- libsystemd.
-- libnl-3 / libnl-route-3.
-- librknnrt for the board's RKNN runtime. Models are converted with rknn-toolkit2 on a supported board or PC.
-- libjpeg for JPEG decoding and AI overlays.
-- OpenCV 4 core + imgproc for bounding boxes and label text.
-- Linux SocketCAN support.
-- An available H.264 encoder backend: FFmpeg libx264 for software encoding, or a compatible Rockchip hardware backend. The V4L2 M2M rkvenc path uses an encoder device such as `/dev/video-enc0`; the optional FFmpeg backend can provide `h264_rkmpp`.
+A Linux board needs working V4L2, SocketCAN, and Rockchip NPU drivers for the enabled hardware. The current validation board is a Radxa Rock 4D with RK3576. Platform detection and NPU core selection also contain mappings for other Rockchip devices, but a mapping alone does not establish driver, model, or encoder compatibility.
 
-Example dependency installation:
+Build dependencies are GCC/G++ with C11/C++11 support, CMake 3.10 or newer, Python 3, libsystemd, libnl-3/libnl-route-3, libjpeg, OpenCV core/imgproc, and the board-compatible `librknnrt.so`. Software H.264 encoding requires an FFmpeg build containing `libx264`; hardware encoding requires an available RKMPP or V4L2 encoder.
+
+On Debian/Ubuntu, install the development packages:
 
 ```bash
-apt install build-essential cmake libsystemd-dev libnl-3-dev libnl-route-3-dev libjpeg62-turbo-dev libopencv-dev
+sudo apt install build-essential cmake python3 pkg-config \
+  libsystemd-dev libnl-3-dev libnl-route-3-dev \
+  libjpeg62-turbo-dev libopencv-dev libavcodec-dev libavutil-dev
 ```
 
-## Build
+Install the NPU runtime from the SDK appropriate to the board and kernel. YOLO inference is required by the application: a missing/incompatible RKNN model or unavailable NPU prevents a normal startup.
+
+## Build and deploy
+
+Run commands from the repository root:
 
 ```bash
-cd /home/qianruo/rockchip-smart-gateway
-./scripts/build.sh            # Release by default; detect the board's RKNPU platform
-./scripts/build.sh -D         # Debug
-./scripts/build.sh -P rk3576  # Explicit target platform, for example for cross-deployment
-./scripts/build.sh -C         # Remove build output and logs
+bash scripts/build.sh -R
+ctest --test-dir build --output-on-failure
+sudo bash scripts/deploy.sh -i
 ```
 
-`build.sh` checks the toolchain, development libraries, and librknnrt before building. Missing dependencies are reported with installation commands, and the build stops.
+The build writes `bin/autonomous-driving-car`. Useful build options are `-D` for a debug build, `-P rk3576` for an explicit platform, and `-M` for explicit model conversion. `-C` clears build output and logs; it is not needed for an ordinary rebuild.
 
-Platform detection and model synchronization:
+Deployment installs into `/opt/autonomous-driving-car`, updates the systemd unit, and starts the service. It preserves device configuration and uploaded models, detects conflicting model changes, and retains the configured CPU-frequency and follow-control settings. It restarts the service, so expect a brief interruption of live video.
 
-- The default platform is derived from `/proc/device-tree/compatible`, for example `rockchip,rk3576` -> `rk3576`. Use `-P` to override it.
-- Conversion, default runtime loading, and model uploads all use `config/yolo26.rknn`. Old `config/models/<platform>/yolo26.rknn` configuration entries migrate to this path; duplicate platform models are no longer required.
-- The build scans `config/` recursively for `.pt` weights. One discovered input is automatically converted into `config/yolo26.rknn`, even if an older RKNN file already exists. Multiple inputs stop the build with a candidate list; use `YOLO_WEIGHTS` to select one explicitly. With no PT input, reuse the valid RKNN model; if neither is available, the original default-weight download/export workflow applies. Conversion invokes the official Ultralytics CLI, `yolo export model=<weights> format=rknn name=<platform>`. Use `./scripts/build.sh -M` to explicitly reconvert an existing model. An explicit weight path must exist. After a successful build, the selected project-owned PT input and cached conversion copies are removed. Failed builds retain them; external user-supplied input files are preserved. Weights are not deployed.
-- `scripts/model_sync.py` compares source, deployed, and last-deployed SHA-256 values. A model uploaded on the device is pulled back when the source is unchanged; a newly converted source model is deployed when the device is unchanged. Independent changes on both sides stop synchronization instead of overwriting either model. The shared baseline under `config/models/` is gitignored.
-
-Build output: `./bin/rockchip-smart-gateway`.
-
-At configuration time, CMake generates `include/core/version.h` with `APP_NAME`, `APP_VERSION`, `APP_GIT_COMMIT`, `APP_GIT_BRANCH`, `APP_GIT_DIRTY`, `APP_BUILD_TYPE`, and `APP_BUILD_DATE`. This generated file is listed in `.gitignore`.
-
-## Run
+For an existing installation, retain its `config/`, `logs/`, and `recordings/` when migrating to the new installation directory. Stop the previous service before starting the renamed service.
 
 ```bash
-cd /home/qianruo/rockchip-smart-gateway
-./bin/rockchip-smart-gateway
+systemctl status autonomous-driving-car --no-pager
+journalctl -u autonomous-driving-car -f
 ```
 
-Run from the project root so that `config/`, `html/`, and `logs/` are available.
+For a foreground run, use `sudo ./bin/autonomous-driving-car` from the repository root. Relative paths such as `config/` and `html/` are resolved from the working directory. Use `deploy.sh -i` to update an installation; uninstall/reinstall actions remove the deployment directory and are not routine update commands.
 
-## systemd Deployment
+## Model and camera setup
 
-First build the executable with `./scripts/build.sh`.
+Conversion, normal runtime loading, and model uploads share **`config/yolo26.rknn`**. Class labels use `config/coco.names` unless configured otherwise. The model must match the target NPU and supported YOLO26 output layout.
+
+The build discovers `.pt` weights under `config/`. A single candidate is converted automatically; multiple candidates stop the build until one is selected with `YOLO_WEIGHTS`. With no PT input, a valid existing RKNN model is reused. Conversion requires the Ultralytics CLI and compatible RKNN conversion tools, normally installed in `.venv`.
 
 ```bash
-sudo ./scripts/deploy.sh        # Install and start; the default action, equivalent to -i
-sudo ./scripts/deploy.sh -i     # Install and start
-sudo ./scripts/deploy.sh -u     # Uninstall: stop service and remove unit and installation directory
-sudo ./scripts/deploy.sh -r     # Reinstall: uninstall, then install
-sudo ./scripts/deploy.sh -h     # Show help
+YOLO_WEIGHTS=config/my_model.pt bash scripts/build.sh -R
 ```
 
-`deploy.sh` requires root privileges and installs into `/opt/rockchip-smart-gateway/`:
+After a successful build, the selected project-owned PT input and conversion cache copies are removed. Failed builds retain their inputs, and externally supplied weight files are preserved. Conversion weights are not deployed. Source/deployed model conflicts are reported rather than silently overwritten.
 
-| Source | Destination |
+Choose the camera, combined resolution/frame-rate mode, encoder, and decoder in Configuration. Resolution and FPS come from device capabilities and saved settings: **1280 x 720 at 30 FPS is configurable, not hardcoded**. The active mode may differ if the driver negotiates a lower frame rate. Available capture decoding is software; hardware encoding is offered only when a usable backend exists. Continuous autofocus is used when the camera supports it.
+
+## Browser interface
+
+Open `http://<board-ip>/` for Home, `/config` for Configuration, and `/logs` for Driving Logs. Management pages, writes, and protected downloads require a local administrator account: `root` or an account in the `sudo` group. The browser uses HTTP Basic authentication; use the application on a trusted network or behind a separately configured secure access layer.
+
+The vehicle controls are grouped and saved independently:
+
+| Group | Settings |
 | --- | --- |
-| `bin/<executable>` | `/opt/.../bin/` |
-| `html/` | `/opt/.../html/` |
-| Runtime `config/` files and the selected platform model | `/opt/.../config/`; preserve Web configuration and uploaded models, excluding conversion weights and synchronization bookkeeping. |
-| systemd service unit | `/etc/systemd/system/` |
+| Tracking settings | Stopped/enabled state and target selection from current detections. |
+| Speed Strategy | Automatic/manual mode and maximum wheel speed. |
+| Steering parameters | Maximum wheel-speed correction, center deadband, proportional and derivative coefficients. |
+| Automatic speed control | Proportional and derivative coefficients for relative target size. |
+| Manual speed control | Target speed, shared wheel proportional/integral coefficients, and integral limit. |
 
-`config/config.txt` is device-specific runtime configuration, including the camera device path. It is gitignored, as is the generated `include/core/version.h`, so normal configuration and build activity do not add these files to version control.
+On desktop, Steering parameters occupy the left box of the second row. The active automatic/manual parameter group occupies the right box. Only the group belonging to the selected speed mode is shown; the manual speed input is hidden in automatic mode. Narrow displays stack the groups in reading order.
 
-Service name: `rockchip-smart-gateway`.
+Saving one group does not submit another group's unsaved edits. Ordinary tuning preserves the target, capture timing, and unrelated loop state. Selecting a new target or changing the enabled state performs the corresponding controller reset. Following always starts **stopped after a service restart**.
 
-Inspect service state and logs:
+The top-level CAN switch persists immediately. Disabling it hides the CAN configuration card, stops application CAN acquisition/transmission, and clears pending frames while retaining interface settings. The DBC page is linked from the CAN card.
 
-```bash
-systemctl status rockchip-smart-gateway
-journalctl -u rockchip-smart-gateway -f
-```
+## Following and wheel control
 
-Service settings include:
+The independent controller is implemented in `source/control/car_sport_ctrl.c` and `include/control/car_sport_ctrl.h`.
 
-- `Type=notify`.
-- `WatchdogSec=10`.
-- `Restart=on-failure` with a five-second restart delay.
-- `AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW`.
-- `ProtectSystem=strict`, with explicit writable installation paths for `config/`, `logs/`, and `recordings/`; `html/` remains read-only.
-
-## Configuration
-
-Web configuration changes are saved to `config/config.txt` and applied to the running application.
-
-| Key | Format | Description |
-| --- | --- | --- |
-| `can_enabled` | `on\|off` | Global gateway CAN RX/TX switch. Preserves per-interface settings when off. If omitted, enabled only when CAN interfaces are configured or discovered. |
-| `can_ifname` | `<name>` | CAN interface name; repeatable. When no configuration file exists, discover the system's actual CAN interfaces. |
-| `can_bitrate` | `<name> <bps>` | Bitrate; default 500000. |
-| `can_dbitrate` | `<name> <bps>` | CAN FD data bitrate; default 2000000. |
-| `can_fd` | `<name> on\|off` | Enable or disable CAN FD. |
-| `can_up` | `<name> on\|off` | Bring the interface up at startup. |
-| `can_filter` | `<name> <id> <mask>` | Receive filter with hexadecimal ID / mask; repeatable per interface. |
-| `tcp_port` | `<port>` | TCP port; default 6666. |
-| `max_clients` | `<n>` | Maximum TCP clients; default 16. |
-| `tcp_bind` | `<ifname>` | Bind TCP listening to this interface; empty means all interfaces (`INADDR_ANY`). |
-| `ip_ifname` | `<ifname>` | Interface whose IP configuration is managed; defaults to the selected TCP interface when applicable. |
-| `ip_mode` | `static` / `dhcp` / empty | Static address, DHCP, or unmanaged mode. |
-| `ip_addr` / `ip_mask` / `ip_gw` | `<IPv4-address>` | Static IPv4 address, subnet mask, and optional gateway. |
-| `video_device` | `<path>` | Video device; default `/dev/video0`. |
-| `video_width` / `video_height` | `<n>` | Resolution; default 640 x 480. |
-| `video_fps` | `<n>` | Requested frame rate, 1-120, applied using V4L2 S_PARM; 0 uses the driver default. |
-| `video_codec` | `software` / `hardware` | H.264 encoder backend: libx264 or supported Rockchip hardware. The default is `software`; backend availability determines whether fallback is possible. |
-| `video_decoder` | `software` | Camera image decoding uses libjpeg-turbo/YUYV conversion. Hardware decoding is unavailable in this build and is rejected by the configuration API. Older configuration files default to software decoding. |
-| `can_dbc` | `<name> <path>` | Per-interface DBC path; empty disables decoding for that interface. |
-| `ai_model` | `<path>` | Official YOLO26 single-output RKNN model; default `config/yolo26.rknn`. AI is mandatory; missing models or NPU initialization failure abort startup. |
-| `ai_names` | `<path>` | Class labels, one class name per line in COCO format; default `config/coco.names`. |
-| `ai_input_size` | `<n>` | Model input side length, 32-2048; default 640. |
-| `ai_conf` | `<n>` | Confidence threshold as an integer percentage, 1-100; default 25 (0.25). |
-| `ai_nms` | `<n>` | NMS IoU threshold as an integer percentage, 1-100; default 45 (0.45). |
-| `ai_interval_ms` / `ai_threads` | Legacy | Older files may retain these keys. The runtime uses adaptive worker selection and camera-paced inference instead; the Web UI no longer exposes manual controls. |
-
-Without a configuration file, defaults are applied to CAN interfaces discovered through netlink with `kind=="can"`. If no CAN interfaces are discovered, the application can run with zero CAN channels; it does not invent unavailable interfaces.
-
-### DBC Templates
-
-`config/` contains two CAN channel templates. Enable them with `can_dbc <interface> <path>`, or upload a DBC file through the Web configuration page:
-
-- `config/can0.dbc`: powertrain / battery examples, including `EngineData` and `BatteryStatus`.
-- `config/can1.dbc`: chassis / position examples, including a `Status` message with Motorola big-endian signals and an extended-ID `VehiclePos` message.
-
-The parser recognizes `BO_` message lines and `SG_` signal lines. Other lines, including `//` comments, are ignored. IDs are decimal; extended-frame IDs set bit 31 on the 29-bit ID, for example `0x18FF50E5` -> `2566869221`.
-
-## Web Management
-
-The HTTP server listens on port 80 by default:
-
-- `/`: dashboard, including live video without a seek bar, a fullscreen button, displayed FPS, CPU utilization and per-core indicators, per-core NPU load, GPU load or frequency, memory, disk, and network rates. There are no manual focus controls.
-- `/dbc`: receive-side and transmit-side DBC signal views.
-- `/config`: runtime configuration for camera device, resolution, frame rate and encoder, AI confidence/NMS and model uploads, CAN settings and DBC upload, network addressing, CPU frequency controls, network tests, and configuration export. Camera frame-rate choices intersect capture and encoder capabilities. Use each card's Save button to apply its settings.
-- `/logs`: one file-management page displays Logs, Recordings, and Results together. Each section has its own Pack download and Clear controls, with authenticated Download/Delete actions for individual files. Results lists one TXT file per day.
-
-The camera card combines resolution and frame rate in one selector, places encoder and decoder side by side on wider screens, and keeps Save in its title bar. Continuous autofocus is enabled when capture starts and restored if it is externally disabled. Dynamic frame intervals are disabled where supported to request a fixed cadence; actual delivery still depends on the camera firmware, lighting, and negotiated mode. The dashboard and configuration page have no manual lens controls. Each captured frame carries a lens-position sample and its monotonic sample time. These controls are read immediately after dequeue, rather than being queried later when a file is saved; this is not exposure-synchronized lens telemetry.
-
-CPU affinity uses detected kernel CPU capacity, with hardware maximum frequency as a fallback, within the process CPU allowance. Heavy video capture, inference, composition and encoding threads use the higher-capacity group; main/control/network/watchdog and background report tasks use the lower-capacity group. Export and compression inherit the lower-capacity mask and run at reduced priority. Homogeneous or unidentifiable topologies retain all allowed CPUs, without fixed core numbers or platform-specific CPU-part tables.
-
-The CPU frequency card enumerates kernel policy groups and their related CPUs, governors, and hardware frequency tables. Each group is configured independently. Requested limits are shown separately from effective limits and current frequency, so thermal throttling is visible. Saving validates the entire request before writes, checks results, and persists device settings in `config/cpu_freq.conf`; startup restores saved requests. Deployment preserves that device file. Kernel thermal and hardware protections remain active.
-
-Every completed inference records metadata before display coalescing can discard a result. The Results section exposes one UTF-8 `result_YYYYMMDD.txt` file per day. Each frame begins with capture time, target count, captured image dimensions, and focal-length information. Each detected target follows on an indented line with its label, confidence, and pixel coordinates in the order **X1 X2 Y1 Y2**. Coordinates use the original captured image: letterbox padding is removed with the actual horizontal and vertical resize ratios, and visible boxes are clipped to `0..width-1` and `0..height-1`. Zero-target frames retain their summary with `num[0]` and no target lines. The format follows this example:
+For target center `cx`, image width `W`, normalized target-box area `A`, and captured reference area `Aref`:
 
 ```text
-2026-10-27T16:00:00.123+0800：num[2] size[1280 720] FocalLength[raw:645]
-	person 0.93 position[100 300 50 600]
-	car 0.88 position[400 900 200 650]
-2026-10-27T16:00:00.157+0800：num[0] size[1280 720] FocalLength[raw:645]
+horizontal_error = 2 * (cx / W - 0.5)
+size_error       = clamp((Aref - A) / Aref, -1, 1)
+
+automatic mode: forward_speed = bounded size PD output, at least zero
+manual mode:    forward_speed = configured speed setpoint
+
+correction = bounded steering PD output
+left_target  = forward_speed + correction
+right_target = forward_speed - correction
 ```
 
-Downloads and archives use a consistent snapshot of the daily text report. Camera identity and geometry belong to the captured session and travel with the inference job. No photos or per-frame JSON are generated. A bounded 512-entry queue waits for space; the writer flushes about once per second or at 64 KiB and drains accepted records at shutdown. Failed appends preserve earlier complete data and retry the pending batch. Persistent storage failure has bounded shutdown retries and logs unsaved data so worker shutdown cannot deadlock. `FocalLength` contains a calibrated millimeter value when available. Otherwise it contains `raw:<position>` for the device's raw lens-position value, or `unknown` if no measurement exists. A raw position cannot be converted reliably to millimeters without lens calibration. See the [Linux camera control reference](https://docs.kernel.org/userspace-api/media/v4l/ext-ctrls-camera.html).
+Selecting a detection records its normalized reference area. If no reference is saved, the first matching target establishes one. A smaller target increases automatic forward speed; a larger target reduces it toward zero. Manual speed bypasses size-based speed control. Bounding-box area is a relative-size cue, not a calibrated distance measurement; target pose, occlusion, and camera zoom can affect it.
 
-New files use consistent names: `log_info_YYYYMMDD_HHMMSS_mmm.log` / `log_error_YYYYMMDD_HHMMSS_mmm.log`, `video_YYYYMMDD_HHMMSS_mmm.mp4`, and daily `result_YYYYMMDD.txt`. Deployment normalizes legacy names while the service is stopped; file contents are preserved and collisions receive a suffix. Legacy recording names and result download links remain accepted.
+Steering correction and wheel targets are in **m/s**; no wheel-track input is required. Limiting scales both wheel targets together to retain their differential ratio. Original-image coordinates are used throughout. Target association follows the nearest center within the selected class and a normalized distance gate; it is not an identity/re-identification tracker.
 
-Daily TXT reports use the same Download/Delete controls as recordings. Logs, Recordings, and Results are visible together. Each saved file has a Preview action: text previews read at most 64 KiB, while finalized MP4 recordings use native browser Range playback. Active recordings must be saved through Download before previewing. The page toolbar downloads all saved files or deletes them after confirmation; the active recording is retained. Whole-page ZIP archives store already-compressed videos directly, reducing preparation time. Large whole-page archives use a short-lived, scoped HttpOnly download cookie and the browser download manager instead of buffering all recordings in JavaScript. Each section also retains its own Pack download and Clear controls. Lists load automatically and refresh every five seconds without a Query button. Detection archives contain TXT reports only. Clear and single-day deletion also remove the corresponding append data and reject pre-deletion queued batches, while later inference frames can create a fresh report. Deletion requires administrator authentication and confirmation. Deleting today's file removes its saved history; subsequent frames create a new report for the same date. Append and delete operations are serialized independently of the video task.
+Each wheel PI compares its target with **measured signed wheel speed**, then produces a normalized actuator command in `[-1, 1]`. Both wheels share coefficients but retain independent feedback, integral state, and output. The inner wheel feedback loops operate in both speed modes.
 
-In the **Recordings** section, **Download** on the active row saves the current MP4 and continues into a new file at the next keyframe, normally within one GOP. It waits for the new recording to receive frames before downloading the completed segment, with a ten-second split wait limit. The encoder and live-stream connection remain active. The list refreshes after completion; the saved segment becomes directly downloadable and the new segment remains marked Recording. Deleting an active recording is disabled. The operation requires administrator access and rejects stale filenames or duplicate pending requests. There is no separate split button in the toolbar.
+`wheel_integral_limit` bounds the magnitude of each wheel's I-term contribution. Its range is `0..1`: `1` is the full normalized command range, and `0` clears/disables integration. A reduced limit applies even during output saturation. Filtered derivatives, conditional-integration anti-windup, and total output limits remain active.
 
-AI is required and has no disable switch. Inference concurrency is automatic; confidence/NMS and model uploads remain configurable. The toolbar's Enable CAN / Disable CAN button immediately saves the global CAN switch; the CAN card appears only while enabled. Disabling closes the gateway's CAN sockets and clears pending frames without erasing interface settings. Enabling reapplies the saved bitrate, filters, FD mode and interface state; unavailable hardware is reported as an error. The switch also works without any CAN devices so their discovery message can be viewed. Use `POST /api/config` with `target=can_feature&can_enabled=on` or `off`; `GET /api/config` returns the confirmed `can_enabled` boolean. The CAN card displays bitrate, DBC, CAN FD, and FD bitrate controls, with FD capability shown in the channel selector. Static IP fields are visible only in static mode. Export Config packages the config directory, including configuration, DBC files, class labels, and the RKNN model.
+New inference results trigger controller updates using capture-time differences. The controller consumes current observations without building a stale command backlog. Idle wakes check stopping conditions every 50 ms without advancing PID on an unchanged frame. Target loss, stale detections/feedback, a capture-session reset, disabled CAN, or unavailable real-time scheduling inhibit motion output.
 
-The language button switches between English and Chinese; in English mode it is labeled `Chinese` and in Chinese mode it is labeled `English`. Theme switching is independent of language. Header navigation, language, theme, reboot, and shutdown controls share the same height and rounded shape across pages.
+## CAN motor integration
 
-### Authentication
+The motor transport is `source/control/car_motor_can.c` with its public interface in `include/control/car_motor_can.h`. It owns a nonblocking SocketCAN socket and feedback receive worker, separate from the application's ordinary CAN queues and DBC receive filters.
 
-The server uses HTTP Basic authentication against local Linux account credentials:
+No real motor profile is supplied. A missing, disabled, or invalid `config/car_motor_can.conf` does not bind a motor adapter or transmit motor frames. Start with the **disabled** [example profile](config/car_motor_can.example.conf), then replace its illustrative values with the drive manufacturer's documented protocol.
 
-- **User:** an existing local account with a valid password. Required for the dashboard (`/` and `/index.html`) and DBC pages (`/dbc` and `/dbc.html`).
-- **Administrator:** a valid local `root` account, or a valid local account belonging to the `sudo` group. Required for the configuration page, Logs page, protected downloads, and management writes listed below. A board with a locked root password can use its existing sudo-group administrator account.
-- **None:** the handler does not enforce authentication. This applies to the read-only API and video routes marked below; authenticating the dashboard page does not make all related API routes private.
+```bash
+# In an installed system, edit the deployed runtime profile.
+sudo cp config/car_motor_can.example.conf \
+  /opt/autonomous-driving-car/config/car_motor_can.conf
+sudoedit /opt/autonomous-driving-car/config/car_motor_can.conf
+sudo systemctl restart autonomous-driving-car
+```
 
-The frontend prompts for administrator credentials for protected requests and keeps its Basic credential value in session storage for the current browser session. Server-side authentication still checks every protected request.
+The profile accepts `key value` or `key=value` lines and `#` comments. General keys are `enabled`, `interface`, and `feedback_pair_timeout_ms`. Each `left.`/`right.` wheel uses these mappings:
 
-### REST API
+| Mapping | Keys and meaning |
+| --- | --- |
+| Command frame | `cmd_id`, `cmd_extended`, `cmd_fd`, `cmd_length`, `cmd_template`. |
+| Command field | `cmd_offset`, `cmd_width` (`16`/`32`), `cmd_big_endian`, `cmd_scale`, optional `cmd_bias`. |
+| Stop frame | `stop_template`: required explicit bytes of exactly the command-frame length. |
+| Feedback frame | `fb_id`, `fb_extended`, `fb_fd`, `fb_length`. |
+| Feedback field | `fb_offset`, `fb_width` (`16`/`32`), `fb_big_endian`, `fb_scale`. |
 
-Authentication below follows the route definitions in `source/http/http.c`.
+IDs accept `0x` notation. Classic CAN and legal CAN FD lengths are supported. Data fields are signed integers. Command encoding applies `raw = round(normalized_command * cmd_scale + cmd_bias)`; feedback decoding applies `wheel_mps = raw * fb_scale`. Include wheel diameter, gearing, units, and polarity in the real feedback conversion. Commanded speed must never be substituted for measured feedback.
 
-| Method | Path | Authentication | Description |
-| --- | --- | --- | --- |
-| GET | `/api/system` | None | System monitoring, including `cpu_cores`, `npu_count`, `npu_cores`, `gpu`, and `gpu_freq`. |
-| GET | `/api/can` | None | CAN interface state. |
-| GET | `/api/can/ifaces` | None | CAN interface discovery and FD capabilities. |
-| GET | `/api/can/frames` | None | Recent raw received CAN frames. |
-| GET | `/api/can/decoded` | None | Receive-side decoded signals. |
-| GET | `/api/can/decoded/tx` | None | Transmit-side decoded signals. |
-| POST | `/api/can/send` | Administrator | Transmit a CAN / CAN FD frame. |
-| POST | `/api/can/toggle` | Administrator | Set a CAN interface up or down. |
-| POST | `/api/can/dbc` | Administrator | Upload and reload a DBC file. |
-| GET | `/api/config` | None | Read runtime configuration. |
-| POST | `/api/config` | Administrator | Write configuration for the selected `target`. |
-| GET | `/api/config/export` | Administrator | Download a config directory archive. |
-| POST | `/api/ai/upload` | Administrator | Upload an RKNN model or class labels. |
-| GET | `/api/network` | None | Network state. |
-| GET | `/api/network/ifaces` | None | Available network interfaces. |
-| POST | `/api/nettest` | Administrator | Start an asynchronous ping or download-speed test. |
-| GET | `/api/nettest/result?id=<id>` | None | Read an asynchronous test's status and result. |
-| GET | `/api/cpu_freq` | None | CPU frequency, available frequencies, and governors. |
-| POST | `/api/cpu_freq` | Administrator | Update CPU governor and frequency limits. |
-| GET | `/api/video/caps` | None | Camera capabilities. |
-| GET | `/api/video/codeccaps` | None | Encoder resolution and frame-rate capabilities. |
-| GET | `/api/video/stats` | None | Frame-ring per-stage counters. |
-| GET | `/api/video/devices` | None | Available video devices. |
-| GET | `/api/camera` | None | Current lens controls, limits, and hardware encoder availability. |
-| GET | `/api/detections` | Administrator | Latest 200 completed detection photo/JSON pairs. |
-| GET | `/api/files/preview?type=log&name=...` | Administrator | Bounded UTF-8 text preview. |
-| POST / DELETE | `/api/files/video-session` | Administrator | Create or revoke a short-lived preview cookie bound to one saved recording. |
-| GET / HEAD | `/api/files/video?name=...` | Scoped cookie or Administrator | Saved MP4 preview with byte ranges. |
-| POST | `/api/files/download-session` | Administrator | Grant a short-lived whole-page archive download cookie. |
-| GET | `/api/files/pack` | Scoped cookie or Administrator | Archive logs, finalized recordings and daily TXT results. |
-| POST | `/api/files/clear` | Administrator | Delete managed logs, saved recordings and daily results; preserve active recordings. |
-| GET | `/api/detections/reports` | Administrator | Daily detection TXT reports, newest day first. |
-| GET | `/api/detections/reports/pack` | Administrator | Download daily TXT reports as a tar.gz archive. |
-| POST | `/api/detections/reports/clear` | Administrator | Clear daily reports and their append data; subsequent inference continues saving. |
-| POST | `/api/detections/reports/delete` | Administrator | Delete a daily TXT report; body is its relative date/filename. New frames can recreate today's report. |
-| GET | `/detectionfile/<date/filename>` | Administrator | Download a daily TXT report; legacy pair downloads remain compatible when the files exist. Unsafe paths and symlinks are rejected. |
-| GET | `/video/stream` | None | H.264 fragmented MP4 live stream for MSE. |
-| GET | `/video/mjpeg` | None | Raw MJPEG stream. |
-| GET | `/video/mjpeg_ai` | None | AI-annotated MJPEG stream. |
-| GET | `/api/rec/status` | None | Recording state and current file. |
-| GET | `/api/rec/list` | None | Recording list. |
-| GET | `/recfile/<date/filename>` | Administrator | Download an individual recording. |
-| GET | `/api/rec/pack` | Administrator | Download a recording archive. |
-| POST | `/api/rec/start` / `/api/rec/stop` | Administrator | Recording control; automatic recording is enabled by default. |
-| POST | `/api/rec/split` | Administrator | Queue a keyframe-aligned file split; body is the current relative recording filename. Continues with the same encoder and stream session. |
-| POST | `/api/rec/delete` | Administrator | Delete a recording; the active recording is protected. |
-| POST | `/api/rec/clear` | Administrator | Clear recordings while retaining the active file. |
-| GET | `/api/logs` | Administrator | List log files. |
-| GET | `/logfile/<date/filename>` | Administrator | Download an individual log. |
-| DELETE | `/logfile/<date/filename>` | Administrator | Delete a log. |
-| GET | `/logs/pack` | Administrator | Download a log archive. |
-| POST | `/api/logs/clear` | Administrator | Clear log files. |
-| GET or POST | `/api/reboot` / `/api/shutdown` | Administrator | Reboot or shut down the device. |
+Left/right fields can share one command frame when their ID, format, templates, and length match and their fields do not overlap. Shared feedback frames require consistent formats and non-overlapping fields. Unknown/duplicate keys, invalid field bounds, incompatible templates, or missing stop bytes reject the profile. The adapter sends no guessed initialization or enable sequence.
+
+Direct nonblocking transmission avoids an application command queue. Feedback is published only as a fresh left/right pair, using the **older** wheel timestamp so one wheel cannot keep stale feedback for the other wheel alive. The profile's pairing timeout and the controller's stale-data timeout serve different checks.
+
+Configure CAN bitrate/FD mode, documented stop behavior, and the motor drive's independent command watchdog before operation. Verify direction and unit conversion with wheels safely unloaded, then select a target and explicitly enable following. Motor drives needing a state machine, startup handshake, checksums, or another unsupported payload format require a protocol-specific adapter; this profile is not a universal CAN motor driver.
+
+### Real-time readiness
+
+The controller requests `SCHED_FIFO` priority 20. **Motion remains inhibited unless the real-time request succeeds**, global CAN is enabled, and detections and measured wheel feedback are fresh. Profile loading or connecting the CAN cable does not bypass these checks. A configured adapter may send its documented stop frames while motion is inhibited; missing/disabled profiles send no motor frames.
+
+The current validation board runs `7.3.0-npu` with `CONFIG_PREEMPT_RT` disabled. The latest runtime observation reports `fifo=true` and `rt_kernel=false`: FIFO scheduling is available, but the board has not been changed to a PREEMPT_RT kernel. FIFO is a scheduling policy; PREEMPT_RT is a kernel configuration. Motor output remains disabled, and no ordinary-scheduler fallback is enabled.
+
+Investigate scheduling permissions and RT-group/cgroup restrictions separately from kernel replacement. Enabling PREEMPT_RT requires a compatible kernel and a planned, validated reboot; this deployment does not change boot parameters or reboot the board. `GET /api/follow` exposes scheduling readiness and a top-level `motor` object containing `configured`, `online`, `interface_name`, `error`, and transmit/receive counters. A physical emergency stop and motor-drive watchdog remain necessary because a failed CAN link cannot deliver a stop frame.
+
+## Video, files, and detection records
+
+The H.264 stream and MP4 recorder share encoded output. The browser presents frames with their matching YOLO overlays. Inference concurrency adapts automatically; camera resolution/FPS, confidence/NMS, and model uploads remain configurable.
+
+Chrome uses a bounded adaptive MSE playback buffer and controlled catch-up. Reducing that buffer does not eliminate camera, decoding, inference, encoding, or network delay. **100 ms camera-to-screen latency is not a demonstrated guarantee.** Home shows playback measurements; additional diagnostics are available with `window.getCarVideoDiagnostics()` and `GET /api/video/stats`.
+
+The Driving Logs page combines Logs, Recordings, and Results. Text previews read a bounded prefix; finalized MP4 previews use native byte-range playback. Downloading the active recording first closes its current segment and continues recording into a new file. Whole-page ZIP archives store already-compressed video without recompression. Bulk deletion requires confirmation and retains the active recording.
+
+| Output | Filename |
+| --- | --- |
+| Logs | `log_info_YYYYMMDD_HHMMSS_mmm.log`, `log_error_YYYYMMDD_HHMMSS_mmm.log` |
+| Recordings | `video_YYYYMMDD_HHMMSS_mmm.mp4` |
+| Detection results | `result_YYYYMMDD.txt` |
+
+Files are stored in date directories; collision suffixes can be added. Every completed inference, including a zero-target frame, contributes to the daily UTF-8 TXT report. Each frame has capture time, target count, original image dimensions, and available focal/lens metadata; each target has its label, confidence, and coordinates in **`X1 X2 Y1 Y2`** order. Boxes are mapped back from model letterboxing and clipped to original-image bounds. No recognition photos or per-frame JSON files are generated.
+
+Lens position is reported as calibrated millimeters only when calibration is available; otherwise it is a device raw value or unknown. Autofocus position alone is not a millimeter focal length. Clearing today's report removes saved history; later inference frames may create a new report.
+
+## Configuration, APIs, and source layout
+
+| Path | Purpose |
+| --- | --- |
+| `config/config.txt` | Device-specific camera, CAN, TCP/IP, and inference settings. |
+| `config/follow.conf` | Following parameters; enabled/moving state is not restored on restart. |
+| `config/car_motor_can.conf` | Actual motor protocol profile; absent/disabled by default. |
+| `config/cpu_freq.conf` | Per-policy CPU governor and requested limits. |
+| `config/yolo26.rknn`, `config/coco.names` | Canonical RKNN model and labels. |
+| `source/control/`, `include/control/` | Controller and motor transport. |
+| `source/video/`, `source/yolo/` | Capture, frame ring, inference, overlays, encoding, and results. |
+| `source/can/`, `source/tcp/`, `source/http/` | Data transport and browser/API service. |
+| `html/`, `scripts/` | Web interface and build/deployment utilities. |
+
+Heavy capture/inference/encoding work uses the detected higher-capacity CPU group; control/network/background work uses the lower-capacity group. Unknown or homogeneous CPU layouts retain the allowed CPU set. CPU-frequency policies are handled independently, and effective thermal limits can be lower than requested limits.
+
+Key HTTP endpoints:
+
+| Endpoint | Use |
+| --- | --- |
+| `GET /api/follow` | Control configuration, current targets, readiness, and motor-adapter diagnostics. |
+| `POST /api/follow` | Save a validated subset of control parameters. |
+| `GET/POST /api/config` | Read/apply the selected configuration module. |
+| `GET /api/system`, `GET/POST /api/cpu_freq` | Monitoring and CPU policy controls. |
+| `GET /api/can/ifaces`, `/api/can/frames`, `/api/can/decoded` | Discover CAN and inspect received data. |
+| `POST /api/can/send`, `/api/can/toggle`, `/api/can/dbc` | Manual CAN transmission, interface state, and DBC upload. |
+| `GET /api/video/devices`, `/api/video/caps`, `/api/video/stats` | Camera discovery, capabilities, and pipeline measurements. |
+| `GET /api/rec/status`, `/api/rec/list` | Recording state and saved files. |
+| `POST /api/rec/split` | Close the current segment and continue recording. |
+| `GET /api/detections/reports`, `GET /api/logs` | Daily TXT and log lists. |
+| `GET /api/files/preview`, `GET /api/files/pack`, `POST /api/files/clear` | Preview text, download a whole-page archive, or clear managed files. |
+
+Management writes and protected file operations require administrator authentication. Native video/archive downloads use scoped, short-lived cookies created by authenticated session endpoints. API paths are relative to the board's HTTP origin; use the browser workflow for preview/download session creation.
+
+## Troubleshooting and validation
+
+| Symptom | Check |
+| --- | --- |
+| Service fails during YOLO startup | Correct `librknnrt.so`, NPU driver, target platform, model path, model format, and labels. |
+| No motor output | Stopped state, profile validation, SocketCAN interface, FIFO error, feedback age, target selection, and CAN enable state in `/api/follow`. |
+| Adapter is online but wheels do not report speed | Online means the socket is open; verify feedback IDs, frame formats, offsets, endian order, scaling, and real traffic. |
+| Video stalls or delay grows | Negotiated camera mode, processing age, browser buffer/drop measurements, thermal throttling, and network conditions. |
+| CPU frequency differs from the request | Selected policy, effective min/max limits, temperature, and kernel thermal controls. |
+| Model synchronization stops | Resolve independent source/device changes; do not overwrite one side blindly. |
+
+Build and run the existing CTest suite before deploying changes. Hardware-free transport/control checks validate packet mapping and loop behavior, but do not certify a particular motor protocol or a vehicle's braking behavior. Keep motor integration disabled until its documented profile, feedback conversion, stopping behavior, and real-time prerequisites have been verified.
 
 ## License
 

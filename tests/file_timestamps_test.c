@@ -73,7 +73,7 @@ int main(void)
                     .tm_hour = 12, .tm_min = 34, .tm_sec = 56};
     test_wallclock.tv_sec = mktime(&tm);
     test_wallclock.tv_usec = 123000;
-    char root[] = "/tmp/gateway-file-timestamps-XXXXXX";
+    char root[] = "/tmp/car-file-timestamps-XXXXXX";
     assert(mkdtemp(root));
     char day[PATH_MAX], legacy_log[PATH_MAX], legacy_rec[PATH_MAX];
     snprintf(day, sizeof(day), "%s/20261027", root);

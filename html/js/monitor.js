@@ -416,7 +416,7 @@
   }
 
   /* Read-only diagnostics for distinguishing network delivery from rendering. */
-  window.getGatewayVideoDiagnostics = function() {
+  window.getCarVideoDiagnostics = function() {
     var vid = document.getElementById('stream_video');
     var result = Object.assign({}, mseDiag, {
       transport: mseRunning ? 'H.264/MSE' : streamRunning ? 'MJPEG' : 'idle',
@@ -708,7 +708,7 @@
         var vid = document.getElementById('stream_video');
         var img = document.getElementById('stream_img');
         var useMse = !explicit && mseSupported();
-        if (!explicit && !useMse) streamUrl = '/video/mjpeg_ai';   /* 无 MSE：回退画框流 */
+        if (!explicit && !useMse) streamUrl = '/video/mjpeg_yolo';   /* 无 MSE：回退画框流 */
         if (useMse) {
           /* MSE 路径：录制编码扇出（无会话 503 节流重试，会话轮转断流自动重连） */
           imgEl = null;
@@ -773,7 +773,7 @@
     el.title = 'Displayed: ' + Math.round(fpsVal) + ' FPS; received: ' + Math.round(receivedFps) + ' FPS';
     var stats = document.getElementById('video_stats');
     if (stats) {
-      var d = window.getGatewayVideoDiagnostics();
+      var d = window.getCarVideoDiagnostics();
       stats.textContent = t('摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 总延迟约 {delay} ms · 当前丢帧 {dropped}/s', {
         camera: d.cameraFps ? Math.round(d.cameraFps) : '--', processing: Math.round(d.processingAgeMs),
         received: Math.round(d.receivedFps), buffer: Math.round(d.bufferAheadSeconds * 1000),
@@ -791,7 +791,7 @@
   window.shutdown = function() { if (!confirm(t('确定要关闭设备吗？'))) return; authFetch('/api/shutdown').catch(function(){}); };
 })();
 
-window.toggleGatewayFullscreen = async function () {
+window.toggleCarFullscreen = async function () {
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
     else { var view = document.querySelector(".video-wrapper"); if (view && view.requestFullscreen) await view.requestFullscreen(); }

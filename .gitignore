@@ -97,3 +97,5 @@ Thumbs.db
 config/config.txt
 include/core/version.h
 config/cpu_freq.conf
+config/follow.conf
+config/car_motor_can.conf

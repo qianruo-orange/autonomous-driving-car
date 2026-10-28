@@ -48,8 +48,8 @@ int main(void)
     frame_ring_unlock(&ring);
 
     /* Inference metadata keeps the frame's own coordinates and lens sample. */
-    g_ai.classes.count = 1;
-    strcpy(g_ai.classes.names[0], "person");
+    g_yolo.classes.count = 1;
+    strcpy(g_yolo.classes.names[0], "person");
     yolo_result_t display = {.seq = seq, .w = 16, .h = 16, .count = 1};
     display.dets[0] = (yolo_det_t){.cls = 0, .conf = .9f, .x1 = 1, .y1 = 1, .x2 = 10, .y2 = 10};
     assert(yolo_event_describe_result(&metadata, &display, 3000, 1000000) == 0);

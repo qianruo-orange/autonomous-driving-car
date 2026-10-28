@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize gateway log/video names while stopped, preserving every file."""
+"""Normalize vehicle log/video names while stopped, preserving every file."""
 import argparse
 import datetime
 import os
@@ -8,7 +8,7 @@ import re
 import stat
 
 def new_name(name, day, info):
-    log = re.fullmatch(r'rockchip-smart-gateway_(info|error)(?:_([0-9]{8}_[0-9]{6}_[0-9]{3}(?:_[0-9]+)?))?\.log(?:\.([0-9]+))?', name)
+    log = re.fullmatch(r'(?:autonomous-driving-car|rockchip-smart-gateway)_(info|error)(?:_([0-9]{8}_[0-9]{6}_[0-9]{3}(?:_[0-9]+)?))?\.log(?:\.([0-9]+))?', name)
     if log:
         stamp = log[2] or datetime.datetime.fromtimestamp(info.st_mtime).strftime('%Y%m%d_%H%M%S_000')
         return 'log_' + log[1] + '_' + stamp + ('_' + log[3] if log[3] else '') + '.log'
@@ -67,7 +67,7 @@ def normalize(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', required=True, help='Deployed gateway directory; stop service first')
+    parser.add_argument('--root', required=True, help='Deployed vehicle directory; stop service first')
     args = parser.parse_args()
     root = Path(args.root).absolute()
     logs = 'logs'

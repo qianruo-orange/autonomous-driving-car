@@ -144,12 +144,12 @@ static module_t g_modules[] = {
         .wd   = { .timeout = 5, .max_miss = 3 },
         .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
     },
-    /* ai —— RKNN YOLO26 检测（必要流程）：无模型/NPU 不可用时 init 返回 -1，
-       服务启动直接失败（无 AI 直接报错），不进降级空转 */
+    /* yolo —— RKNN YOLO26 检测（必要流程）：无模型/NPU 不可用时 init 返回 -1，
+       服务启动直接失败（无 YOLO 直接报错），不进降级空转 */
     {
         .tid  = 0,
-        .name = "ai",
-        .ops  = { .init = rknn_yolo_init, .dtor = rknn_yolo_destroy, .task = rknn_ai_task },
+        .name = "yolo",
+        .ops  = { .init = rknn_yolo_init, .dtor = rknn_yolo_destroy, .task = rknn_yolo_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
         .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
     },
@@ -195,7 +195,7 @@ static void *thread_wrapper(void *arg)
     int idx = (int)(intptr_t)arg;
     const char *name = g_modules[idx].name;
     set_current_thread_name(name);
-    if (!strcmp(name, "video") || !strcmp(name, "ai") || !strcmp(name, "rec"))
+    if (!strcmp(name, "video") || !strcmp(name, "yolo") || !strcmp(name, "rec"))
         (void)cpu_bind_big();
     else
         (void)cpu_bind_little();
@@ -339,7 +339,7 @@ int main(void)
     watchdog_unregister_self("main");
 
     /* 通知各模块停止，让工作线程尽快退出。
-       运行期致命错误（如 AI 停摆）以退出码 1 结束：systemd Restart=on-failure 自动拉起 */
+       运行期致命错误（如 YOLO 停摆）以退出码 1 结束：systemd Restart=on-failure 自动拉起 */
     shutdown_modules_safe();
     log_close(); return g_app.fatal ? 1 : 0;
 

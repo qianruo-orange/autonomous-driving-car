@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=Autonomous Driving Car Service (CAN FD / TCP / Video / YOLO)
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+
+WorkingDirectory=/opt/autonomous-driving-car
+ExecStart=/opt/autonomous-driving-car/bin/autonomous-driving-car
+
+WatchdogSec=10
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=15
+
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/autonomous-driving-car/logs /opt/autonomous-driving-car/config /opt/autonomous-driving-car/recordings
+ReadOnlyPaths=/opt/autonomous-driving-car/html
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=autonomous-driving-car
+
+[Install]
+WantedBy=multi-user.target

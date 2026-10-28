@@ -66,11 +66,11 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
              cfg->video_width, cfg->video_height, cfg->video_fps);
     JSON_ADD(json, off, ",\"video_codec\":\"%s\"", cfg->video_codec);
     JSON_ADD(json, off, ",\"video_decoder\":\"%s\"", cfg->video_decoder[0] ? cfg->video_decoder : "software");
-    /* AI 检测配置（必要流程：推理不可关停，前端默认展示画框流） */
-    JSON_ADD(json, off, ",\"ai_model\":\"%s\",\"ai_names\":\"%s\",\"ai_input_size\":%d,"
-        "\"ai_conf\":%.2f,\"ai_nms\":%.2f,\"ai_interval_ms\":0,\"ai_threads\":%d,\"ai_threads_auto\":true",
-        cfg->ai_model, cfg->ai_names, cfg->ai_input_size,
-        cfg->ai_conf, cfg->ai_nms, rknn_yolo_active_workers());
+    /* YOLO 检测配置（必要流程：推理不可关停，前端默认展示画框流） */
+    JSON_ADD(json, off, ",\"yolo_model\":\"%s\",\"yolo_names\":\"%s\",\"yolo_input_size\":%d,"
+        "\"yolo_conf\":%.2f,\"yolo_nms\":%.2f,\"yolo_interval_ms\":0,\"yolo_threads\":%d,\"yolo_threads_auto\":true",
+        cfg->yolo_model, cfg->yolo_names, cfg->yolo_input_size,
+        cfg->yolo_conf, cfg->yolo_nms, rknn_yolo_active_workers());
     JSON_ADD(json, off, "}");
 
     http_ok_json(fd, json, (size_t)off);
@@ -310,20 +310,20 @@ static int apply_video(app_ctx_t *app, const http_form_field_t *fields, int coun
 }
 
 /* Confidence/NMS changes reload the inference pool; concurrency is adaptive. */
-static int apply_ai(app_ctx_t *app, const http_form_field_t *fields, int count)
+static int apply_yolo(app_ctx_t *app, const http_form_field_t *fields, int count)
 {
     struct app_config_t *cfg = app->cfg;
     int changed = 0;
 
-    const char *v = http_form_find(fields, count, "ai_conf");
+    const char *v = http_form_find(fields, count, "yolo_conf");
     if (v) {
         float f = parse_int_clamped(v, 1, 100, 25) / 100.0f;
-        if (f != cfg->ai_conf) { cfg->ai_conf = f; changed = 1; }
+        if (f != cfg->yolo_conf) { cfg->yolo_conf = f; changed = 1; }
     }
-    v = http_form_find(fields, count, "ai_nms");
+    v = http_form_find(fields, count, "yolo_nms");
     if (v) {
         float f = parse_int_clamped(v, 1, 100, 45) / 100.0f;
-        if (f != cfg->ai_nms) { cfg->ai_nms = f; changed = 1; }
+        if (f != cfg->yolo_nms) { cfg->yolo_nms = f; changed = 1; }
     }
     return changed;
 }
@@ -436,9 +436,9 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
         if (target && strcmp(target, "video") == 0) vid_changed |= APPLY_VIDEO_CAPTURE;
     }
 
-    int ai_changed = 0;
-    if (!target || strcmp(target, "all") == 0 || strcmp(target, "ai") == 0)
-        ai_changed = apply_ai(app, fields, count);
+    int yolo_changed = 0;
+    if (!target || strcmp(target, "all") == 0 || strcmp(target, "yolo") == 0)
+        yolo_changed = apply_yolo(app, fields, count);
 
     LOG_INFO("config: applied to runtime, saving to file");
     config_save(app);
@@ -450,8 +450,8 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
     if (vid_changed & (APPLY_VIDEO_CAPTURE | APPLY_VIDEO_ENCODER))
         video_rec_cycle_session();
     if (vid_changed & APPLY_VIDEO_CAPTURE) video_stream_restart();
-    /* AI 参数变更后热重载推理池（停旧池 → 重读配置重建），无需重启服务 */
-    if (ai_changed) rknn_yolo_reload();
+    /* YOLO 参数变更后热重载推理池（停旧池 → 重读配置重建），无需重启服务 */
+    if (yolo_changed) rknn_yolo_reload();
 
     pthread_mutex_unlock(&app->can_mutex);
 }

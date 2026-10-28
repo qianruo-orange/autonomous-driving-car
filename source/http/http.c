@@ -78,7 +78,7 @@ static void http_can_send_wrap(app_ctx_t *app, int fd, const char *method, const
 #define HTTP_WBUF_INIT 8192             /* 输出缓冲初始大小 */
 #define HTTP_WBUF_MAX  (16UL * 1024 * 1024)  /* 输出缓冲上限：慢客户端超限即断开 */
 #define HTTP_BODY_MAX  ((long)HTTP_BUF_SIZE - 4096)  /* 请求 body 上限（须能收进读缓冲） */
-#define HTTP_UPLOAD_MAX (64L * 1024 * 1024)  /* /api/ai/upload body 上限（落盘，不占读缓冲） */
+#define HTTP_UPLOAD_MAX (64L * 1024 * 1024)  /* /api/yolo/upload body 上限（落盘，不占读缓冲） */
 #define HTTP_CONN_IDLE 30               /* 连接空闲超时（秒） */
 
 typedef struct http_conn {
@@ -96,7 +96,7 @@ typedef struct http_conn {
     char method[16];
     char uri[HTTP_URI_MAX];
 
-    /* AI 文件上传（/api/ai/upload）：body 流式落盘到临时文件，不占读缓冲 */
+    /* YOLO 文件上传（/api/yolo/upload）：body 流式落盘到临时文件，不占读缓冲 */
     FILE *up_fp;           /* 上传临时文件（NULL = 非上传连接） */
     char up_path[64];      /* 上传临时文件路径（fd 在连接生命周期内唯一，不冲突） */
     long up_cl;            /* 上传 Content-Length */
@@ -199,10 +199,10 @@ static http_conn_t *conn_new(int fd)
     return c;
 }
 
-/* AI 文件上传走落盘模式：body 直接写入临时文件，不占读缓冲 */
-static int conn_is_ai_upload(const http_conn_t *c)
+/* YOLO 文件上传走落盘模式：body 直接写入临时文件，不占读缓冲 */
+static int conn_is_yolo_upload(const http_conn_t *c)
 {
-    return strncmp(c->uri, "/api/ai/upload", 15) == 0;
+    return strncmp(c->uri, "/api/yolo/upload", sizeof("/api/yolo/upload") - 1) == 0;
 }
 
 /* 追加数据到输出缓冲；超限（慢客户端）直接断开连接 */
@@ -645,7 +645,7 @@ static void http_process_request(http_conn_t *c)
     }
 
     if (strcmp(c->uri, "/video/stream") == 0) {
-        /* H.264 fMP4 推流（浏览器 MSE）：录制编码扇出，无会话/无 AI 时 503 */
+        /* H.264 fMP4 推流（浏览器 MSE）：录制编码扇出，无会话/无 YOLO 时 503 */
         if (h264_stream_client_start(fd, http_video_client_closed) != 0) {
             http_send_response(fd, 500, "Error", "text/plain", "", 0);
         } else {
@@ -655,9 +655,9 @@ static void http_process_request(http_conn_t *c)
         goto finish;
     }
 
-    if (strcmp(c->uri, "/video/mjpeg_ai") == 0) {
-        /* 画框流：AI 可用时推画框帧，AI 降级时自动回退原始帧 */
-        if (video_stream_client_start_ai(fd, http_video_client_closed) != 0) {
+    if (strcmp(c->uri, "/video/mjpeg_yolo") == 0) {
+        /* 画框流：YOLO 可用时推画框帧，YOLO 降级时自动回退原始帧 */
+        if (video_stream_client_start_yolo(fd, http_video_client_closed) != 0) {
             http_send_response(fd, 500, "Error", "text/plain", "", 0);
         } else {
             conn_detach(c);   /* fd 移交给视频推流线程 */
@@ -689,10 +689,10 @@ static void http_process_request(http_conn_t *c)
         if (!http_check_auth_user(req, fd)) goto finish;
         http_serve_file(fd, "/dbc.html"); goto finish;
     }
-    if (strncmp(c->uri, "/api/ai/upload", 15) == 0) {
-        /* AI 文件上传：body 已由读取状态机落盘到 c->up_path */
+    if (strncmp(c->uri, "/api/yolo/upload", sizeof("/api/yolo/upload") - 1) == 0) {
+        /* YOLO 文件上传：body 已由读取状态机落盘到 c->up_path */
         if (!http_check_auth_root(req, fd)) goto finish;
-        http_ai_upload(app, fd, c->uri, c->up_path);
+        http_yolo_upload(app, fd, c->uri, c->up_path);
         goto finish;
     }
 
@@ -801,7 +801,7 @@ static void conn_read(http_conn_t *c)
             long cl = http_content_length(c->rbuf);
             if (cl > 0) c->body_cl = cl;
             /* body 上限：普通请求须收进读缓冲；文件上传落盘后不受读缓冲限制 */
-            long max_body = conn_is_ai_upload(c) ? HTTP_UPLOAD_MAX : HTTP_BODY_MAX;
+            long max_body = conn_is_yolo_upload(c) ? HTTP_UPLOAD_MAX : HTTP_BODY_MAX;
             if (c->body_cl > max_body) {   /* body 过大：拒绝，避免读缓冲溢出 */
                 http_send_response(c->fd, 413, "Payload Too Large", "text/plain", "body too large", 15);
                 c->body_cl = -1;
@@ -810,8 +810,8 @@ static void conn_read(http_conn_t *c)
                 if (!c->closed) conn_update_events(c);
                 return;
             }
-            if (conn_is_ai_upload(c) && c->body_cl > 0) {
-                snprintf(c->up_path, sizeof(c->up_path), "/tmp/ai_upload_%d.tmp", c->fd);
+            if (conn_is_yolo_upload(c) && c->body_cl > 0) {
+                snprintf(c->up_path, sizeof(c->up_path), "/tmp/yolo_upload_%d.tmp", c->fd);
                 c->up_fp = fopen(c->up_path, "wb");
                 c->up_cl = c->body_cl;
                 if (!c->up_fp) {

@@ -46,9 +46,9 @@ void http_can_decoded_tx(app_ctx_t *app, int fd);
 void http_can_send(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body);
 void http_can_rx(app_ctx_t *app, int fd);
 void http_can_dbc_upload(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body);
-/* AI 文件上传（/api/ai/upload?type=model|names）：body 已由 HTTP 层落盘到 tmp_path，
+/* YOLO 文件上传（/api/yolo/upload?type=model|names）：body 已由 HTTP 层落盘到 tmp_path，
    本接口负责校验、原子替换 config/ 下正式文件、更新配置并热重载推理池 */
-void http_ai_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_path);
+void http_yolo_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_path);
 void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req);
 void http_config_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body);
 void http_follow_get(app_ctx_t *, int, const char *, const char *, const char *);

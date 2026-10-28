@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Clip historical native TXT boxes to each frame's original image dimensions.
 
-Stop the gateway service first. Existing coordinates are already inverse-mapped
+Stop the vehicle service first. Existing coordinates are already inverse-mapped
 from letterbox space: do not scale them again. Preserve every frame and object,
 including boxes which become zero-area at an image boundary. Only changed TXT
 lines are replaced. Keep an exact backup outside the downloadable report tree.
@@ -128,7 +128,7 @@ def main():
     parser.add_argument('--root', required=True)
     parser.add_argument('--backup-root', required=True)
     parser.add_argument('--service-stopped', action='store_true', required=True,
-                        help='Confirm the gateway service was stopped before running this tool')
+                        help='Confirm the vehicle service was stopped before running this tool')
     arguments = parser.parse_args()
     print('Corrected %d historical object lines' % repair(arguments.root, arguments.backup_root))
 

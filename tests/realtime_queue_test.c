@@ -123,11 +123,11 @@ static void check_adaptive_policy(void)
 
 static void check_adaptive_queue(void)
 {
-    pthread_mutex_init(&g_ai.q_lock, NULL);
-    pthread_cond_init(&g_ai.q_not_empty, NULL);
-    pthread_cond_init(&g_ai.q_not_full, NULL);
-    g_ai.running = g_ai.pool_running = 1;
-    __atomic_store_n(&g_ai.active_workers, 1, __ATOMIC_RELAXED);
+    pthread_mutex_init(&g_yolo.q_lock, NULL);
+    pthread_cond_init(&g_yolo.q_not_empty, NULL);
+    pthread_cond_init(&g_yolo.q_not_full, NULL);
+    g_yolo.running = g_yolo.pool_running = 1;
+    __atomic_store_n(&g_yolo.active_workers, 1, __ATOMIC_RELAXED);
     queue_waiter_t active, parked;
     init_waiter(&parked, 1);
     init_waiter(&active, 0);
@@ -147,10 +147,10 @@ static void check_adaptive_queue(void)
     job.seq = 43;
     assert(yolo_queue_push(&job) == 0);
     assert(!wait_completed(&parked, 10));
-    pthread_mutex_lock(&g_ai.q_lock);
-    __atomic_store_n(&g_ai.active_workers, 2, __ATOMIC_RELAXED);
-    pthread_cond_broadcast(&g_ai.q_not_empty);
-    pthread_mutex_unlock(&g_ai.q_lock);
+    pthread_mutex_lock(&g_yolo.q_lock);
+    __atomic_store_n(&g_yolo.active_workers, 2, __ATOMIC_RELAXED);
+    pthread_cond_broadcast(&g_yolo.q_not_empty);
+    pthread_mutex_unlock(&g_yolo.q_lock);
     assert(wait_completed(&parked, 500));
     assert(parked.status == 0 && parked.seq == 43);
     pthread_join(parked_thread, NULL);
@@ -159,24 +159,24 @@ static void check_adaptive_queue(void)
 
     /* A parked worker must exit on shutdown even when work is queued. */
     init_waiter(&parked, 1);
-    __atomic_store_n(&g_ai.active_workers, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_yolo.active_workers, 1, __ATOMIC_RELAXED);
     assert(pthread_create(&parked_thread, NULL, pop_one, &parked) == 0);
     job.seq = 44;
     assert(yolo_queue_push(&job) == 0);
     assert(!wait_completed(&parked, 10));
-    pthread_mutex_lock(&g_ai.q_lock);
-    g_ai.pool_running = 0;
-    pthread_cond_broadcast(&g_ai.q_not_empty);
-    pthread_mutex_unlock(&g_ai.q_lock);
+    pthread_mutex_lock(&g_yolo.q_lock);
+    g_yolo.pool_running = 0;
+    pthread_cond_broadcast(&g_yolo.q_not_empty);
+    pthread_mutex_unlock(&g_yolo.q_lock);
     assert(wait_completed(&parked, 500));
     assert(parked.status == -1);
     pthread_join(parked_thread, NULL);
-    assert(g_ai.q_count == 1);
+    assert(g_yolo.q_count == 1);
     destroy_waiter(&parked);
-    g_ai.q_head = g_ai.q_tail = g_ai.q_count = 0;
-    pthread_cond_destroy(&g_ai.q_not_empty);
-    pthread_cond_destroy(&g_ai.q_not_full);
-    pthread_mutex_destroy(&g_ai.q_lock);
+    g_yolo.q_head = g_yolo.q_tail = g_yolo.q_count = 0;
+    pthread_cond_destroy(&g_yolo.q_not_empty);
+    pthread_cond_destroy(&g_yolo.q_not_full);
+    pthread_mutex_destroy(&g_yolo.q_lock);
     puts("PASS: parked workers do not steal wakeups; scale-up and shutdown release queue waiters");
 }
 
@@ -191,17 +191,17 @@ static void check_latest(const unsigned long long *seqs, size_t count,
     yolo_result_item_t latest;
     assert(yolo_result_pop_latest(&latest, 5) == 0);
     assert(latest.seq == expected);
-    assert(g_ai.r_count == 0);
+    assert(g_yolo.r_count == 0);
 }
 
 int main(void)
 {
     check_adaptive_policy();
     check_adaptive_queue();
-    pthread_mutex_init(&g_ai.r_lock, NULL);
-    pthread_cond_init(&g_ai.r_not_empty, NULL);
-    pthread_cond_init(&g_ai.r_not_full, NULL);
-    g_ai.running = g_ai.pool_running = 1;
+    pthread_mutex_init(&g_yolo.r_lock, NULL);
+    pthread_cond_init(&g_yolo.r_not_empty, NULL);
+    pthread_cond_init(&g_yolo.r_not_full, NULL);
+    g_yolo.running = g_yolo.pool_running = 1;
     const unsigned long long a[] = {101, 103, 102};
     const unsigned long long b[] = {205, 199};
     const unsigned long long c[] = {300, 308, 302, 307, 301, 306, 305, 304};
@@ -211,12 +211,12 @@ int main(void)
     yolo_result_item_t empty;
     assert(yolo_result_pop_latest(&empty, 2) == -1);
     puts("PASS: freshest sequence survives out-of-order worker completion and queue bursts");
-    pthread_cond_destroy(&g_ai.r_not_empty);
-    pthread_cond_destroy(&g_ai.r_not_full);
-    pthread_mutex_destroy(&g_ai.r_lock);
+    pthread_cond_destroy(&g_yolo.r_not_empty);
+    pthread_cond_destroy(&g_yolo.r_not_full);
+    pthread_mutex_destroy(&g_yolo.r_lock);
     frame_ring_t ring;
     frame_ring_init(&ring);
-    frame_ring_set_ai_active(&ring, 1);
+    frame_ring_set_yolo_active(&ring, 1);
     frame_ring_set_rec_active(&ring, 1);
     frame_ring_lock(&ring);
     ring.capture_fps_num = 30;

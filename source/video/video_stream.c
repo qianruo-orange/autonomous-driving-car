@@ -563,7 +563,7 @@ static int video_stream_wait_next(int last_seq, unsigned char **out, size_t *out
     return (int)(unsigned int)seq;   /* 客户端 pacing 兼容 32 位序号 */
 }
 
-/* 环形队列句柄：AI/录像消费方直接操作槽位（零拷贝路径），模块未初始化返回 NULL */
+/* 环形队列句柄：YOLO/录像消费方直接操作槽位（零拷贝路径），模块未初始化返回 NULL */
 frame_ring_t *video_stream_get_ring(void)
 {
     video_ctx_t *vs = g_ctx;
@@ -601,7 +601,7 @@ void video_stream_restart(void)
 
 typedef struct {
     int fd;
-    int ai_mode;   /* 1: 画框流（AI 为必要流程：不可用时直接 503/断流，不回退原始帧） */
+    int yolo_mode;   /* 1: 画框流（YOLO 为必要流程：不可用时直接 503/断流，不回退原始帧） */
     video_stream_client_close_cb on_close;
 } video_client_ctx_t;
 
@@ -617,16 +617,16 @@ static void *video_stream_client_task(void *arg)
 {
     video_client_ctx_t *a = (video_client_ctx_t *)arg;
     int fd = a->fd;
-    int ai_mode = a->ai_mode;
+    int yolo_mode = a->yolo_mode;
     video_stream_client_close_cb on_close = a->on_close;
     free(a);
 
-    /* AI 为必要流程：画框流在 AI 不可用时直接报错（503），不回退原始帧 */
-    if (ai_mode && !rknn_yolo_enabled()) {
+    /* YOLO 为必要流程：画框流在 YOLO 不可用时直接报错（503），不回退原始帧 */
+    if (yolo_mode && !rknn_yolo_enabled()) {
         const char *err = "HTTP/1.1 503 Service Unavailable\r\n"
                           "Content-Type: text/plain; charset=utf-8\r\n"
                           "Connection: close\r\n\r\n"
-                          "AI 推理不可用（无 AI）\n";
+                          "YOLO 推理不可用（无 YOLO）\n";
         fd_write_all_blocking(fd, err, strlen(err));
         if (on_close) on_close(fd);
         return NULL;
@@ -653,8 +653,8 @@ static void *video_stream_client_task(void *arg)
 
         /* 推流线程基于非阻塞写 + 轮询，不会长期阻塞，无需独立看门狗监督 */
         unsigned char *frame = NULL; size_t flen = 0;
-        if (ai_mode) {
-            /* AI 必要流程：运行期 AI 失效（热重载失败等）→ 直接断流报错，不回退原始帧 */
+        if (yolo_mode) {
+            /* YOLO 必要流程：运行期 YOLO 失效（热重载失败等）→ 直接断流报错，不回退原始帧 */
             if (!rknn_yolo_enabled()) break;
             /* 画框流：推流的每一帧都必须是推理标注后的画面。
                新标注帧未就绪（推理进行中 / 首帧未生成）时短暂等待，绝不混入原始帧，
@@ -696,7 +696,7 @@ int video_stream_client_start(int fd, video_stream_client_close_cb on_close)
     video_client_ctx_t *a = malloc(sizeof(*a));
     if (!a) return -1;
     a->fd       = fd;
-    a->ai_mode  = 0;
+    a->yolo_mode  = 0;
     a->on_close = on_close;
     pthread_t tid;
     if (pthread_create(&tid, NULL, video_stream_client_task, a) != 0) {
@@ -707,12 +707,12 @@ int video_stream_client_start(int fd, video_stream_client_close_cb on_close)
     return 0;
 }
 
-int video_stream_client_start_ai(int fd, video_stream_client_close_cb on_close)
+int video_stream_client_start_yolo(int fd, video_stream_client_close_cb on_close)
 {
     video_client_ctx_t *a = malloc(sizeof(*a));
     if (!a) return -1;
     a->fd       = fd;
-    a->ai_mode  = 1;
+    a->yolo_mode  = 1;
     a->on_close = on_close;
     pthread_t tid;
     if (pthread_create(&tid, NULL, video_stream_client_task, a) != 0) {

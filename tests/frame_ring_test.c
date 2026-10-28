@@ -3,7 +3,7 @@
  * frame_ring_test.c — 视频帧环形队列单元测试（build 独立 target）。
  *
  * 覆盖：槽位分配/回绕、槽满丢弃、claims 引用计数钉住、最新帧钉住、
- * AI 启停/录像启停/推理停摆四种模式组合的 raw 释放规则、
+ * YOLO 启停/录像启停/推理停摆四种模式组合的 raw 释放规则、
  * 显示/编码指针流转与池回收、quiesce 退让、事件等待、seq 单调。
  */
 
@@ -22,7 +22,7 @@ static int g_checks = 0;
     g_checks++; \
     if (!(cond)) { \
         g_fail++; \
-        printf("FAIL %s:%d: ", __FILE__, __LINE__); \
+        printf("FYOLOL %s:%d: ", __FILE__, __LINE__); \
         printf(__VA_ARGS__); \
         printf("\n"); \
     } \
@@ -89,7 +89,7 @@ static void test_basic_flow(void)
     frame_ring_set_raw_release_cb(&r, fake_release_cb, NULL);
     g_qbuf_count = 0;
 
-    /* 默认 ai_active=0 rec_active=0：旧帧立即释放（最新帧除外） */
+    /* 默认 yolo_active=0 rec_active=0：旧帧立即释放（最新帧除外） */
     unsigned long long s1 = capture_one(&r, NULL);
     CHECK(s1 == 1, "first seq = 1, got %llu", s1);
     CHECK(g_qbuf_count == 0, "newest raw pinned, qbuf=0 got %d", g_qbuf_count);
@@ -132,14 +132,14 @@ static void test_wraparound(void)
     frame_ring_destroy(&r);
 }
 
-/* ---- 测试 3：槽满丢弃（AI 激活且停摆，无人消费） ---- */
+/* ---- 测试 3：槽满丢弃（YOLO 激活且停摆，无人消费） ---- */
 static void test_ring_full_drop(void)
 {
     frame_ring_t r;
     frame_ring_init(&r);
     frame_ring_set_raw_release_cb(&r, fake_release_cb, NULL);
     g_qbuf_count = 0;
-    frame_ring_set_ai_active(&r, 1);
+    frame_ring_set_yolo_active(&r, 1);
 
     int dropped = 0, total_drop = 0;
     for (int i = 0; i < FRAME_RING_N + 8; i++) {
@@ -169,8 +169,8 @@ static void test_claims_pin(void)
     frame_ring_init(&r);
     frame_ring_set_raw_release_cb(&r, fake_release_cb, NULL);
     g_qbuf_count = 0;
-    /* AI 激活：raw 释放需 infer_done；claims 阻止提前释放 */
-    frame_ring_set_ai_active(&r, 1);
+    /* YOLO 激活：raw 释放需 infer_done；claims 阻止提前释放 */
+    frame_ring_set_yolo_active(&r, 1);
 
     for (int i = 0; i < FRAME_RING_N; i++) capture_one(&r, NULL);
 
@@ -196,14 +196,14 @@ static void test_claims_pin(void)
     frame_ring_destroy(&r);
 }
 
-/* ---- 测试 5：AI 激活 + 录像激活完整流转（rgb/jpeg/nv12 指针与回池） ---- */
+/* ---- 测试 5：YOLO 激活 + 录像激活完整流转（rgb/jpeg/nv12 指针与回池） ---- */
 static void test_full_pipeline(void)
 {
     frame_ring_t r;
     frame_ring_init(&r);
     frame_ring_set_raw_release_cb(&r, fake_release_cb, NULL);
     g_qbuf_count = 0;
-    frame_ring_set_ai_active(&r, 1);
+    frame_ring_set_yolo_active(&r, 1);
     frame_ring_set_rec_active(&r, 1);
 
     /* 5 帧：采集 → 推理解码 → worker 结果入槽 */
@@ -269,14 +269,14 @@ static void test_full_pipeline(void)
     frame_ring_destroy(&r);
 }
 
-/* ---- 测试 6：AI 停用 + 录像激活（raw 读取不回退；AI 停用等 encode_done 释放） ---- */
+/* ---- 测试 6：YOLO 停用 + 录像激活（raw 读取不回退；YOLO 停用等 encode_done 释放） ---- */
 static void test_raw_fallback(void)
 {
     frame_ring_t r;
     frame_ring_init(&r);
     frame_ring_set_raw_release_cb(&r, fake_release_cb, NULL);
     g_qbuf_count = 0;
-    /* ai_active=0（默认），rec_active=1：raw 释放需 encode_done */
+    /* yolo_active=0（默认），rec_active=1：raw 释放需 encode_done */
     frame_ring_set_rec_active(&r, 1);
 
     for (int i = 0; i < 3; i++) capture_one(&r, NULL);
@@ -443,21 +443,21 @@ static void test_pool_reuse(void)
     frame_ring_destroy(&r);
 }
 
-/* ---- 测试 10：AI 激活时 raw 仅由推理消费释放（无编码回退释放路径） ---- */
-static void test_ai_stall_release(void)
+/* ---- 测试 10：YOLO 激活时 raw 仅由推理消费释放（无编码回退释放路径） ---- */
+static void test_yolo_stall_release(void)
 {
     frame_ring_t r;
     frame_ring_init(&r);
     frame_ring_set_raw_release_cb(&r, fake_release_cb, NULL);
     g_qbuf_count = 0;
-    frame_ring_set_ai_active(&r, 1);   /* AI 激活：raw 释放只看 infer_done */
+    frame_ring_set_yolo_active(&r, 1);   /* YOLO 激活：raw 释放只看 infer_done */
     frame_ring_set_rec_active(&r, 1);
 
     for (int i = 0; i < 4; i++) capture_one(&r, NULL);
     /* 无人 claim：旧槽钉住（停摆由 rec 线程宕机处理，环不再兜底释放） */
     CHECK(g_qbuf_count == 0, "no release without infer consume, got %d", g_qbuf_count);
 
-    /* AI 消费帧 1 → infer_done → 释放（非最新） */
+    /* YOLO 消费帧 1 → infer_done → 释放（非最新） */
     frame_ring_lock(&r);
     frame_slot_t *c = frame_ring_infer_claim_locked(&r, 1);
     CHECK(c != NULL, "claim seq1");
@@ -527,7 +527,7 @@ int main(void)
     test_quiesce();
     test_event_wait();
     test_pool_reuse();
-    test_ai_stall_release();
+    test_yolo_stall_release();
     test_encode_skip();
 
     printf("frame_ring_test: %d checks, %d failure(s)\n", g_checks, g_fail);

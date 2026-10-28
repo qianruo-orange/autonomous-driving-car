@@ -6,7 +6,7 @@
   var busy = false;
   var refreshPending = false;
   var bulkBusy = false;
-  function pageBusy() { return window.gatewayFiles.isBulkBusy(); }
+  function pageBusy() { return window.carFiles.isBulkBusy(); }
   function setBulkBusy(value) {
     bulkBusy = value;
     clearButton.disabled = value;
@@ -69,13 +69,13 @@
         var empty = reports.insertRow().insertCell(); empty.colSpan = 5; setI18nText(empty, '暂无结果文件');
       } else data.files.forEach(function (report) {
         var row = reports.insertRow();
-        row.insertCell().textContent = window.gatewayFiles.formatDate(report.date, report.mtime);
+        row.insertCell().textContent = window.carFiles.formatDate(report.date, report.mtime);
         var filename = row.insertCell();
         filename.textContent = report.name.split('/').pop(); filename.title = filename.textContent;
-        row.insertCell().textContent = window.gatewayFiles.formatSize(report.size);
+        row.insertCell().textContent = window.carFiles.formatSize(report.size);
         row.insertCell().textContent = report.mtime || '—';
         var actions = row.insertCell();
-        window.gatewayFiles.addPreviewButton(actions, 'result', report.name, false);
+        window.carFiles.addPreviewButton(actions, 'result', report.name, false);
         downloadLink(actions, report.name, '', '下载');
         var remove = document.createElement('button');
         remove.className = 'del'; setI18nText(remove, '删除');

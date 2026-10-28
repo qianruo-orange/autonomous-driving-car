@@ -15,7 +15,7 @@
     '积分系数': 'Integral coefficient',
     '微分系数': 'Derivative coefficient',
     '跟踪设置': 'Tracking settings',
-    '速度模式与限速': 'Speed mode and limits',
+    '速度策略': 'Speed Strategy',
     '自动调速 PD': 'Automatic speed PD',
     '转向 PD': 'Steering PD',
     '轮速 PI': 'Wheel speed PI',
@@ -129,14 +129,14 @@
     '无法读取相机配置，请重试': 'Unable to load camera settings. Please retry',
     '正在保存相机配置…': 'Saving camera settings...',
     /* ---- brand / navigation / common ---- */
-    '边缘智能网关': 'Edge AI Gateway',
+    '自动驾驶小车': 'Autonomous Driving Car',
     '配置': 'Configuration',
     '仪表盘': 'Dashboard',
     '主界面': 'Home',
     '识别结果正在更新，请稍后重试': 'Detection reports are updating; please retry shortly',
     'DBC解析': 'DBC Decoder',
     'DBC 信号解析': 'DBC Signal Decoder',
-    '文件下载': 'Files',
+    '行驶日志': 'Driving Logs',
     '主题': 'Theme',
     '切换主题': 'Toggle theme',
     '切换语言': 'Switch language',
@@ -181,8 +181,8 @@
     '确定要重启设备吗？': 'Are you sure you want to reboot the device?',
     '确定要关闭设备吗？': 'Are you sure you want to shut down the device?',
 
-    /* ---- AI detection card ---- */
-    'AI 检测': 'AI Detection',
+    /* ---- YOLO detection card ---- */
+    'YOLO 检测': 'YOLO Detection',
     '推理参数': 'Inference',
     '推理线程数': 'Threads',
     '置信度': 'Confidence',
@@ -279,7 +279,7 @@
     '报文 / ': 'messages / ',
     ' 信号）': ' signals)',
 
-    /* ---- config.js AI threads ---- */
+    /* ---- config.js YOLO threads ---- */
     '（每核 ': ' (per core ',
     ' 个）': ')',
     '（NPU ': '(NPU ',

@@ -401,7 +401,7 @@ static int report_failure(const char *operation, const char *phase, int error)
 int yolo_events_export_report(const char *relative)
 {
     if (!yolo_report_rel_valid(relative)) { errno = EINVAL; return -1; }
-    char snapshot[] = "/tmp/gateway-detections-snapshot-XXXXXX";
+    char snapshot[] = "/tmp/autonomous-driving-car-detections-snapshot-XXXXXX";
     if (!mkdtemp(snapshot)) return report_failure("TXT", "temporary directory", errno);
     unsigned count = 0; unsigned long long epoch;
     pthread_mutex_lock(&report_io_lock);
@@ -427,7 +427,7 @@ int yolo_events_pack_reports(unsigned *file_count)
 {
     unsigned count = 0;
     unsigned long long epoch;
-    char snapshot[] = "/tmp/gateway-detections-snapshot-XXXXXX";
+    char snapshot[] = "/tmp/autonomous-driving-car-detections-snapshot-XXXXXX";
     if (!mkdtemp(snapshot)) return report_failure("archive", "temporary directory", errno);
     pthread_mutex_lock(&report_io_lock);
     int result = snapshot_reports(snapshot, &count, NULL, &epoch);
@@ -436,7 +436,7 @@ int yolo_events_pack_reports(unsigned *file_count)
     if (result || !count) {
         remove_report_snapshot(snapshot); return report_failure("archive", "snapshot", result ? saved_errno : ENOENT);
     }
-    char output_path[] = "/tmp/gateway-detections-archive-XXXXXX";
+    char output_path[] = "/tmp/autonomous-driving-car-detections-archive-XXXXXX";
     int output = mkstemp(output_path);
     if (output < 0) { saved_errno = errno; remove_report_snapshot(snapshot); return report_failure("archive", "temporary file", saved_errno); }
     unlink(output_path);

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
- * http_api_ai.c — AI 文件上传接口：POST /api/ai/upload?type=model|names
+ * http_api_yolo.c — YOLO 文件上传接口：POST /api/yolo/upload?type=model|names
  *
  * 请求 body 为原始文件内容（前端 fetch 直接以二进制上传，不用 multipart）。
  * HTTP 层（http.c）在解析请求头后把 body 流式落盘到 /tmp 临时文件，
@@ -22,11 +22,11 @@
 #include "yolo/yolo_draw.h"     /* yolo_classes_t / YOLO_MAX_CLASSES / YOLO_CLASS_NAME_LEN */
 #include "core/common.h"      /* safe_strncpy */
 
-#define AI_MODEL_MAX_SIZE  (64 * 1024 * 1024)   /* 模型文件上限 64MB */
-#define AI_NAMES_MAX_SIZE  (256 * 1024)         /* 类别标签文件上限 256KB */
+#define YOLO_MODEL_MAX_SIZE  (64 * 1024 * 1024)   /* 模型文件上限 64MB */
+#define YOLO_NAMES_MAX_SIZE  (256 * 1024)         /* 类别标签文件上限 256KB */
 
 /* 从路径取 basename（拒绝含 '/' 或空的 basename，防止路径逃逸） */
-static const char *ai_safe_basename(const char *path, const char *fallback)
+static const char *yolo_safe_basename(const char *path, const char *fallback)
 {
     if (!path || !path[0]) return fallback;
     const char *base = strrchr(path, '/');
@@ -37,7 +37,7 @@ static const char *ai_safe_basename(const char *path, const char *fallback)
 
 /* The caller supplies a path generated from the fixed platform table. Reject
  * symlinked parent components instead of following them during uploads. */
-static int ai_prepare_model_directory(const char *path)
+static int yolo_prepare_model_directory(const char *path)
 {
     char directory[320];
     safe_strncpy(directory, sizeof(directory), path);
@@ -59,7 +59,7 @@ static int ai_prepare_model_directory(const char *path)
 
 /* Upload staging may live on /tmp (a different filesystem). Copy into a
  * sibling temporary file and rename there so replacement stays atomic. */
-static int ai_atomic_install(const char *source, const char *destination)
+static int yolo_atomic_install(const char *source, const char *destination)
 {
     char temporary[352];
     if (snprintf(temporary, sizeof(temporary), "%s.upload-XXXXXX", destination) >= (int)sizeof(temporary)) return -1;
@@ -90,7 +90,7 @@ static int ai_atomic_install(const char *source, const char *destination)
 
 /* 校验类别标签文件：每行一个类名（1~128 行，每行 ≤23 字符，允许空行），
    全部满足返回行数，否则 -1 */
-static int ai_validate_names(const char *path)
+static int yolo_validate_names(const char *path)
 {
     FILE *fp = fopen(path, "r");
     if (!fp) return -1;
@@ -111,7 +111,7 @@ static int ai_validate_names(const char *path)
     return (err || n == 0) ? -1 : n;
 }
 
-void http_ai_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_path)
+void http_yolo_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_path)
 {
     if (!app || !app->cfg || !uri || !tmp_path || !tmp_path[0]) {
         http_err(fd, 400, "Bad Request", NULL);
@@ -138,7 +138,7 @@ void http_ai_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_pat
         return;
     }
     if (is_model) {
-        if (sz > AI_MODEL_MAX_SIZE) {
+        if (sz > YOLO_MODEL_MAX_SIZE) {
             fclose(fp);
             http_err(fd, 413, "Payload Too Large", "model too large");
             return;
@@ -153,11 +153,11 @@ void http_ai_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_pat
         }
     } else {
         fclose(fp);
-        if (sz > AI_NAMES_MAX_SIZE) {
+        if (sz > YOLO_NAMES_MAX_SIZE) {
             http_err(fd, 413, "Payload Too Large", "names too large");
             return;
         }
-        if (ai_validate_names(tmp_path) < 0) {
+        if (yolo_validate_names(tmp_path) < 0) {
             http_err(fd, 400, "Bad Request", "invalid names file");
             return;
         }
@@ -165,19 +165,19 @@ void http_ai_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_pat
 
     /* Model conversion and uploads use the same runtime path.
        Labels retain their safe basename under config/. */
-    char path[sizeof(app->cfg->ai_model)];
+    char path[sizeof(app->cfg->yolo_model)];
     if (is_model) {
         rknn_yolo_default_model_path(path, sizeof(path));
-        if (ai_prepare_model_directory(path) < 0) {
+        if (yolo_prepare_model_directory(path) < 0) {
             http_err(fd, 500, "Error", "cannot prepare model directory");
             return;
         }
     } else {
-        snprintf(path, sizeof(path), "config/%s", ai_safe_basename(app->cfg->ai_names, "coco.names"));
+        snprintf(path, sizeof(path), "config/%s", yolo_safe_basename(app->cfg->yolo_names, "coco.names"));
     }
 
     /* 校验通过：原子替换正式文件 */
-    if (ai_atomic_install(tmp_path, path) != 0) {
+    if (yolo_atomic_install(tmp_path, path) != 0) {
         remove(tmp_path);
         http_err(fd, 500, "Error", "cannot write file");
         return;
@@ -185,9 +185,9 @@ void http_ai_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_pat
 
     /* 更新运行时配置并落盘 */
     if (is_model)
-        safe_strncpy(app->cfg->ai_model, sizeof(app->cfg->ai_model), path);
+        safe_strncpy(app->cfg->yolo_model, sizeof(app->cfg->yolo_model), path);
     else
-        safe_strncpy(app->cfg->ai_names, sizeof(app->cfg->ai_names), path);
+        safe_strncpy(app->cfg->yolo_names, sizeof(app->cfg->yolo_names), path);
     config_save(app);
 
     /* 热重载推理池：加载新模型/新标签，无需重启服务 */
@@ -201,7 +201,7 @@ void http_ai_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_pat
     } else {
         snprintf(msg, sizeof(msg),
                  "{\"result\":\"%s\",\"type\":\"names\",\"path\":\"%s\",\"size\":%zu,\"classes\":%d}",
-                 rc == 0 ? "ok" : "saved_reload_failed", path, sz, ai_validate_names(path));
+                 rc == 0 ? "ok" : "saved_reload_failed", path, sz, yolo_validate_names(path));
     }
     http_ok_json(fd, msg, strlen(msg));
 }

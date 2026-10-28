@@ -40,7 +40,7 @@ static char *request(const char *method,const char *uri,const char *headers,cons
 
 int main(void)
 {
-    char scratch[]="/tmp/gateway-file-api-XXXXXX";assert(mkdtemp(scratch));assert(!chdir(scratch));
+    char scratch[]="/tmp/car-file-api-XXXXXX";assert(mkdtemp(scratch));assert(!chdir(scratch));
     assert(!mkdir("logs",0700));assert(!mkdir("logs/20261027",0700));
     assert(!mkdir("recordings",0700));assert(!mkdir("recordings/20261027",0700));
     assert(!mkdir("recordings/detections",0700));assert(!mkdir("recordings/detections/20261027",0700));

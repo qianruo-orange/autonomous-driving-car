@@ -432,7 +432,7 @@ static void file_bulk(file_job_t *job,int clear)
     if(clear){char json[256];int n=snprintf(json,sizeof(json),"{\"deleted\":%u,\"logs\":%u,\"recordings\":%u,\"results\":%u,\"kept_active\":true}",
         logs+recordings+results,logs,recordings,results);file_response(job,200,"application/json",NULL,json,(size_t)n);return;}
     struct stat info;if(fstat(output,&info)||lseek(output,0,SEEK_SET)<0){close(output);file_error(job,EIO);return;}
-    file_response(job,200,"application/zip","Content-Disposition: attachment; filename=\"gateway_files.zip\"\r\n",NULL,(size_t)info.st_size);
+    file_response(job,200,"application/zip","Content-Disposition: attachment; filename=\"autonomous-driving-car_files.zip\"\r\n",NULL,(size_t)info.st_size);
     char bytes[65536];uint64_t started=file_now();ssize_t n;
     while((n=read(output,bytes,sizeof(bytes)))!=0){if(n<0&&errno==EINTR)continue;if(n<0||file_send(job->fd,bytes,(size_t)n,started))break;}
     close(output);

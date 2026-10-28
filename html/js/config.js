@@ -227,9 +227,9 @@
       document.getElementById('mc').value = cfg.max_clients || '';
       document.getElementById('bind').value = cfg.tcp_bind || '';
 
-      /* AI thresholds are percentages; concurrency and pacing are automatic. */
-      document.getElementById('ai_cf').value = Math.round((cfg.ai_conf || 0.25) * 100);
-      document.getElementById('ai_nm').value = Math.round((cfg.ai_nms || 0.45) * 100);
+      /* YOLO thresholds are percentages; concurrency and pacing are automatic. */
+      document.getElementById('yolo_cf').value = Math.round((cfg.yolo_conf || 0.25) * 100);
+      document.getElementById('yolo_nm').value = Math.round((cfg.yolo_nms || 0.45) * 100);
       /* IP 设置：IP 即 TCP 绑定网卡的 IP；回填保存配置 + 当前运行时地址 */
       document.getElementById('ip_mode').value = cfg.ip_mode || '';
       document.getElementById('ip_a').value = cfg.ip_addr || '';
@@ -381,31 +381,31 @@
   };
 
   /* Save thresholds; inference concurrency and pacing are automatic. */
-  window.saveAi = async function() {
-    await postConfig({target:'ai', ai_conf:document.getElementById('ai_cf').value,
-      ai_nms:document.getElementById('ai_nm').value}, 'ai');
+  window.saveYolo = async function() {
+    await postConfig({target:'yolo', yolo_conf:document.getElementById('yolo_cf').value,
+      yolo_nms:document.getElementById('yolo_nm').value}, 'yolo');
   };
 
-  window.uploadAi = async function(type) {
-    var input = document.getElementById(type === 'model' ? 'ai_model_f' : 'ai_names_f');
+  window.uploadYolo = async function(type) {
+    var input = document.getElementById(type === 'model' ? 'yolo_model_f' : 'yolo_names_f');
     var file = input.files && input.files[0];
-    if (!file) { cardStatus('ai', 'err', type === 'model' ? '请先选择模型文件' : '请先选择类别标签文件'); return; }
+    if (!file) { cardStatus('yolo', 'err', type === 'model' ? '请先选择模型文件' : '请先选择类别标签文件'); return; }
     try {
-      var r = await authFetch('/api/ai/upload?type=' + type, {
+      var r = await authFetch('/api/yolo/upload?type=' + type, {
         method: 'POST',
         headers: {'Content-Type': 'application/octet-stream'},
         body: file
       });
       var j = r.ok ? await r.json() : null;
       if (j && j.result === 'ok') {
-        cardStatus('ai', 'ok', type === 'names' ? '✓ 已上传并热生效 ({classes} classes)' : '✓ 已上传并热生效', {classes: j.classes});
+        cardStatus('yolo', 'ok', type === 'names' ? '✓ 已上传并热生效 ({classes} classes)' : '✓ 已上传并热生效', {classes: j.classes});
         setTimeout(loadCfg, 800);
       } else if (j) {
-        cardStatus('ai', 'err', '上传失败 ({status})', {status: j.result || ('HTTP ' + r.status)});
+        cardStatus('yolo', 'err', '上传失败 ({status})', {status: j.result || ('HTTP ' + r.status)});
       } else {
-        cardStatus('ai', 'err', '上传失败 ({status})', {status: r.status});
+        cardStatus('yolo', 'err', '上传失败 ({status})', {status: r.status});
       }
-    } catch(e) { cardStatus('ai', 'err', '上传失败'); }
+    } catch(e) { cardStatus('yolo', 'err', '上传失败'); }
     input.value = '';
     updateFileName(input);
   };

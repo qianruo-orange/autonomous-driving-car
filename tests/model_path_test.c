@@ -1,6 +1,6 @@
 /* Exercise production platform mapping and upload destination installation. */
 #include "yolo/rknn_yolo.c"
-#include "http/http_api_ai.c"
+#include "http/http_api_yolo.c"
 #include <assert.h>
 #include <dirent.h>
 
@@ -37,23 +37,23 @@ int main(void)
     assert(!strcmp(model, "config/yolo26.rknn"));
     rknn_yolo_default_model_path(NULL, 0);
 
-    char scratch[] = "/tmp/gateway-model-path-test-XXXXXX";
+    char scratch[] = "/tmp/car-model-path-test-XXXXXX";
     assert(mkdtemp(scratch));
     int original = open(".", O_RDONLY | O_DIRECTORY);
     assert(original >= 0 && chdir(scratch) == 0);
     const char *destination = "config/yolo26.rknn";
-    assert(ai_prepare_model_directory(destination) == 0);
+    assert(yolo_prepare_model_directory(destination) == 0);
     write_bytes(destination, "RKNNold");
-    assert(ai_atomic_install("missing-upload", destination) < 0);
+    assert(yolo_atomic_install("missing-upload", destination) < 0);
     expect_bytes(destination, "RKNNold");
     write_bytes("upload", "RKNNnew");
-    assert(ai_atomic_install("upload", destination) == 0);
+    assert(yolo_atomic_install("upload", destination) == 0);
     assert(access("upload", F_OK) < 0);
     expect_bytes(destination, "RKNNnew");
     assert(unlink(destination) == 0 && rmdir("config") == 0);
     assert(mkdir("outside", 0700) == 0);
     assert(symlink("outside", "config") == 0);
-    assert(ai_prepare_model_directory(destination) < 0); /* No symlink parent escape. */
+    assert(yolo_prepare_model_directory(destination) < 0); /* No symlink parent escape. */
     assert(unlink("config") == 0 && rmdir("outside") == 0);
     assert(fchdir(original) == 0); close(original); assert(rmdir(scratch) == 0);
     puts("PASS: platform aliases, canonical model defaults, atomic upload installation and parent path protection");

@@ -3,7 +3,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="rockchip-smart-gateway"
+APP_NAME="autonomous-driving-car"
 DEPLOY_DIR="/opt/$APP_NAME"
 BINARY="$PROJECT_DIR/bin/$APP_NAME"
 SERVICE_SRC="$PROJECT_DIR/$APP_NAME.service"
@@ -56,9 +56,9 @@ do_install() {
     fi
 
     local platform
-    platform="${GATEWAY_PLATFORM:-$(detect_model_platform || true)}"
+    platform="${CAR_PLATFORM:-$(detect_model_platform || true)}"
     if [ -z "$platform" ]; then
-        echo "[ERROR] unable to detect the RKNN platform; set GATEWAY_PLATFORM explicitly"
+        echo "[ERROR] unable to detect the RKNN platform; set CAR_PLATFORM explicitly"
         return 1
     fi
     platform=$(python3 "$PROJECT_DIR/scripts/model_sync.py" normalize-platform --platform "$platform")

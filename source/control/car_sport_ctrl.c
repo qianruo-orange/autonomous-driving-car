@@ -2,7 +2,9 @@
 #define _GNU_SOURCE
 #include "control/car_sport_ctrl.h"
 #include "can/can_socket.h"
+#include "control/car_motor_can.h"
 #include "core/cpu_affinity.h"
+#include "core/log.h"
 #include "http/http_internal.h"
 #include <math.h>
 #include <sched.h>
@@ -47,6 +49,7 @@ static struct {
     pthread_t thread;
     atomic_int ready;
     int running, fifo, rt_kernel, rt_error, selected, tracked;
+    int motor_running, stop_required;
     app_ctx_t *app;
     follow_motor_ops_t motor;
     double cfg[N], ex, ey, area_error, left_target, right_target, left_output, right_output;
@@ -88,6 +91,37 @@ static void reset(void)
     g.left_target = g.right_target = g.left_output = g.right_output = 0;
     g.selected = -1;
 }
+static int stop_motor_if_needed(void)
+{
+    if (!g.motor.stop || (!g.motor_running && !g.stop_required))
+        return 0;
+    g.stop_required = 1;
+    if (g.motor.stop(g.app) < 0)
+        return -1;
+    g.motor_running = g.stop_required = 0;
+    return 0;
+}
+static void finish_motor_stop(void)
+{
+    const unsigned long long deadline = now_ms() + 100;
+    unsigned attempts = 0;
+    for (;;) {
+        pthread_mutex_lock(&g.lock);
+        int failed = stop_motor_if_needed() < 0;
+        pthread_mutex_unlock(&g.lock);
+        if (!failed)
+            return;
+        if (++attempts >= 100 || now_ms() >= deadline) {
+            LOG_ERROR("car control: final motor stop remains pending after %u retries; "
+                      "closing transport", attempts);
+            return;
+        }
+        /* The worker has joined. Only its owner waits here, without holding
+         * the controller lock or blocking a real-time control iteration. */
+        struct timespec delay = {.tv_nsec = 1000000};
+        nanosleep(&delay, NULL);
+    }
+}
 static void halt(const char *reason)
 {
     g.left_target = g.right_target = g.left_output = g.right_output = 0;
@@ -95,7 +129,7 @@ static void halt(const char *reason)
     g.previous_ms = 0;
     g.selected = -1;
     g.reason = reason;
-    if (g.motor.stop && g.motor.stop(g.app) < 0)
+    if (stop_motor_if_needed() < 0)
         g.reason = "motor_stop_failed";
 }
 static void stop_wheels(const char *reason)
@@ -103,7 +137,7 @@ static void stop_wheels(const char *reason)
     memset(&g.pid[2], 0, 2 * sizeof(g.pid[0]));
     g.left_output = g.right_output = 0;
     g.reason = reason;
-    if (g.motor.stop && g.motor.stop(g.app) < 0)
+    if (stop_motor_if_needed() < 0)
         g.reason = "motor_stop_failed";
 }
 static void tick(unsigned long long now, int can_enabled)
@@ -209,10 +243,16 @@ static void tick(unsigned long long now, int can_enabled)
                                             g.cfg[WHEEL_I_LIMIT]);
     g.right_output = follow_pid_step_limited(&g.pid[3], wheel_pi, g.right_target - right, dt, 1,
                                              g.cfg[WHEEL_I_LIMIT]);
+    /* A transport can fail after one wheel's frame was accepted. Always try
+     * the documented stop sequence if any command pair fails partway. */
+    g.stop_required = 1;
     if (g.motor.send(g.app, g.left_output, g.right_output) < 0)
         halt("motor_send_failed");
-    else
+    else {
+        g.motor_running = 1;
+        g.stop_required = 0;
         g.reason = "active";
+    }
 }
 static void *worker(void *unused)
 {
@@ -318,11 +358,17 @@ int follow_init(void *app)
         fclose(f);
     }
     reset();
+    g.motor = (follow_motor_ops_t){0};
+    g.motor_running = g.stop_required = 0;
     g.running = 1;
     atomic_store(&g.ready, 1);
+    /* The profile remains disabled unless explicitly configured. Binding occurs
+     * before the controller worker starts; the FIFO interlock stays mandatory. */
+    (void)car_motor_can_init(g.app);
     if (pthread_create(&g.thread, NULL, worker, NULL)) {
         atomic_store(&g.ready, 0);
         g.running = 0;
+        car_motor_can_destroy();
         return -1;
     }
     return 0;
@@ -337,6 +383,10 @@ void follow_destroy(void *app)
     pthread_cond_signal(&g.changed);
     pthread_mutex_unlock(&g.lock);
     pthread_join(g.thread, NULL);
+    /* A transient nonblocking send failure must not discard the final stop.
+     * Retry on the owner thread before closing transport, with a bounded wait. */
+    finish_motor_stop();
+    car_motor_can_destroy();
     pthread_cond_destroy(&g.changed);
     pthread_mutex_destroy(&g.lock);
     pthread_mutex_destroy(&g.feedback_lock);
@@ -348,8 +398,10 @@ int follow_bind_motor(const follow_motor_ops_t *ops)
         return -1;
     pthread_mutex_lock(&g.lock);
     int rc = g.cfg[ENABLED] || g.motor.send ? -1 : 0;
-    if (!rc)
+    if (!rc) {
         g.motor = *ops;
+        g.stop_required = 1;
+    }
     pthread_mutex_unlock(&g.lock);
     return rc;
 }
@@ -426,6 +478,11 @@ void http_follow_get(app_ctx_t *app, int fd, const char *method, const char *uri
     s.reason = g.reason;
     s.frame = g.frame;
     pthread_mutex_unlock(&g.lock);
+    car_motor_can_status_t motor_status;
+    car_motor_can_get_status(&motor_status);
+    char motor_error[1024], motor_interface[IFNAMSIZ * 6 + 1];
+    http_json_escape(motor_status.error, motor_error, sizeof(motor_error));
+    http_json_escape(motor_status.interface_name, motor_interface, sizeof(motor_interface));
     /* Polling the UI must not hold the controller lock during JSON encoding. */
     char json[32768];
     int off = 0;
@@ -453,7 +510,14 @@ void http_follow_get(app_ctx_t *app, int fd, const char *method, const char *uri
                      (d->y1 + d->y2) * .5 / s.frame.height,
                      (d->x2 - d->x1) * (d->y2 - d->y1) / (s.frame.width * (double)s.frame.height));
     }
-    off += snprintf(json + off, sizeof(json) - off, "]}");
+    off +=
+        snprintf(json + off, sizeof(json) - off,
+                 "],\"motor\":{\"configured\":%s,\"online\":%s,\"interface\":\"%s\","
+                 "\"tx_frames\":%llu,\"tx_errors\":%llu,\"rx_frames\":%llu,"
+                 "\"decode_errors\":%llu,\"error\":\"%s\"}}",
+                 motor_status.configured ? "true" : "false", motor_status.online ? "true" : "false",
+                 motor_interface, motor_status.tx_frames, motor_status.tx_errors,
+                 motor_status.rx_frames, motor_status.decode_errors, motor_error);
     http_ok_json(fd, json, (size_t)off);
 }
 /* Apply only posted settings; runtime-learned reference and capture-stop state
@@ -545,6 +609,7 @@ void http_follow_post(app_ctx_t *app, int fd, const char *method, const char *ur
     if (present[ENABLED] && !values[ENABLED]) {
         /* A valid explicit stop does not wait for storage to finish. */
         g.cfg[ENABLED] = 0;
+        g.stop_required = 1;
         halt("disabled");
     }
     pthread_mutex_unlock(&g.lock);

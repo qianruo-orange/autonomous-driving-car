@@ -18,7 +18,8 @@ double follow_pid_step_limited(follow_pid_t *pid, follow_gains_t gains, double e
                                double output_limit, double integral_limit);
 /* Differential correction and both wheel targets are in m/s; no wheel track is needed. */
 void follow_mix(double speed, double correction, double limit, double *left, double *right);
-/* Motor protocol adapter, intentionally absent until the motor protocol is known.
+/* Motor protocol adapter: a validated car_motor_can.conf binds the built-in
+ * SocketCAN transport; custom drivers can bind through the same interface.
  * send receives bounded normalized actuator commands [-1,1], not raw speed.
  * Implement CAN packing using can_tx_frame(). stop MUST encode the documented
  * motor stop command. Callbacks must be nonblocking and finish within 1 ms;

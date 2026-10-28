@@ -11,20 +11,20 @@
  * 32 个槽位描述符 + 四阶段指针（raw/rgb/nv12/jpeg）。各阶段只移动缓冲指针，
  * 缓冲本身在阶段间传递、游标越过后回池复用：
  *   采集(video worker)  V4L2 mmap 指针直接入槽，延迟 QBUF（真正零拷贝）
- *   推理(ai_task)       claims++ 后锁外解码槽内 raw → 池内 rgb（job 持有）；
+ *   推理(yolo_task)       claims++ 后锁外解码槽内 raw → 池内 rgb（job 持有）；
  *                       claim 随任务移交 worker（任务在途期间槽位被钉住不可复用）
  *   推理(worker)        resize 读 job rgb，推理结果（名称+坐标）入结果队列，
  *                       rgb 写槽置 rgb_done，unclaim
  *   显示(composer)      消费结果队列最新结果，按 seq 取最新 rgb_done 槽原地画框
  *                       → nv12/jpeg 写槽，置 display_done
- *   编码(rec)           窃取槽内 nv12（所有权转移），置 encode_done（AI 必要流程，
+ *   编码(rec)           窃取槽内 nv12（所有权转移），置 encode_done（YOLO 必要流程，
  *                       停摆直接宕机，无原始帧回退）
  *   HTTP 推流            锁内拷贝最新显示槽 jpeg / 最新 raw（多读者，不钉槽）
  *
  * 槽位回收（采集复用条件）：raw/rgb/nv12/jpeg 四个缓冲全部释放。
  * 释放规则在 frame_ring_maintain_locked 统一维护（各提交点触发，遍历 32 槽开销可忽略）：
  *   raw  → QBUF(mmap)/free：非最新帧(raw 客户端钉最新) && claims==0 &&
- *          (ai_active ? infer_done : encode_done||!rec_active)
+ *          (yolo_active ? infer_done : encode_done||!rec_active)
  *   rgb  → 池：seq <= 最新已渲染 seq（含被跳过的槽）
  *   jpeg → 池：seq != 最新已渲染 seq
  *   nv12 → 池：seq != display_seq 且（encode_done || !rec_active）；
@@ -79,11 +79,11 @@ typedef struct {
     int raw_present;          /* 槽内持有 raw（采集已写入、尚未释放） */
     int raw_is_mmap;          /* raw 指向 V4L2 mmap：释放走回调 QBUF，不能 free */
     int raw_vbuf_index;       /* mmap 时对应的驱动缓冲索引（释放回调参数） */
-    int raw_claims;           /* 锁外引用 raw 的计数（ai_task 解码至 worker 写槽全程/退让期间） */
+    int raw_claims;           /* 锁外引用 raw 的计数（yolo_task 解码至 worker 写槽全程/退让期间） */
 
     /* ---- 推理阶段 ---- */
     ring_buf_t rgb;           /* JPEG/YUYV 解码 RGB24（池内缓冲） */
-    int infer_done;           /* ai_task 解码完成（raw 可释放） */
+    int infer_done;           /* yolo_task 解码完成（raw 可释放） */
     int rgb_done;             /* worker 解码 rgb 写入完成（可渲染）；检测结果经结果队列传递 */
 
     /* ---- 显示阶段 ---- */
@@ -105,7 +105,7 @@ typedef struct frame_ring {
     unsigned capture_fps_num, capture_fps_den;
 
     /* 运行模式（消费者侧在锁内更新，维护释放规则用） */
-    int ai_active;            /* AI 池运行中（停用时 infer_done 不再推进） */
+    int yolo_active;            /* YOLO 池运行中（停用时 infer_done 不再推进） */
     int rec_active;           /* 录像进行中 */
     int quiescing;            /* 相机重启退让：禁止新 claim，等待 claims 归零 */
 
@@ -161,7 +161,7 @@ void frame_ring_produce_commit_locked(frame_ring_t *r);
 void frame_ring_produce_drop_locked(frame_ring_t *r);   /* capture_dropped++ */
 void frame_ring_add_driver_dropped_locked(frame_ring_t *r, unsigned long long n);
 
-/* ---- 推理（ai_task） ---- */
+/* ---- 推理（yolo_task） ---- */
 /* 按序 claim 槽 seq 的 raw（claims++）。quiescing / 槽已释放 / 已被复用返回 NULL。
    成功后调用方可在锁外解码 s->raw（mmap 由 claims 保护），解码完 unclaim */
 frame_slot_t *frame_ring_infer_claim_locked(frame_ring_t *r, unsigned long long seq);
@@ -176,7 +176,7 @@ frame_slot_t *frame_ring_display_pick_locked(frame_ring_t *r, unsigned long long
 void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s);
 
 /* ---- 编码（rec） ---- */
-/* 取 seq > next_seq 的最新 display_done 槽（AI 录像）；无则 NULL。
+/* 取 seq > next_seq 的最新 display_done 槽（YOLO 录像）；无则 NULL。
    调用方锁内窃取 nv12（s->nv12.buf 置 NULL，所有权转移给 rec，
    用毕 frame_ring_buf_put_locked 回池），再 encode_advance */
 frame_slot_t *frame_ring_encode_pick_locked(frame_ring_t *r, unsigned long long next_seq);
@@ -189,7 +189,7 @@ void frame_ring_encode_skip_locked(frame_ring_t *r, frame_slot_t *s);
 frame_slot_t *frame_ring_raw_newest_locked(frame_ring_t *r);
 
 /* ---- 模式标志 ---- */
-void frame_ring_set_ai_active(frame_ring_t *r, int on);
+void frame_ring_set_yolo_active(frame_ring_t *r, int on);
 void frame_ring_set_rec_active(frame_ring_t *r, int on);
 
 /* ---- 事件等待（内部加锁；超时返回 0） ---- */

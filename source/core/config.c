@@ -27,10 +27,10 @@ static void config_normalize_model_path(struct app_config_t *cfg)
     char previous_default[256], previous_relative[256];
     snprintf(previous_default, sizeof(previous_default), "config/models/%s/yolo26.rknn", npu_platform_name());
     snprintf(previous_relative, sizeof(previous_relative), "./config/models/%s/yolo26.rknn", npu_platform_name());
-    if (!cfg->ai_model[0] || !strcmp(cfg->ai_model, "config/yolo26.rknn") ||
-        !strcmp(cfg->ai_model, "./config/yolo26.rknn") ||
-        !strcmp(cfg->ai_model, previous_default) || !strcmp(cfg->ai_model, previous_relative))
-        rknn_yolo_default_model_path(cfg->ai_model, sizeof(cfg->ai_model));
+    if (!cfg->yolo_model[0] || !strcmp(cfg->yolo_model, "config/yolo26.rknn") ||
+        !strcmp(cfg->yolo_model, "./config/yolo26.rknn") ||
+        !strcmp(cfg->yolo_model, previous_default) || !strcmp(cfg->yolo_model, previous_relative))
+        rknn_yolo_default_model_path(cfg->yolo_model, sizeof(cfg->yolo_model));
 }
 
 static void config_defaults(struct app_config_t *cfg)
@@ -44,13 +44,13 @@ static void config_defaults(struct app_config_t *cfg)
     safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), "software");
     safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
 
-    rknn_yolo_default_model_path(cfg->ai_model, sizeof(cfg->ai_model));
-    safe_strncpy(cfg->ai_names, sizeof(cfg->ai_names), "config/coco.names");
-    cfg->ai_input_size  = 640;
-    cfg->ai_conf        = 0.25f;
-    cfg->ai_nms         = 0.45f;
-    cfg->ai_interval_ms = 10;
-    { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->ai_threads = _c; } /* 默认每核 1 个推理线程 */
+    rknn_yolo_default_model_path(cfg->yolo_model, sizeof(cfg->yolo_model));
+    safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), "config/coco.names");
+    cfg->yolo_input_size  = 640;
+    cfg->yolo_conf        = 0.25f;
+    cfg->yolo_nms         = 0.45f;
+    cfg->yolo_interval_ms = 10;
+    { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->yolo_threads = _c; } /* 默认每核 1 个推理线程 */
 
     app_args_t *args = &cfg->args;
     args->tcp_port    = 6666;
@@ -81,10 +81,10 @@ int config_load(struct app_config_t *cfg)
     cfg->video_width = 640; cfg->video_height = 480;
     safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), "software");
     safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
-    rknn_yolo_default_model_path(cfg->ai_model, sizeof(cfg->ai_model));
-    safe_strncpy(cfg->ai_names, sizeof(cfg->ai_names), "config/coco.names");
-    cfg->ai_input_size = 640; cfg->ai_conf = 0.25f; cfg->ai_nms = 0.45f;
-    cfg->ai_interval_ms = 10; { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->ai_threads = _c; } /* 默认每核 1 个推理线程 */
+    rknn_yolo_default_model_path(cfg->yolo_model, sizeof(cfg->yolo_model));
+    safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), "config/coco.names");
+    cfg->yolo_input_size = 640; cfg->yolo_conf = 0.25f; cfg->yolo_nms = 0.45f;
+    cfg->yolo_interval_ms = 10; { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->yolo_threads = _c; } /* 默认每核 1 个推理线程 */
     app_args_t *a = &cfg->args;
     int can_feature_configured = 0;
 
@@ -152,16 +152,16 @@ int config_load(struct app_config_t *cfg)
                 LOG_ERROR("config: unsupported video decoder '%s'; using software decoding", val);
             safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
         }
-        else if (strcmp(key, "ai_model") == 0) safe_strncpy(cfg->ai_model, sizeof(cfg->ai_model), val);
-        else if (strcmp(key, "ai_names") == 0) safe_strncpy(cfg->ai_names, sizeof(cfg->ai_names), val);
-        else if (strcmp(key, "ai_input_size") == 0) cfg->ai_input_size = parse_int_clamped(val, 32, 2048, 640);
-        else if (strcmp(key, "ai_conf") == 0) cfg->ai_conf = parse_int_clamped(val, 1, 100, 25) / 100.0f;
-        else if (strcmp(key, "ai_nms") == 0) cfg->ai_nms = parse_int_clamped(val, 1, 100, 45) / 100.0f;
-        else if (strcmp(key, "ai_interval_ms") == 0) cfg->ai_interval_ms = parse_int_clamped(val, 10, 5000, 200);
-        else if (strcmp(key, "ai_threads") == 0) {
+        else if (strcmp(key, "yolo_model") == 0) safe_strncpy(cfg->yolo_model, sizeof(cfg->yolo_model), val);
+        else if (strcmp(key, "yolo_names") == 0) safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), val);
+        else if (strcmp(key, "yolo_input_size") == 0) cfg->yolo_input_size = parse_int_clamped(val, 32, 2048, 640);
+        else if (strcmp(key, "yolo_conf") == 0) cfg->yolo_conf = parse_int_clamped(val, 1, 100, 25) / 100.0f;
+        else if (strcmp(key, "yolo_nms") == 0) cfg->yolo_nms = parse_int_clamped(val, 1, 100, 45) / 100.0f;
+        else if (strcmp(key, "yolo_interval_ms") == 0) cfg->yolo_interval_ms = parse_int_clamped(val, 10, 5000, 200);
+        else if (strcmp(key, "yolo_threads") == 0) {
             int cores = npu_core_count(); if (cores < 1) cores = 1;
             int t = parse_int_clamped(val, cores, 15, cores);
-            cfg->ai_threads = (t / cores) * cores;   /* 取整为 NPU 核数的整数倍，各核等量 worker */
+            cfg->yolo_threads = (t / cores) * cores;   /* 取整为 NPU 核数的整数倍，各核等量 worker */
         }
         else if (strcmp(key, "can_dbc") == 0) {
             char nm[64], path[256];
@@ -237,14 +237,14 @@ void config_save(app_ctx_t *app)
     fprintf(fp, "video_fps %d\n", cfg->video_fps);
     fprintf(fp, "video_codec %s\n", cfg->video_codec);
     fprintf(fp, "video_decoder %s\n", cfg->video_decoder[0] ? cfg->video_decoder : "software");
-    fprintf(fp, "\n# --- AI 检测 (YOLO26, RKNN) ---\n");
-    fprintf(fp, "ai_model %s\n", cfg->ai_model);
-    fprintf(fp, "ai_names %s\n", cfg->ai_names[0] ? cfg->ai_names : "config/coco.names");
-    fprintf(fp, "ai_input_size %d\n", cfg->ai_input_size > 0 ? cfg->ai_input_size : 640);
-    fprintf(fp, "ai_conf %d\n", (int)(cfg->ai_conf > 0 ? cfg->ai_conf * 100 : 25));
-    fprintf(fp, "ai_nms %d\n", (int)(cfg->ai_nms > 0 ? cfg->ai_nms * 100 : 45));
-    fprintf(fp, "ai_interval_ms %d\n", cfg->ai_interval_ms > 0 ? cfg->ai_interval_ms : 200);
-    fprintf(fp, "ai_threads %d\n", cfg->ai_threads > 0 ? cfg->ai_threads : 2);
+    fprintf(fp, "\n# --- YOLO 检测 (YOLO26, RKNN) ---\n");
+    fprintf(fp, "yolo_model %s\n", cfg->yolo_model);
+    fprintf(fp, "yolo_names %s\n", cfg->yolo_names[0] ? cfg->yolo_names : "config/coco.names");
+    fprintf(fp, "yolo_input_size %d\n", cfg->yolo_input_size > 0 ? cfg->yolo_input_size : 640);
+    fprintf(fp, "yolo_conf %d\n", (int)(cfg->yolo_conf > 0 ? cfg->yolo_conf * 100 : 25));
+    fprintf(fp, "yolo_nms %d\n", (int)(cfg->yolo_nms > 0 ? cfg->yolo_nms * 100 : 45));
+    fprintf(fp, "yolo_interval_ms %d\n", cfg->yolo_interval_ms > 0 ? cfg->yolo_interval_ms : 200);
+    fprintf(fp, "yolo_threads %d\n", cfg->yolo_threads > 0 ? cfg->yolo_threads : 2);
     fprintf(fp, "\n# --- DBC ---\n");
     for (int i = 0; i < can->count; i++)
         if (can->ifaces[i].dbc_path[0])

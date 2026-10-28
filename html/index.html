@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="边缘智能网关">边缘智能网关</title>
+<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="自动驾驶小车">自动驾驶小车</title>
 <link rel="stylesheet" href="/css/common.css">
 <link rel="stylesheet" href="/css/monitor.css">
 <link rel="stylesheet" href="/css/camera.css">
@@ -8,11 +8,11 @@
 <script src="/js/auth.js"></script>
 </head><body>
 <div class="top-bar">
-  <div class="tb-left"><h1>📶 <span data-i18n="边缘智能网关">边缘智能网关</span></h1></div>
+  <div class="tb-left"><h1>📶 <span data-i18n="自动驾驶小车">自动驾驶小车</span></h1></div>
   <div class="tb-right">
     <span id="datetime"></span>
     <a href="/config" class="btn btn-back">⚙ <span data-i18n="配置">配置</span></a>
-    <a href="/logs" class="btn btn-back"> <span data-i18n="文件下载">文件下载</span></a>
+    <a href="/logs" class="btn btn-back"> <span data-i18n="行驶日志">行驶日志</span></a>
     <button id="langBtn" class="theme-btn" onclick="toggleLang()" data-i18n-title="切换语言">English</button>
     <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" data-i18n-title="切换主题"></button>
     <a href="#" onclick="reboot()" class="pwr pwr-reboot"> <span data-i18n="重启">重启</span></a>
@@ -28,7 +28,7 @@
         <div class="video-wrapper">
           <video id="stream_video" autoplay muted playsinline></video>
           <img id="stream_img" style="display:none" alt="stream">
-          <button class="video-fullscreen" type="button" onclick="toggleGatewayFullscreen()" data-i18n="全屏">全屏</button>
+          <button class="video-fullscreen" type="button" onclick="toggleCarFullscreen()" data-i18n="全屏">全屏</button>
         </div>
         <div class="video-stats" id="video_stats" aria-live="off"></div>
       </div>

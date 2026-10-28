@@ -5,7 +5,7 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 BIN_DIR="$PROJECT_DIR/bin"
-BIN_NAME="rockchip-smart-gateway"
+BIN_NAME="autonomous-driving-car"
 BIN_PATH="$BIN_DIR/$BIN_NAME"
 CMAKE_DIR="$PROJECT_DIR/cmake"
 LOGS_DIR="$PROJECT_DIR/logs"
@@ -41,7 +41,7 @@ sync_model() {
     selected_weights=$(python3 "$PROJECT_DIR/scripts/model_sync.py" discover-weights --project "$PROJECT_DIR" --plain)
     weights="${selected_weights:-yolo26n.pt}"
     python3 "$PROJECT_DIR/scripts/model_sync.py" reconcile \
-        --project "$PROJECT_DIR" --deployment "${GATEWAY_MODEL_DEPLOYMENT:-/opt/$BIN_NAME}" --platform "$plat"
+        --project "$PROJECT_DIR" --deployment "${CAR_MODEL_DEPLOYMENT:-/opt/$BIN_NAME}" --platform "$plat"
     if [ "$CONVERT_MODEL" != 1 ] && [ -z "$selected_weights" ] && [ -f "$runtime_model" ]; then
         python3 "$PROJECT_DIR/scripts/model_sync.py" validate --model "$runtime_model" --platform "$plat"
         echo "[MODEL] using config/yolo26.rknn ($plat)"

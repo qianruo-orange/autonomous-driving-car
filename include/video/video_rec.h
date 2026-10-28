@@ -5,11 +5,11 @@
 #include <stddef.h>
 
 /**
- * video/video_rec.h — 网络录像模块（Web/HTTP 控制，AI 画框帧优先）。
+ * video/video_rec.h — 网络录像模块（Web/HTTP 控制，YOLO 画框帧优先）。
  *
  * 数据流：
  *   HTTP API（/api/rec/start|stop）→ 录制线程（main 模块表 "rec"）
- *     拉取 AI 画框帧（rknn_yolo_get_frame，JPEG）；AI 未启用或尚无画框帧时
+ *     拉取 YOLO 画框帧（rknn_yolo_get_frame，JPEG）；YOLO 未启用或尚无画框帧时
  *     回退原始视频帧（MJPEG 直接用，YUYV 转 JPEG）→ 封装为 MP4（MJPEG track）
  *     写入 recordings/ 目录，停止时 finalize（写 moov）。
  *
