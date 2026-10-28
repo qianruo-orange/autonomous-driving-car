@@ -334,6 +334,8 @@
 
   /* 保存 Web 管理界面的网卡 IP 配置，HTTP 端口固定为 80。 */
   window.saveNet = async function() {
+    var networkCard = document.getElementById('card_net');
+    if (networkCard.dataset.saving === 'true' || !window.networkVofa || !window.networkVofa.validate()) return;
     var mode = document.getElementById('ip_mode').value;
     var ifn = document.getElementById('bind').value;
     if (mode !== '') {
@@ -349,14 +351,24 @@
         if (!confirm(t('将把 ') + ifn + t(' 切换到 DHCP 自动获取。\nIP 变化后请用新地址重新访问。'))) return;
       }
     }
-    await postConfig({
+    var ipSettings = {
       target: 'ip',
       ip_ifname: ifn,
       ip_mode: mode,
       ip_addr: document.getElementById('ip_a').value.trim(),
       ip_mask: document.getElementById('ip_m').value.trim(),
       ip_gw: document.getElementById('ip_g').value.trim()
-    }, 'net');
+    };
+    var save = document.getElementById('network_save');
+    networkCard.dataset.saving = 'true';
+    save.disabled = true;
+    try {
+      if (!await window.networkVofa.save()) return;
+      await postConfig(ipSettings, 'net');
+    } finally {
+      networkCard.dataset.saving = 'false';
+      save.disabled = false;
+    }
   };
 
   /* 按 IP 模式显隐静态地址输入行 */

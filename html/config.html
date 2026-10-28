@@ -68,7 +68,7 @@
 </div>
 </div><div class="hint" id="hint" data-i18n="接口已关闭，开启后可配置">接口已关闭，开启后可配置</div></div>
 
-<div class="card" id="card_net"><h3><span data-i18n="网络设置">网络设置</span><span class="card-status" id="status_net"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveNet()">💾 <span data-i18n="保存">保存</span></button></h3>
+<div class="card" id="card_net"><h3><span data-i18n="网络设置">网络设置</span><span class="card-status" id="status_net"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" id="network_save" disabled onclick="saveNet()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="cfg-grid net2">
 <div class="row"><label data-i18n="Web网卡">Web网卡</label><select name="bind" id="bind"><option value="" data-i18n="选择网卡">选择网卡</option></select></div>
 <div class="row"><label data-i18n="IP 模式">IP 模式</label><select id="ip_mode" onchange="chkIpMode()"><option value="" data-i18n="关闭（不管理）">关闭（不管理）</option><option value="static" data-i18n="静态">静态</option><option value="dhcp">DHCP</option></select></div>

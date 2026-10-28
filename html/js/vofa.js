@@ -4,28 +4,21 @@
     const networkCard = document.querySelector('#card_net');
     if (!networkCard) return;
 
-    const card = document.createElement('form');
-    card.id = 'network_vofa';
-    card.className = 'network-vofa';
+    const card = document.createElement('div');
     card.innerHTML =
-        '<div class="vofa-actions">' +
-        '<span id="vofa_save_status" class="card-status" role="status" aria-live="polite"></span>' +
-        '<button class="btn btn-save" type="submit" id="vofa_save" disabled data-i18n="保存"></button></div>' +
-        '<div class="cfg-grid vid2 vofa-fields">' +
         '<div class="row"><label for="vofa_enabled" data-i18n="通信状态"></label>' +
         '<select id="vofa_enabled" name="enabled" disabled><option value="0" data-i18n="停用 VOFA"></option>' +
         '<option value="1" data-i18n="启用 VOFA"></option></select></div>' +
         '<div class="row"><label for="vofa_port" data-i18n="VOFA端口"></label>' +
         '<input id="vofa_port" name="port" type="number" min="1024" max="65535" step="1" required disabled></div>' +
         '<div class="row"><label for="vofa_rate_hz" data-i18n="发送频率 (Hz)"></label>' +
-        '<input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" required disabled></div>' +
-        '</div>';
-    networkCard.appendChild(card);
-    applyI18n(card);
+        '<input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" required disabled></div>';
+    networkCard.querySelector('.net2').append(...card.childNodes);
+    applyI18n(networkCard);
 
-    const status = card.querySelector('#vofa_save_status');
-    const save = card.querySelector('#vofa_save');
-    const inputs = ['enabled', 'port', 'rate_hz'].map(key => card.elements.namedItem(key));
+    const status = networkCard.querySelector('#status_net');
+    const save = networkCard.querySelector('#network_save');
+    const inputs = ['enabled', 'port', 'rate_hz'].map(key => networkCard.querySelector('#vofa_' + key));
     const dirty = new Set();
     let loaded = false;
     let busy = false;
@@ -39,7 +32,7 @@
     }
     function disabled() {
         inputs.forEach(input => { input.disabled = busy || !loaded; });
-        save.disabled = busy || !loaded;
+        save.disabled = busy || !loaded || networkCard.dataset.saving === 'true';
     }
     function validSnapshot(data) {
         if (!data || !data.config || !data.status) throw new Error('Invalid VOFA response');
@@ -88,9 +81,12 @@
         input.addEventListener('input', () => { dirty.add(input.name); });
         input.addEventListener('change', () => { dirty.add(input.name); });
     });
-    card.addEventListener('submit', async event => {
-        event.preventDefault();
-        if (!loaded || busy || !card.reportValidity()) return;
+    window.networkVofa = {
+      validate: function () {
+        return loaded && !busy && inputs.every(input => input.reportValidity());
+      },
+      save: async function () {
+        if (!this.validate()) return false;
         busy = true;
         readFailed = false;
         generation++;
@@ -108,14 +104,16 @@
             const data = validSnapshot(await response.json());
             dirty.clear();
             render(data, true);
-            message('VOFA 设置已保存', false);
+            return true;
         } catch (error) {
             message('无法保存 VOFA 设置，请检查端口是否被占用', true);
+            return false;
         } finally {
             busy = false;
             disabled();
         }
-    });
+      }
+    };
     document.addEventListener('languagechange', () => {
         if (latest) render(latest, false);
     });
