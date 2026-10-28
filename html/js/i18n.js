@@ -34,7 +34,7 @@
     '轮速 Ki': 'Wheel speed Ki',
     '轮速 Kd': 'Wheel speed Kd',
     '实时调度错误': 'Real-time scheduling error',
-    '按目标大小自动调速': 'Automatic from target size',
+    '自动设定速度': 'Automatically set speed',
     '目标大小误差': 'Target size error',
     '智能跟随':'Intelligent Following',
     '电机 CAN 协议接口预留，未接入时仅预览；每次启动默认停止。':'Motor CAN protocol adapter reserved. Preview only until connected; stopped on every startup.',
