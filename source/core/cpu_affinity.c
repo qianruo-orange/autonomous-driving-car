@@ -11,9 +11,7 @@
 #include "core/cpu_affinity.h"
 #include "core/log.h"
 
-#ifndef CPU_AFFINITY_ROOT
 #define CPU_AFFINITY_ROOT "/sys/devices/system/cpu"
-#endif
 
 static pthread_once_t affinity_once = PTHREAD_ONCE_INIT;
 static cpu_set_t heavy_set, light_set;

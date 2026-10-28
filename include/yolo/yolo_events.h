@@ -31,7 +31,7 @@ typedef struct {
     yolo_event_object_t objects[YOLO_MAX_DETS];
 } yolo_event_meta_t;
 
-/* root is normally NULL (YOLO_EVENTS_DIR); tests can use a private directory.
+/* NULL selects YOLO_EVENTS_DIR; a non-NULL root selects another output directory.
  * Initialize once before rendering starts. A failed init disables event saving. */
 int yolo_events_init(const char *root);
 /* Every frame is eligible, including frames with zero detected targets. */

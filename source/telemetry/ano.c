@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
 #include "telemetry/ano.h"
-#include "telemetry/ano_test.h"
+#include "telemetry/ano_simulation.h"
 #include "telemetry/ano_protocol.h"
 #include "control/car_sport_ctrl.h"
 #include "http/http_internal.h"
@@ -183,7 +183,7 @@ static void simulate_sample(follow_telemetry_t *sample, unsigned long long start
                             unsigned long long now)
 {
     float channels[4];
-    ano_test_sample(now >= started ? now - started : 0, channels);
+    ano_simulation_sample(now >= started ? now - started : 0, channels);
     sample->speed_target = channels[0];
     sample->speed_actual = channels[1];
     sample->steering_target = channels[2];

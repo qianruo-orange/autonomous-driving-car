@@ -17,12 +17,8 @@
 #include <inttypes.h>
 #include <time.h>
 
-#ifndef DETECTION_DOWNLOAD_IDLE_MS
 #define DETECTION_DOWNLOAD_IDLE_MS 30000u
-#endif
-#ifndef DETECTION_DOWNLOAD_TOTAL_MS
 #define DETECTION_DOWNLOAD_TOTAL_MS 300000u
-#endif
 
 typedef struct {
     int fd, archive;

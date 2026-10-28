@@ -675,8 +675,8 @@ static void *h264_stream_client_task(void *arg)
     h264_stream_client_close_cb on_close = c->on_close;
 
     /* Send each completed media fragment promptly instead of waiting for a
-     * previous small TCP packet to be acknowledged. Non-TCP test sockets do not
-     * support this option; the stream remains usable if the option is absent. */
+     * previous small TCP packet to be acknowledged. The stream remains usable
+     * if this socket option is unavailable. */
     int nodelay = 1;
     (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 

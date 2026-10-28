@@ -11,12 +11,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#ifndef CPUFREQ_ROOT
 #define CPUFREQ_ROOT "/sys/devices/system/cpu/cpufreq"
-#endif
-#ifndef CPUFREQ_CONFIG_PATH
 #define CPUFREQ_CONFIG_PATH "config/cpu_freq.conf"
-#endif
 #define CPUFREQ_POLICIES 64
 #define CPUFREQ_FREQS 64
 #define CPUFREQ_GOVS 16
@@ -88,13 +84,10 @@ static int sysfs_write(const char *id, const char *file, const char *text)
     if (fclose(output)) { result = -1; saved_errno = errno; }
     errno = saved_errno; return result;
 }
-#ifndef CPUFREQ_WRITE
-#define CPUFREQ_WRITE sysfs_write
-#endif
 static int write_frequency(const char *id, const char *file, long value)
 {
     char text[32]; snprintf(text, sizeof(text), "%ld", value);
-    return CPUFREQ_WRITE(id, file, text);
+    return sysfs_write(id, file, text);
 }
 static int read_policy(const char *id, cpu_policy_t *policy)
 {
@@ -232,7 +225,7 @@ static int apply_request(const cpu_request_t *request)
     }
     if (minimum != request->minimum && write_frequency(request->id, "scaling_min_freq", request->minimum)) return -1;
     if (maximum != request->maximum && write_frequency(request->id, "scaling_max_freq", request->maximum)) return -1;
-    if (strcmp(current.actual.governor, request->governor) && CPUFREQ_WRITE(request->id, "scaling_governor", request->governor)) return -1;
+    if (strcmp(current.actual.governor, request->governor) && sysfs_write(request->id, "scaling_governor", request->governor)) return -1;
     /* A kernel thermal cap can legitimately reduce the effective maximum. */
     if (read_policy(request->id, &current) || strcmp(current.actual.governor, request->governor) ||
         current.actual.minimum > current.actual.maximum || current.actual.maximum > request->maximum ||

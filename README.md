@@ -1,273 +1,156 @@
 # Autonomous Driving Car
 
-A Linux vehicle application combining V4L2 camera capture, Rockchip RKNN YOLO26 detection, differential target following, SocketCAN motor integration, and a browser management interface. The backend uses C11, with C++11/OpenCV for drawing overlays; the frontend uses plain HTML, CSS, and JavaScript.
+A Linux vehicle project combining camera capture, RKNN YOLO26 detection, differential target following, SocketCAN, and a browser management interface. The application uses C11/C++11; the frontend uses HTML, CSS, and JavaScript; build and deployment tools use Bash.
 
-The current hardware validation platform is **Radxa Rock 4D / RK3576**. The implemented control path uses conventional PD/PI controllers and real wheel feedback. An LLM reasoning layer is a planned extension; no LLM provider, model invocation, or reasoning-to-control integration exists.
+The hardware validation platform is **Radxa Rock 4D / RK3576**. Actual motion requires a compatible motor protocol and measured wheel feedback. The supplied motor profile is a disabled example.
 
-## Implementation status
+## Features
 
-| Area | Implemented behavior | Boundary |
-| --- | --- | --- |
-| Perception | YOLO26 inference, original-image coordinates, frame-matched overlays, adaptive worker count | Requires a compatible RKNN model and working NPU runtime |
-| Following | Target selection, automatic/manual speed strategies, steering PD, independent wheel PI state | Actual motion requires a validated motor profile, fresh feedback, CAN, and successful FIFO scheduling |
-| Motor communication | Commands and feedback share the public CAN module | No production motor profile or drive-specific startup handshake is supplied |
-| Video and records | H.264/MSE, MJPEG, annotated MP4, daily detection TXT | Display/encoding may skip old frames; no zero-drop or 100 ms end-to-end guarantee |
-| Web management | Monitoring, camera/model configuration, network IP, CPU policies, CAN/DBC, file management | HTTP uses fixed port 80 |
-| Anonymous Assistant 2.0.1 | ANO V8 telemetry over TCP, four Float32 channels, simulated link-test signals | Flexible frame F1 must be configured in the PC application |
-| Real-time platform | Controller requests `SCHED_FIFO` priority 20 | FIFO admission and PREEMPT_RT kernel support are separate checks |
-
-The supplied configuration does not enable a real motor. Following starts stopped after every service restart. Platform mappings for other Rockchip devices do not constitute hardware compatibility validation.
-
-## Architecture and code map
-
-The executable is one process. [main.c](source/core/main.c) constructs a shared `app_ctx_t`, initializes modules, starts workers, and coordinates shutdown. Modules own their lifecycle functions and use mutexes, atomics, bounded queues, and condition variables to exchange data.
-
-```text
-V4L2 camera
-    -> frame ring: raw -> RGB -> annotated NV12/JPEG
-                       |             |
-                 RKNN workers        +-> MJPEG / H.264 -> browser
-                       |                             +-> MP4 recording
-                       +-> completed detections
-                              +-> daily TXT writer
-                              +-> following controller -> shared CAN -> motor drives
-                                         ^                    |
-                                         +-- measured wheels -+
-                              +-> read-only telemetry -> TCP -> Anonymous Assistant
-
-HTTP :80 -> pages, configuration APIs, status, and protected file operations
-```
-
-| Directory / entry | Responsibility |
-| --- | --- |
-| `source/core/`, `include/core/` | Entry point, configuration persistence, logging, CPU affinity, shared context |
-| `source/video/`, `include/video/` | V4L2 capture, frame ring and buffer ownership, H.264 encoding/streaming, MP4 recording |
-| `source/yolo/`, `include/yolo/` | RKNN lifecycle, adaptive inference pool, image conversion, postprocessing, overlays, TXT writer |
-| `source/control/car_sport_ctrl.c` | Target association, speed/steering control, wheel PI, motion interlocks, following API |
-| `source/can/`, `include/can/` | Shared SocketCAN transport, CAN enable/disable, filters, DBC parsing, motor profile mapping |
-| `source/tcp/`, `include/tcp/` | Anonymous Assistant TCP listener/client lifecycle; system interface IP helpers |
-| `source/telemetry/`, `include/telemetry/` | Controller sampling, simulated signals, ANO V8 frames, configuration/API |
-| `source/http/`, `include/http/` | HTTP reactor, authentication, configuration, monitoring, video/file APIs |
-| `source/watchdog/`, `include/watchdog/` | Worker heartbeat supervision and systemd notification |
-| `html/` | Browser pages, shared themes, bilingual labels, configuration and player logic |
-| `scripts/` | Build/deploy, model synchronization, historical report migration and maintenance utilities |
-| `tests/` | C/C++ and Python regression checks; an additional JavaScript player test is separate from CTest |
-
-Main workers include CAN receive/send, TCP, HTTP, capture, YOLO dispatch, recording/encoding, and watchdog. YOLO owns inference workers and a rendering composer; control owns a joinable event-driven worker; detection reports have a writer thread. Anonymous Assistant sampling and socket work share `tcp_task`.
-
-Capture, inference, and recording work use the detected higher-capacity CPU group. Network/control/background workers use the lower-capacity group. Unknown or homogeneous CPU layouts retain the originally allowed CPU set.
+- Camera selection, resolution/frame-rate configuration, continuous autofocus where supported, and annotated live video.
+- YOLO26 inference with adaptive worker allocation and frame-matched detection results.
+- Intelligent following with target selection, automatic/manual speed, steering PD, and independent left/right wheel PI control.
+- Shared CAN/CAN FD communication, DBC decoding, interface configuration, and motor command/feedback integration.
+- H.264/MSE and MJPEG streaming, annotated MP4 recordings, daily detection TXT files, and file downloads/cleanup.
+- Web monitoring and configuration, CPU policies, network diagnostics, and Anonymous Assistant telemetry.
 
 ## Requirements
 
-Use Linux with V4L2 and the Rockchip NPU driver/runtime. SocketCAN and a compatible interface are needed for CAN functions. The build requires GCC/G++ supporting C11/C++11, CMake 3.10+, Python 3, libsystemd, libnl-3/libnl-route-3, libjpeg, OpenCV core/imgproc, and board-compatible `librknnrt.so`.
+Use Linux with V4L2, the Rockchip NPU driver, and a board-compatible `librknnrt.so`. CAN features additionally require a SocketCAN interface.
 
-On Debian/Ubuntu, development packages include:
+Build dependencies:
 
-```bash
-sudo apt install build-essential cmake python3 pkg-config \
-  libsystemd-dev libnl-3-dev libnl-route-3-dev \
-  libjpeg62-turbo-dev libopencv-dev libavcodec-dev libavutil-dev
-```
+- C11/C++11 compiler, GNU Make, CMake **3.18+**, Bash, and pkg-config.
+- libsystemd, libnl-3/libnl-route-3, libjpeg, and OpenCV core/imgproc development libraries.
+- Standard Linux tools including `flock`, `sha256sum`, `strings`, `awk`, `tar`, and `zip`.
+- FFmpeg libavcodec/libavutil are optional at build time; software H.264 encoding uses FFmpeg's `libx264` encoder. Hardware encoding depends on the available RKMPP/V4L2 backend.
 
-Install `librknnrt.so` from the SDK appropriate to the board and kernel. FFmpeg libraries are optional at build time: software H.264 requires the `libx264` encoder; hardware encoding uses an available `h264_rkmpp` or V4L2 encoder. Runtime capability detection determines which choices can be used.
+Provide a compatible **YOLO26 RKNN model** at `config/yolo26.rknn` and class labels at `config/coco.names`. The application requires working inference to start normally.
 
-YOLO is a required startup component. Missing/incompatible models or unavailable NPU execution prevent normal startup; there is no detection-disabled operating mode.
+## Build and deploy
 
-## Build, test, and deploy
-
-Use the repository scripts for all builds and deployments. From the repository root:
+Run all builds and deployments through the repository scripts:
 
 ```bash
 bash scripts/build.sh -R
-ctest --test-dir build --output-on-failure
 sudo bash scripts/deploy.sh -i
 ```
 
-| Option | Effect |
-| --- | --- |
-| `build.sh -R` | Release build; writes `bin/autonomous-driving-car` |
-| `build.sh -D` | Debug build with terminal debug output |
-| `build.sh -P rk3576` | Explicit model target platform when automatic detection is unavailable |
-| `build.sh -M` | Explicit model conversion rather than reuse |
-| `build.sh -C` | Clean only: removes build outputs and clears project logs |
-| `deploy.sh -i` | Install/update `/opt/autonomous-driving-car`, install/enable the unit, and start the service |
-| `deploy.sh -u` / `-r` | Uninstall / uninstall then reinstall; these remove the installation directory |
+The executable is written to `bin/autonomous-driving-car`. Deployment installs it and the frontend under `/opt/autonomous-driving-car`, installs the systemd unit, and starts the service.
 
-Ordinary updates use **`deploy.sh -i`**. Deployment stops the service, reconciles models, preserves device configuration and existing logs/recordings, installs the binary and frontend, and restarts. Video and clients are interrupted during the restart. Independently changed source/deployed models cause a reported conflict rather than a silent overwrite.
+| Command | Purpose |
+| --- | --- |
+| `bash scripts/build.sh -R` | Release build |
+| `bash scripts/build.sh -D` | Debug build |
+| `bash scripts/build.sh -R -P rk3576` | Specify the model platform instead of detecting it |
+| `bash scripts/build.sh -C` | Clean build outputs and project logs; does not build |
+| `sudo bash scripts/deploy.sh -i` | Install or update the existing deployment |
+
+Use `deploy.sh -i` for normal updates. It preserves existing logs, recordings, and device settings, and reconciles model changes before replacement. The deployed `config.txt` and existing following, motor, CPU, and telemetry settings take precedence; ordinary files such as labels and DBC databases can be replaced by source versions. The service restarts during deployment.
+
+`deploy.sh -u` uninstalls the application; `-r` uninstalls before reinstalling. Both remove the installation directory, including its configuration and recordings.
 
 ```bash
 systemctl status autonomous-driving-car --no-pager
 journalctl -u autonomous-driving-car -f
 ```
 
-The systemd unit uses `Type=notify`, a 10-second watchdog, and `Restart=on-failure`. It runs from `/opt/autonomous-driving-car` and restricts writable application paths to `config/`, `logs/`, and `recordings/`.
+The systemd service runs from `/opt/autonomous-driving-car`, uses a watchdog, and restarts on failure. For foreground debugging, stop the service first and run `sudo ./bin/autonomous-driving-car` from the repository root.
 
-For foreground debugging, stop the installed service first to avoid competing for ports/camera, then run `sudo ./bin/autonomous-driving-car` from the repository root. Runtime paths are relative to the working directory.
+## Web interface
 
-## Models and camera
+Open `http://<board-ip>/` using the board's current address.
 
-The canonical conversion/upload/runtime model is **`config/yolo26.rknn`**; default labels are `config/coco.names`. Models must match the selected NPU and supported YOLO26 output layout.
-
-The build discovers `.pt` files under `config/`. One candidate is selected automatically; multiple candidates require an explicit choice:
-
-```bash
-YOLO_WEIGHTS=config/my_model.pt bash scripts/build.sh -R
-```
-
-Without PT input, the build reuses a valid existing RKNN model. Conversion needs the Ultralytics CLI and compatible RKNN tooling, normally in `.venv`. Successful builds clean the selected project-owned PT input and conversion cache copies. Failed builds retain inputs; externally supplied weights are preserved. PT conversion inputs are not deployed.
-
-Source-side synchronization state lives in `config/.model-sync.lock` and `config/.last-deployed.sha256`. Downloaded conversion inputs are staged in `config/weights/` and cleaned after a successful build. Build/deploy tools no longer create `config/models/`; old paths remain readable for migration, existing model/weight files are preserved, and only empty legacy directories are removed. Internal synchronization files and conversion inputs are not installed on the board.
-
-In **System Configuration / 系统配置**, select camera, resolution/FPS combination, encoder, and decoder. Modes come from device capabilities; 1280×720 at 30 FPS is a selectable configuration, not a fixed assumption. Drivers can negotiate a different effective rate. Capture decoding currently uses software; continuous autofocus is enabled where supported.
-
-The frame ring moves buffer ownership between stages and reuses pools. Inference results remain associated with their captured frame. The renderer favors newer completed results instead of waiting indefinitely for out-of-order workers. H.264 live streaming and MP4 share encoded output; browser playback uses a bounded MSE buffer with catch-up logic.
-
-## Web interface and network settings
-
-| Page / service | Address | Purpose |
+| Page | Address | Contents |
 | --- | --- | --- |
-| Home | `http://<board-ip>/` | Annotated video and resource monitoring |
-| System Configuration | `/config` | Camera, YOLO, Web interface IP, CAN, CPU policies, network tests, intelligent following |
-| Driving Logs | `/logs` | Logs, recordings, and detection reports |
-| DBC viewer | `/dbc` | CAN decode view, linked from CAN configuration |
-| HTTP | TCP **80**, fixed | Pages, APIs, video, and file operations |
-| Anonymous Assistant | TCP **8080** by default, configurable | ANO V8 telemetry for Anonymous Assistant 2.0.1 |
+| Home | `/` | Annotated video and resource monitoring |
+| System Configuration / 系统配置 | `/config` | Camera, YOLO, CAN, Web/telemetry, CPU, and following settings |
+| Driving Logs / 行驶日志 | `/logs` | Logs, recordings, detection results, downloads, and cleanup |
+| DBC viewer | `/dbc` | CAN signal definitions and decoded data |
 
-Management pages, writes, and protected file operations use local administrator authentication (`root` or an account in the `sudo` group). Authentication uses HTTP Basic; provide a trusted network or a separately configured secure access layer. Some status APIs are publicly readable. Native protected video/archive downloads use scoped, short-lived session cookies.
+HTTP uses fixed port **80**. The home page accepts a local system account; administrative pages and writes require `root` or a `sudo` group account. Authentication uses HTTP Basic.
 
-**Web & Anonymous Assistant Settings / Web与匿名助手设置** configures the system interface used to reach the Web UI: Web interface, static/DHCP mode, IP, netmask, and gateway. HTTP remains on port 80 and listens on the board's configured IPv4 interfaces; selecting a management interface does not restrict HTTP to that interface. IP changes affect the actual system interface and can disconnect the browser.
+**Web与匿名助手设置** combines interface IP configuration and telemetry settings with one Save button. Web IP settings manage the selected system interface; HTTP still listens on the board's IPv4 interfaces. Changing static/DHCP addressing can require reconnecting the browser.
 
-The card's **one Save button** saves Anonymous Assistant settings first, then applies Web IP settings only if they changed. If the telemetry save fails, IP settings are not applied; an IP-save failure does not roll back telemetry settings already saved. Both configurations must load before Save becomes available. Static mode requires an interface, IP address, and subnet mask; changed static/DHCP settings ask for confirmation because the browser may need to reconnect. **关闭（不管理）** leaves interface addressing unmanaged by the application.
+Save applies telemetry first, then changed Web IP settings. A failed telemetry save prevents the IP change; an IP-save failure does not roll back telemetry already saved.
 
-Web admits at most **two clients**, counted by source IPv4 address: a device's pages, API requests, downloads, and video connections share one slot. A slot becomes available 30 seconds after that address's last connection closes; requests from a third address receive HTTP 503 with `Retry-After`. Devices sharing a NAT address count as one Web client.
+Web allows **two client IPv4 addresses**. One address can use multiple page, API, video, or download connections. Its slot is released 30 seconds after its last connection closes; a third address receives HTTP 503. Devices sharing a NAT address share a slot.
 
-Anonymous Assistant independently allows **two TCP connections**. Additional connections are closed; disconnecting a client immediately releases its slot. Slow readers can lose samples or be disconnected, without blocking control or other clients.
+## Camera and models
 
-The former ordinary TCP **6666** service, client buffers, transmit queue, and configuration fields have been removed. Legacy `tcp_port`/`max_clients` file entries are ignored. Legacy `tcp_bind` is read only to migrate a management interface when `ip_ifname` is absent; subsequent saves omit these legacy keys.
+Select camera modes from the device capabilities in System Configuration. Resolution and frame rate are configurable; the driver determines the effective negotiated mode. Capture decoding uses software, while H.264 encoding can use software or available hardware.
 
-The CAN master switch persists immediately. Turning it off hides its card, stops application CAN traffic, and clears pending frames while retaining interface configuration. CPU frequency settings apply per policy; actual thermal/kernel limits may be below requested values.
+`config/yolo26.rknn` is the canonical model path for uploads, builds, and deployment. Upload model/label files from the YOLO section. Models must match the board's NPU platform and supported YOLO26 output layout.
+
+[Model synchronization](scripts/model_sync.sh) compares source and deployed model hashes so an uploaded model can be retained. Independently changed models produce a conflict instead of a silent overwrite. Internal synchronization files live directly under `config/`; the old `config/models/` directory is not created.
+
+H.264 live video and MP4 recording share an encoding session. Stopping recording can also end that H.264 stream. Pipeline stages favor recent frames; recording and display need not include every captured frame.
 
 ## Intelligent following
 
-**Intelligent Following / 智能跟随** groups tracking, speed strategy, steering, and automatic/manual speed parameters. Groups save independently. Only the active speed strategy's parameter group is displayed; routine tuning preserves unrelated edits and loop state. Selecting another target or changing enable state performs the corresponding reset.
+**智能跟随** selects a detected target and controls differential wheel speed. Automatic speed uses relative target size; manual mode uses the configured speed setpoint. Steering follows horizontal target error. Each wheel uses its own PI state and measured speed feedback.
 
-The controller associates detections by selected class and nearby normalized center. It is not an identity/re-identification tracker. Selecting a target captures its normalized box area as a relative-size reference.
+Motor output requires:
 
-```text
-horizontal_error = 2 * (target_center_x / image_width - 0.5)
-size_error       = clamp((reference_area - current_area) / reference_area, -1, 1)
+- A valid, enabled `config/car_motor_can.conf` profile.
+- An enabled CAN interface, fresh detections, and fresh measured left/right wheel speeds.
+- Successful `SCHED_FIFO` scheduling at priority **20**.
 
-automatic speed = bounded size PD output, at least zero
-manual speed    = configured forward-speed setpoint
-steering        = bounded horizontal-error PD output
+Following starts stopped after each service restart. Target loss, stale input/feedback, and unavailable prerequisites inhibit motion. `GET /api/follow` reports readiness and motor status. FIFO admission and PREEMPT_RT kernel support are reported separately.
 
-left_target     = forward_speed + steering
-right_target    = forward_speed - steering
-wheel_command   = PI(target_wheel_speed - measured_wheel_speed)
-```
+Motor traffic uses the same [CAN module](source/can/can_socket.c) as other CAN communication. Adapt the disabled [example profile](config/car_motor_can.example.conf) to the drive manufacturer's command, stop, and feedback formats. A drive needing a special enable sequence or checksum requires a corresponding adapter.
 
-Wheel targets and steering correction use **m/s**. Both wheel targets are scaled together when necessary to preserve their ratio under the speed limit. Each wheel PI produces a normalized command in `[-1, 1]`; parameters are shared but feedback and integral state are independent. `wheel_integral_limit` bounds each I-term contribution in `0..1`; zero disables integration. Derivative filtering and conditional-integration anti-windup are implemented.
+Wheel targets and steering correction use **m/s**. Target size is a relative visual cue rather than calibrated distance. LLM integration and navigation/path planning are not implemented.
 
-Box area is a relative-size cue, not calibrated distance. Target pose, occlusion, and zoom can change it. Automatic and manual strategies both retain the inner wheel feedback loops.
+## Anonymous Assistant
 
-New inference observations trigger control using capture-time differences. Unchanged frames do not advance PID again; idle wakes check stop conditions every 50 ms. Target loss, stale detections/feedback, capture reset, disabled CAN, and failed FIFO admission inhibit motion. Setpoints may still be previewed without an actuator adapter.
+Official website: [ANO Tech / 匿名科创](https://www.anotc.com/). Downloads and documentation: [Anonymous Assistant official repository](https://gitee.com/anotc/AnoAssistant).
 
-### Motor CAN integration
+Supports **Anonymous Assistant 2.0.1** with **ANO V8 over TCP**: board as server, PC as client. The configurable port defaults to **8080**; telemetry is disabled until enabled or restored from saved settings. Configure it under **Web与匿名助手设置**.
 
-Motor encoding/decoding belongs to [the shared CAN module](source/can/can_socket.c), using the same interfaces, sockets, filters, and receive path as other CAN traffic. There is no standalone motor CAN module or socket.
+Frame `0xF1` carries four `Float32` fields: target speed, actual speed, target steering correction, and actual steering correction. Send rate and simulated waveforms are configurable. Telemetry supports **two TCP clients** and does not issue motor commands.
 
-Start from the **disabled** [example profile](config/car_motor_can.example.conf). Replace its illustrative IDs, layout, scaling, direction, and stop bytes with the manufacturer's documented protocol before enabling it. The runtime file is `config/car_motor_can.conf` under the installation directory; an absent, disabled, or invalid profile does not bind the adapter or send motor frames.
+## Configuration and data
 
-The profile accepts `key value` or `key=value` and `#` comments:
+Paths are relative to the runtime working directory. The installed service uses `/opt/autonomous-driving-car`.
 
-| Scope | Keys |
+| Path | Purpose |
 | --- | --- |
-| Global | `enabled`, `interface`, `feedback_pair_timeout_ms` |
-| Each `left.` / `right.` command | `cmd_id`, `cmd_extended`, `cmd_fd`, `cmd_length`, `cmd_template` |
-| Command field | `cmd_offset`, `cmd_width`, `cmd_big_endian`, `cmd_scale`, optional `cmd_bias` |
-| Explicit stop payload | `stop_template` |
-| Feedback frame | `fb_id`, `fb_extended`, `fb_fd`, `fb_length` |
-| Feedback field | `fb_offset`, `fb_width`, `fb_big_endian`, `fb_scale` |
+| `config/config.txt` | Camera, YOLO, CAN, and Web IP configuration |
+| `config/follow.conf` | Following parameters |
+| `config/car_motor_can.conf` | Device-specific motor protocol |
+| `config/cpu_freq.conf` | CPU policy settings |
+| `config/ano.conf` | Anonymous Assistant settings |
+| `config/yolo26.rknn` | Runtime model |
+| `config/coco.names`, `config/*.dbc` | Class labels and CAN databases |
+| `logs/YYYYMMDD/` | Information and error logs |
+| `recordings/YYYYMMDD/` | Annotated MP4 recordings |
+| `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | Daily inference results |
 
-Fields are signed 16/32-bit integers. Encoding uses `raw = round(command * cmd_scale + cmd_bias)`; decoding uses `wheel_mps = raw * fb_scale`. Include gearing, wheel diameter, units, and polarity in the feedback conversion. Matching non-overlapping left/right fields can share a frame. Invalid/duplicate/unknown keys and incompatible layouts are rejected.
+Completed inference results include frames with no targets. TXT entries contain capture time, image size, lens position when available, and detections with confidence and `X1 X2 Y1 Y2` coordinates in the original image.
 
-Motor commands use direct nonblocking writes rather than a stale-command queue. Feedback is published as a fresh left/right pair, timestamped with the older wheel sample. Protocols needing a startup state machine, checksums, or unsupported payload types need a specific adapter. Configure the drive watchdog and verify stop behavior and direction with unloaded wheels before actual operation; a broken CAN link cannot deliver a stop frame.
+Configuration downloads include actual configuration files and the model. Empty directories and internal synchronization metadata are omitted; the uncompressed file limit is **64 MiB**.
 
-### Real-time readiness
+Driving Logs supports previews, individual downloads, and a whole-page ZIP. Bulk deletion keeps active/finalizing recordings while removing inactive managed files, including interrupted videos. The whole-page ZIP excludes active or incomplete videos.
 
-The worker requests `SCHED_FIFO` priority **20**. Motion requires successful scheduling admission, a valid adapter, enabled CAN, and fresh detections/real feedback. Read `GET /api/follow`: `status.fifo`, `status.rt_error`, and `status.rt_kernel` report actual readiness; `motor` reports configuration, interface availability, errors, and counters.
+## Source layout
 
-FIFO success does not imply PREEMPT_RT. The validation board has not been upgraded to a PREEMPT_RT kernel, and scheduling admission can vary with permissions and group limits. No ordinary-scheduler motion fallback is enabled. Building/deploying this project does not install a kernel or reboot the board.
-
-## Anonymous Assistant 2.0.1
-
-Official website: [ANO Tech / 匿名科创](https://www.anotc.com/). Downloads and software documentation: [Anonymous Assistant official repository](https://gitee.com/anotc/AnoAssistant).
-
-Supports **Anonymous Assistant 2.0.1** using **ANO V8 over TCP**: the board is the server and the PC is the client. The default port is **8080**. Enable the service, adjust the port/send rate, or select simulated signals under **系统配置 → Web与匿名助手设置**.
-
-Configure flexible frame **`0xF1`** as four **Float32** fields: target speed, actual speed, target steering correction, and actual steering correction. Software usage details are available from the official links above.
-
-## Recordings and detection reports
-
-Driving Logs combines logs, MP4 recordings, and daily TXT results. It supports text preview, finalized video preview, individual download/delete, category packs/clears, and a whole-page ZIP. Active-recording download closes its current segment and continues in a new segment; bulk deletion retains the active recording, including its finalization window. Inactive interrupted or malformed MP4 files are deleted too; they remain excluded from preview and whole-page archives. Historical migration tools do not imply automatic deletion of all old artifacts.
-
-| Output | Location / naming |
+| Directory | Responsibility |
 | --- | --- |
-| Information/error logs | `logs/…/log_info_YYYYMMDD_HHMMSS_mmm.log`, `log_error_YYYYMMDD_HHMMSS_mmm.log` |
-| Annotated video | `recordings/…/video_YYYYMMDD_HHMMSS_mmm.mp4` |
-| Completed inference results | `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` |
+| `source/core/`, `include/core/` | Startup, shared context, configuration, logging, CPU affinity |
+| `source/video/`, `include/video/` | Capture, frame ownership, encoding, streaming, recording |
+| `source/yolo/`, `include/yolo/` | RKNN inference, drawing, result reports |
+| `source/control/`, `include/control/` | Following and wheel control |
+| `source/can/`, `include/can/` | Shared CAN sockets, queues, DBC and motor integration |
+| `source/tcp/`, `include/tcp/` | Telemetry transport and interface IP helpers |
+| `source/telemetry/`, `include/telemetry/` | ANO V8 frames, sampling, simulation, configuration |
+| `source/http/`, `include/http/` | HTTP reactor, authentication, configuration and file APIs |
+| `source/watchdog/`, `include/watchdog/` | Worker heartbeat supervision |
+| `html/` | Browser pages, themes, and JavaScript modules |
+| `scripts/` | Shell build, deployment, and model synchronization |
 
-Every completed inference, including a zero-target result, is submitted to the report writer. This does not mean every camera frame completes inference or appears in the stream/recording. New output does not create recognition photos or per-frame JSON.
+The [entry point](source/core/main.c) coordinates module startup and shutdown. Camera frames feed inference and rendering; completed results feed following control and TXT reports. Encoded video serves both recording and browser clients. Telemetry reads controller snapshots through the TCP worker.
 
-Example TXT layout:
-
-```text
-2026-10-28T20:19:17.653+0800：num[1] size[1280 720] FocalLength[raw:160]
-    person 0.891602 position[572.000 1279.000 3.000 690.000]
-```
-
-Each frame header contains local capture time with timezone, detection count, image width/height, and lens position (`raw:<value>` or `unknown`). Each object contains name, confidence, and **`X1 X2 Y1 Y2`** in original-image coordinates after letterbox restoration and clipping. The TXT currently has no separate camera identity field and no millimeter focal-length calibration.
-
-## Persistent configuration
-
-Paths are relative to the runtime working directory (`/opt/autonomous-driving-car` for the service).
-
-| File | Purpose |
-| --- | --- |
-| `config/config.txt` | Camera, YOLO, CAN, and Web interface IP configuration |
-| `config/follow.conf` | Following parameters; moving state is not restored at startup |
-| `config/car_motor_can.conf` | Actual motor protocol profile; not supplied/enabled by default |
-| `config/ano.conf` | Anonymous Assistant enable state, TCP port, sample rate, and link-test mode |
-| `config/cpu_freq.conf` | CPU governor/min/max values per policy |
-| `config/yolo26.rknn` | Canonical model |
-| `config/coco.names` | Default class labels |
-| `config/*.dbc` | Per-interface DBC databases |
-
-Use the deployed configuration for runtime changes. Keep models, device settings, logs, and recordings when moving an existing installation. Do not replace them with a clean checkout merely to update source code.
-
-Configuration downloads contain regular files, including the current RKNN model, labels, hidden/zero-byte configuration files, and any retained model or weight files in subdirectories. Empty directories and the internal `.model-sync.lock` / `.last-deployed.sha256` bookkeeping files are omitted; export does not delete files or folders. The 64 MiB uncompressed limit includes files in subdirectories.
-
-## API and diagnostics
-
-These are selected endpoints; [http.c](source/http/http.c) and individual HTTP handlers define routing and authorization. Paths are relative to the board's HTTP origin.
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET/POST /api/config` | Configuration snapshot / apply selected module; exposes fixed `http_port: 80` |
-| `GET/POST /api/ano` | Anonymous Assistant configuration, sampled channels, and TCP status |
-| `GET/POST /api/follow` | Following parameters, detections, readiness, motor diagnostics |
-| `GET /api/system`, `GET/POST /api/cpu_freq` | Resource monitoring and CPU policies |
-| `GET /api/network/ifaces`, `GET /api/network` | Interface discovery and network state |
-| `GET /api/can/ifaces`, `/api/can/frames`, `/api/can/decoded` | CAN interfaces, raw frames, decoded signals |
-| `POST /api/can/send`, `/api/can/toggle`, `/api/can/dbc` | Manual transmission, interface toggle, DBC upload |
-| `GET /api/camera`, `/api/video/devices`, `/api/video/caps` | Camera configuration/capabilities |
-| `GET /api/video/stats` | Capture/drop/display/encoding counters and processing age |
-| `GET /api/rec/status`, `/api/rec/list` | Recording state and file list |
-| `POST /api/rec/start`, `/api/rec/stop` | Recording control |
-| `GET /api/detections/reports`, `/api/logs` | Daily report and log lists |
-| `GET /api/files/preview`, `/api/files/pack`, `POST /api/files/clear` | Text preview, whole-page archive, managed-file cleanup |
-
-Protected native downloads/previews require the browser's authenticated session workflow. Browser video measurements are available through `window.getCarVideoDiagnostics()`; pipeline age is not a direct camera-to-screen latency measurement.
+## Diagnostics
 
 ```bash
 systemctl status autonomous-driving-car --no-pager
@@ -278,16 +161,7 @@ curl -s http://127.0.0.1/api/ano
 curl -s http://127.0.0.1/api/video/stats
 ```
 
-| Symptom | Check |
-| --- | --- |
-| Startup fails at YOLO | NPU driver/runtime compatibility, RKNN platform/layout, canonical model, labels |
-| No video / increasing delay | Negotiated mode, camera errors, pipeline counters, thermal limits, network and MSE buffer |
-| No motor output | Enabled state, selected target, profile validation, CAN, FIFO error, feedback freshness |
-| Motor socket online but no wheel speed | Feedback IDs/format/offsets/endian order/scaling and actual incoming frames |
-| CPU clock below requested value | Selected policy, effective limits, temperature and kernel thermal controls |
-| Model synchronization conflict | Resolve independent project/deployment changes before retrying |
-
-CTest covers frame ownership/queues, H.264 timeline, color conversion, recording splits, reports, model synchronization, files, CPU settings, CAN lifecycle, Web configuration/client admission, and ANO V8 framing/TCP queries/simulated signals. Passing these checks does not establish real-motor protocol compatibility, long-term video stability, PREEMPT_RT readiness, or acceptance in the PC application's GUI.
+Check model/platform compatibility for inference startup failures, capture/encoding counters for video issues, and controller readiness/feedback for missing motor output. Detailed API routes are defined in [http.c](source/http/http.c).
 
 ## License
 

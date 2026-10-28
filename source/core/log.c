@@ -27,9 +27,7 @@ typedef struct {
 
 static log_ctx_t g_log = { .mutex = PTHREAD_MUTEX_INITIALIZER };
 
-#ifndef LOG_MAX_SIZE
 #define LOG_MAX_SIZE (10 * 1024 * 1024)  /* 10MB */
-#endif
 
 /* Exclusive creation preserves old logs even on rapid restarts or clock
    adjustments. The timestamp remains meaningful outside the date directory. */

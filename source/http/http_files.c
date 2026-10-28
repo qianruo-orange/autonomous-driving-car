@@ -343,19 +343,19 @@ static int file_archive_command(const char *stage,int output)
     posix_spawn_file_actions_t actions;int rc=posix_spawn_file_actions_init(&actions);if(rc){errno=rc;return -1;}
     rc=posix_spawn_file_actions_adddup2(&actions,output,STDOUT_FILENO);
     if(!rc)rc=posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
+    if(!rc)rc=posix_spawn_file_actions_addchdir_np(&actions,stage);
     /* H.264 files are already compressed. Stored ZIP needs no recompression,
        supports ZIP64 and opens directly in desktop file managers. */
-    const char *script="import os,sys,zipfile\n"
-        "root=sys.argv[1]\n"
-        "with zipfile.ZipFile(sys.stdout.buffer,'w',compression=zipfile.ZIP_STORED,allowZip64=True) as z:\n"
-        " for folder,dirs,files in os.walk(root):\n"
-        "  for name in sorted(files):\n"
-        "   path=os.path.join(folder,name)\n"
-        "   z.write(path,os.path.relpath(path,root))\n";
-    char *args[]={"python3","-c",(char*)script,(char*)stage,NULL};pid_t child;
-    extern char **environ;if(!rc)rc=posix_spawnp(&child,"python3",&actions,NULL,args,environ);
+    char *args[]={"zip","-q","-0","-r","-D","-",".",NULL};pid_t child;
+    extern char **environ;if(!rc)rc=posix_spawnp(&child,"zip",&actions,NULL,args,environ);
     posix_spawn_file_actions_destroy(&actions);if(rc){errno=rc;return -1;}
     int status;do{rc=waitpid(child,&status,0);}while(rc<0&&errno==EINTR);
+    if(rc>=0&&WIFEXITED(status)&&WEXITSTATUS(status)==12){
+        /* Info-ZIP returns 12 for an empty selection. Return a valid empty ZIP. */
+        static const unsigned char empty[22]={0x50,0x4b,0x05,0x06};
+        if(ftruncate(output,0)||lseek(output,0,SEEK_SET)<0)return -1;
+        return file_write(output,empty,sizeof(empty));
+    }
     if(rc<0||!WIFEXITED(status)||WEXITSTATUS(status)){errno=EIO;return -1;}return 0;
 }
 

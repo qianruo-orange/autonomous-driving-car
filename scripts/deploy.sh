@@ -10,7 +10,7 @@ SERVICE_SRC="$PROJECT_DIR/$APP_NAME.service"
 SERVICE_NAME="$APP_NAME"
 
 detect_model_platform() {
-    python3 "$PROJECT_DIR/scripts/model_sync.py" detect-platform
+    bash "$PROJECT_DIR/scripts/model_sync.sh" detect-platform
 }
 
 usage() {
@@ -61,39 +61,18 @@ do_install() {
         echo "[ERROR] unable to detect the RKNN platform; set CAR_PLATFORM explicitly"
         return 1
     fi
-    platform=$(python3 "$PROJECT_DIR/scripts/model_sync.py" normalize-platform --platform "$platform")
+    platform=$(bash "$PROJECT_DIR/scripts/model_sync.sh" normalize-platform --platform "$platform")
     # Check for independently changed models before interrupting the service.
-    python3 "$PROJECT_DIR/scripts/model_sync.py" reconcile \
+    bash "$PROJECT_DIR/scripts/model_sync.sh" reconcile \
         --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR" --platform "$platform"
 
     echo "[STOP] existing service (if running)"
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 
     echo "[INSTALL] configuration and canonical model (preserving uploaded model changes)"
-    if ! python3 "$PROJECT_DIR/scripts/model_sync.py" install-config \
+    if ! bash "$PROJECT_DIR/scripts/model_sync.sh" install-config \
         --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR" --platform "$platform"; then
         echo "[ERROR] configuration/model synchronization failed; restarting the previous service"
-        systemctl start "$SERVICE_NAME" 2>/dev/null || true
-        return 1
-    fi
-
-    echo "[CLEAN] retired telemetry configuration"
-    if ! python3 "$PROJECT_DIR/scripts/model_sync.py" cleanup-retired-config \
-        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR"; then
-        echo "[ERROR] retired configuration cleanup failed; restarting the previous service"
-        systemctl start "$SERVICE_NAME" 2>/dev/null || true
-        return 1
-    fi
-
-    echo "[MIGRATE] retained detection journals to daily TXT"
-    if ! nice -n 10 python3 "$PROJECT_DIR/scripts/normalize_file_names.py" --root "$DEPLOY_DIR"; then
-        echo "[ERROR] filename normalization failed; restarting the previous service"
-        systemctl start "$SERVICE_NAME" 2>/dev/null || true
-        return 1
-    fi
-    if ! nice -n 10 python3 "$PROJECT_DIR/scripts/migrate_detection_txt.py" \
-        --root "$DEPLOY_DIR/recordings/detections"; then
-        echo "[ERROR] TXT migration failed; retaining journals and restarting the previous service"
         systemctl start "$SERVICE_NAME" 2>/dev/null || true
         return 1
     fi
@@ -118,9 +97,11 @@ do_install() {
     rm -rf "$DEPLOY_DIR/html"
     cp -r "$PROJECT_DIR/html" "$DEPLOY_DIR/html"
 
-    echo "[INSTALL] TXT migration utility"
-    mkdir -p "$DEPLOY_DIR/scripts"
-    cp "$PROJECT_DIR/scripts/migrate_detection_txt.py" "$DEPLOY_DIR/scripts/migrate_detection_txt.py"
+    echo "[CLEAN] retired tooling"
+    if [ -d "$DEPLOY_DIR/scripts" ]; then
+        find "$DEPLOY_DIR/scripts" -type f \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -delete
+        find "$DEPLOY_DIR/scripts" -depth -type d -empty -delete
+    fi
 
     echo "[INSTALL] logs/"
     mkdir -p "$DEPLOY_DIR/logs"

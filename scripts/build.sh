@@ -9,87 +9,36 @@ BIN_NAME="autonomous-driving-car"
 BIN_PATH="$BIN_DIR/$BIN_NAME"
 CMAKE_DIR="$PROJECT_DIR/cmake"
 LOGS_DIR="$PROJECT_DIR/logs"
-USED_MODEL_WEIGHT=""
 
 usage() {
-    echo "Usage: $0 [-D|--debug] [-R|--release] [-C|--clean] [-P|--platform <platform>] [-M|--convert-model]"
+    echo "Usage: $0 [-D|--debug] [-R|--release] [-C|--clean] [-P|--platform <platform>]"
     echo "  -D, --debug     build with debug output to terminal"
     echo "  -R, --release   build for production (default)"
     echo "  -C, --clean     remove build directory, bin directory, cmake directory, generated CMake artifacts, and clear logs"
     echo "  -P, --platform  目标 RKNPU 平台（rk3588/rk3576/rk3568/rk3566/rk3562 等）"
     echo "                  默认从 /proc/device-tree/compatible 自动辨识当前板卡芯片"
-    echo ""
-    echo "  -M, --convert-model  explicitly re-export the model from YOLO_WEIGHTS"
-    echo "Conversion and runtime use config/yolo26.rknn."
-    echo "缺失或平台不匹配时调用 ultralytics 官方 CLI 在板端自动转换"
-    echo "（yolo export model=<权重> format=rknn name=<平台>，权重缺失自动下载，"
-    echo "  可用环境变量 YOLO_WEIGHTS 指定权重，默认 yolo26n.pt）。"
+    echo "Prepare a board-compatible config/yolo26.rknn before building."
     exit 1
 }
 
 # 平台自动辨识：从设备树 compatible 提取 Rockchip RKNPU 芯片型号（rkXXXX / rvXXXX）
 detect_platform() {
-    python3 "$PROJECT_DIR/scripts/model_sync.py" detect-platform
+    bash "$PROJECT_DIR/scripts/model_sync.sh" detect-platform
 }
 
-# Conversion and runtime share exactly one RKNN path. Reconcile uploads before
-# reusing or exporting a model; never restore a stale platform cache over it.
+# Reconcile uploaded models before validating the single runtime RKNN path.
+# Model preparation is external to this C/C++ build.
 sync_model() {
     local plat="$1"
     local runtime_model="$PROJECT_DIR/config/yolo26.rknn"
-    local selected_weights weights
-    selected_weights=$(python3 "$PROJECT_DIR/scripts/model_sync.py" discover-weights --project "$PROJECT_DIR" --plain)
-    weights="${selected_weights:-yolo26n.pt}"
-    python3 "$PROJECT_DIR/scripts/model_sync.py" reconcile \
+    bash "$PROJECT_DIR/scripts/model_sync.sh" reconcile \
         --project "$PROJECT_DIR" --deployment "${CAR_MODEL_DEPLOYMENT:-/opt/$BIN_NAME}" --platform "$plat"
-    if [ "$CONVERT_MODEL" != 1 ] && [ -z "$selected_weights" ] && [ -f "$runtime_model" ]; then
-        python3 "$PROJECT_DIR/scripts/model_sync.py" validate --model "$runtime_model" --platform "$plat"
-        echo "[MODEL] using config/yolo26.rknn ($plat)"
-        return 0
-    fi
-
-    local yolo_bin wbase weights_cache workdir rknn_file export_status=0
-    yolo_bin="$PROJECT_DIR/.venv/bin/yolo"
-    [ -x "$yolo_bin" ] || yolo_bin=$(command -v yolo || true)
-    [ -z "$yolo_bin" ] && [ -x "$HOME/.local/bin/yolo" ] && yolo_bin="$HOME/.local/bin/yolo"
-    if [ ! -x "$yolo_bin" ]; then
-        echo "[MODEL] Ultralytics CLI unavailable; install ultralytics and rknn-toolkit2 in .venv"
+    if [ ! -f "$runtime_model" ]; then
+        echo "[MODEL] missing config/yolo26.rknn; provide a compatible $plat RKNN model before building"
         return 1
     fi
-    wbase=$(basename "$weights")
-    weights_cache="$PROJECT_DIR/config/weights/$wbase"
-    if [[ "$weights" == */* ]] && [ ! -f "$weights" ]; then
-        echo "[MODEL] explicit weight file not found: $weights"
-        return 1
-    fi
-    mkdir -p "$PROJECT_DIR/config/weights"
-    workdir=$(mktemp -d /tmp/yolo_rknn_XXXXXX)
-    # An explicit weight path takes precedence over a same-named cached weight.
-    if [ -f "$weights" ]; then
-        cp -- "$weights" "$workdir/$wbase"
-    elif [ -f "$weights_cache" ]; then
-        cp -- "$weights_cache" "$workdir/$wbase"
-    fi
-    echo "[MODEL] exporting $wbase for $plat into config/yolo26.rknn"
-    (cd "$workdir" && "$yolo_bin" export model="$wbase" format=rknn name="$plat") || export_status=$?
-    # Keep a downloaded input even if export fails. Compilation success is the
-    # only point at which conversion inputs may be removed.
-    if [ -f "$workdir/$wbase" ]; then
-        cp -- "$workdir/$wbase" "$weights_cache"
-    fi
-    if [ "$export_status" -eq 0 ]; then
-        rknn_file=$(find "$workdir" -type f -name '*.rknn' -print -quit)
-        if [ -n "$rknn_file" ] && python3 "$PROJECT_DIR/scripts/model_sync.py" publish-converted \
-            --project "$PROJECT_DIR" --platform "$plat" --model "$rknn_file"; then
-            if [ -f "$weights" ]; then USED_MODEL_WEIGHT="$weights"; fi
-            [[ "$workdir" == /tmp/yolo_rknn_* ]] && rm -rf -- "$workdir"
-            return 0
-        fi
-        echo "[MODEL] exporter did not produce a valid $plat RKNN artifact"
-    fi
-    [[ "$workdir" == /tmp/yolo_rknn_* ]] && rm -rf -- "$workdir"
-    echo "[MODEL] conversion failed; the previous canonical model was preserved"
-    return 1
+    bash "$PROJECT_DIR/scripts/model_sync.sh" validate --model "$runtime_model" --platform "$plat"
+    echo "[MODEL] using config/yolo26.rknn ($plat)"
 }
 
 print_version_info() {
@@ -154,7 +103,7 @@ check_deps() {
 
     # 工具链
     local cmd
-    for cmd in cmake make gcc g++ python3; do
+    for cmd in cmake make gcc g++ tar zip; do
         command -v "$cmd" >/dev/null 2>&1 || missing_cmds+=("$cmd")
     done
 
@@ -203,13 +152,11 @@ check_deps() {
 # ---------- 参数解析（支持组合使用） ----------
 BUILD_MODE="release"
 PLATFORM_OVERRIDE=""
-CONVERT_MODEL=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -D|--debug)    BUILD_MODE="debug" ;;
         -R|--release)  BUILD_MODE="release" ;;
         -C|--clean)    BUILD_MODE="clean" ;;
-        -M|--convert-model) CONVERT_MODEL=1 ;;
         -P|--platform) shift
                        [ -n "${1:-}" ] || { echo "[BUILD] 错误: -P 需要平台参数"; usage; }
                        PLATFORM_OVERRIDE="$1" ;;
@@ -240,10 +187,16 @@ else
     exit 1
 fi
 
-PLATFORM=$(python3 "$PROJECT_DIR/scripts/model_sync.py" normalize-platform --platform "$PLATFORM")
+PLATFORM=$(bash "$PROJECT_DIR/scripts/model_sync.sh" normalize-platform --platform "$PLATFORM")
 
 # 模型同步（失败则中止编译：模型是启动必要项）
 sync_model "$PLATFORM"
+
+# Regenerate legacy build trees once; logs and runtime data live outside them.
+if [ -f "$BUILD_DIR/CTestTestfile.cmake" ] || [ -d "$BUILD_DIR/Testing" ]; then
+    echo "[CLEAN] regenerating legacy build outputs"
+    find "$BUILD_DIR" -xdev -mindepth 1 -depth -delete
+fi
 
 case "$BUILD_MODE" in
     debug)
@@ -264,7 +217,6 @@ case "$BUILD_MODE" in
 esac
 
 make -C "$BUILD_DIR" -j"$(nproc)"
-python3 "$PROJECT_DIR/scripts/model_sync.py" cleanup-weights --project "$PROJECT_DIR" --used-weight "$USED_MODEL_WEIGHT"
 print_version_info
 
 echo "[BUILD] done -> $BIN_PATH"
