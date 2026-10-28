@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 (function () {
     'use strict';
-    const grid = document.querySelector('.can-grid');
-    if (!grid) return;
+    const networkCard = document.querySelector('#card_net');
+    if (!networkCard) return;
 
     const card = document.createElement('form');
-    card.id = 'card_vofa';
-    card.className = 'card';
+    card.id = 'network_vofa';
+    card.className = 'network-vofa';
     card.innerHTML =
-        '<h3><span data-i18n="VOFA 上位机"></span>' +
+        '<h4><span data-i18n="VOFA 上位机"></span>' +
         '<span id="vofa_save_status" class="card-status" role="status" aria-live="polite"></span>' +
-        '<button class="btn btn-save" type="submit" id="vofa_save" disabled data-i18n="保存"></button></h3>' +
+        '<button class="btn btn-save" type="submit" id="vofa_save" disabled data-i18n="保存"></button></h4>' +
         '<div class="cfg-grid vid2 vofa-fields">' +
         '<div class="row"><label for="vofa_enabled" data-i18n="通信状态"></label>' +
         '<select id="vofa_enabled" name="enabled" disabled><option value="0" data-i18n="停用 VOFA"></option>' +
@@ -20,7 +20,7 @@
         '<div class="row"><label for="vofa_rate_hz" data-i18n="发送频率 (Hz)"></label>' +
         '<input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" required disabled></div>' +
         '</div>';
-    grid.appendChild(card);
+    networkCard.appendChild(card);
     applyI18n(card);
 
     const status = card.querySelector('#vofa_save_status');

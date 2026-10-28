@@ -172,7 +172,7 @@ Investigate scheduling permissions and RT-group/cgroup restrictions separately f
 
 ## VOFA+ telemetry
 
-System Configuration includes a VOFA card for enabling telemetry, selecting its TCP port, and setting a sampling limit of `1..100 Hz`. It is disabled by default and uses port **6667**, independently of the application's CAN/TCP data port. The board is a TCP server; VOFA+ on the computer is the TCP client. Saving the card persists these settings in `config/vofa.conf`. Telemetry configuration does not enable following or motor output.
+System Configuration includes a VOFA section inside Network Settings for enabling telemetry, selecting its TCP port, and setting a sampling limit of `1..100 Hz`. It is disabled by default and uses port **6667**, independently of the application's CAN/TCP data port. The board is a TCP server; VOFA+ on the computer is the TCP client. Saving the card persists these settings in `config/vofa.conf`. Telemetry configuration does not enable following or motor output.
 
 The stream uses the official [JustFloat format](https://www.vofa.plus/docs/learning/dataengines/justfloat/): each 20-byte frame contains four little-endian 32-bit floats followed by `00 00 80 7F`. There are no text headers or channel-name packets. Channel positions are fixed:
 
@@ -187,7 +187,7 @@ Steering here is the differential wheel-speed correction already used by the con
 
 To create the two comparison plots in VOFA+:
 
-1. Enable the VOFA card, choose a free port, and save it. On the computer, select **TCP Client**, connect to the board's IP and the saved port, and select the **JustFloat** data engine.
+1. Enable VOFA in Network Settings, choose a free port, and save it. On the computer, select **TCP Client**, connect to the board's IP and the saved port, and select the **JustFloat** data engine.
 2. Add two Waveform widgets. In each widget's right-click axis settings, use time `T` for X. Bind channels **0 and 1** to the first widget's Y axis for target/actual speed, and channels **2 and 3** to the second for target/actual steering correction.
 3. Set the VOFA sampling interval to `1 / rate_hz` seconds (about `33.333 ms` at 30 Hz). Use Auto scale and keep the displayed sample window at its latest position. The official [waveform guide](https://www.vofa.plus/docs/learning/widgets/wave/) describes axis bindings and the sampling-interval control.
 
