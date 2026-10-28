@@ -233,10 +233,7 @@
       document.getElementById('ip_a').value = cfg.ip_addr || '';
       document.getElementById('ip_m').value = cfg.ip_mask || '';
       document.getElementById('ip_g').value = cfg.ip_gw || '';
-      var ipKey = !cfg.ip_cur_addr ? '当前 {interface}  无 IP' :
-        cfg.ip_cur_gw ? '当前 {interface}  IP {address}{mask} 网关 {gateway}' : '当前 {interface}  IP {address}{mask}';
-      setI18nText(document.getElementById('ip_cur'), ipKey, {interface: cfg.ip_cur_if || '',
-        address: cfg.ip_cur_addr || '', mask: cfg.ip_cur_mask ? ' / ' + cfg.ip_cur_mask : '', gateway: cfg.ip_cur_gw || ''});
+
       chkIpMode();
 
       canNames = Object.keys(cfg.cans || {});
