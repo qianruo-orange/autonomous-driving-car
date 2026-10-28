@@ -104,3 +104,6 @@ config/cpu_freq.conf
 config/follow.conf
 config/car_motor_can.conf
 config/vofa.conf
+config/.vofa.conf.*
+config/ano.conf
+config/.ano.conf.*

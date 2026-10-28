@@ -8,6 +8,31 @@
   var canFD = {};      /* 系统接口 CAN FD 支持映射 { can0: 1, ... } */
   var canEnabled = null; /* Confirmed global state; loaded from the device. */
   var canFeatureBusy = false;
+  var netLoaded = false;
+  var netLoading = false;
+  var netSaving = false;
+  var netSnapshot = null;
+
+  function renderNetControls() {
+    var unavailable = !netLoaded || netLoading || netSaving;
+    ['bind', 'ip_mode', 'ip_a', 'ip_m', 'ip_g'].forEach(function(id) {
+      document.getElementById(id).disabled = unavailable;
+    });
+    document.getElementById('network_save').disabled = unavailable || !window.networkAno || !window.networkAno.ready();
+  }
+  document.addEventListener('networkanostatechange', renderNetControls);
+  renderNetControls();
+
+  function netSettings() {
+    return {
+      target: 'ip',
+      ip_ifname: document.getElementById('bind').value,
+      ip_mode: document.getElementById('ip_mode').value,
+      ip_addr: document.getElementById('ip_a').value.trim(),
+      ip_mask: document.getElementById('ip_m').value.trim(),
+      ip_gw: document.getElementById('ip_g').value.trim()
+    };
+  }
 
   function renderCanFeature() {
     var enabled = canEnabled === true;
@@ -222,23 +247,43 @@
     if (canFeatureBusy) return;
     canFeatureBusy = true;
     renderCanFeature();
+    var loadNet = !netSaving;
+    var netFailed = loadNet;
+    if (loadNet) {
+      netLoaded = false;
+      netLoading = true;
+      renderNetControls();
+    }
     try {
       var response = await fetch('/api/config');
       if (!response.ok) throw new Error('Settings unavailable');
       var cfg = await response.json();
+      if (!cfg || typeof cfg !== 'object') throw new Error('Invalid settings');
+      if (loadNet) {
+        /* Web readiness is independent of CAN state and other configuration cards. */
+        var bind = document.getElementById('bind');
+        var ifname = cfg.ip_ifname || '';
+        if (ifname && !Array.from(bind.options).some(function(option) { return option.value === ifname; })) {
+          var option = document.createElement('option');
+          option.value = ifname;
+          option.textContent = ifname;
+          bind.appendChild(option);
+        }
+        bind.value = ifname;
+        document.getElementById('ip_mode').value = cfg.ip_mode || '';
+        document.getElementById('ip_a').value = cfg.ip_addr || '';
+        document.getElementById('ip_m').value = cfg.ip_mask || '';
+        document.getElementById('ip_g').value = cfg.ip_gw || '';
+        chkIpMode();
+        netSnapshot = netSettings();
+        netLoaded = true;
+        netFailed = false;
+      }
       if (typeof cfg.can_enabled !== 'boolean') throw new Error('CAN state unavailable');
-      document.getElementById('bind').value = cfg.ip_ifname || '';
 
       /* YOLO thresholds are percentages; concurrency and pacing are automatic. */
       document.getElementById('yolo_cf').value = Math.round((cfg.yolo_conf || 0.25) * 100);
       document.getElementById('yolo_nm').value = Math.round((cfg.yolo_nms || 0.45) * 100);
-      /* Web 管理网卡 IP；HTTP 固定使用 80 端口。 */
-      document.getElementById('ip_mode').value = cfg.ip_mode || '';
-      document.getElementById('ip_a').value = cfg.ip_addr || '';
-      document.getElementById('ip_m').value = cfg.ip_mask || '';
-      document.getElementById('ip_g').value = cfg.ip_gw || '';
-
-      chkIpMode();
 
       canNames = Object.keys(cfg.cans || {});
 
@@ -290,8 +335,11 @@
       canEnabled = cfg.can_enabled;
       renderCan();
     } catch(e) {
+      if (netFailed) cardStatus('net', 'err', '配置加载失败，请点击查询重试');
       cardStatus('can_feature', 'err', '配置加载失败，请点击查询重试');
     } finally {
+      if (loadNet) netLoading = false;
+      renderNetControls();
       canFeatureBusy = false;
       renderCanFeature();
     }
@@ -335,40 +383,38 @@
 
   /* 保存 Web 管理界面的网卡 IP 配置，HTTP 端口固定为 80。 */
   window.saveNet = async function() {
-    var networkCard = document.getElementById('card_net');
-    if (networkCard.dataset.saving === 'true' || !window.networkVofa || !window.networkVofa.validate()) return;
-    var mode = document.getElementById('ip_mode').value;
-    var ifn = document.getElementById('bind').value;
+    if (!netLoaded || netLoading || netSaving || !window.networkAno || !window.networkAno.validate()) return;
+    var ipSettings = netSettings();
+    var ipChanged = Object.keys(ipSettings).some(function(key) { return ipSettings[key] !== netSnapshot[key]; });
+    var mode = ipSettings.ip_mode;
+    var ifn = ipSettings.ip_ifname;
     if (mode !== '') {
       if (!ifn) { cardStatus('net', 'err', '配置 IP 需要先选择绑定网卡'); return; }
       if (mode === 'static') {
         var a = document.getElementById('ip_a').value.trim();
         var m = document.getElementById('ip_m').value.trim();
         if (!a || !m) { cardStatus('net', 'err', '静态模式需要填写 IP 地址与子网掩码'); return; }
-        if (!confirm(t('将把 ') + ifn + t(' 设为静态 IP ') + a + '/' + m
+        if (ipChanged && !confirm(t('将把 ') + ifn + t(' 设为静态 IP ') + a + '/' + m
           + (document.getElementById('ip_g').value ? t('，网关 ') + document.getElementById('ip_g').value : '')
           + t('。\n若当前页面通过该网卡访问，连接会断开，请用新 IP 重新访问。'))) return;
       } else if (mode === 'dhcp') {
-        if (!confirm(t('将把 ') + ifn + t(' 切换到 DHCP 自动获取。\nIP 变化后请用新地址重新访问。'))) return;
+        if (ipChanged && !confirm(t('将把 ') + ifn + t(' 切换到 DHCP 自动获取。\nIP 变化后请用新地址重新访问。'))) return;
       }
     }
-    var ipSettings = {
-      target: 'ip',
-      ip_ifname: ifn,
-      ip_mode: mode,
-      ip_addr: document.getElementById('ip_a').value.trim(),
-      ip_mask: document.getElementById('ip_m').value.trim(),
-      ip_gw: document.getElementById('ip_g').value.trim()
-    };
-    var save = document.getElementById('network_save');
-    networkCard.dataset.saving = 'true';
-    save.disabled = true;
+    netSaving = true;
+    window.networkAno.setSaving(true);
+    renderNetControls();
     try {
-      if (!await window.networkVofa.save()) return;
-      await postConfig(ipSettings, 'net');
+      if (!await window.networkAno.save()) return;
+      if (ipChanged) {
+        if (await postConfig(ipSettings, 'net')) netSnapshot = ipSettings;
+      } else {
+        cardStatus('net', 'ok', '✓ 已保存');
+      }
     } finally {
-      networkCard.dataset.saving = 'false';
-      save.disabled = false;
+      netSaving = false;
+      window.networkAno.setSaving(false);
+      renderNetControls();
     }
   };
 

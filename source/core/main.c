@@ -33,7 +33,7 @@
 #include "yolo/rknn_yolo.h"
 #include "tcp/net_ip.h"
 #include "control/car_sport_ctrl.h"
-#include "telemetry/vofa.h"
+#include "telemetry/ano.h"
 
 /* 模块生命周期函数 */
 typedef struct {
@@ -80,7 +80,7 @@ static int signal_setup(void *arg)
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
     /* 写已断开 socket 会触发 SIGPIPE，默认会终止进程；统一忽略，
-       由 write() 的返回值处理错误（见 tcp_server.c / http.c） */
+       由 write() 的返回值处理错误（见 http.c） */
     signal(SIGPIPE, SIG_IGN);
     return 0;
 }
@@ -116,13 +116,12 @@ static module_t g_modules[] = {
         .wd   = { .timeout = 3, .max_miss = 3 },
         .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
     },
-    /* tcp */
+    /* Anonymous Assistant network transport. */
     {
-        .tid  = 0,
         .name = "tcp",
-        .ops  = { .init = tcp_init, .dtor = tcp_cleanup, .task = tcp_task },
-        .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .ops = { .init = tcp_init, .dtor = tcp_cleanup, .task = tcp_task },
+        .wd = { .timeout = 5, .max_miss = 3 },
+        .thr = { .cpu = -1 },
     },
     /* http */
     {
@@ -137,10 +136,10 @@ static module_t g_modules[] = {
         .name = "car_sport_ctrl",
         .ops = { .init = follow_init, .dtor = follow_destroy, .task = NULL },
     },
-    /* Read-only telemetry shuts down before the controller it observes. */
+    /* Read-only Anonymous Assistant telemetry observes the controller. */
     {
-        .name = "vofa",
-        .ops = { .init = vofa_init, .dtor = vofa_destroy, .task = NULL },
+        .name = "ano",
+        .ops = { .init = ano_init, .dtor = ano_destroy, .task = NULL },
     },
     /* video */
     {

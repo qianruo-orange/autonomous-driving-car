@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [Unit]
-Description=Autonomous Driving Car Service (CAN FD / TCP / Video / YOLO)
+Description=Autonomous Driving Car Service (CAN FD / Web / ANO / Video / YOLO)
 After=network.target
 
 [Service]

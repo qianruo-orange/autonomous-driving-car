@@ -6,25 +6,25 @@
 
     const card = document.createElement('div');
     card.innerHTML =
-        '<div class="row"><label for="vofa_enabled" data-i18n="通信状态"></label>' +
-        '<select id="vofa_enabled" name="enabled" disabled><option value="0" data-i18n="停用 VOFA"></option>' +
-        '<option value="1" data-i18n="启用 VOFA"></option></select></div>' +
-        '<div class="row"><label for="vofa_port" data-i18n="VOFA端口"></label>' +
-        '<input id="vofa_port" name="port" type="number" min="1024" max="65535" step="1" required disabled></div>' +
-        '<div class="row"><label for="vofa_rate_hz" data-i18n="发送频率"></label>' +
-        '<div class="field-unit"><input id="vofa_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" aria-describedby="vofa_rate_unit" required disabled><span class="unit" id="vofa_rate_unit">Hz</span></div></div>' +
-        '<div class="row"><label for="vofa_test_mode" data-i18n="VOFA测试"></label>' +
-        '<select id="vofa_test_mode" name="test_mode" disabled><option value="0" data-i18n="关闭测试（实际数据）"></option>' +
+        '<div class="row"><label for="ano_enabled" data-i18n="通信状态"></label>' +
+        '<select id="ano_enabled" name="enabled" disabled><option value="0" data-i18n="停用匿名助手"></option>' +
+        '<option value="1" data-i18n="启用匿名助手"></option></select></div>' +
+        '<div class="row"><label for="ano_port" data-i18n="匿名助手端口"></label>' +
+        '<input id="ano_port" name="port" type="number" min="1024" max="65535" step="1" required disabled></div>' +
+        '<div class="row"><label for="ano_rate_hz" data-i18n="发送频率"></label>' +
+        '<div class="field-unit"><input id="ano_rate_hz" name="rate_hz" type="number" min="1" max="100" step="1" aria-describedby="ano_rate_unit" required disabled><span class="unit" id="ano_rate_unit">Hz</span></div></div>' +
+        '<div class="row"><label for="ano_test_mode" data-i18n="链路测试"></label>' +
+        '<select id="ano_test_mode" name="test_mode" disabled><option value="0" data-i18n="关闭测试（实际数据）"></option>' +
         '<option value="1" data-i18n="模拟波形"></option></select></div>';
     networkCard.querySelector('.net2').append(...card.childNodes);
     applyI18n(networkCard);
 
     const status = networkCard.querySelector('#status_net');
-    const save = networkCard.querySelector('#network_save');
-    const inputs = ['enabled', 'port', 'rate_hz', 'test_mode'].map(key => networkCard.querySelector('#vofa_' + key));
+    const inputs = ['enabled', 'port', 'rate_hz', 'test_mode'].map(key => networkCard.querySelector('#ano_' + key));
     const dirty = new Set();
     let loaded = false;
     let busy = false;
+    let saving = false;
     let readFailed = false;
     let generation = 0;
     let latest = null;
@@ -34,15 +34,15 @@
         setI18nText(status, key);
     }
     function disabled() {
-        inputs.forEach(input => { input.disabled = busy || !loaded; });
-        save.disabled = busy || !loaded || networkCard.dataset.saving === 'true';
+        inputs.forEach(input => { input.disabled = busy || saving || !loaded; });
+        document.dispatchEvent(new Event('networkanostatechange'));
     }
     function validSnapshot(data) {
-        if (!data || !data.config || !data.status) throw new Error('Invalid VOFA response');
+        if (!data || !data.config || !data.status) throw new Error('Invalid ANO response');
         if (!Number.isInteger(data.config.port) || data.config.port < 1024 || data.config.port > 65535 ||
             !Number.isInteger(data.config.rate_hz) || data.config.rate_hz < 1 || data.config.rate_hz > 100 ||
             ![true, false, 0, 1].includes(data.config.enabled) ||
-            ![true, false, 0, 1].includes(data.config.test_mode)) throw new Error('Invalid VOFA configuration');
+            ![true, false, 0, 1].includes(data.config.test_mode)) throw new Error('Invalid ANO configuration');
         return data;
     }
     function render(data, acceptAll) {
@@ -58,12 +58,12 @@
         disabled();
     }
     async function poll() {
-        if (!busy && !document.hidden) {
+        if (!busy && !saving && !document.hidden) {
             const version = generation;
             const abort = new AbortController();
             const timeout = setTimeout(() => abort.abort(), 5000);
             try {
-                const response = await fetch('/api/vofa', {cache: 'no-store', signal: abort.signal});
+                const response = await fetch('/api/ano', {cache: 'no-store', signal: abort.signal});
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 const data = await response.json();
                 if (version === generation) {
@@ -73,7 +73,7 @@
                 }
             } catch (error) {
                 if (version === generation) {
-                    message('无法读取 VOFA 状态', true);
+                    message('无法读取匿名助手状态', true);
                     readFailed = true;
                 }
             } finally {
@@ -86,7 +86,15 @@
         input.addEventListener('input', () => { dirty.add(input.name); });
         input.addEventListener('change', () => { dirty.add(input.name); });
     });
-    window.networkVofa = {
+    window.networkAno = {
+      ready: function () {
+        return loaded && !busy;
+      },
+      setSaving: function (value) {
+        saving = value;
+        if (saving) generation++;
+        disabled();
+      },
       validate: function () {
         return loaded && !busy && inputs.every(input => input.reportValidity());
       },
@@ -96,11 +104,11 @@
         readFailed = false;
         generation++;
         disabled();
-        message('正在保存 VOFA 设置…', false);
+        message('正在保存匿名助手设置…', false);
         const body = new URLSearchParams();
         inputs.forEach(input => body.set(input.name, input.value));
         try {
-            const response = await authFetch('/api/vofa', {
+            const response = await authFetch('/api/ano', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                 body: body.toString()
@@ -111,7 +119,7 @@
             render(data, true);
             return true;
         } catch (error) {
-            message('无法保存 VOFA 设置，请检查端口是否被占用', true);
+            message('无法保存匿名助手设置，请检查端口是否被占用', true);
             return false;
         } finally {
             busy = false;
@@ -122,5 +130,6 @@
     document.addEventListener('languagechange', () => {
         if (latest) render(latest, false);
     });
+    disabled();
     poll();
 })();

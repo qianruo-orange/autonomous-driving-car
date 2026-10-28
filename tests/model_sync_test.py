@@ -8,6 +8,7 @@ import subprocess
 import sys
 import shutil
 import os
+import json
 
 SPEC = importlib.util.spec_from_file_location("model_sync", Path(__file__).resolve().parents[1] / "scripts/model_sync.py")
 sync = importlib.util.module_from_spec(SPEC)
@@ -222,6 +223,66 @@ class ModelSyncTests(unittest.TestCase):
         saved = self.put(self.deployment, "config/cpu_freq.conf", b"device policy settings")
         sync.install_config(self.project, self.deployment, self.platform)
         self.assertEqual(saved.read_bytes(), b"device policy settings")
+
+    def test_install_excludes_retired_telemetry_configuration(self):
+        self.establish()
+        source = self.put(self.project, "config/vofa.conf", b"enabled 1\nport 6667\nrate_hz 30\n")
+        self.put(self.project, "config/.vofa.conf.Abc123", b"enabled 0\n")
+        self.put(self.project, "config/unrelated.conf", b"keep this setting\n")
+        sync.install_config(self.project, self.deployment, self.platform)
+        self.assertFalse((self.deployment / "config/vofa.conf").exists())
+        self.assertFalse((self.deployment / "config/.vofa.conf.Abc123").exists())
+        self.assertEqual((self.deployment / "config/unrelated.conf").read_bytes(), b"keep this setting\n")
+        self.assertTrue(source.exists())  # Deployment cleans only after successful synchronization.
+
+    def test_retired_configuration_cli_cleans_both_roots_after_install(self):
+        self.establish()
+        source = self.put(self.project, "config/vofa.conf", b"enabled 1\nport 6667\nrate_hz 30\ntest_mode 1\n")
+        installed = self.put(self.deployment, "config/vofa.conf", b"enabled 0\nport 7000\nrate_hz 10\n")
+        temporary = self.put(self.deployment, "config/.vofa.conf.aB1234", b"")
+        control = self.put(self.deployment, "config/follow.conf", b"unchanged controller settings\n")
+        sync.install_config(self.project, self.deployment, self.platform)
+        self.assertEqual(installed.read_bytes(), b"enabled 0\nport 7000\nrate_hz 10\n")
+        result = subprocess.run([sys.executable, str(SPEC.origin), "cleanup-retired-config",
+                                 "--project", str(self.project), "--deployment", str(self.deployment)],
+                                text=True, capture_output=True, check=True)
+        data = json.loads(result.stdout)
+        self.assertEqual(set(data["removed"]), {str(source), str(installed), str(temporary)})
+        self.assertEqual(data["preserved"], [])
+        self.assertFalse(source.exists() or installed.exists() or temporary.exists())
+        self.assertIn(b"port 6667\n", (self.project / "config/ano.conf").read_bytes())
+        self.assertIn(b"test_mode 1\n", (self.project / "config/ano.conf").read_bytes())
+        self.assertIn(b"port 7000\n", (self.deployment / "config/ano.conf").read_bytes())
+        self.assertIn(b"test_mode 0\n", (self.deployment / "config/ano.conf").read_bytes())
+        self.assertEqual(control.read_bytes(), b"unchanged controller settings\n")
+        self.assertEqual(sync.cleanup_retired_config(self.project, self.deployment)["removed"], [])
+
+    def test_replacement_telemetry_settings_survive_install_and_migration(self):
+        self.establish()
+        self.put(self.project, "config/ano.conf", b"enabled 0\nport 9000\n")
+        installed = self.put(self.deployment, "config/ano.conf", b"enabled 1\nport 8000\n")
+        old = self.put(self.deployment, "config/vofa.conf", b"enabled 0\nport 6667\n")
+        sync.install_config(self.project, self.deployment, self.platform)
+        sync.cleanup_retired_config(self.project, self.deployment)
+        self.assertEqual(installed.read_bytes(), b"enabled 1\nport 8000\n")
+        self.assertFalse(old.exists())
+
+    def test_retired_cleanup_preserves_unknown_contents_names_and_links(self):
+        unknown = self.put(self.project, "config/vofa.conf", b"user_file keep\n")
+        invalid = self.put(self.project, "config/.vofa.conf.Ab1234", b"port 80\n")
+        similar = self.put(self.project, "config/.vofa.conf.user-backup", b"enabled 1\n")
+        external = self.put(self.root, "outside.conf", b"enabled 1\n")
+        link = self.project / "config/.vofa.conf.Lnk123"
+        link.symlink_to(external)
+        directory = self.project / "config/.vofa.conf.Dir123"
+        directory.mkdir()
+        result = sync.cleanup_retired_config(self.project, self.deployment)
+        self.assertEqual(result["removed"], [])
+        self.assertEqual(set(result["preserved"]), {str(unknown), str(invalid), str(link), str(directory)})
+        self.assertEqual(unknown.read_bytes(), b"user_file keep\n")
+        self.assertEqual(invalid.read_bytes(), b"port 80\n")
+        self.assertTrue(similar.exists() and link.is_symlink() and directory.is_dir())
+        self.assertEqual(external.read_bytes(), b"enabled 1\n")
 
     def test_upload_after_preflight_is_rechecked_before_install(self):
         self.establish()

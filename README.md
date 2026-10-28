@@ -13,7 +13,7 @@ The current hardware validation platform is **Radxa Rock 4D / RK3576**. The impl
 | Motor communication | Commands and feedback share the public CAN module | No production motor profile or drive-specific startup handshake is supplied |
 | Video and records | H.264/MSE, MJPEG, annotated MP4, daily detection TXT | Display/encoding may skip old frames; no zero-drop or 100 ms end-to-end guarantee |
 | Web management | Monitoring, camera/model configuration, network IP, CPU policies, CAN/DBC, file management | HTTP uses fixed port 80 |
-| VOFA+ | Configurable TCP server, four JustFloat channels | Actual-value channels need valid measured wheel feedback |
+| Anonymous Assistant 2.0.1 | ANO V8 telemetry over TCP, four Float32 channels, simulated link-test signals | Flexible frame F1 must be configured in the PC application |
 | Real-time platform | Controller requests `SCHED_FIFO` priority 20 | FIFO admission and PREEMPT_RT kernel support are separate checks |
 
 The supplied configuration does not enable a real motor. Following starts stopped after every service restart. Platform mappings for other Rockchip devices do not constitute hardware compatibility validation.
@@ -33,9 +33,7 @@ V4L2 camera
                               +-> following controller -> shared CAN -> motor drives
                                          ^                    |
                                          +-- measured wheels -+
-                                         |
-                                  telemetry snapshot
-                                         -> TCP event loop -> VOFA+ client
+                              +-> read-only telemetry -> TCP -> Anonymous Assistant
 
 HTTP :80 -> pages, configuration APIs, status, and protected file operations
 ```
@@ -47,15 +45,15 @@ HTTP :80 -> pages, configuration APIs, status, and protected file operations
 | `source/yolo/`, `include/yolo/` | RKNN lifecycle, adaptive inference pool, image conversion, postprocessing, overlays, TXT writer |
 | `source/control/car_sport_ctrl.c` | Target association, speed/steering control, wheel PI, motion interlocks, following API |
 | `source/can/`, `include/can/` | Shared SocketCAN transport, CAN enable/disable, filters, DBC parsing, motor profile mapping |
-| `source/tcp/`, `include/tcp/` | VOFA TCP listener/client lifecycle and event loop; system interface IP helpers |
-| `source/telemetry/`, `include/telemetry/` | Read-only controller sampling, simulated link-test signals, JustFloat encoding, VOFA configuration/API |
+| `source/tcp/`, `include/tcp/` | Anonymous Assistant TCP listener/client lifecycle; system interface IP helpers |
+| `source/telemetry/`, `include/telemetry/` | Controller sampling, simulated signals, ANO V8 frames, configuration/API |
 | `source/http/`, `include/http/` | HTTP reactor, authentication, configuration, monitoring, video/file APIs |
 | `source/watchdog/`, `include/watchdog/` | Worker heartbeat supervision and systemd notification |
 | `html/` | Browser pages, shared themes, bilingual labels, configuration and player logic |
 | `scripts/` | Build/deploy, model synchronization, historical report migration and maintenance utilities |
 | `tests/` | C/C++ and Python regression checks; an additional JavaScript player test is separate from CTest |
 
-Main workers include CAN receive/send, TCP, HTTP, capture, YOLO dispatch, recording/encoding, and watchdog. YOLO owns inference workers and a rendering composer; control owns a joinable event-driven worker; detection reports have a writer thread. **VOFA has no separate network thread**: sampling and socket processing run in `tcp_task`.
+Main workers include CAN receive/send, TCP, HTTP, capture, YOLO dispatch, recording/encoding, and watchdog. YOLO owns inference workers and a rendering composer; control owns a joinable event-driven worker; detection reports have a writer thread. Anonymous Assistant sampling and socket work share `tcp_task`.
 
 Capture, inference, and recording work use the detected higher-capacity CPU group. Network/control/background workers use the lower-capacity group. Unknown or homogeneous CPU layouts retain the originally allowed CPU set.
 
@@ -129,19 +127,21 @@ The frame ring moves buffer ownership between stages and reuses pools. Inference
 | Page / service | Address | Purpose |
 | --- | --- | --- |
 | Home | `http://<board-ip>/` | Annotated video and resource monitoring |
-| System Configuration | `/config` | Camera, YOLO, Web network/VOFA, CAN, CPU policies, network tests, intelligent following |
+| System Configuration | `/config` | Camera, YOLO, Web interface IP, CAN, CPU policies, network tests, intelligent following |
 | Driving Logs | `/logs` | Logs, recordings, and detection reports |
 | DBC viewer | `/dbc` | CAN decode view, linked from CAN configuration |
 | HTTP | TCP **80**, fixed | Pages, APIs, video, and file operations |
-| VOFA | TCP **6667** by default, configurable | JustFloat telemetry to PC clients |
+| Anonymous Assistant | TCP **8080** by default, configurable | ANO V8 telemetry for Anonymous Assistant 2.0.1 |
 
 Management pages, writes, and protected file operations use local administrator authentication (`root` or an account in the `sudo` group). Authentication uses HTTP Basic; provide a trusted network or a separately configured secure access layer. Some status APIs are publicly readable. Native protected video/archive downloads use scoped, short-lived session cookies.
 
-**Web & VOFA Settings / Web与VOFA设置** configures the system interface used to reach the Web UI: Web interface, static/DHCP mode, IP, netmask, and gateway. HTTP remains on port 80 and listens on the board's configured IPv4 interfaces; selecting a management interface does not restrict HTTP to that interface. IP changes affect the actual system interface and can disconnect the browser.
+**Web & Anonymous Assistant Settings / Web与匿名助手设置** configures the system interface used to reach the Web UI: Web interface, static/DHCP mode, IP, netmask, and gateway. HTTP remains on port 80 and listens on the board's configured IPv4 interfaces; selecting a management interface does not restrict HTTP to that interface. IP changes affect the actual system interface and can disconnect the browser.
 
-The same continuous field area contains VOFA enable state, **VOFA端口**, send rate, and **VOFA测试**. Its **one Save button** saves VOFA first and applies IP last. If VOFA saving fails, IP is not applied. These are sequential saves: an IP-save failure does not roll back an already saved VOFA change.
+The card's **one Save button** saves Anonymous Assistant settings first, then applies Web IP settings only if they changed. If the telemetry save fails, IP settings are not applied; an IP-save failure does not roll back telemetry settings already saved. Both configurations must load before Save becomes available. Static mode requires an interface, IP address, and subnet mask; changed static/DHCP settings ask for confirmation because the browser may need to reconnect. **关闭（不管理）** leaves interface addressing unmanaged by the application.
 
-Web and VOFA each admit at most **two clients**, independently. Web counts source IPv4 addresses: a device's pages, API requests, downloads, and video connections share one slot. A Web slot becomes available 30 seconds after that address's last connection closes; requests from a third address receive HTTP 503 with `Retry-After`. Devices sharing a NAT address count as one Web client. VOFA counts TCP connections and closes excess connections; disconnecting a client releases its slot immediately.
+Web admits at most **two clients**, counted by source IPv4 address: a device's pages, API requests, downloads, and video connections share one slot. A slot becomes available 30 seconds after that address's last connection closes; requests from a third address receive HTTP 503 with `Retry-After`. Devices sharing a NAT address count as one Web client.
+
+Anonymous Assistant independently allows **two TCP connections**. Additional connections are closed; disconnecting a client immediately releases its slot. Slow readers can lose samples or be disconnected, without blocking control or other clients.
 
 The former ordinary TCP **6666** service, client buffers, transmit queue, and configuration fields have been removed. Legacy `tcp_port`/`max_clients` file entries are ignored. Legacy `tcp_bind` is read only to migrate a management interface when `ip_ifname` is absent; subsequent saves omit these legacy keys.
 
@@ -199,29 +199,27 @@ The worker requests `SCHED_FIFO` priority **20**. Motion requires successful sch
 
 FIFO success does not imply PREEMPT_RT. The validation board has not been upgraded to a PREEMPT_RT kernel, and scheduling admission can vary with permissions and group limits. No ordinary-scheduler motion fallback is enabled. Building/deploying this project does not install a kernel or reboot the board.
 
-## VOFA+ setup
+## Anonymous Assistant 2.0.1
 
-The **board is the TCP server**; VOFA+ on the PC is the **TCP client**. Normal telemetry reads controller snapshots; test mode generates signals for the same transport. Neither mode runs a control iteration or enables motors.
+The **board is the TCP server** and the PC runs **Anonymous Assistant / 匿名助手 2.0.1** as a **TCP client**. It uses ANO V8, including its length field and two checksums. The [official application releases](https://gitee.com/anotc/AnoAssistant/blob/master/1.匿名助手安装包/README.md) document TCP support; the [official protocol definitions](https://gitee.com/anotc/AnoPTv8/wikis/21-协议帧定义大全) define flexible frames and device queries.
 
-1. Open **系统配置 → Web与VOFA设置**. Select **启用 VOFA**, choose **VOFA端口** (default `6667`, allowed `1024..65535`) and **发送频率** (Hz; default `30`, allowed `1..100`), then use the top Save button.
-2. In VOFA+, select **TCP Client**, the board IP and saved VOFA port, and the **JustFloat** data engine. For example, a board at `192.168.1.5` with port `6667` accepts a connection to `192.168.1.5:6667`.
-3. Add two Waveform components. Use time `T` as X; bind CH0/CH1 to the speed plot and CH2/CH3 to the steering-correction plot. Set the sample interval to `1 / rate_hz` seconds: about `33.333 ms` at 30 Hz.
-4. After changing the port, reconnect the client to the new port. Update the plot interval when changing rate. Select **停用 VOFA** and save to close telemetry connections.
+1. Open **系统配置 → Web与匿名助手设置**. Select **启用匿名助手**, set **匿名助手端口** (default `8080`, range `1024..65535`) and **发送频率** (default `30 Hz`, range `1..100`), then save.
+2. In Anonymous Assistant 2.0.1, choose its network **TCP client** mode, enter the board's current IP and configured port, and connect. The assistant receives ANO V8 directly; no text handshake is required.
+3. In **灵活数据 / 灵活帧**, define frame ID **`0xF1`** with four consecutive **Float32** fields in the order below, totaling **16 data bytes**. Names and field types are configured in the assistant; the protocol does not automatically declare them.
+4. Add the four fields to a waveform view. If setting a fixed time interval, use approximately `1 / rate_hz` seconds (`33.333 ms` at 30 Hz); actual scheduling may vary. Reconnect after changing the port.
 
-| Channel | Meaning | Calculation | Unit |
+| F1 field | Suggested name | Normal telemetry | Unit |
 | --- | --- | --- | --- |
-| CH0 | Target speed / 目标速度 | `(left_target + right_target) / 2` | m/s |
-| CH1 | Actual speed / 实际速度 | `(measured_left + measured_right) / 2` | m/s |
-| CH2 | Target steering correction / 目标转向修正 | `(left_target - right_target) / 2` | m/s |
-| CH3 | Actual steering correction / 实际转向修正 | `(measured_left - measured_right) / 2` | m/s |
+| 0 | `speed_target` | `(left_target + right_target) / 2` | m/s |
+| 1 | `speed_actual` | `(measured_left + measured_right) / 2` | m/s |
+| 2 | `steering_target` | `(left_target - right_target) / 2` | m/s |
+| 3 | `steering_actual` | `(measured_left - measured_right) / 2` | m/s |
 
-In **关闭测试（实际数据）** mode (the default), steering channels are differential wheel-speed correction, not steering angle or yaw rate. Missing/stale wheel feedback produces IEEE `NaN` for actual channels; the HTTP snapshot uses `null`. No fabricated zero-speed measurements are supplied.
+Steering is a differential wheel-speed correction, not an angle. Missing/stale real feedback gives IEEE `NaN` in actual fields (`null` in the HTTP API). A sample is **24 bytes**: `AB 01 FE F1 10 00`, four little-endian IEEE-754 floats, then SUM and ADD checksums. Device address is `0x01`, PC address is `0xFE`, and broadcast requests to `0xFF` are accepted. The board announces `AutonomousCar` on connection and answers device-information queries plus zero parameter/command counts. Writes, flight commands, and motion commands from the assistant are not implemented.
 
-To test the link without a camera, motor, or wheel feedback, select **VOFA测试 → 模拟波形**, keep **启用 VOFA** selected, and save. The existing port and send rate apply. CH0 is a sine wave, CH1 a cosine wave, CH2 a triangle wave, and CH3 a square wave; all have a four-second period and amplitude from -1 to +1. These are normalized test values with no physical unit. The separate backend `vofa_test` module generates them using monotonic elapsed time and only replaces outgoing telemetry. It never injects controller feedback or sends CAN commands. `/api/vofa` reports `config.test_mode=1`, `status.test_active=true`, and `status.data_source="simulation"`; `feedback_valid` remains false for simulated output. Select **关闭测试（实际数据）** and save to restore controller data on the same connection.
+For a connection check, select **链路测试 → 模拟波形** and save. Fields 0–3 become sine, cosine, triangle, and square waves with a four-second period and normalized range `-1..1`; they have no physical unit. Select **关闭测试（实际数据）** to restore controller snapshots on the same connection. Both modes are read-only: simulation never injects feedback or enables motors. `/api/ano` reports the selected mode and data source; disabling telemetry stops output and closes clients.
 
-Each packet contains four little-endian 32-bit floats and the tail `00 00 80 7F`: **20 bytes**, with no text header or channel names. Normal samples repeat the current state between inference updates; test signals advance independently of inference. Up to **two TCP clients** are supported; pending application output is bounded, and slow clients may lose samples or be disconnected. Sampling rate is subject to scheduling.
-
-The webpage shows configuration only; view plots in VOFA+. A busy replacement port rejects the save and retains previous settings/connections. Settings, including `test_mode` (`0` for controller data, `1` for simulated signals), persist in `config/vofa.conf` and are preserved by normal deployment. Existing files without `test_mode` use controller data. Disabling VOFA closes its connections and stops output even when test mode is selected.
+Settings persist in `config/ano.conf` and survive deployment. When upgrading from the previous telemetry service, valid existing port/rate/enable/test settings are migrated before its retired configuration is removed; an existing `ano.conf` is preserved. A busy port rejects saving and leaves the current listener/settings intact. The webpage contains configuration fields; plots are shown in the PC assistant.
 
 ## Recordings and detection reports
 
@@ -253,7 +251,7 @@ Paths are relative to the runtime working directory (`/opt/autonomous-driving-ca
 | `config/config.txt` | Camera, YOLO, CAN, and Web interface IP configuration |
 | `config/follow.conf` | Following parameters; moving state is not restored at startup |
 | `config/car_motor_can.conf` | Actual motor protocol profile; not supplied/enabled by default |
-| `config/vofa.conf` | VOFA enable state, port, sample rate, and link-test mode |
+| `config/ano.conf` | Anonymous Assistant enable state, TCP port, sample rate, and link-test mode |
 | `config/cpu_freq.conf` | CPU governor/min/max values per policy |
 | `config/yolo26.rknn` | Canonical model |
 | `config/coco.names` | Default class labels |
@@ -270,8 +268,8 @@ These are selected endpoints; [http.c](source/http/http.c) and individual HTTP h
 | Endpoint | Purpose |
 | --- | --- |
 | `GET/POST /api/config` | Configuration snapshot / apply selected module; exposes fixed `http_port: 80` |
+| `GET/POST /api/ano` | Anonymous Assistant configuration, sampled channels, and TCP status |
 | `GET/POST /api/follow` | Following parameters, detections, readiness, motor diagnostics |
-| `GET/POST /api/vofa` | Telemetry configuration, channels, listener/client counters |
 | `GET /api/system`, `GET/POST /api/cpu_freq` | Resource monitoring and CPU policies |
 | `GET /api/network/ifaces`, `GET /api/network` | Interface discovery and network state |
 | `GET /api/can/ifaces`, `/api/can/frames`, `/api/can/decoded` | CAN interfaces, raw frames, decoded signals |
@@ -290,7 +288,7 @@ systemctl status autonomous-driving-car --no-pager
 journalctl -u autonomous-driving-car -n 100 --no-pager
 curl -s http://127.0.0.1/api/config
 curl -s http://127.0.0.1/api/follow
-curl -s http://127.0.0.1/api/vofa
+curl -s http://127.0.0.1/api/ano
 curl -s http://127.0.0.1/api/video/stats
 ```
 
@@ -300,13 +298,10 @@ curl -s http://127.0.0.1/api/video/stats
 | No video / increasing delay | Negotiated mode, camera errors, pipeline counters, thermal limits, network and MSE buffer |
 | No motor output | Enabled state, selected target, profile validation, CAN, FIFO error, feedback freshness |
 | Motor socket online but no wheel speed | Feedback IDs/format/offsets/endian order/scaling and actual incoming frames |
-| VOFA cannot connect | Saved port, enabled/listening state, board IP, firewall, client mode |
-| VOFA reports `The proxy type is invalid for this operation` | Check the PC's proxy settings; use a direct connection to the board's current IP, then restart VOFA+. Qt TCP connections require a proxy with tunneling support. See [Qt proxy capabilities](https://doc.qt.io/qt-6/qnetworkproxy.html#ProxyType-enum). |
-| VOFA actual curves absent | `feedback_valid`, real wheel feedback; unavailable values are `NaN` |
 | CPU clock below requested value | Selected policy, effective limits, temperature and kernel thermal controls |
 | Model synchronization conflict | Resolve independent project/deployment changes before retrying |
 
-CTest covers frame ownership/queues, H.264 timeline, color conversion, recording splits, reports, model synchronization, files, CPU settings, CAN lifecycle, Web configuration/client admission, and VOFA TCP lifecycle/simulated signals. Passing these checks does not establish real-motor protocol compatibility, long-term video stability, PREEMPT_RT readiness, or PC VOFA+ UI acceptance.
+CTest covers frame ownership/queues, H.264 timeline, color conversion, recording splits, reports, model synchronization, files, CPU settings, CAN lifecycle, Web configuration/client admission, and ANO V8 framing/TCP queries/simulated signals. Passing these checks does not establish real-motor protocol compatibility, long-term video stability, PREEMPT_RT readiness, or acceptance in the PC application's GUI.
 
 ## License
 

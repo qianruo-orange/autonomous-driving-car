@@ -11,7 +11,6 @@
 #include <pthread.h>
 #include "core/config.h"
 #include "can/can_socket.h"
-#include "tcp/tcp_server.h"
 #include "core/log.h"
 #include "core/version.h"
 #include "yolo/rknn_yolo.h"
@@ -185,7 +184,7 @@ int config_load(struct app_config_t *cfg)
 
 void config_save(app_ctx_t *app)
 {
-    if (!app || !app->cfg || !app->can || !app->tcp) return;
+    if (!app || !app->cfg || !app->can) return;
     struct app_config_t *cfg = app->cfg;
     can_ctx_t *can = app->can;
     config_normalize_model_path(cfg);

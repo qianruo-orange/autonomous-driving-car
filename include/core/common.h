@@ -83,7 +83,7 @@ static inline int ifname_valid(const char *name)
 }
 
 /* 设置 fd 为非阻塞；成功返回 0，失败返回 -1（保留 errno）。
-   tcp/can/http 三层各自把 socket 设为非阻塞的同一套 fcntl 模式收口于此 */
+   CAN / HTTP 共用的 socket 非阻塞设置 */
 static inline int set_nonblock(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -98,7 +98,7 @@ static inline void ifreq_set_name(struct ifreq *ifr, const char *name)
     snprintf(ifr->ifr_name, sizeof(ifr->ifr_name), "%s", name);
 }
 
-/* 写 eventfd：通知对端“有数据压入队列”（can TX 队列 / tcp TX 队列共用） */
+/* 写 eventfd：通知对端“有数据压入队列” */
 static inline void eventfd_signal(int efd)
 {
     if (efd < 0) return;

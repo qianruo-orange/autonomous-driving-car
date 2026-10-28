@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "telemetry/vofa_test.h"
+#include "telemetry/ano_test.h"
 #include <math.h>
 
-void vofa_test_sample(unsigned long long elapsed_ms, float channels[4])
+void ano_test_sample(unsigned long long elapsed_ms, float channels[4])
 {
     double phase = (double)(elapsed_ms % 4000) / 4000.0;
     double angle = 6.28318530717958647693 * phase;

@@ -77,6 +77,14 @@ do_install() {
         return 1
     fi
 
+    echo "[CLEAN] retired telemetry configuration"
+    if ! python3 "$PROJECT_DIR/scripts/model_sync.py" cleanup-retired-config \
+        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR"; then
+        echo "[ERROR] retired configuration cleanup failed; restarting the previous service"
+        systemctl start "$SERVICE_NAME" 2>/dev/null || true
+        return 1
+    fi
+
     echo "[MIGRATE] retained detection journals to daily TXT"
     if ! nice -n 10 python3 "$PROJECT_DIR/scripts/normalize_file_names.py" --root "$DEPLOY_DIR"; then
         echo "[ERROR] filename normalization failed; restarting the previous service"

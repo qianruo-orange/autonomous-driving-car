@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
-#include "telemetry/vofa.h"
-#include "telemetry/vofa_test.h"
+#include "telemetry/ano.h"
+#include "telemetry/ano_test.h"
+#include "telemetry/ano_protocol.h"
 #include "control/car_sport_ctrl.h"
 #include "http/http_internal.h"
 #include "tcp/tcp_server.h"
@@ -9,27 +10,27 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#define VOFA_FRAME_BYTES 20
-#define VOFA_CONFIG "config/vofa.conf"
+#define ANO_FRAME_BYTES 24
+#define ANO_CONFIG "config/ano.conf"
 
 typedef struct {
     int enabled, port, rate_hz, test_mode;
-} vofa_config_t;
+} ano_config_t;
 
-static pthread_mutex_t vofa_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t vofa_save_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t ano_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t ano_save_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct {
     atomic_int ready;
     app_ctx_t *app;
-    vofa_config_t config;
+    ano_config_t config;
     unsigned epoch;
     unsigned long long samples, last_sample_ms, next_sample_ms;
     unsigned long long test_started_ms;
     follow_telemetry_t latest;
     const char *error;
-} vofa;
+} ano;
 
-static unsigned long long vofa_now_ms(void)
+static unsigned long long ano_now_ms(void)
 {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -54,7 +55,7 @@ static int parse_decimal(const char *text, int low, int high, int *out)
     return 0;
 }
 
-static int apply_field(vofa_config_t *config, const char *key, const char *value, unsigned *seen)
+static int apply_field(ano_config_t *config, const char *key, const char *value, unsigned *seen)
 {
     unsigned bit;
     int *destination, low, high;
@@ -87,9 +88,9 @@ static int apply_field(vofa_config_t *config, const char *key, const char *value
     return 0;
 }
 
-static int load_config(vofa_config_t *config)
+static int load_config(ano_config_t *config)
 {
-    int fd = open(VOFA_CONFIG, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    int fd = open(ANO_CONFIG, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0)
         return errno == ENOENT ? 0 : -1;
     struct stat info;
@@ -128,13 +129,13 @@ static int load_config(vofa_config_t *config)
     return result;
 }
 
-static int save_config(const vofa_config_t *config)
+static int save_config(const ano_config_t *config)
 {
     struct stat previous;
-    int exists = !lstat(VOFA_CONFIG, &previous);
+    int exists = !lstat(ANO_CONFIG, &previous);
     if ((!exists && errno != ENOENT) || (exists && !S_ISREG(previous.st_mode)))
         return -1;
-    char temporary[] = "config/.vofa.conf.XXXXXX";
+    char temporary[] = "config/.ano.conf.XXXXXX";
     int fd = mkstemp(temporary);
     if (fd < 0)
         return -1;
@@ -156,25 +157,18 @@ static int save_config(const vofa_config_t *config)
     failed |= fflush(file) != 0;
     failed |= fsync(fd) != 0;
     failed |= fclose(file) != 0;
-    if (failed || rename(temporary, VOFA_CONFIG)) {
+    if (failed || rename(temporary, ANO_CONFIG)) {
         unlink(temporary);
         return -1;
     }
     return 0;
 }
 
-static void encode_sample(const follow_telemetry_t *sample, unsigned char *frame)
+static size_t encode_sample(const follow_telemetry_t *sample, unsigned char *frame)
 {
-    _Static_assert(sizeof(float) == 4, "JustFloat requires 32-bit float");
     float channels[4] = {(float)sample->speed_target, (float)sample->speed_actual,
                           (float)sample->steering_target, (float)sample->steering_actual};
-    for (int i = 0; i < 4; i++) {
-        uint32_t value;
-        memcpy(&value, &channels[i], sizeof(value));
-        for (int b = 0; b < 4; b++)
-            frame[i * 4 + b] = (unsigned char)(value >> (8 * b));
-    }
-    memcpy(frame + 16, "\x00\x00\x80\x7f", 4);
+    return ano_v8_sample(channels, frame, ANO_FRAME_BYTES);
 }
 
 static void expire_feedback(follow_telemetry_t *sample, unsigned long long now)
@@ -189,7 +183,7 @@ static void simulate_sample(follow_telemetry_t *sample, unsigned long long start
                             unsigned long long now)
 {
     float channels[4];
-    vofa_test_sample(now >= started ? now - started : 0, channels);
+    ano_test_sample(now >= started ? now - started : 0, channels);
     sample->speed_target = channels[0];
     sample->speed_actual = channels[1];
     sample->steering_target = channels[2];
@@ -201,114 +195,114 @@ static void simulate_sample(follow_telemetry_t *sample, unsigned long long start
 
 
 /* Invoked by tcp_task only. Controller snapshots are obtained before either
- * VOFA configuration or shared TCP transport locks are acquired. */
-void vofa_tick(app_ctx_t *app)
+ * ANO configuration or shared TCP transport locks are acquired. */
+void ano_tick(app_ctx_t *app)
 {
-    if (!app || !atomic_load(&vofa.ready))
+    if (!app || !atomic_load(&ano.ready))
         return;
-    unsigned long long now = vofa_now_ms();
-    int refresh = tcp_vofa_take_refresh(app->tcp);
-    pthread_mutex_lock(&vofa_lock);
-    unsigned epoch = vofa.epoch;
-    int due = vofa.app == app && now >= vofa.next_sample_ms;
-    pthread_mutex_unlock(&vofa_lock);
+    unsigned long long now = ano_now_ms();
+    int refresh = tcp_ano_take_refresh(app->tcp);
+    pthread_mutex_lock(&ano_lock);
+    unsigned epoch = ano.epoch;
+    int due = ano.app == app && now >= ano.next_sample_ms;
+    pthread_mutex_unlock(&ano_lock);
     if (!due && !refresh)
         return;
     follow_telemetry_t sample;
     int sampled = !follow_telemetry_snapshot(&sample);
-    pthread_mutex_lock(&vofa_lock);
-    if (!atomic_load(&vofa.ready) || vofa.epoch != epoch) {
-        pthread_mutex_unlock(&vofa_lock);
+    pthread_mutex_lock(&ano_lock);
+    if (!atomic_load(&ano.ready) || ano.epoch != epoch) {
+        pthread_mutex_unlock(&ano_lock);
         return;
     }
     if (!sampled)
-        sample = vofa.latest;
+        sample = ano.latest;
     expire_feedback(&sample, now);
-    if (sampled || sample.feedback_valid != vofa.latest.feedback_valid)
-        vofa.latest = sample;
-    /* VOFA plots use a fixed sample period for their X axis. Repeat the current
+    if (sampled || sample.feedback_valid != ano.latest.feedback_valid)
+        ano.latest = sample;
+    /* ANO plots use a fixed sample period for their X axis. Repeat the current
      * state at every configured period, even when inference has not advanced;
      * sampling never executes a PID iteration or invents measured feedback. */
-    if (vofa.config.enabled) {
-        if (vofa.config.test_mode)
-            simulate_sample(&sample, vofa.test_started_ms, now);
-        unsigned char frame[VOFA_FRAME_BYTES];
-        encode_sample(&sample, frame);
-        if (!tcp_vofa_publish(app->tcp, frame)) {
-            vofa.samples++;
-            vofa.last_sample_ms = now;
+    if (ano.config.enabled) {
+        if (ano.config.test_mode)
+            simulate_sample(&sample, ano.test_started_ms, now);
+        unsigned char frame[ANO_FRAME_BYTES];
+        size_t length = encode_sample(&sample, frame);
+        if (length && !tcp_ano_publish(app->tcp, frame, length)) {
+            ano.samples++;
+            ano.last_sample_ms = now;
         }
     }
-    unsigned interval = vofa.config.enabled ? (1000 + vofa.config.rate_hz - 1) /
-                                                  vofa.config.rate_hz : 100;
+    unsigned interval = ano.config.enabled ? (1000 + ano.config.rate_hz - 1) /
+                                                  ano.config.rate_hz : 100;
     /* A new connection receives a synchronization sample immediately without
      * moving the deadline of the regular periodic stream. */
     if (due)
-        vofa.next_sample_ms = now + interval;
-    pthread_mutex_unlock(&vofa_lock);
+        ano.next_sample_ms = now + interval;
+    pthread_mutex_unlock(&ano_lock);
 }
 
-int vofa_wait_ms(app_ctx_t *app)
+int ano_wait_ms(app_ctx_t *app)
 {
-    if (!app || !atomic_load(&vofa.ready))
+    if (!app || !atomic_load(&ano.ready))
         return 500;
-    unsigned long long now = vofa_now_ms();
-    pthread_mutex_lock(&vofa_lock);
-    unsigned long long next = vofa.next_sample_ms;
-    pthread_mutex_unlock(&vofa_lock);
+    unsigned long long now = ano_now_ms();
+    pthread_mutex_lock(&ano_lock);
+    unsigned long long next = ano.next_sample_ms;
+    pthread_mutex_unlock(&ano_lock);
     return next > now ? (int)(next - now) : 0;
 }
 
-int vofa_init(void *arg)
+int ano_init(void *arg)
 {
     app_ctx_t *app = arg;
-    pthread_mutex_lock(&vofa_save_lock);
-    if (!app || !app->tcp || !app->tcp->vofa_initialized || atomic_load(&vofa.ready)) {
-        pthread_mutex_unlock(&vofa_save_lock);
+    pthread_mutex_lock(&ano_save_lock);
+    if (!app || !app->tcp || !app->tcp->ano_initialized || atomic_load(&ano.ready)) {
+        pthread_mutex_unlock(&ano_save_lock);
         return -1;
     }
-    pthread_mutex_lock(&vofa_lock);
-    unsigned epoch = vofa.epoch + 1;
-    memset(&vofa, 0, sizeof(vofa));
-    vofa.epoch = epoch;
-    vofa.app = app;
-    vofa.config = (vofa_config_t){.port = 6667, .rate_hz = 30};
-    vofa.latest = (follow_telemetry_t){.speed_target = NAN, .speed_actual = NAN,
+    pthread_mutex_lock(&ano_lock);
+    unsigned epoch = ano.epoch + 1;
+    memset(&ano, 0, sizeof(ano));
+    ano.epoch = epoch;
+    ano.app = app;
+    ano.config = (ano_config_t){.port = 8080, .rate_hz = 30};
+    ano.latest = (follow_telemetry_t){.speed_target = NAN, .speed_actual = NAN,
                                       .steering_target = NAN, .steering_actual = NAN};
-    vofa.error = "";
-    vofa_config_t saved = vofa.config;
+    ano.error = "";
+    ano_config_t saved = ano.config;
     if (load_config(&saved))
-        vofa.error = "invalid_saved_settings";
+        ano.error = "invalid_saved_settings";
     else
-        vofa.config = saved;
-    vofa.test_started_ms = vofa_now_ms();
-    tcp_vofa_stage_t stage;
-    if (tcp_vofa_stage(app->tcp, vofa.config.enabled, vofa.config.port, &stage))
-        vofa.error = "listen_failed";
+        ano.config = saved;
+    ano.test_started_ms = ano_now_ms();
+    tcp_ano_stage_t stage;
+    if (tcp_ano_stage(app->tcp, ano.config.enabled, ano.config.port, &stage))
+        ano.error = "listen_failed";
     else
-        tcp_vofa_commit(app->tcp, vofa.config.enabled, vofa.config.port, &stage);
-    atomic_store(&vofa.ready, 1);
-    pthread_mutex_unlock(&vofa_lock);
-    pthread_mutex_unlock(&vofa_save_lock);
+        tcp_ano_commit(app->tcp, ano.config.enabled, ano.config.port, &stage);
+    atomic_store(&ano.ready, 1);
+    pthread_mutex_unlock(&ano_lock);
+    pthread_mutex_unlock(&ano_save_lock);
     eventfd_signal(app->tcp->wake_fd);
     return 0;
 }
 
-void vofa_destroy(void *arg)
+void ano_destroy(void *arg)
 {
     (void)arg;
-    pthread_mutex_lock(&vofa_save_lock);
-    if (!atomic_exchange(&vofa.ready, 0)) {
-        pthread_mutex_unlock(&vofa_save_lock);
+    pthread_mutex_lock(&ano_save_lock);
+    if (!atomic_exchange(&ano.ready, 0)) {
+        pthread_mutex_unlock(&ano_save_lock);
         return;
     }
-    pthread_mutex_lock(&vofa_lock);
-    app_ctx_t *app = vofa.app;
-    vofa.app = NULL;
-    pthread_mutex_unlock(&vofa_lock);
+    pthread_mutex_lock(&ano_lock);
+    app_ctx_t *app = ano.app;
+    ano.app = NULL;
+    pthread_mutex_unlock(&ano_lock);
     if (app)
-        tcp_vofa_stop(app->tcp);
-    pthread_mutex_unlock(&vofa_save_lock);
+        tcp_ano_stop(app->tcp);
+    pthread_mutex_unlock(&ano_save_lock);
 }
 
 static const char *json_channel(double value, char *out, size_t length)
@@ -321,27 +315,27 @@ static const char *json_channel(double value, char *out, size_t length)
 }
 
 
-void http_vofa_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
+void http_ano_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
     (void)method;
     (void)uri;
     (void)req;
     char json[2048], channels[4][48];
-    pthread_mutex_lock(&vofa_lock);
-    vofa_config_t config = vofa.config;
-    follow_telemetry_t latest = vofa.latest;
-    unsigned long long samples = vofa.samples, last_sample = vofa.last_sample_ms;
-    unsigned long long test_started = vofa.test_started_ms;
-    const char *module_error = vofa.error ? vofa.error : "";
-    int ready = atomic_load(&vofa.ready);
-    pthread_mutex_unlock(&vofa_lock);
-    unsigned long long now = vofa_now_ms();
+    pthread_mutex_lock(&ano_lock);
+    ano_config_t config = ano.config;
+    follow_telemetry_t latest = ano.latest;
+    unsigned long long samples = ano.samples, last_sample = ano.last_sample_ms;
+    unsigned long long test_started = ano.test_started_ms;
+    const char *module_error = ano.error ? ano.error : "";
+    int ready = atomic_load(&ano.ready);
+    pthread_mutex_unlock(&ano_lock);
+    unsigned long long now = ano_now_ms();
     expire_feedback(&latest, now);
     int test_active = ready && config.enabled && config.test_mode;
     if (test_active)
         simulate_sample(&latest, test_started, now);
-    tcp_vofa_status_t transport;
-    tcp_vofa_get_status(app ? app->tcp : NULL, &transport);
+    tcp_ano_status_t transport;
+    tcp_ano_get_status(app ? app->tcp : NULL, &transport);
     int length = snprintf(
         json, sizeof(json),
         "{\"config\":{\"enabled\":%s,\"port\":%d,\"rate_hz\":%d,\"test_mode\":%d},"
@@ -350,7 +344,7 @@ void http_vofa_get(app_ctx_t *app, int fd, const char *method, const char *uri, 
         "\"feedback_valid\":%s,\"test_active\":%s,\"data_source\":\"%s\","
         "\"last_sample_ms\":%llu,\"error\":\"%s\"},"
         "\"channels\":{\"speed_target\":%s,\"speed_actual\":%s,\"steering_target\":%s,"
-        "\"steering_actual\":%s},\"protocol\":\"JustFloat\",\"frame_bytes\":20,\"max_clients\":%d}",
+        "\"steering_actual\":%s},\"protocol\":\"ANOv8\",\"frame_bytes\":24,\"max_clients\":%d}",
         config.enabled ? "true" : "false", config.port, config.rate_hz, config.test_mode,
         ready && transport.running ? "true" : "false", transport.listening ? "true" : "false",
         transport.clients, samples, transport.sent_frames, transport.dropped_frames, transport.errors,
@@ -360,11 +354,11 @@ void http_vofa_get(app_ctx_t *app, int fd, const char *method, const char *uri, 
         json_channel(latest.speed_target, channels[0], 48),
         json_channel(latest.speed_actual, channels[1], 48),
         json_channel(latest.steering_target, channels[2], 48),
-        json_channel(latest.steering_actual, channels[3], 48), TCP_VOFA_CLIENTS);
+        json_channel(latest.steering_actual, channels[3], 48), TCP_ANO_CLIENTS);
     http_ok_json(fd, json, (size_t)length);
 }
 
-static int parse_form(const char *request, vofa_config_t *config)
+static int parse_form(const char *request, ano_config_t *config)
 {
     const char *body = http_body_start(request);
     if (!body || !*body || strlen(body) > 128)
@@ -397,44 +391,44 @@ static int parse_form(const char *request, vofa_config_t *config)
 }
 
 
-void http_vofa_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
+void http_ano_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
-    pthread_mutex_lock(&vofa_save_lock);
-    if (!app || !app->tcp || !atomic_load(&vofa.ready)) {
-        pthread_mutex_unlock(&vofa_save_lock);
-        http_err(fd, 503, "Service Unavailable", "VOFA module is not running");
+    pthread_mutex_lock(&ano_save_lock);
+    if (!app || !app->tcp || !atomic_load(&ano.ready)) {
+        pthread_mutex_unlock(&ano_save_lock);
+        http_err(fd, 503, "Service Unavailable", "ANO module is not running");
         return;
     }
-    pthread_mutex_lock(&vofa_lock);
-    vofa_config_t next = vofa.config;
-    pthread_mutex_unlock(&vofa_lock);
+    pthread_mutex_lock(&ano_lock);
+    ano_config_t next = ano.config;
+    pthread_mutex_unlock(&ano_lock);
     if (parse_form(req, &next)) {
-        pthread_mutex_unlock(&vofa_save_lock);
-        http_err(fd, 400, "Bad Request", "Invalid or repeated VOFA field");
+        pthread_mutex_unlock(&ano_save_lock);
+        http_err(fd, 400, "Bad Request", "Invalid or repeated ANO field");
         return;
     }
-    tcp_vofa_stage_t stage;
-    if (tcp_vofa_stage(app->tcp, next.enabled, next.port, &stage)) {
-        pthread_mutex_unlock(&vofa_save_lock);
-        http_err(fd, 409, "Conflict", "VOFA TCP port is unavailable; settings unchanged");
+    tcp_ano_stage_t stage;
+    if (tcp_ano_stage(app->tcp, next.enabled, next.port, &stage)) {
+        pthread_mutex_unlock(&ano_save_lock);
+        http_err(fd, 409, "Conflict", "ANO TCP port is unavailable; settings unchanged");
         return;
     }
     if (save_config(&next)) {
-        tcp_vofa_discard(app->tcp, &stage);
-        pthread_mutex_unlock(&vofa_save_lock);
-        http_err(fd, 500, "Error", "Cannot save VOFA settings; settings unchanged");
+        tcp_ano_discard(app->tcp, &stage);
+        pthread_mutex_unlock(&ano_save_lock);
+        http_err(fd, 500, "Error", "Cannot save ANO settings; settings unchanged");
         return;
     }
-    pthread_mutex_lock(&vofa_lock);
-    tcp_vofa_commit(app->tcp, next.enabled, next.port, &stage);
-    if (next.enabled && next.test_mode && (!vofa.config.enabled || !vofa.config.test_mode))
-        vofa.test_started_ms = vofa_now_ms();
-    vofa.config = next;
-    vofa.epoch++;
-    vofa.next_sample_ms = 0;
-    vofa.error = "";
-    pthread_mutex_unlock(&vofa_lock);
-    pthread_mutex_unlock(&vofa_save_lock);
+    pthread_mutex_lock(&ano_lock);
+    tcp_ano_commit(app->tcp, next.enabled, next.port, &stage);
+    if (next.enabled && next.test_mode && (!ano.config.enabled || !ano.config.test_mode))
+        ano.test_started_ms = ano_now_ms();
+    ano.config = next;
+    ano.epoch++;
+    ano.next_sample_ms = 0;
+    ano.error = "";
+    pthread_mutex_unlock(&ano_lock);
+    pthread_mutex_unlock(&ano_save_lock);
     eventfd_signal(app->tcp->wake_fd);
-    http_vofa_get(app, fd, method, uri, req);
+    http_ano_get(app, fd, method, uri, req);
 }

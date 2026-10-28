@@ -384,9 +384,10 @@ def install_config(project, deployment, platform):
             relative = source.relative_to(source_root)
             if (relative.parts[0] in ("models", "weights") or
                 relative.name in (".model-sync.lock", ".last-deployed.sha256") or
+                relative.as_posix() == "vofa.conf" or relative.name.startswith(".vofa.conf.") or
                 source.suffix.lower() in (".rknn", ".pt", ".onnx")):
                 continue
-            if relative.as_posix() in ("cpu_freq.conf", "follow.conf", "car_motor_can.conf", "vofa.conf") and checked(deployment, Path("config") / relative).exists():
+            if relative.as_posix() in ("cpu_freq.conf", "follow.conf", "car_motor_can.conf", "ano.conf") and checked(deployment, Path("config") / relative).exists():
                 continue  # Preserve device-specific frequency, control, motor and telemetry settings.
             if source.is_symlink():
                 raise ModelSyncError("Refusing a symlink in configuration: " + str(source))
@@ -517,9 +518,64 @@ def _cleanup_weights(project, used_weight=None):
     return {"action": "weights-cleaned", "removed": len(candidates), "protected_external": protected}
 
 
+def cleanup_retired_config(project, deployment):
+    """Called by deployment after the old service stops and config sync succeeds.
+
+    Migrate known settings to the replacement ANO adapter before removing the old
+    file. Unknown contents, links, directories and similarly named files remain.
+    """
+    removed, preserved = [], []
+    limits = {"enabled": (0, 1), "port": (1024, 65535), "rate_hz": (1, 100), "test_mode": (0, 1)}
+    for root in dict.fromkeys((Path(project).resolve(), Path(deployment).resolve())):
+        config = checked(root, Path("config"))
+        if not config.exists():
+            continue
+        for path in config.iterdir():
+            if path.name != "vofa.conf" and not re.fullmatch(r"\.vofa\.conf\.[A-Za-z0-9]{6}", path.name):
+                continue
+            if not stat.S_ISREG(path.lstat().st_mode):
+                preserved.append(str(path))
+                continue
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                data = os.read(fd, 4097)
+            finally:
+                os.close(fd)
+            valid, seen = len(data) <= 4096, set()
+            settings = {"enabled": 0, "port": 8080, "rate_hz": 30, "test_mode": 0}
+            for line in data.splitlines():
+                fields = line.split(b"#", 1)[0].split()
+                if not fields:
+                    continue
+                try:
+                    key = fields[0].decode("ascii")
+                except UnicodeDecodeError:
+                    valid = False
+                    break
+                if (len(fields) != 2 or key not in limits or key in seen or
+                    not re.fullmatch(rb"[0-9]+", fields[1]) or
+                    not limits[key][0] <= int(fields[1]) <= limits[key][1]):
+                    valid = False
+                    break
+                seen.add(key)
+                settings[key] = int(fields[1])
+            if valid:
+                if path.name == "vofa.conf":
+                    replacement = checked(root, Path("config/ano.conf"))
+                    if not replacement.exists():
+                        content = "".join(f"{key} {value}\n" for key, value in settings.items()).encode()
+                        atomic_bytes(replacement, content, owner(root),
+                                     stat.S_IMODE(path.stat().st_mode))
+                path.unlink()
+                removed.append(str(path))
+            else:
+                preserved.append(str(path))
+    return {"action": "retired-config-cleaned", "removed": removed, "preserved": preserved}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("reconcile", "install-config", "publish-converted", "validate", "normalize-platform", "detect-platform", "cleanup-weights", "discover-weights"))
+    parser.add_argument("command", choices=("reconcile", "install-config", "publish-converted", "validate", "normalize-platform", "detect-platform", "cleanup-weights", "discover-weights", "cleanup-retired-config"))
     parser.add_argument("--project", type=Path)
     parser.add_argument("--deployment", type=Path, default=Path("/opt/autonomous-driving-car"))
     parser.add_argument("--platform")
@@ -537,6 +593,11 @@ def main():
             if args.project is None:
                 parser.error("--project is required")
             print(json.dumps(cleanup_weights(args.project.resolve(strict=True), args.used_weight)))
+            return
+        if args.command == "cleanup-retired-config":
+            if args.project is None:
+                parser.error("--project is required")
+            print(json.dumps(cleanup_retired_config(args.project.resolve(strict=True), args.deployment)))
             return
         if args.command == "discover-weights":
             if args.project is None:

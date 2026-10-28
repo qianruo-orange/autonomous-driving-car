@@ -5,7 +5,6 @@
 
 #include "http/http_internal.h"
 #include "can/can_socket.h"
-#include "tcp/tcp_server.h"
 #include "video/video_stream.h"
 #include "video/video_rec.h"
 #include "watchdog/watchdog.h"
@@ -24,7 +23,7 @@
 void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
     (void)method; (void)uri; (void)req;
-    if (!app || !app->cfg || !app->can || !app->tcp) {
+    if (!app || !app->cfg || !app->can) {
         http_err(fd, 500, "Error", NULL);
         return;
     }
@@ -337,7 +336,7 @@ static void apply_ip(app_ctx_t *app, const http_form_field_t *fields, int count)
 void http_config_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body)
 {
     (void)method; (void)uri;
-    if (!body || !app || !app->cfg || !app->can || !app->tcp) {
+    if (!body || !app || !app->cfg || !app->can) {
         http_err(fd, 400, "Bad Request", NULL);
         return;
     }
