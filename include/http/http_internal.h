@@ -55,6 +55,8 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
 void http_config_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body);
 void http_follow_get(app_ctx_t *, int, const char *, const char *, const char *);
 void http_follow_post(app_ctx_t *, int, const char *, const char *, const char *);
+void http_tracking_get(app_ctx_t *, int, const char *, const char *, const char *);
+void http_tracking_post(app_ctx_t *, int, const char *, const char *, const char *);
 void http_ano_get(app_ctx_t *, int, const char *, const char *, const char *);
 void http_ano_post(app_ctx_t *, int, const char *, const char *, const char *);
 void http_config_export(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);

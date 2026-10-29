@@ -209,7 +209,7 @@ case "$BUILD_MODE" in
         ;;
     release)
         echo "=== build $BIN_NAME ==="
-        echo "[BUILD] RELEASE mode (-O3 -DNDEBUG)"
+        echo "[BUILD] RELEASE mode (-O3 -DNDEBUG -g)"
         mkdir -p "$BIN_DIR"
         cmake -S "$PROJECT_DIR" -B "$BUILD_DIR" \
             -DCMAKE_BUILD_TYPE=Release

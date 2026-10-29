@@ -26,6 +26,16 @@
 .focus-manual .btn{flex:none;margin:0;padding:6px 12px}
 .video-column .camera-focus-card{flex:none;margin-top:12px}
 .video-wrapper{position:relative}
+.video-wrapper #stream_video,.video-wrapper #stream_img{object-fit:contain}
+#tracking_overlay{position:absolute;inset:0;pointer-events:none;z-index:3;overflow:hidden}
+.tracking-target{position:absolute;pointer-events:auto;background:transparent;border:2px solid transparent;border-radius:3px;cursor:crosshair;padding:0;min-width:0;min-height:0}
+.tracking-target:hover,.tracking-target:focus-visible{border-color:#ffcc00;outline:none;background:rgba(255,204,0,.08)}
+.tracking-target[aria-pressed=true]{border-color:#00ffff}
+.tracking-target span{display:none;position:absolute;left:0;top:0;max-width:100%;padding:2px 5px;background:rgba(0,0,0,.8);color:#fff;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tracking-target:hover span,.tracking-target:focus-visible span{display:block}
+.tracking-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 4px 0;color:var(--muted);font-size:13px;flex:none}
+.tracking-toolbar .btn{margin:0;flex:none}
+.tracking-toolbar button:disabled{opacity:.5;cursor:default}
 .video-fullscreen{position:absolute;right:12px;bottom:12px;border:1px solid rgba(255,255,255,.3);border-radius:8px;background:rgba(0,0,0,.65);color:#fff;padding:6px 12px;cursor:pointer;font-size:12px;z-index:5}
 .video-fullscreen:hover{background:rgba(0,0,0,.9)}
 .video-fullscreen:focus-visible{outline:2px solid var(--accent);outline-offset:2px}

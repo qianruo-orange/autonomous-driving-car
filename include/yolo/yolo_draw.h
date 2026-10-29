@@ -24,7 +24,7 @@ int yolo_classes_load(const char *path, yolo_classes_t *out);
    失败返回 -1（*jpeg_buf 可能已被 realloc，由调用方持有释放）。 */
 int yolo_render_annotated(unsigned char *rgb, int w, int h,
                           const yolo_result_t *res,
-                          const yolo_classes_t *classes,
+                          const yolo_classes_t *classes, int tracked_index,
                           unsigned char **jpeg_buf, size_t *jpeg_cap,
                           size_t *jpeg_len);
 

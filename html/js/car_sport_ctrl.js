@@ -12,6 +12,7 @@
     const fields = card.querySelector('#car_fields');
     const dirtyKeys = new Set();
     let selectedTarget = null;
+    let renderedTargets = [];
     let loaded = false,
         busy = false,
         latest;
@@ -159,7 +160,7 @@
     });
     card.addEventListener('change', event => {
         dirtyKeys.add(event.target.name);
-        if (event.target.name === 'target') selectedTarget = latest.targets[Number(event.target.value)] || null;
+        if (event.target.name === 'target') selectedTarget = renderedTargets[Number(event.target.value)] || null;
         updateSpeedMode();
     });
 
@@ -171,13 +172,23 @@
                 if (input && !dirtyKeys.has(key)) input.value = String(value);
             }
             const select = card.querySelector('[name=target]');
-            if (!dirtyKeys.has('target') && document.activeElement !== select) {
+            // An empty selector must recover when detections arrive, even if
+            // it still has focus. Preserve an open, populated list for selection.
+            if (!dirtyKeys.has('target') && (document.activeElement !== select ||
+                    (!renderedTargets.length && data.targets.length > 0))) {
+                renderedTargets = data.targets.slice();
                 select.replaceChildren();
                 const saved = document.createElement('option');
                 saved.value = 'saved';
                 setI18nText(saved, '已保存的目标');
                 select.appendChild(saved);
-                data.targets.forEach((target, index) => {
+                if (!renderedTargets.length) {
+                    const empty = document.createElement('option');
+                    empty.disabled = true;
+                    setI18nText(empty, '暂无识别目标，请将目标置于摄像头画面内');
+                    select.appendChild(empty);
+                }
+                renderedTargets.forEach((target, index) => {
                     const o = document.createElement('option');
                     o.value = String(index);
                     o.textContent = target.name + ' #' + index + ' (' + target.x.toFixed(2) + ', ' + target.y.toFixed(2) + ')';

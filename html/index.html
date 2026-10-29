@@ -28,7 +28,12 @@
         <div class="video-wrapper">
           <video id="stream_video" autoplay muted playsinline></video>
           <img id="stream_img" style="display:none" alt="stream">
+          <div id="tracking_overlay" aria-label="图像目标追踪" data-i18n-aria-label="图像目标追踪"></div>
           <button class="video-fullscreen" type="button" onclick="toggleCarFullscreen()" data-i18n="全屏">全屏</button>
+        </div>
+        <div class="tracking-toolbar">
+          <span id="tracking_status" role="status" data-i18n="点击画面中的识别框开始追踪">点击画面中的识别框开始追踪</span>
+          <button id="tracking_stop" type="button" class="btn" disabled data-i18n="停止追踪">停止追踪</button>
         </div>
         <div class="video-stats" id="video_stats" aria-live="off"></div>
       </div>
@@ -60,4 +65,5 @@
   </div>
 </div>
 <script src="/js/monitor.js"></script>
+<script src="/js/image-tracking.js"></script>
 </body></html>

@@ -191,7 +191,7 @@ static void yolo_draw_label(cv::Mat &img, int x1, int y1,
 
 int yolo_render_annotated(unsigned char *rgb, int w, int h,
                           const yolo_result_t *res,
-                          const yolo_classes_t *classes,
+                          const yolo_classes_t *classes, int tracked_index,
                           unsigned char **jpeg_buf, size_t *jpeg_cap,
                           size_t *jpeg_len)
 {
@@ -207,15 +207,15 @@ int yolo_render_annotated(unsigned char *rgb, int w, int h,
     cv::Mat mat(h, w, CV_8UC3, rgb);    /* 包装 RGB 缓冲，不拷贝 */
     for (int i = 0; i < res->count; i++) {
         const yolo_det_t *d = &res->dets[i];
-        unsigned int color = kColors[d->cls % ncolors];
+        unsigned int color = i == tracked_index ? 0x00FFFF : kColors[d->cls % ncolors];
         yolo_draw_box(rgb, w, h, (int)d->x1, (int)d->y1, (int)d->x2, (int)d->y2, color);
 
         /* 标签：类别名 + 置信度（cv2 风格：实色底块 + 白色粗体字） */
         const char *name = "obj";
         if (classes && d->cls >= 0 && d->cls < classes->count)
             name = classes->names[d->cls];
-        char label[YOLO_CLASS_NAME_LEN + 16];
-        snprintf(label, sizeof(label), "%s %.2f", name, d->conf);
+        char label[YOLO_CLASS_NAME_LEN + 32];
+        snprintf(label, sizeof(label), "%s%s %.2f", i == tracked_index ? "TRACK " : "", name, d->conf);
         yolo_draw_label(mat, (int)d->x1, (int)d->y1, label, color);
     }
 

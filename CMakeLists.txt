@@ -80,6 +80,10 @@ file(GLOB APP_HEADERS CONFIGURE_DEPENDS include/**/*.h)
 
 add_executable(autonomous-driving-car ${APP_SOURCES} ${APP_HEADERS})
 
+# Keep source lines and variable information in optimized crash dumps for both
+# C and C++, including builds using an existing CMake cache.
+target_compile_options(autonomous-driving-car PRIVATE $<$<CONFIG:Release>:-g>)
+
 target_include_directories(autonomous-driving-car PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
 
 # libnl3 headers are under /usr/include/libnl3

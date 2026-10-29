@@ -58,6 +58,7 @@
 #include "yolo/yolo_image.h"
 #include "yolo/yolo_postprocess.h"
 #include "yolo/yolo_draw.h"
+#include "control/image_tracking.h"
 #include "yolo/yolo_events.h"
 #include "core/common.h"
 #include "core/cpu_affinity.h"
@@ -786,6 +787,7 @@ static void *yolo_render_task(void *arg)
         if (want_jpeg)
             frame_ring_buf_take_locked(ring, FRAME_RING_POOL_JPEG, 64 * 1024, &jpegb);
         g_yolo.next_seq = seq;
+        unsigned long long tracking_capture_ms = s->capture_ms;
         frame_ring_unlock(ring);
 
         /* 结果条目 → 渲染结果：名称回查类别下标（标签含置信度） */
@@ -807,10 +809,11 @@ static void *yolo_render_task(void *arg)
            无 MJPEG 观看者时跳过 JPEG 编码（省 CPU）；观看者接入后下一帧
            （≤33ms）恢复编码，get_frame 对 len==0 帧返回 -1 由客户端等待 */
         yolo_smooth(&g_yolo.prev, &disp);
+        int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms);
         unsigned char *jbuf = jpegb.buf;
         size_t jcap = jpegb.cap, jlen = 0;
         int ok = (nv12b.buf &&
-                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes,
+                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes, tracked_index,
                                         want_jpeg ? &jbuf : NULL,
                                         want_jpeg ? &jcap : NULL,
                                         want_jpeg ? &jlen : NULL) == 0);

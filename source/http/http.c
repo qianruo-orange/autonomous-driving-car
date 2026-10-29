@@ -731,6 +731,8 @@ static void http_process_request(http_conn_t *c)
         { "/api/ano",       0, "GET", http_ano_get, NULL },
         { "/api/follow",    0, "POST", http_follow_post, http_check_auth_root },
         { "/api/follow",    0, "GET", http_follow_get, NULL },
+        { "/api/tracking",  0, "GET", http_tracking_get, NULL },
+        { "/api/tracking",  0, "POST", http_tracking_post, http_check_auth_root },
         { "/api/config",    0, "POST", http_config_post,  http_check_auth_root },
         { "/api/config",    0, NULL,   http_config_get,   NULL },
         { "/api/config/export", 0, NULL, http_config_export, http_check_auth_root },

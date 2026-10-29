@@ -87,6 +87,16 @@ H.264 live video and MP4 recording share an encoding session. Stopping recording
 
 ## Intelligent following
 
+### Image target tracking
+
+On the home page, click a detected object in the live video to select it. The selected object receives a cyan box and a `TRACK` label in the frame itself, including recordings. Use **停止追踪 / Stop tracking** to clear the selection. Image tracking runs independently of the wheel controller and does not enable vehicle motion.
+
+The tracker associates same-class detections using overlap, predicted center movement, and relative size. Brief detection gaps can recover within 800 ms; ambiguous matches or longer gaps show target loss. Select the object again after loss. This is detection-based tracking without appearance re-identification; crossing or fully occluded objects can lose their identity.
+
+`GET /api/tracking` returns the rendered-frame sequence, normalized boxes, and tracking state. Authenticated `POST /api/tracking` accepts `action=select&seq=<sequence>&index=<detection index>` or `action=stop`. Selection uses a bounded history of rendered detections and rejects expired or unmatchable selections with HTTP 409. Browser hit areas use recent metadata and may lag/lead the displayed stream slightly; the encoded `TRACK` marker is frame-matched.
+
+### Wheel following
+
 **智能跟随** selects a detected target and controls differential wheel speed. Automatic speed uses relative target size; manual mode uses the configured speed setpoint. Steering follows horizontal target error. Each wheel uses its own PI state and measured speed feedback.
 
 Motor output requires:
@@ -162,6 +172,32 @@ curl -s http://127.0.0.1/api/video/stats
 ```
 
 Check model/platform compatibility for inference startup failures, capture/encoding counters for video issues, and controller readiness/feedback for missing motor output. Detailed API routes are defined in [http.c](source/http/http.c).
+
+### Crash dumps
+
+The service explicitly enables core dumps with `LimitCORE=infinity`. On Debian/Armbian, install the system collector once with `sudo apt-get install systemd-coredump`. The collector receives fatal-signal dumps (including watchdog aborts) even when the service restarts automatically; normal stops do not create a dump.
+
+To retain dumps on disk with bounded storage, create `/etc/systemd/coredump.conf.d/99-autonomous-driving-car.conf`:
+
+```ini
+[Coredump]
+Storage=external
+Compress=yes
+ProcessSizeMax=2G
+ExternalSizeMax=2G
+MaxUse=4G
+KeepFree=2G
+```
+
+These collector limits apply system-wide. Dumps are stored under `/var/lib/systemd/coredump` and are also subject to systemd's age-based cleanup. Dumps above the per-process limit may be incomplete or unavailable.
+
+```bash
+sudo coredumpctl list /opt/autonomous-driving-car/bin/autonomous-driving-car
+sudo coredumpctl info /opt/autonomous-driving-car/bin/autonomous-driving-car
+sudo coredumpctl dump /opt/autonomous-driving-car/bin/autonomous-driving-car --output=/tmp/autonomous-driving-car.core
+```
+
+Release builds include `-g` for both C and C++ while retaining `-O3` optimization. Keep the matching executable with its debug information for analysis; optimization can still make some variables unavailable. After changing the service unit, reload systemd and restart the service to apply its limits.
 
 ## License
 

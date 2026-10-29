@@ -5,6 +5,17 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    '图像目标追踪': 'Image target tracking',
+    '追踪目标': 'Track target',
+    '点击画面中的识别框开始追踪': 'Click a detection box in the video to track it',
+    '正在追踪所选目标': 'Tracking the selected target',
+    '目标丢失，请重新选择': 'Target lost. Select it again',
+    '等待实时识别画面': 'Waiting for live detections',
+    '停止追踪': 'Stop tracking',
+    '正在更新追踪目标…': 'Updating tracking target...',
+    '画面已更新，请重新点击目标': 'The frame has changed. Click the target again',
+    '无法更新追踪目标': 'Unable to update tracking target',
+    '无法读取图像追踪状态': 'Unable to read image tracking status',
     'Web网卡': 'Web interface',
     '选择网卡': 'Select interface',
     '通信状态': 'Connection',
@@ -50,6 +61,7 @@
     '右轮速度 Kp':'Right wheel speed Kp','右轮速度 Ki':'Right wheel speed Ki','右轮速度 Kd':'Right wheel speed Kd',
     '停止':'Stopped','启用跟随':'Enable following','按中心误差自动调速':'Automatic from center error','手动设定速度':'Manual speed',
     '已保存的目标':'Saved target','识别数据过期':'Detection data stale','目标丢失':'Target lost','等待下一识别帧':'Waiting for next detection',
+    '暂无识别目标，请将目标置于摄像头画面内':'No detections. Place the target in the camera view',
     '未接入电机协议':'Motor protocol not connected','需要实时内核':'Real-time kernel required','实时调度不可用':'Real-time scheduling unavailable',
     '轮速反馈过期':'Wheel feedback stale','正在控制':'Controlling','参数已更新':'Settings updated',
     '电机发送失败':'Motor send failed','电机停止失败':'Motor stop failed','中心误差':'Center error',
