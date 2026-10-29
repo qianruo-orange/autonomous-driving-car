@@ -5,6 +5,12 @@
    the Chinese text when a translation is missing). */
 (function () {
   var EN = {
+    '目标太小，无法提取外观特征': 'Target is too small to extract appearance features',
+    '点击识别框记录外观并开始追踪': 'Click a detection to capture its appearance and start tracking',
+    '正在按外观追踪目标': 'Tracking the target by appearance',
+    '目标丢失，正在按外观找回…': 'Target lost. Searching by appearance...',
+    '外观相似度': 'Appearance similarity',
+    '目标已过期或外观特征不足，请重新选择': 'Target expired or appearance unavailable. Select it again',
     '图像目标追踪': 'Image target tracking',
     '追踪目标': 'Track target',
     '点击画面中的识别框开始追踪': 'Click a detection box in the video to track it',

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* cc -std=c11 -Iinclude tests/image_tracking_test.c source/control/image_tracking.c
+/* cc -std=c11 -Iinclude tests/image_tracking_test.c source/control/image_tracking.c source/control/appearance_features.c
  *    -pthread -lm -o /tmp/image_tracking_test && /tmp/image_tracking_test */
 #define _POSIX_C_SOURCE 200809L
 #include "control/image_tracking.h"
@@ -24,7 +24,7 @@ static int update(yolo_result_t *f, unsigned elapsed)
 {
     test_ms += elapsed;
     ++f->seq;
-    return image_tracking_update(f, NULL, test_ms);
+    return image_tracking_update(f, NULL, test_ms, NULL, 0, NULL);
 }
 int main(void)
 {
@@ -32,15 +32,18 @@ int main(void)
     f.dets[0] = box(0, 100);
     f.dets[1] = box(0, 600);
     assert(update(&f, 20) == -1);
+    image_tracking_snapshot_t s;
+    image_tracking_snapshot(&s);
+    assert(s.object_ids[0] == 1 && s.object_ids[1] == 2);
     assert(image_tracking_select(f.seq, 0) == 0);
     assert(image_tracking_select(f.seq, 32) == -1);
     /* Detection ordering changes while the same object moves. */
     f.dets[0] = box(0, 600);
     f.dets[1] = box(0, 110);
     assert(update(&f, 40) == 1);
-    image_tracking_snapshot_t s;
     image_tracking_snapshot(&s);
     assert(s.active && s.selected == 1 && s.track_id == 1);
+    assert(s.object_ids[0] == 2 && s.object_ids[1] == 1);
     /* Brief detector dropout recovers nearby, using the same track ID. */
     f.count = 0;
     assert(update(&f, 40) == -1);
@@ -65,7 +68,7 @@ int main(void)
     assert(update(&f, 40) == 0);
     assert(image_tracking_select(old_seq, 0) == 0);
     image_tracking_snapshot(&s);
-    assert(s.track_id == 2 && s.selected == 0);
+    assert(s.track_id == 1 && s.selected == 0);
     /* Long gaps never silently reacquire a potentially different object. */
     assert(update(&f, 900) == -1);
     assert(image_tracking_select(old_seq, 0) == -1);
@@ -73,7 +76,7 @@ int main(void)
     /* Out-of-order publication leaves the accepted snapshot intact. */
     yolo_result_t reordered = f;
     reordered.seq = 1;
-    assert(image_tracking_update(&reordered, NULL, test_ms - 1) == -1);
+    assert(image_tracking_update(&reordered, NULL, test_ms - 1, NULL, 0, NULL) == -1);
     image_tracking_snapshot(&s);
     assert(s.frame.seq == f.seq);
     /* Stop is independent of continued detection publication. */

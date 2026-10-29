@@ -25,6 +25,7 @@ int yolo_classes_load(const char *path, yolo_classes_t *out);
 int yolo_render_annotated(unsigned char *rgb, int w, int h,
                           const yolo_result_t *res,
                           const yolo_classes_t *classes, int tracked_index,
+                          const unsigned long long *object_ids,
                           unsigned char **jpeg_buf, size_t *jpeg_cap,
                           size_t *jpeg_len);
 

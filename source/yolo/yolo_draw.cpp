@@ -192,6 +192,7 @@ static void yolo_draw_label(cv::Mat &img, int x1, int y1,
 int yolo_render_annotated(unsigned char *rgb, int w, int h,
                           const yolo_result_t *res,
                           const yolo_classes_t *classes, int tracked_index,
+                          const unsigned long long *object_ids,
                           unsigned char **jpeg_buf, size_t *jpeg_cap,
                           size_t *jpeg_len)
 {
@@ -210,12 +211,14 @@ int yolo_render_annotated(unsigned char *rgb, int w, int h,
         unsigned int color = i == tracked_index ? 0x00FFFF : kColors[d->cls % ncolors];
         yolo_draw_box(rgb, w, h, (int)d->x1, (int)d->y1, (int)d->x2, (int)d->y2, color);
 
-        /* 标签：类别名 + 置信度（cv2 风格：实色底块 + 白色粗体字） */
+        /* One numbered label is burned into the same RGB frame used by JPEG,
+         * H.264 live video and recording. The browser adds no visible boxes. */
         const char *name = "obj";
         if (classes && d->cls >= 0 && d->cls < classes->count)
             name = classes->names[d->cls];
-        char label[YOLO_CLASS_NAME_LEN + 32];
-        snprintf(label, sizeof(label), "%s%s %.2f", i == tracked_index ? "TRACK " : "", name, d->conf);
+        char label[YOLO_CLASS_NAME_LEN + 48];
+        unsigned long long id = object_ids ? object_ids[i] : (unsigned long long)i + 1;
+        snprintf(label, sizeof(label), "#%llu %s %.2f", id, name, d->conf);
         yolo_draw_label(mat, (int)d->x1, (int)d->y1, label, color);
     }
 

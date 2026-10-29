@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "http/http_internal.h"
 #include "control/image_tracking.h"
+#include "control/appearance_features.h"
 #include <errno.h>
 #include <math.h>
 
@@ -28,12 +29,19 @@ void http_tracking_get(app_ctx_t *app, int fd, const char *method, const char *u
         char name[YOLO_CLASS_NAME_LEN * 6 + 1];
         http_json_escape(b->cls >= 0 && b->cls < s.classes.count ?
                          s.classes.names[b->cls] : "obj", name, sizeof(name));
-        JSON_ADD(json, off, "%s{\"index\":%d,\"class_id\":%d,\"name\":\"%s\",\"confidence\":%.4f,"
+        JSON_ADD(json, off, "%s{\"index\":%d,\"object_id\":%llu,\"class_id\":%d,\"name\":\"%s\",\"confidence\":%.4f,\"appearance_available\":%s,"
                  "\"x1\":%.6f,\"y1\":%.6f,\"x2\":%.6f,\"y2\":%.6f}",
-                 emitted++ ? "," : "", i, b->cls, name, b->conf,
+                 emitted++ ? "," : "", i, s.object_ids[i], b->cls, name, b->conf, s.feature_ready[i] ? "true" : "false",
                  b->x1 / s.frame.w, b->y1 / s.frame.h, b->x2 / s.frame.w, b->y2 / s.frame.h);
     }
-    JSON_ADD(json, off, "]}");
+    JSON_ADD(json, off, "],\"appearance\":{\"method\":\"hsv_lbp_gradient\",\"dimensions\":%d,"
+             "\"available_targets\":%d,\"reference_ready\":%s,\"reidentifications\":%d,"
+             "\"reacquire_remaining_ms\":%llu,\"similarity\":",
+             APPEARANCE_DIM, s.fresh ? s.features_available : 0, s.reference_ready ? "true" : "false",
+             s.reidentifications, s.reacquire_remaining_ms);
+    if (s.appearance_similarity >= 0) JSON_ADD(json, off, "%.5f", s.appearance_similarity);
+    else JSON_ADD(json, off, "null");
+    JSON_ADD(json, off, "}}");
     http_ok_json(fd, json, (size_t)off);
 }
 

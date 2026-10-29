@@ -809,11 +809,13 @@ static void *yolo_render_task(void *arg)
            无 MJPEG 观看者时跳过 JPEG 编码（省 CPU）；观看者接入后下一帧
            （≤33ms）恢复编码，get_frame 对 len==0 帧返回 -1 由客户端等待 */
         yolo_smooth(&g_yolo.prev, &disp);
-        int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms);
+        unsigned long long object_ids[YOLO_MAX_DETS];
+        int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms,
+                                                  rgbb.buf, rgbb.cap, object_ids);
         unsigned char *jbuf = jpegb.buf;
         size_t jcap = jpegb.cap, jlen = 0;
         int ok = (nv12b.buf &&
-                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes, tracked_index,
+                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes, tracked_index, object_ids,
                                         want_jpeg ? &jbuf : NULL,
                                         want_jpeg ? &jcap : NULL,
                                         want_jpeg ? &jlen : NULL) == 0);

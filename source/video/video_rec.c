@@ -498,6 +498,10 @@ int video_rec_stop(void)
         return -1;
     }
     g_rec.cmd = REC_CMD_STOP;
+    /* The encoder's inner loop polls recording, while cmd is consumed only by
+     * the outer loop. Release the current session now so it can finalize; the
+     * queued STOP then disables automatic continuation before the next file. */
+    g_rec.recording = 0;
     pthread_mutex_unlock(&g_rec.lock);
     return 0;
 }
