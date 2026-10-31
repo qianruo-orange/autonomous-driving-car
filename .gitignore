@@ -8,8 +8,6 @@ cmake_install.cmake
 Makefile
 *.cmake
 compile_commands.json
-CTestTestfile.cmake
-Testing/
 
 # 二进制 / 静态库 / 生成物
 *.o

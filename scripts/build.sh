@@ -192,12 +192,6 @@ PLATFORM=$(bash "$PROJECT_DIR/scripts/model_sync.sh" normalize-platform --platfo
 # 模型同步（失败则中止编译：模型是启动必要项）
 sync_model "$PLATFORM"
 
-# Regenerate legacy build trees once; logs and runtime data live outside them.
-if [ -f "$BUILD_DIR/CTestTestfile.cmake" ] || [ -d "$BUILD_DIR/Testing" ]; then
-    echo "[CLEAN] regenerating legacy build outputs"
-    find "$BUILD_DIR" -xdev -mindepth 1 -depth -delete
-fi
-
 case "$BUILD_MODE" in
     debug)
         echo "=== build $BIN_NAME ==="
