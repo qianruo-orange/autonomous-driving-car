@@ -104,47 +104,38 @@ static module_t g_modules[] = {
     {
         .name = "context",
         .ops = { .init = context_init },
-        .thr = { .cpu = -1 },
     },
     /* 无独立线程：正序初始化、逆序清理，日志最后关闭。 */
     {
         .name = "log",
         .ops = { .init = log_init, .dtor = log_close },
-        .thr = { .cpu = -1 },
     },
     {
         .name = "config",
         .ops = { .init = config_init, .dtor = config_cleanup },
-        .thr = { .cpu = -1 },
     },
     {
         .name = "dbc",
         .ops = { .init = dbc_init, .dtor = dbc_cleanup },
-        .thr = { .cpu = -1 },
     },
     /* can（只负责初始化 / 清理，不占独立线程） */
     {
-        .tid  = 0,
         .name = "can",
-        .ops  = { .init = can_init, .dtor = can_cleanup, .task = NULL },
-        .wd   = { .timeout = 0, .max_miss = 0 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .ops  = { .init = can_init, .dtor = can_cleanup },
     },
     /* can_recv —— 接收线程：按端口和 CAN ID 投递业务数据槽，喂狗 */
     {
-        .tid  = 0,
         .name = "can_recv",
-        .ops  = { .init = NULL, .dtor = NULL, .task = can_recv_task },
+        .ops  = { .task = can_recv_task },
         .wd   = { .timeout = 3, .max_miss = 3 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .thr  = { .cpu = -1 },
     },
     /* can_send —— 发送线程：排空 txq 写 socket 做发送 DBC 解析，喂狗 */
     {
-        .tid  = 0,
         .name = "can_send",
-        .ops  = { .init = NULL, .dtor = NULL, .task = can_send_task },
+        .ops  = { .task = can_send_task },
         .wd   = { .timeout = 3, .max_miss = 3 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .thr  = { .cpu = -1 },
     },
     /* Anonymous Assistant network transport. */
     {
@@ -155,11 +146,10 @@ static module_t g_modules[] = {
     },
     /* http */
     {
-        .tid  = 0,
         .name = "http",
         .ops  = { .init = http_server_start, .dtor = http_server_stop, .task = http_server_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .thr  = { .cpu = -1 },
     },
     /* Event-driven differential vehicle controller owns a joinable FIFO worker. */
     {
@@ -173,44 +163,36 @@ static module_t g_modules[] = {
     },
     /* video */
     {
-        .tid  = 0,
         .name = "video",
         .ops  = { .init = video_stream_init, .dtor = video_stream_shutdown, .task = video_stream_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .thr  = { .cpu = -1 },
     },
     /* yolo —— RKNN YOLO26 检测（必要流程）：无模型/NPU 不可用时 init 返回 -1，
        服务启动直接失败（无 YOLO 直接报错），不进降级空转 */
     {
-        .tid  = 0,
         .name = "yolo",
         .ops  = { .init = rknn_yolo_init, .dtor = rknn_yolo_destroy, .task = rknn_yolo_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .thr  = { .cpu = -1 },
     },
     /* watchdog —— 监控者，不能监督自己，故 timeout=0（不注册自身） */
     {
-        .tid  = 0,
         .name = "watchdog",
-        .ops  = { .init = watchdog_init, .dtor = NULL, .task = watchdog_task },
-        .wd   = { .timeout = 0, .max_miss = 0 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .ops  = { .init = watchdog_init, .task = watchdog_task },
+        .thr  = { .cpu = -1 },
     },
     /* rec —— 网络录像（HTTP 控制）：空闲空转喂狗，录制中每帧喂狗 */
     {
-        .tid  = 0,
         .name = "rec",
         .ops  = { .init = video_rec_init, .dtor = video_rec_destroy, .task = video_rec_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .thr  = { .cpu = -1 },
     },
     /* signal */
     {
-        .tid  = 0,
         .name = "signal",
-        .ops  = { .init = signal_setup, .dtor = NULL, .task = NULL },
-        .wd   = { .timeout = 0, .max_miss = 0 },
-        .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
+        .ops  = { .init = signal_setup },
     },
 };
 #define MOD_COUNT (int)(sizeof(g_modules)/sizeof(g_modules[0]))

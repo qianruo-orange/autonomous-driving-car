@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
- * http_api_can.c — CAN 接口状态查询与开关控制 API。
+ * http_api_can.c — CAN 状态、控制、收发记录和 DBC 解析结果 API。
  */
 
 #include <ctype.h>
@@ -12,11 +12,80 @@
 #include <netlink/route/link.h>
 #include <netlink/route/link/can.h>
 #include <linux/can/netlink.h>
+#include <pthread.h>
 
 #include "http/http_internal.h"
 #include "http/http_api_can.h"
+#include "core/common.h"
 #include "core/ring.h"
+#include "can/dbc_parser.h"
 #include "can/can_socket.h"
+
+#define DECODE_RING_MAX 32
+#define DECODE_TEXT_MAX 512
+#define DBC_DIR_COUNT 2
+
+typedef struct {
+    char ifname[16];
+    canid_t can_id;
+    char name[DBC_MAX_NAME_LEN];
+    char text[DECODE_TEXT_MAX];
+} decode_entry_t;
+
+static decode_entry_t decode_buffer[DBC_DIR_COUNT][DECODE_RING_MAX];
+static ring_t decode_ring[DBC_DIR_COUNT] = {
+    {.buf=decode_buffer[0],.entry_size=sizeof(decode_entry_t),.max=DECODE_RING_MAX},
+    {.buf=decode_buffer[1],.entry_size=sizeof(decode_entry_t),.max=DECODE_RING_MAX},
+};
+static pthread_mutex_t decode_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static unsigned decode_index(dbc_dir_t direction)
+{
+    return direction == DBC_DIR_TX ? 1u : 0u;
+}
+
+void http_dbc_record(dbc_dir_t direction,const char *ifname,canid_t can_id,
+                     const char *name,const char *text)
+{
+    if(!ifname||!name||!text)return;
+    decode_entry_t entry={.can_id=can_id};
+    safe_strncpy(entry.ifname,sizeof(entry.ifname),ifname);
+    safe_strncpy(entry.name,sizeof(entry.name),name);
+    safe_strncpy(entry.text,sizeof(entry.text),text);
+    unsigned index=decode_index(direction);
+    ring_record(&decode_ring[index],&decode_lock,&entry);
+}
+
+static int decoded_json(dbc_dir_t direction,char *out,size_t size)
+{
+    if(!out||!size)return -1;
+    unsigned index=decode_index(direction);
+    ring_t *ring=&decode_ring[index];
+    int total=ring_total(ring),offset=snprintf(out,size,"[");
+    pthread_mutex_lock(&decode_lock);
+    for(int i=0;i<total;i++){
+        decode_entry_t *entry=&decode_buffer[index][ring_latest_pos(ring,i)];
+        int next=http_json_append(out,size,offset,
+            "%s{\"ifname\":\"%s\",\"id\":\"0x%X\",\"name\":\"%s\",\"text\":\"%s\"}",
+            i?",":"",entry->ifname,entry->can_id,entry->name,entry->text);
+        if(next<0){offset=(int)size-1;break;}
+        offset=next;
+    }
+    pthread_mutex_unlock(&decode_lock);
+    return offset<(int)size-1?http_json_append(out,size,offset,"]"):offset;
+}
+
+void http_can_decoded(app_ctx_t *app,int fd)
+{
+    (void)app;char json[8192];int length=decoded_json(DBC_DIR_RX,json,sizeof(json));
+    http_ok_json(fd,json,(size_t)(length<0?0:length));
+}
+
+void http_can_decoded_tx(app_ctx_t *app,int fd)
+{
+    (void)app;char json[8192];int length=decoded_json(DBC_DIR_TX,json,sizeof(json));
+    http_ok_json(fd,json,(size_t)(length<0?0:length));
+}
 
 void http_can_ifaces(app_ctx_t *app, int fd)
 {

@@ -33,7 +33,6 @@
 #include "core/epoll_util.h"
 #include "core/log.h"
 #include "http/http_api_can.h"
-#include "http/http_api_dbc.h"
 #include "watchdog/watchdog.h"
 #include <limits.h>
 #include <math.h>

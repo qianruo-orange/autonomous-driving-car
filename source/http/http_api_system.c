@@ -1,9 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <sys/statvfs.h>
+#include <sys/reboot.h>
 #include <string.h>
 #include <dirent.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netpacket/packet.h>
+#include <unistd.h>
 /**
- * http_api_system.c — 系统监控 API（CPU / 内存 / 磁盘 / 温度 / GPU / NPU）。
+ * http_api_system.c — 系统状态、网络统计和电源控制 API。
  */
 
 #include "http/http_internal.h"
@@ -187,3 +192,56 @@ void http_system_api(app_ctx_t *app, int fd)
 
     http_ok_json(fd, json, (size_t)off);
 }
+
+/* Network status endpoints belong with the system monitor API. */
+void http_network_ifaces(app_ctx_t *app,int fd,const char *method,const char *uri,const char *req_buf)
+{
+    (void)app;(void)method;(void)uri;(void)req_buf;
+    char json[1024];int offset=0,first=1;JSON_ADD(json,offset,"[");
+    struct ifaddrs *interfaces=NULL;
+    if(getifaddrs(&interfaces)==0){
+        for(struct ifaddrs *item=interfaces;item;item=item->ifa_next){
+            if(!item->ifa_name||!item->ifa_addr||item->ifa_addr->sa_family!=AF_PACKET||
+               (item->ifa_flags&IFF_LOOPBACK))continue;
+            JSON_ADD(json,offset,"%s\"%s\"",first?"":",",item->ifa_name);first=0;
+        }
+        freeifaddrs(interfaces);
+    }
+    JSON_ADD(json,offset,"]");http_ok_json(fd,json,(size_t)offset);
+}
+
+void http_network_api(app_ctx_t *app,int fd)
+{
+    (void)app;const char *interfaces[]={NET_IFACE_ETH,NET_IFACE_WLAN};
+    char json[512];int offset=snprintf(json,sizeof(json),"{");
+    FILE *fp=fopen("/proc/net/dev","r");
+    if(!fp){
+        JSON_ADD(json,offset,"\"%s\":{\"rx\":0,\"tx\":0},\"%s\":{\"rx\":0,\"tx\":0}}",interfaces[0],interfaces[1]);
+        http_ok_json(fd,json,(size_t)offset);return;
+    }
+    char line[256];int found=0;
+    while(fgets(line,sizeof(line),fp)){
+        char name[32];unsigned long rx,tx;
+        if(sscanf(line," %31[^:]: %lu %*u %*u %*u %*u %*u %*u %*u %lu",name,&rx,&tx)!=3)continue;
+        if(strcmp(name,interfaces[0])&&strcmp(name,interfaces[1]))continue;
+        JSON_ADD(json,offset,"%s\"%s\":{\"rx\":%lu,\"tx\":%lu}",found?",":"",name,rx,tx);found++;
+    }
+    fclose(fp);
+    for(int i=0,need=found>0;i<2;i++)if(!strstr(json,interfaces[i])){
+        JSON_ADD(json,offset,"%s\"%s\":{\"rx\":0,\"tx\":0}",need?",":"",interfaces[i]);need=1;
+    }
+    JSON_ADD(json,offset,"}");http_ok_json(fd,json,(size_t)offset);
+}
+
+static void reboot_action(int fd,int power_off)
+{
+    char html[512];int length=snprintf(html,sizeof(html),
+        "<html><body style='font-family:Segoe UI;background:#0d1117;color:#c9d1d9;padding:40px;text-align:center'>"
+        "<h2 style='color:%s'> %s...</h2><p>%s</p></body></html>",
+        power_off?"#da3633":"#58a6ff",power_off?"正在关机":"正在重启",power_off?"设备即将关闭":"设备将在几秒后重启");
+    http_send_response(fd,200,"OK","text/html; charset=utf-8",html,(size_t)length);
+    sync();reboot(power_off?RB_POWER_OFF:RB_AUTOBOOT);
+}
+
+void http_reboot(app_ctx_t *app,int fd){(void)app;reboot_action(fd,0);}
+void http_shutdown(app_ctx_t *app,int fd){(void)app;reboot_action(fd,1);}
