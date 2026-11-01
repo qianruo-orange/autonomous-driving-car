@@ -60,20 +60,28 @@ static int nt_alloc(int test_id)
     return -1;
 }
 
+/* Copy task input while locked; workers execute commands outside the lock. */
+static int nt_begin(int id, char *target, size_t size)
+{
+    pthread_mutex_lock(&nt_mutex);
+    int idx = nt_find(id);
+    if (idx >= 0) {
+        strcpy(nt_tests[idx].status, "running");
+        safe_strncpy(target, size, nt_tests[idx].target);
+    }
+    pthread_mutex_unlock(&nt_mutex);
+    return idx;
+}
+
 /* ---- ping 后台线程：解析丢包率 ---- */
 static void *nt_run_ping(void *arg)
 {
     int id = *(int *)arg;
     free(arg);
 
-    pthread_mutex_lock(&nt_mutex);
-    int idx = nt_find(id);
-    if (idx < 0) { pthread_mutex_unlock(&nt_mutex); return NULL; }
-    strcpy(nt_tests[idx].status, "running");
-    char target[256];
-    strncpy(target, nt_tests[idx].target, sizeof(target) - 1);
-    target[sizeof(target) - 1] = '\0';
-    pthread_mutex_unlock(&nt_mutex);
+    char target[sizeof(nt_tests[0].target)];
+    int idx = nt_begin(id, target, sizeof(target));
+    if (idx < 0) return NULL;
 
     char cmd[NT_CMD_BUF];
     snprintf(cmd, sizeof(cmd), "ping -c 4 -W 3 '%.200s' 2>&1", target);
@@ -97,9 +105,9 @@ static void *nt_run_ping(void *arg)
                 int loss = -1;
                 const char *lp = strstr(output, "% packet loss");
                 if (lp) {
-                    const char *s = lp - 1;
-                    while (s > output && *s >= '0' && *s <= '9') s--;
-                    loss = atoi(s + 1);
+                    const char *s = lp;
+                    while (s > output && s[-1] >= '0' && s[-1] <= '9') s--;
+                    if (s < lp) loss = atoi(s);
                 }
                 /* 解析 rtt: "rtt min/avg/max/mdev = X/X/X/X ms" */
                 double rtt_min = 0, rtt_avg = 0, rtt_max = 0;
@@ -159,14 +167,9 @@ static void *nt_run_speed(void *arg)
     int id = *(int *)arg;
     free(arg);
 
-    pthread_mutex_lock(&nt_mutex);
-    int idx = nt_find(id);
-    if (idx < 0) { pthread_mutex_unlock(&nt_mutex); return NULL; }
-    strcpy(nt_tests[idx].status, "running");
-    char target[256];
-    strncpy(target, nt_tests[idx].target, sizeof(target) - 1);
-    target[sizeof(target) - 1] = '\0';
-    pthread_mutex_unlock(&nt_mutex);
+    char target[sizeof(nt_tests[0].target)];
+    int idx = nt_begin(id, target, sizeof(target));
+    if (idx < 0) return NULL;
 
     char cmd[NT_CMD_BUF];
     snprintf(cmd, sizeof(cmd),
