@@ -100,7 +100,7 @@ flowchart LR
     Source["Source + RKNN<br/>model + labels"] --> Build["build.sh<br/>dependencies / model sync<br/>CMake / make"]
     Build --> Deploy["deploy.sh -i<br/>install under /opt<br/>preserve settings"]
     Deploy --> Service["systemd<br/>starts application"]
-    Service --> Base["main<br/>context / logs / affinity<br/>config / IP / DBC"]
+    Service --> Base["main<br/>shared application<br/>context"]
     Base --> Modules["Initialize modules<br/>start workers<br/>register heartbeats"]
     Modules --> Ready{"Startup<br/>succeeded?"}
     Ready -->|Yes| Running["Main loop<br/>cooperating workers"]
@@ -115,7 +115,7 @@ flowchart LR
     class Failed failure
 ```
 
-Module-table order: **CAN → CAN RX/TX → TCP → HTTP → following → ANO → video → YOLO → watchdog → recording → signals**. Modules may create additional workers for following, inference, composition, reports, and media/file clients.
+Module-table order: **log → config → platform → CAN → CAN RX/TX → TCP → HTTP → following → ANO → video → YOLO → watchdog → recording → signals**. Modules may create additional workers for following, inference, composition, reports, and media/file clients.
 
 ### Shutdown and recovery
 

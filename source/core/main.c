@@ -91,7 +91,70 @@ static app_ctx_t g_app;
 /* DBC 数据库数组（每个 CAN 通道一个，静态分配；其他模块经 g_app.dbcs 访问） */
 static dbc_t g_dbc[CAN_MAX_IFACES];
 
+/* 基础模块同样通过生命周期表启动：日志必须先于配置及平台操作。 */
+static int logging_init(void *arg)
+{
+    (void)arg;
+    log_init(PATH_LOGS);
+    return 0;
+}
+
+static void logging_destroy(void *arg)
+{
+    (void)arg;
+    LOG_INFO("Modules shut down successfully.");
+    log_close();
+}
+
+static int configuration_init(void *arg)
+{
+    app_ctx_t *app = arg;
+    int rc = config_load(app->cfg);
+    if (rc < 0) return rc;
+    log_close();
+    log_init(app->cfg->log_dir);
+    return 0;
+}
+
+static int platform_init(void *arg)
+{
+    app_ctx_t *app = arg;
+    cpu_affinity_init();
+    (void)cpu_bind_little();
+    /* 启动时按配置应用网卡 IP（静态/DHCP）；未配置则跳过 */
+    net_ip_apply_cfg(app->cfg);
+
+    /* 按 CAN 通道加载 DBC（可选）：失败不阻塞启动，仅记录日志 */
+    for (int i = 0; i < app->cfg->args.can_count; i++) {
+        const char *path = app->cfg->args.can_ifaces[i].dbc_path;
+        if (!path[0]) continue;
+        if (dbc_load(&app->dbcs[i], path) < 0)
+            LOG_ERROR("dbc: load '%s' for %s failed", path, app->cfg->args.can_ifaces[i].ifname);
+        else
+            LOG_INFO("dbc: loaded '%s' for %s (%d message(s), %d signal(s))",
+                     path, app->cfg->args.can_ifaces[i].ifname, app->dbcs[i].msg_count, app->dbcs[i].sig_count);
+    }
+
+    return 0;
+}
+
 static module_t g_modules[] = {
+    /* 无独立线程：正序初始化、逆序清理，日志最后关闭。 */
+    {
+        .name = "log",
+        .ops = { .init = logging_init, .dtor = logging_destroy },
+        .thr = { .cpu = -1 },
+    },
+    {
+        .name = "config",
+        .ops = { .init = configuration_init },
+        .thr = { .cpu = -1 },
+    },
+    {
+        .name = "platform",
+        .ops = { .init = platform_init },
+        .thr = { .cpu = -1 },
+    },
     /* can（只负责初始化 / 清理，不占独立线程） */
     {
         .tid  = 0,
@@ -254,7 +317,6 @@ static void shutdown_modules_safe(void)
             g_modules[i].ops.dtor(&g_app);
         }
     }
-    LOG_INFO("Modules shut down successfully.");
 }
 
 /**
@@ -274,26 +336,6 @@ int main(void)
     g_app.tcp = &tcp_ctx;
     g_app.cfg = &cfg;
     g_app.dbcs = g_dbc;
-
-    log_init(PATH_LOGS);
-    cpu_affinity_init();
-    (void)cpu_bind_little();
-    config_load(&cfg);
-    log_close(); log_init(cfg.log_dir);
-
-    /* 启动时按配置应用网卡 IP（静态/DHCP）；未配置则跳过 */
-    net_ip_apply_cfg(&cfg);
-
-    /* 按 CAN 通道加载 DBC（可选）：失败不阻塞启动，仅记录日志 */
-    for (int i = 0; i < cfg.args.can_count; i++) {
-        const char *path = cfg.args.can_ifaces[i].dbc_path;
-        if (!path[0]) continue;
-        if (dbc_load(&g_dbc[i], path) < 0)
-            LOG_ERROR("dbc: load '%s' for %s failed", path, cfg.args.can_ifaces[i].ifname);
-        else
-            LOG_INFO("dbc: loaded '%s' for %s (%d message(s), %d signal(s))",
-                     path, cfg.args.can_ifaces[i].ifname, g_dbc[i].msg_count, g_dbc[i].sig_count);
-    }
 
     /* 信号（SIGINT/SIGTERM/SIGPIPE）由 signal 模块的 init 统一注册，见 signal_setup */
     set_current_thread_name("main");
@@ -356,10 +398,10 @@ int main(void)
     /* 通知各模块停止，让工作线程尽快退出。
        运行期致命错误（如 YOLO 停摆）以退出码 1 结束：systemd Restart=on-failure 自动拉起 */
     shutdown_modules_safe();
-    log_close(); return g_app.fatal ? 1 : 0;
+    return g_app.fatal ? 1 : 0;
 
 fail:
     watchdog_unregister_self("main");
     shutdown_modules_safe();
-    log_close(); return 1;
+    return 1;
 }
