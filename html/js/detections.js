@@ -54,9 +54,7 @@
     if (busy) { refreshPending = true; return; }
     busy = true;
     try {
-      var response = await authFetch('/api/detections/reports');
-      if (!response.ok) throw new Error('Unable to load saved detections');
-      var data = await response.json();
+      var data = await App.json('/api/detections/reports', {authenticated: true});
       reports.replaceChildren();
       if (!data.files || !data.files.length) {
         var empty = reports.insertRow().insertCell(); empty.colSpan = 5; setI18nText(empty, '暂无结果文件');

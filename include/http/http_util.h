@@ -31,6 +31,10 @@ int http_json_escape(const char *in, char *out, size_t out_size);
 /* URL 解码：%XX 十六进制转义还原 + '+' 转空格。返回写入字节数，未匹配返回 0。 */
 int http_url_decode(const char *src, char *dst, size_t dst_size);
 
+/* Split a two-part relative path (directory/name), rejecting traversal. */
+int http_split_relative(const char *rel, char *directory, size_t directory_size,
+                        char *name, size_t name_size);
+
 /* 跳过 HTTP 头（\r\n\r\n / \n\n），返回 body 起始；无头则返回原串。 */
 const char *http_body_start(const char *req);
 

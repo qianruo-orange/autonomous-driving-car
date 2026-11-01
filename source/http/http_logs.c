@@ -16,20 +16,11 @@
 
 /* 日志目录不再硬编码 PATH_LOGS：与核心日志保持一致，使用配置的 log_dir */
 
-/* 解析日志相对路径，要求为 YYYYMMDD/filename 形式且不含 '..' */
+/* 解析日志相对路径；公共拆分器拒绝目录穿越和多级路径。 */
 static int logs_resolve_rel(const char *rel, char *subdir, size_t subdir_size,
                             char *name, size_t name_size)
 {
-    if (!rel || !*rel || strstr(rel, "..")) return -1;
-    const char *slash = strchr(rel, '/');
-    if (!slash || strchr(slash + 1, '/')) return -1;  /* 只允许一个 '/' */
-    size_t dlen = (size_t)(slash - rel);
-    if (dlen == 0 || dlen >= subdir_size) return -1;
-    memcpy(subdir, rel, dlen);
-    subdir[dlen] = '\0';
-    safe_strncpy(name, name_size, slash + 1);
-    if (!*name) return -1;
-    return 0;
+    return http_split_relative(rel, subdir, subdir_size, name, name_size);
 }
 
 /* 将数据完整写入非阻塞 socket（处理 EAGAIN/EWOULDBLOCK 与部分写入）

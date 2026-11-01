@@ -32,12 +32,6 @@
       (codec.value === 'hardware' && hardwareAvailable !== true);
   }
   function setBusy(value) { busy = value; updateDisabled(); }
-  async function getJson(url) {
-    var response = await fetch(url, {cache: 'no-store'});
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    return response.json();
-  }
-
   /* Capture always prefers MJPEG; use that format's rates when it is available.
      A YUYV-only rate must not appear as an MJPEG capture option. */
   function intersectCaps(camera, encoder) {
@@ -65,8 +59,8 @@
     try {
       if (!/^\/dev\/video\d+$/.test(device.value)) throw new Error('No capture device');
       var responses = await Promise.all([
-        getJson('/api/video/caps?device=' + device.value),
-        getJson('/api/video/codeccaps?codec=' + encodeURIComponent(codec.value))
+        App.json('/api/video/caps?device=' + device.value),
+        App.json('/api/video/codeccaps?codec=' + encodeURIComponent(codec.value))
       ]);
       if (version !== generation) return;
       sizes = intersectCaps(responses[0], responses[1]);
@@ -93,8 +87,8 @@
     message('正在读取相机配置…');
     try {
       var responses = await Promise.all([
-        getJson('/api/config'), getJson('/api/video/devices'),
-        getJson('/api/camera').catch(function () { return null; })
+        App.json('/api/config'), App.json('/api/video/devices'),
+        App.json('/api/camera').catch(function () { return null; })
       ]);
       var cfg = responses[0];
       var devices = responses[1];

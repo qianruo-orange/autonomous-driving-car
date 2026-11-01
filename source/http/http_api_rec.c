@@ -39,16 +39,8 @@ static int rec_file_valid(const char *name)
 static int rec_resolve_rel(const char *rel, char *subdir, size_t subdir_size,
                            char *name, size_t name_size)
 {
-    if (!rel || !*rel || strstr(rel, "..")) return -1;
-    const char *slash = strchr(rel, '/');
-    if (!slash || strchr(slash + 1, '/')) return -1;  /* 只允许一个 '/' */
-    size_t dlen = (size_t)(slash - rel);
-    if (dlen == 0 || dlen >= subdir_size) return -1;
-    memcpy(subdir, rel, dlen);
-    subdir[dlen] = '\0';
-    safe_strncpy(name, name_size, slash + 1);
-    if (!rec_file_valid(name)) return -1;
-    return 0;
+    return http_split_relative(rel, subdir, subdir_size, name, name_size) || !rec_file_valid(name)
+               ? -1 : 0;
 }
 
 /* 状态 JSON */
