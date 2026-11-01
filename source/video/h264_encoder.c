@@ -46,6 +46,33 @@
 #define V4L2_CID_MPEG_VIDEO_H264_SPS_PPS_BEFORE_IDR \
     0x00980919u  /* Rockchip 扩展 control（V4L2_CID_MPEG_VIDEO_BASE+24） */
 
+static long annexb_nal_start(const unsigned char *data,size_t length,size_t from,size_t *code)
+{
+    for(size_t i=from;i+3<=length;i++){
+        if(data[i]==0&&data[i+1]==0&&data[i+2]==1){if(code)*code=i;return (long)(i+3);}
+        if(data[i]==0&&data[i+1]==0&&data[i+2]==0&&i+3<length&&data[i+3]==1){
+            if(code)*code=i;return (long)(i+4);
+        }
+    }
+    return -1;
+}
+
+void h264_annexb_walk(const unsigned char *data,size_t length,
+                      h264_nal_callback_t callback,void *context)
+{
+    if(!data||!callback)return;
+    size_t from=0;
+    while(from+3<=length){
+        size_t code=0;long start=annexb_nal_start(data,length,from,&code);
+        if(start<0)break;
+        size_t next_code=0;long next=annexb_nal_start(data,length,(size_t)start,&next_code);
+        size_t nal_length=next<0?length-(size_t)start:next_code-(size_t)start;
+        callback(context,data+start,nal_length);
+        if(next<0)break;
+        from=(size_t)start;
+    }
+}
+
 /* 编码器创建失败的日志限频：同一错误 10s 内只打一条，
    避免录制线程 0.5s 重试时无限刷屏 */
 static struct timespec g_last_err_ts = { 0, 0 };

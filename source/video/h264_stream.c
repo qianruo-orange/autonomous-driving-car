@@ -38,6 +38,7 @@
 #include "core/common.h"
 #include "core/log.h"
 #include "video/h264_stream.h"
+#include "video/h264_encoder.h"
 
 #define H264S_RING_N           256u              /* ≈8.5s @30fps，≥2×GOP(60帧) */
 #define H264S_MAX_FRAME        (2u * 1024 * 1024)   /* 单帧合理性上限 */
@@ -220,46 +221,6 @@ static void h264s_bb_matrix(h264s_buf_t *b)
     h264s_bb_u32(b, 0); h264s_bb_u32(b, 0); h264s_bb_u32(b, 0x40000000u);
 }
 
-/* ---- Annex-B 扫描（复制自 rec_mp4.c，不跨模块重构） ---- */
-
-/* 从 from 起找下一个 start code：*sc_off 记录 start code 起点，
-   返回 NAL 数据起点（跳过 start code），无则 -1 */
-static long h264s_nal_find(const unsigned char *d, size_t len, size_t from, size_t *sc_off)
-{
-    for (size_t i = from; i + 3 <= len; i++) {
-        if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
-            if (sc_off) *sc_off = i;
-            return (long)(i + 3);
-        }
-        if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0 &&
-            i + 3 < len && d[i + 3] == 1) {
-            if (sc_off) *sc_off = i;
-            return (long)(i + 4);
-        }
-    }
-    return -1;
-}
-
-/* 遍历 Annex-B 码流，逐 NAL 回调：@start 数据起点，@nlen 数据长度 */
-typedef void (*h264s_nal_cb_t)(void *ud, const unsigned char *start, size_t nlen);
-static void h264s_nal_walk(const unsigned char *d, size_t len, h264s_nal_cb_t cb, void *ud)
-{
-    size_t from = 0;
-    while (from + 3 <= len) {
-        size_t sc = 0;
-        long pos = h264s_nal_find(d, len, from, &sc);
-        if (pos < 0) break;
-        /* 从当前 NAL 数据起点找下一个 start code：H.264 帧内经防竞争字节
-           保证不含 00 00 00/00 00 01，直接扫描数据区是安全的 */
-        size_t sc2 = 0;
-        long next = h264s_nal_find(d, len, (size_t)pos, &sc2);
-        size_t nlen = (next < 0) ? (len - (size_t)pos) : ((size_t)sc2 - (size_t)pos);
-        cb(ud, d + pos, nlen);
-        if (next < 0) break;
-        from = (size_t)pos;
-    }
-}
-
 /* 配置补齐回调：从入环帧内嵌码流扫描 SPS/PPS
    （V4L2 后端首 IDR 前 extradata 为空，push_config 收到空配置的场景） */
 static void h264s_collect_sps_pps(void *ud, const unsigned char *start, size_t nlen)
@@ -288,7 +249,7 @@ static void h264s_avcc_size_cb(void *ud, const unsigned char *start, size_t nlen
 static size_t h264s_avcc_size(const unsigned char *d, size_t len)
 {
     size_t n = 0;
-    h264s_nal_walk(d, len, h264s_avcc_size_cb, &n);
+    h264_annexb_walk(d, len, h264s_avcc_size_cb, &n);
     return n;
 }
 
@@ -310,7 +271,7 @@ static void h264s_avcc_write_cb(void *ud, const unsigned char *start, size_t nle
 /* 写入恰好 avcc_size 字节到 dst（调用方已保证容量） */
 static void h264s_avcc_write(unsigned char *dst, const unsigned char *d, size_t len)
 {
-    h264s_nal_walk(d, len, h264s_avcc_write_cb, &dst);
+    h264_annexb_walk(d, len, h264s_avcc_write_cb, &dst);
 }
 
 /* ---- 初始化段：ftyp + moov（live 形态：duration 0 + 空样本表，
@@ -599,7 +560,7 @@ void h264_stream_push_frame(const unsigned char *annexb, size_t len,
     /* 配置缺 SPS/PPS（V4L2 后端首 IDR 前）：从入环帧内嵌 SPS/PPS 扫描补齐
        （补齐后本帧尾部的 broadcast 会唤醒等待配置的客户端） */
     if (g_h264s.sps_len == 0 || g_h264s.pps_len == 0)
-        h264s_nal_walk(annexb, len, h264s_collect_sps_pps, &g_h264s);
+        h264_annexb_walk(annexb, len, h264s_collect_sps_pps, &g_h264s);
     if (g_h264s.count == H264S_RING_N) {   /* 满：淘汰最旧 */
         free(g_h264s.ring[g_h264s.head].data);
         g_h264s.head = (g_h264s.head + 1) % H264S_RING_N;

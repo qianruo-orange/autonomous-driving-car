@@ -24,6 +24,7 @@
 #include <errno.h>
 
 #include "video/rec_mp4.h"
+#include "video/h264_encoder.h"
 
 #define REC_MAX_SAMPLES 200000u      /* 帧数上限（≈1.8h @30fps），防内存无限增长 */
 #define REC_MAX_MDAT   (3500u * 1024 * 1024)  /* mdat 数据上限 3.5GB（32 位 size） */
@@ -96,46 +97,6 @@ static void write_matrix(FILE *fp)
     be32(fp, 0x00010000u); be32(fp, 0); be32(fp, 0);
     be32(fp, 0); be32(fp, 0x00010000u); be32(fp, 0);
     be32(fp, 0); be32(fp, 0); be32(fp, 0x40000000u);
-}
-
-/* ---- Annex-B 扫描辅助 ---- */
-
-/* 从 from 起找下一个 start code：*sc_off 记录 start code 起点，
-   返回 NAL 数据起点（跳过 start code），无则 -1 */
-static long nal_find(const unsigned char *d, size_t len, size_t from, size_t *sc_off)
-{
-    for (size_t i = from; i + 3 <= len; i++) {
-        if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1) {
-            if (sc_off) *sc_off = i;
-            return (long)(i + 3);
-        }
-        if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0 &&
-            i + 3 < len && d[i + 3] == 1) {
-            if (sc_off) *sc_off = i;
-            return (long)(i + 4);
-        }
-    }
-    return -1;
-}
-
-/* 遍历 Annex-B 码流，逐 NAL 回调：@start 数据起点，@nlen 数据长度 */
-typedef void (*nal_cb_t)(void *ud, const unsigned char *start, size_t nlen);
-static void nal_walk(const unsigned char *d, size_t len, nal_cb_t cb, void *ud)
-{
-    size_t from = 0;
-    while (from + 3 <= len) {
-        size_t sc = 0;
-        long pos = nal_find(d, len, from, &sc);
-        if (pos < 0) break;
-        /* 从当前 NAL 数据起点找下一个 start code：H.264 帧内经防竞争字节
-           保证不含 00 00 00/00 00 01，直接扫描数据区是安全的 */
-        size_t sc2 = 0;
-        long next = nal_find(d, len, (size_t)pos, &sc2);
-        size_t nlen = (next < 0) ? (len - (size_t)pos) : ((size_t)sc2 - (size_t)pos);
-        cb(ud, d + pos, nlen);
-        if (next < 0) break;
-        from = (size_t)pos;
-    }
 }
 
 /* ---- MP4 封装 ---- */
@@ -411,7 +372,7 @@ static void sps_pps_cb(void *ud, const unsigned char *start, size_t nlen)
 /* 首次遇到 SPS/PPS 时保存（供 avcC） */
 static void rec_save_sps_pps(rec_mp4_t *s, const unsigned char *d, size_t len)
 {
-    nal_walk(d, len, sps_pps_cb, s);
+    h264_annexb_walk(d, len, sps_pps_cb, s);
 }
 
 int rec_mp4_write_frame(rec_mp4_t *s, const unsigned char *h264, size_t len,
@@ -446,7 +407,7 @@ int rec_mp4_write_frame(rec_mp4_t *s, const unsigned char *h264, size_t len,
     long off = ftell(s->fp);
     if (off < 0) return -1;
     struct { FILE *fp; uint32_t written; int ok; } w = { s->fp, 0, 1 };
-    nal_walk(h264, len, nal_write_cb, &w);
+    h264_annexb_walk(h264, len, nal_write_cb, &w);
     if (!w.ok || w.written == 0) return -1;   /* 写失败或无有效 NAL，丢弃 */
     uint32_t written = w.written;
 

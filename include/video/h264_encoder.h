@@ -20,6 +20,11 @@
 
 typedef struct h264_encoder_s h264_encoder_t;
 
+/* Visit each NAL in an Annex-B buffer without copying it. */
+typedef void (*h264_nal_callback_t)(void *context,const unsigned char *nal,size_t length);
+void h264_annexb_walk(const unsigned char *data,size_t length,
+                      h264_nal_callback_t callback,void *context);
+
 /* 探测可用的 V4L2 H.264 编码器节点：优先 /dev/video-enc0，其次扫描 /dev/video0..15。
    返回 0 成功并把节点路径写入 dev（调用方提供缓冲区）。 */
 int h264_encoder_probe(char *dev, size_t dev_size);
