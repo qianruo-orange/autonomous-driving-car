@@ -12,6 +12,8 @@
 #include "core/config.h"
 #include "can/can_socket.h"
 #include "core/log.h"
+#include "core/cpu_affinity.h"
+#include "tcp/net_ip.h"
 #include "core/version.h"
 #include "yolo/rknn_yolo.h"
 
@@ -20,6 +22,38 @@
 /* 串行化配置持久化：http_config_post 与 http_can_dbc_upload 等
    并发保存时避免写坏 config.txt */
 static pthread_mutex_t g_config_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void config_apply_platform(app_ctx_t *app)
+{
+    cpu_affinity_init();
+    (void)cpu_bind_little();
+    /* 启动时按配置应用网卡 IP（静态/DHCP）；未配置则跳过 */
+    net_ip_apply_cfg(app->cfg);
+
+    /* 按 CAN 通道加载 DBC（可选）：失败不阻塞启动，仅记录日志 */
+    for (int i = 0; i < app->cfg->args.can_count; i++) {
+        const char *path = app->cfg->args.can_ifaces[i].dbc_path;
+        if (!path[0]) continue;
+        if (dbc_load(&app->dbcs[i], path) < 0)
+            LOG_ERROR("dbc: load '%s' for %s failed", path, app->cfg->args.can_ifaces[i].ifname);
+        else
+            LOG_INFO("dbc: loaded '%s' for %s (%d message(s), %d signal(s))",
+                     path, app->cfg->args.can_ifaces[i].ifname, app->dbcs[i].msg_count, app->dbcs[i].sig_count);
+    }
+
+}
+
+/* 模块表入口：加载配置、切换日志目录，再应用平台配置。 */
+int config_init(void *arg)
+{
+    app_ctx_t *app = arg;
+    int rc = config_load(app->cfg);
+    if (rc < 0) return rc;
+    log_close();
+    log_init(app->cfg->log_dir);
+    config_apply_platform(app);
+    return 0;
+}
 
 static void config_normalize_model_path(struct app_config_t *cfg)
 {

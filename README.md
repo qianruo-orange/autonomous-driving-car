@@ -115,7 +115,7 @@ flowchart LR
     class Failed failure
 ```
 
-Module-table order: **context → log → config → platform → CAN → CAN RX/TX → TCP → HTTP → following → ANO → video → YOLO → watchdog → recording → signals**. Modules may create additional workers for following, inference, composition, reports, and media/file clients.
+Module-table order: **context → log → config → CAN → CAN RX/TX → TCP → HTTP → following → ANO → video → YOLO → watchdog → recording → signals**. The config module loads settings, switches the log directory, initializes CPU affinity, applies network IP settings, and loads CAN DBC databases before CAN starts. Modules may create additional workers for following, inference, composition, reports, and media/file clients.
 
 ### Shutdown and recovery
 

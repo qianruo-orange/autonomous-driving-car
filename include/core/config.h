@@ -79,6 +79,8 @@ struct app_config_t {
     int           yolo_threads;       /* Legacy file compatibility; the pool selects active workers adaptively. */
 };
 
+/* 生命周期表入口，接收 app_ctx_t 上下文。 */
+int  config_init(void *arg);
 int  config_load(struct app_config_t *cfg);
 void config_save(app_ctx_t *app);
 

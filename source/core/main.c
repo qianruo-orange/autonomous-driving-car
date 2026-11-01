@@ -31,7 +31,6 @@
 #include "video/video_stream.h"
 #include "video/video_rec.h"
 #include "yolo/rknn_yolo.h"
-#include "tcp/net_ip.h"
 #include "control/car_sport_ctrl.h"
 #include "telemetry/ano.h"
 
@@ -145,38 +144,6 @@ static void logging_destroy(void *arg)
     log_close();
 }
 
-static int configuration_init(void *arg)
-{
-    app_ctx_t *app = arg;
-    int rc = config_load(app->cfg);
-    if (rc < 0) return rc;
-    log_close();
-    log_init(app->cfg->log_dir);
-    return 0;
-}
-
-static int platform_init(void *arg)
-{
-    app_ctx_t *app = arg;
-    cpu_affinity_init();
-    (void)cpu_bind_little();
-    /* 启动时按配置应用网卡 IP（静态/DHCP）；未配置则跳过 */
-    net_ip_apply_cfg(app->cfg);
-
-    /* 按 CAN 通道加载 DBC（可选）：失败不阻塞启动，仅记录日志 */
-    for (int i = 0; i < app->cfg->args.can_count; i++) {
-        const char *path = app->cfg->args.can_ifaces[i].dbc_path;
-        if (!path[0]) continue;
-        if (dbc_load(&app->dbcs[i], path) < 0)
-            LOG_ERROR("dbc: load '%s' for %s failed", path, app->cfg->args.can_ifaces[i].ifname);
-        else
-            LOG_INFO("dbc: loaded '%s' for %s (%d message(s), %d signal(s))",
-                     path, app->cfg->args.can_ifaces[i].ifname, app->dbcs[i].msg_count, app->dbcs[i].sig_count);
-    }
-
-    return 0;
-}
-
 static module_t g_modules[] = {
     {
         .name = "context",
@@ -191,12 +158,7 @@ static module_t g_modules[] = {
     },
     {
         .name = "config",
-        .ops = { .init = configuration_init },
-        .thr = { .cpu = -1 },
-    },
-    {
-        .name = "platform",
-        .ops = { .init = platform_init },
+        .ops = { .init = config_init },
         .thr = { .cpu = -1 },
     },
     /* can（只负责初始化 / 清理，不占独立线程） */
