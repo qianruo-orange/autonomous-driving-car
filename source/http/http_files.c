@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "core/thread.h"
+#include "http/http.h"
 /* Bounded file workers: previews, native MP4 ranges, whole-page pack/clear. */
 #define _GNU_SOURCE
 #include "http/http_internal.h"
@@ -532,7 +532,7 @@ int http_files_start(app_ctx_t *app,int fd,const char *method,const char *uri,co
     safe_strncpy(job->method,sizeof(job->method),method);safe_strncpy(job->uri,sizeof(job->uri),uri);
     safe_strncpy(job->log_root,sizeof(job->log_root),app&&app->cfg?app->cfg->log_dir:PATH_LOGS);
     job->request=strndup(request,32768);if(!job->request){free(job);goto failed;}
-    error=app_thread_start_detached(file_worker,job);if(!error)return 0;
+    error=http_worker_start(file_worker,job);if(!error)return 0;
     free(job->request);free(job);
 failed:
     pthread_mutex_lock(&file_worker_lock);file_workers--;pthread_mutex_unlock(&file_worker_lock);errno=error;return -1;

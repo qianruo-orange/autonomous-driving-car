@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "core/thread.h"
+#include "http/http.h"
 /* Large report generation must never block the HTTP reactor or its watchdog.
  * A successful start transfers the socket to this detached worker. */
 #define _GNU_SOURCE
@@ -167,7 +167,7 @@ int http_detection_download_start(int fd, const char *uri, void (*on_close)(int)
     if (!job) goto failed;
     job->fd = fd; job->archive = archive; job->on_close = on_close;
     if (relative) memcpy(job->relative, relative, strlen(relative) + 1);
-    error = app_thread_start_detached(detection_download_worker, job);
+    error = http_worker_start(detection_download_worker, job);
     if (!error) return 0;
     free(job);
 failed:

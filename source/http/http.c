@@ -44,6 +44,53 @@
 static int g_listen_fd = -1;
 static int g_epfd = -1;              /* 供连接关闭时摘除 epoll 条目（单线程主循环持有） */
 static app_ctx_t *g_http_app = NULL; /* http_server_task 持有的应用上下文 */
+static atomic_uint http_workers;
+
+typedef struct {
+    void *(*task)(void *);
+    void *argument;
+} http_worker_t;
+
+static void http_worker_done(void *unused)
+{
+    (void)unused;
+    atomic_fetch_sub_explicit(&http_workers, 1, memory_order_release);
+}
+
+static void *http_worker_run(void *argument)
+{
+    http_worker_t job = *(http_worker_t *)argument;
+    free(argument);
+    void *result;
+    pthread_cleanup_push(http_worker_done, NULL);
+    result = job.task(job.argument);
+    pthread_cleanup_pop(1);
+    return result;
+}
+
+int http_worker_start(void *(*task)(void *), void *argument)
+{
+    if (!task) return EINVAL;
+    if (!g_http_app || !g_http_app->running) return ECANCELED;
+    http_worker_t *job = malloc(sizeof(*job));
+    if (!job) return ENOMEM;
+    *job = (http_worker_t){task, argument};
+    pthread_attr_t attributes;
+    int rc = pthread_attr_init(&attributes);
+    if (!rc) {
+        rc = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+        if (!rc) {
+            pthread_t thread;
+            atomic_fetch_add_explicit(&http_workers, 1, memory_order_relaxed);
+            rc = pthread_create(&thread, &attributes, http_worker_run, job);
+            if (rc) http_worker_done(NULL);
+        }
+        pthread_attr_destroy(&attributes);
+    }
+    if (rc) free(job);
+    return rc;
+}
+
 /* 保护 g_listen_fd 的关闭操作：http_server_task 退出段与 http_server_stop
    （watchdog 强杀时可能并发）都需要安全关闭，避免 double-close */
 static pthread_mutex_t g_listen_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -1076,6 +1123,10 @@ void *http_server_task(void *arg)
     close(g_listen_fd);
     g_listen_fd = -1;
     pthread_mutex_unlock(&g_listen_mutex);
+    /* Keep the HTTP module alive until its detached users release callbacks
+     * and shared resources. Main retains its existing bounded shutdown guard. */
+    while (atomic_load_explicit(&http_workers, memory_order_acquire))
+        usleep(10000);
     LOG_INFO("HTTP server stopped");
     return NULL;
 }

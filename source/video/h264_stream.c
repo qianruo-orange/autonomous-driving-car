@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "core/thread.h"
+#include "http/http.h"
 /**
  * h264_stream.c — 录制 H.264 编码扇出 + fragmented MP4 实时推流（浏览器 MSE）。
  *
@@ -853,7 +853,7 @@ int h264_stream_client_start(int fd, h264_stream_client_close_cb on_close)
     if (!c) return -1;
     c->fd = fd;
     c->on_close = on_close;
-    if (app_thread_start_detached(h264_stream_client_task, c) != 0) {
+    if (http_worker_start(h264_stream_client_task, c) != 0) {
         free(c);
         return -1;
     }

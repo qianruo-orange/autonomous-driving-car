@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "core/thread.h"
+#include "http/http.h"
 /**
  * http_api_nettest.c — 网络测试 API（ping 可达性 + 网速测试）。
  *
@@ -289,7 +289,7 @@ void http_nettest_post(app_ctx_t *app, int fd, const char *method,
         return;
     }
     *id_arg = test_id;
-    int rc = app_thread_start_detached(is_ping ? nt_run_ping : nt_run_speed, id_arg);
+    int rc = http_worker_start(is_ping ? nt_run_ping : nt_run_speed, id_arg);
     if (rc != 0) {
         free(id_arg);
         pthread_mutex_lock(&nt_mutex);

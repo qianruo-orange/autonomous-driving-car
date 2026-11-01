@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
-#include "core/thread.h"
+#include "http/http.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -699,7 +699,7 @@ int video_stream_client_start(int fd, video_stream_client_close_cb on_close)
     a->fd       = fd;
     a->yolo_mode  = 0;
     a->on_close = on_close;
-    if (app_thread_start_detached(video_stream_client_task, a) != 0) {
+    if (http_worker_start(video_stream_client_task, a) != 0) {
         free(a);
         return -1;
     }
@@ -713,7 +713,7 @@ int video_stream_client_start_yolo(int fd, video_stream_client_close_cb on_close
     a->fd       = fd;
     a->yolo_mode  = 1;
     a->on_close = on_close;
-    if (app_thread_start_detached(video_stream_client_task, a) != 0) {
+    if (http_worker_start(video_stream_client_task, a) != 0) {
         free(a);
         return -1;
     }
