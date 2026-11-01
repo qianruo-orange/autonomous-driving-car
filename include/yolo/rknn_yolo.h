@@ -35,6 +35,8 @@
 int rknn_yolo_init(void *arg);
 void rknn_yolo_destroy(void *arg);
 int rknn_yolo_enabled(void);
+/* Planned pool replacement pauses annotated frames without a runtime fault. */
+int rknn_yolo_reloading(void);
 /* 返回平台 NPU 核心数（RK3588=3 / RK3576=2 / 其余单核）。 */
 int npu_core_count(void);
 /* Canonical model platform name (RK3588S -> rk3588), or "unknown" when the

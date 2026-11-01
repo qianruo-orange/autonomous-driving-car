@@ -368,7 +368,8 @@ void *video_rec_task(void *arg)
                 } else {
                     /* YOLO 必要流程：停摆 >1s（无新标注帧）直接宕机——置 fatal
                        使 main 以退出码 1 结束，systemd Restart=on-failure 拉起 */
-                    if (now_ms() - g_last_yolo_ms >= 1000) {
+                    if (rknn_yolo_reloading()) g_last_yolo_ms = now_ms();
+                    else if (now_ms() - g_last_yolo_ms >= 1000) {
                         LOG_ERROR("rec: YOLO inference stalled >1s (mandatory YOLO, "
                                   "no raw fallback) — aborting service");
                         app->fatal = 1;

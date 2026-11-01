@@ -121,7 +121,7 @@ void http_yolo_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_p
     /* 从 query string 解析上传类型 */
     char type[16] = {0};
     const char *q = strchr(uri, '?');
-    if (!q || !http_form_get_param(q, "type=", type, sizeof(type)) ||
+    if (!q || !http_form_get_param(q + 1, "type=", type, sizeof(type)) ||
         (strcmp(type, "model") != 0 && strcmp(type, "names") != 0)) {
         http_err(fd, 400, "Bad Request", "bad type");
         return;

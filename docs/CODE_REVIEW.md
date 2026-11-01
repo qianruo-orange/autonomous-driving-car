@@ -18,6 +18,7 @@ P1 表示可能导致崩溃、主要功能静默失效或退出丢失数据，�
 - 删除 thread_wrapper。线程命名、绑核和看门狗 register/unregister 由各模块自己的入口承担；所有注册后的提前返回统一经过注销，注册失败和意外退出会请求失败停机。watchdog 监控线程继续免于自我注册。
 - 删除 wait_threads_exit 和 shutdown_modules_safe，正常退出、启动失败共用 main 中的停止、等待和逆序析构段。工作线程未退出时仍保留 5 秒失败退出保护。
 - 将 car_sport_ctrl 的心跳从 finish_motor_stop 的停机重试循环移到 follow_task 的常驻循环。此前正常运行的控制线程不喂狗，会被其 3 秒超时、3 次漏报策略判定失活。
+- 2026-11-02 功能验证中修复上传查询参数入口，并使模型热重载等待生产者完成当前解码/投递。录像线程区分计划内重载与推理故障，保留正常运行时的 1 秒故障保护。
 
 ## P1：优先修复
 
@@ -81,13 +82,13 @@ buf_in/buf_out 为 ENC_BUFS=3 的固定数组；VIDIOC_REQBUFS 返回后只检�
 
 | 编号 | 位置 | 已确认的问题与触发条件 | 建议 |
 | --- | --- | --- | --- |
-| 8 | source/http/http_api_yolo.c:123 | 把包含 `?` 的字符串直接交给查找 `type=` 的表单解析器；正常的 `?type=model` / `?type=names` 匹配失败，上传返回 bad type。 | 传入 q+1；让查询参数与表单体复用经过明确切分的解析入口。 |
+| 8（已修复） | source/http/http_api_yolo.c | 原先把包含 `?` 的字符串交给表单解析器，正常上传返回 bad type。 | 已改为传入 q+1；补测模型 magic、标签长度、实际标签与模型上传。 |
 | 9 | source/can/dbc_parser.c:71 | Motorola 位提取用 start-i 和反转的字节内位号，与 DBC 的跨字节位编号不符。例如 start=7、len=1 应取 bit7，当前取 bit0。 | 使用明确的跨字节步进规则，并覆盖单字节、跨字节与符号扩展向量。 |
 | 10 | source/can/can_socket.c:898；source/http/http_api_can.c:117 | 从 ifindex=1 连续查询，遇到第一个缺号就终止。接口删除后 ifindex 常有空洞，后面的 CAN 会被漏掉。 | 用 netlink link cache/dump 遍历实际接口，状态 API 共用枚举结果。 |
 | 11 | source/can/can_socket.c:484 | 已有接口的 shell 配置以最后一条命令状态为结果，type can 配置失败而 up 成功时仍报告成功；关闭 FD 没有显式 fd off，restart_ms 也未应用。 | 分别检查操作结果并读取真实参数；已有和新建接口共用完整参数应用规则。 |
 | 12 | source/video/h264_encoder.c:60；source/video/rec_mp4.c:356 | Annex-B 遍历器可能对只有尾部起始码的输入回调 nlen=0，SPS/PPS 回调先读取 start[0] 再判断长度。 | 公共遍历器跳过空 NAL，消费者仍先验证长度。 |
 | 13 | source/http/http_api_config.c:243；source/yolo/yolo_draw.cpp:119 | API 接受奇数宽高；NV12/I420 转换要求偶数尺寸，cvtColor 调用位于异常捕获范围外。若相机实际协商出奇数尺寸，异常可能终止进程。 | 同时验证配置与驱动协商后的尺寸；在 C++ 边界内处理转换异常。 |
-| 14 | source/yolo/rknn_yolo.c:1004、:1053、:1188、:1303 | 热重载只停止 worker/render，不等待主生产者。主任务可能正在解码/投递，重载同时重置 last_seq 和队列，存在数据竞争及旧任务跨代投递。 | 给生产者与池切换增加代际/暂停确认；停止后再清队列与重建。 |
+| 14（已修复） | source/yolo/rknn_yolo.c | 原先热重载不等待生产者，可能与解码/投递同时清队列、重置 last_seq。 | 先关闭旧池并唤醒队列，再等待生产者释放当前 claim，随后清理队列和游标；新池准备完成后恢复 enabled。 |
 | 15 | source/video/rec_mp4.c:142 | mvhd 使用 1000 的时间基，tkhd 却直接写入 delta*N 的 90000 时间基值；mvhd 的首末时间差还少算最后一帧。 | 区分电影时间基与媒体时间基，统一计算总样本时长。 |
 | 16 | source/video/rec_mp4.c:423 | finalize 忽略 ftell/fseek、moov 写入及 fclose 错误，直接将 rc 设为成功。磁盘满或 I/O 失败时可能报告录像保存成功。 | 写入函数返回状态，检查 ferror/flush/close，并向录制状态传播失败。 |
 | 17 | source/http/http_util.c:167；source/http/http.c:525 | Content-Length 只匹配全大写首字母或全小写写法，并且没有限定头字段边界；认证头也在整个请求中搜索，可能把正文或其他字段中的文本当成头。 | 头部结束后逐行解析，字段名大小写无关，严格校验长度、重复字段和数字结尾。 |

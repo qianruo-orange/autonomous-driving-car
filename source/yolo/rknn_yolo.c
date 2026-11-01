@@ -182,6 +182,8 @@ static struct {
 } g_yolo;
 
 static pthread_mutex_t g_reload_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_producer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static atomic_int g_reloading;
 
 static unsigned long long yolo_now_us(void)
 {
@@ -1008,6 +1010,7 @@ static void yolo_stop_pool(void)
     if (g_yolo.events_initialized) yolo_events_prepare_stop();
     frame_ring_t *ring = yolo_ring();
     pthread_mutex_lock(&g_yolo.q_lock);
+    g_yolo.enabled = 0;
     g_yolo.pool_running = 0;
     pthread_cond_broadcast(&g_yolo.q_not_empty);
     pthread_cond_broadcast(&g_yolo.q_not_full);
@@ -1032,6 +1035,9 @@ static void yolo_stop_pool(void)
         g_yolo.render_tid = 0;
     }
 
+    /* The producer may still be decoding a claimed raw frame. Let it return
+       that frame before resetting queues and the shared sequence cursor. */
+    pthread_mutex_lock(&g_producer_mutex);
     /* 释放队列中未被消费的任务（已消费槽位 rgb 已置 NULL） */
     for (int i = 0; i < YOLO_QUEUE_CAP; i++) {
         if (g_yolo.jobs[i].rgb) {
@@ -1054,6 +1060,7 @@ static void yolo_stop_pool(void)
 
     yolo_free_workers();
     g_yolo.enabled = 0;
+    pthread_mutex_unlock(&g_producer_mutex);
 }
 
 /* 启动推理池：重读配置 → 加载模型 → 建 worker → 启动线程。
@@ -1192,6 +1199,7 @@ int rknn_yolo_reload(void)
         pthread_mutex_unlock(&g_reload_mutex);
         return -1;
     }
+    atomic_store(&g_reloading, 1);
     LOG_INFO("yolo: reloading inference pool...");
     yolo_stop_pool();
     if (g_yolo.events_initialized) {
@@ -1201,6 +1209,7 @@ int rknn_yolo_reload(void)
     if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable after reload");
     yolo_start_pool();
+    atomic_store(&g_reloading, 0);
     pthread_mutex_unlock(&g_reload_mutex);
     return g_yolo.enabled ? 0 : -1;
 }
@@ -1262,6 +1271,11 @@ int rknn_yolo_enabled(void)
     return g_yolo.enabled;
 }
 
+int rknn_yolo_reloading(void)
+{
+    return atomic_load(&g_reloading);
+}
+
 /* ---- 显示槽快照访问（供推流客户端/录像线程）---- */
 
 int rknn_yolo_get_frame(unsigned char **data, size_t *len, unsigned long long *seq)
@@ -1321,9 +1335,18 @@ void *rknn_yolo_task(void *arg)
            重载后 enabled 恢复时自动继续采集 */
         if (!ring || !g_yolo.enabled || !g_yolo.pool_running) { usleep(200000); continue; }
 
+        pthread_mutex_lock(&g_producer_mutex);
+        if (!g_yolo.enabled || !g_yolo.pool_running) {
+            pthread_mutex_unlock(&g_producer_mutex);
+            continue;
+        }
+
         /* 事件驱动：阻塞等新帧（2s 超时仅用于周期性检查退出/热插拔），
            替代旧版 10ms 轮询，唤醒即处理、无帧即休眠 */
-        if (!frame_ring_wait_new(ring, g_yolo.last_seq, 2000)) continue;
+        if (!frame_ring_wait_new(ring, g_yolo.last_seq, 2000)) {
+            pthread_mutex_unlock(&g_producer_mutex);
+            continue;
+        }
 
         /* 按序 claim 下一个未处理帧的 raw（与旧轮询版语义一致：每帧都解码，
            队列背压即限速）。槽已被编码回退消费/退让清空时顺延跳过。
@@ -1336,7 +1359,11 @@ void *rknn_yolo_task(void *arg)
             if (s) break;
             g_yolo.last_seq++;
         }
-        if (!s) { frame_ring_unlock(ring); continue; }
+        if (!s) {
+            frame_ring_unlock(ring);
+            pthread_mutex_unlock(&g_producer_mutex);
+            continue;
+        }
         unsigned long long seq = s->seq;
         unsigned long long capture_ms = s->capture_ms;
         yolo_event_meta_t metadata;
@@ -1365,6 +1392,7 @@ void *rknn_yolo_task(void *arg)
                 frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
             frame_ring_infer_unclaim_locked(ring, s, 0);   /* 解码失败：infer_dropped++ */
             frame_ring_unlock(ring);
+            pthread_mutex_unlock(&g_producer_mutex);
             usleep(1000);   /* 坏帧退避，避免忙转 */
             continue;
         }
@@ -1375,6 +1403,7 @@ void *rknn_yolo_task(void *arg)
                            .metadata = metadata };
         if (yolo_queue_push(&job) != 0)
             yolo_job_abandon(&job);   /* 停池/退出中：claim 摘除 + rgb 回池 */
+        pthread_mutex_unlock(&g_producer_mutex);
 
         /* The frame condition variable supplies pacing; no extra interval. */
     }
