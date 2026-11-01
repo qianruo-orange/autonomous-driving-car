@@ -73,6 +73,22 @@ static int nt_begin(int id, char *target, size_t size)
     return idx;
 }
 
+/* Drain the pipe even after capture fills, so pclose cannot wait on a
+ * child blocked writing output. All callers provide a nonempty buffer. */
+static int nt_collect(FILE *fp, char *output, size_t size)
+{
+    size_t total = 0, n;
+    char discard[1024];
+    while (total < size - 1 &&
+           (n = fread(output + total, 1, size - 1 - total, fp)) > 0)
+        total += n;
+    output[total] = '\0';
+    while (fread(discard, 1, sizeof(discard), fp) > 0) {}
+    int failed = ferror(fp);
+    int status = pclose(fp);
+    return failed ? -1 : status;
+}
+
 /* ---- ping 后台线程：解析丢包率 ---- */
 static void *nt_run_ping(void *arg)
 {
@@ -88,15 +104,8 @@ static void *nt_run_ping(void *arg)
 
     FILE *fp = popen(cmd, "r");
     char output[1024];
-    size_t total = 0;
     if (fp) {
-        while (total < sizeof(output) - 1) {
-            size_t r = fread(output + total, 1, sizeof(output) - 1 - total, fp);
-            if (r == 0) break;
-            total += r;
-        }
-        output[total] = '\0';
-        int ec = pclose(fp);
+        int ec = nt_collect(fp, output, sizeof(output));
 
         pthread_mutex_lock(&nt_mutex);
         if (idx >= 0 && nt_tests[idx].in_use && nt_tests[idx].test_id == id) {
@@ -178,19 +187,12 @@ static void *nt_run_speed(void *arg)
 
     FILE *fp = popen(cmd, "r");
     char output[256];
-    size_t total = 0;
     if (fp) {
-        while (total < sizeof(output) - 1) {
-            size_t r = fread(output + total, 1, sizeof(output) - 1 - total, fp);
-            if (r == 0) break;
-            total += r;
-        }
-        output[total] = '\0';
-        int ec = pclose(fp);
+        int ec = nt_collect(fp, output, sizeof(output));
 
         pthread_mutex_lock(&nt_mutex);
         if (idx >= 0 && nt_tests[idx].in_use && nt_tests[idx].test_id == id) {
-            if (ec == 0 && total > 0) {
+            if (ec == 0 && output[0]) {
                 double speed = 0, size = 0, tm = 0;
                 if (sscanf(output, "%lf %lf %lf", &speed, &size, &tm) == 3 && speed > 0) {
                     double mbps = (speed * 8.0) / 1000000.0;
