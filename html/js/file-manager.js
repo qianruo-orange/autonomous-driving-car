@@ -23,14 +23,6 @@
   }
   files.isBulkBusy = function() { return bulkBusy; };
 
-  function save(blob, name) {
-    var anchor = document.createElement('a');
-    var url = URL.createObjectURL(blob);
-    anchor.href = url; anchor.download = name;
-    document.body.appendChild(anchor); anchor.click(); anchor.remove();
-    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-  }
-
   pack.addEventListener('click', async function(event) {
     event.preventDefault();
     if (bulkBusy) return;

@@ -12,13 +12,6 @@
     clearButton.disabled = value;
     packButton.setAttribute('aria-disabled', String(value));
   }
-  function saveDownload(blob, filename) {
-    var anchor = document.createElement('a');
-    var url = URL.createObjectURL(blob);
-    anchor.href = url; anchor.download = filename;
-    document.body.appendChild(anchor); anchor.click(); anchor.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-  }
   async function reportDownload(url) {
     for (var attempt=0; ; attempt++) {
       var response=await authFetch(url);
@@ -49,7 +42,7 @@
         var response = await reportDownload(link.href);
         if (reportBusy(response)) return;
         if (!response.ok) throw new Error('HTTP ' + response.status);
-        saveDownload(await response.blob(), name.split('/').pop() + suffix);
+        App.downloadBlob(await response.blob(), name.split('/').pop() + suffix);
       } catch (error) {
         if (error.message !== 'auth cancelled') alert(t('结果下载失败，请重试'));
       } finally { link.removeAttribute('aria-disabled'); setBulkBusy(false); }
@@ -113,7 +106,7 @@
       if (response.status === 404) { window.fileToast('暂无可打包的结果', false); return; }
       if (reportBusy(response)) return;
       if (!response.ok) throw new Error('HTTP ' + response.status);
-      saveDownload(await response.blob(), 'detections_pack.tar.gz');
+      App.downloadBlob(await response.blob(), 'detections_pack.tar.gz');
       window.fileToast('打包完成，开始下载', true);
     } catch (error) {
       if (error.message !== 'auth cancelled') window.fileToast('打包失败或已取消', false);

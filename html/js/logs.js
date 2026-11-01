@@ -157,11 +157,7 @@
           return r.blob();
         })
         .then(function(b) {
-          var a = document.createElement('a');
-          a.href = URL.createObjectURL(b);
-          a.download = filename;
-          a.click();
-          URL.revokeObjectURL(a.href);
+          App.downloadBlob(b, filename);
           setI18nText(btn, '📦 打包下载');
           toast('打包完成，开始下载', true);
         })
@@ -200,14 +196,7 @@
     var response = await authFetch(url);
     if (!response.ok) throw new Error('HTTP ' + response.status);
     var blob = await response.blob();
-    var anchor = document.createElement('a');
-    var objectUrl = URL.createObjectURL(blob);
-    anchor.href = objectUrl;
-    anchor.download = splitName(filename)[1];
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 1000);
+    App.downloadBlob(blob, splitName(filename)[1]);
   }
 
   async function splitAndDownload(previousFile, url, link) {

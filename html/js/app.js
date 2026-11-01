@@ -25,6 +25,18 @@
     }
   }
 
+  // Keep Blob URLs alive until the browser has started the download.
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   // Await completion before scheduling again. Page transitions abort active reads.
   function poll(task, {interval = 1000} = {}) {
     let timer, controller, running = false, stopped = false, paused = false;
@@ -71,7 +83,7 @@
     }, type === 'ok' ? 3000 : 5000));
   }
 
-  window.App = Object.freeze({json, poll, status,
+  window.App = Object.freeze({json, poll, status, downloadBlob,
     components: Object.freeze({
       register(name, api) {
         if (components.has(name)) throw new Error('Duplicate component: ' + name);

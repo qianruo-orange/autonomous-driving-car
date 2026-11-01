@@ -458,11 +458,7 @@
       var pr = await authFetch('/api/config/export');
       if (!pr.ok) throw new Error('HTTP ' + pr.status);
       var pb = await pr.blob();
-      var pa = document.createElement('a');
-      pa.href = URL.createObjectURL(pb);
-      pa.download = 'config_pack.tar.gz';
-      pa.click();
-      setTimeout(function() { URL.revokeObjectURL(pa.href); }, 1000);
+      App.downloadBlob(pb, 'config_pack.tar.gz');
       cardStatus('export', 'ok', '✓ 配置已导出');
     } catch(e) {
       cardStatus('export', 'err', '导出失败 ({status})', {status: e.message});
