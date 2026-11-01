@@ -62,6 +62,7 @@ typedef struct {
     module_ops_t        ops;
     module_wd_t         wd;
     module_thread_cfg_t thr;
+    int                 initialized; /* 仅清理已成功初始化的模块 */
 } module_t;
 
 static void sig_handler(int sig);
@@ -90,6 +91,44 @@ static app_ctx_t g_app;
 
 /* DBC 数据库数组（每个 CAN 通道一个，静态分配；其他模块经 g_app.dbcs 访问） */
 static dbc_t g_dbc[CAN_MAX_IFACES];
+
+/* 共享对象由上下文模块持有，不再依赖 main 的栈生命周期。 */
+static int context_init(void *arg)
+{
+    app_ctx_t *app = arg;
+    static can_ctx_t can_ctx;
+    static tcp_ctx_t tcp_ctx;
+    static struct app_config_t cfg;
+
+    memset(app, 0, sizeof(*app));
+    atomic_init(&app->running, 1);
+    atomic_init(&app->fatal, 0);
+    atomic_init(&app->threads_running, 0);
+    int rc = pthread_mutex_init(&app->can_mutex, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "context: CAN mutex init failed: %s\n", strerror(rc));
+        return -1;
+    }
+    rc = pthread_mutex_init(&app->dbc_mutex, NULL);
+    if (rc != 0) {
+        fprintf(stderr, "context: DBC mutex init failed: %s\n", strerror(rc));
+        pthread_mutex_destroy(&app->can_mutex);
+        return -1;
+    }
+    app->can = &can_ctx;
+    app->tcp = &tcp_ctx;
+    app->cfg = &cfg;
+    app->dbcs = g_dbc;
+    set_current_thread_name("main");
+    return 0;
+}
+
+static void context_destroy(void *arg)
+{
+    app_ctx_t *app = arg;
+    pthread_mutex_destroy(&app->dbc_mutex);
+    pthread_mutex_destroy(&app->can_mutex);
+}
 
 /* 基础模块同样通过生命周期表启动：日志必须先于配置及平台操作。 */
 static int logging_init(void *arg)
@@ -139,6 +178,11 @@ static int platform_init(void *arg)
 }
 
 static module_t g_modules[] = {
+    {
+        .name = "context",
+        .ops = { .init = context_init, .dtor = context_destroy },
+        .thr = { .cpu = -1 },
+    },
     /* 无独立线程：正序初始化、逆序清理，日志最后关闭。 */
     {
         .name = "log",
@@ -301,7 +345,7 @@ static void shutdown_modules_safe(void)
     if (wait_threads_exit() < 0) {
         /* A live worker may hold module/log locks or still reference resources.
          * Do not run destructors, stdio/atexit cleanup, or return through main's
-         * stack-owned contexts. Process exit lets the kernel reclaim resources
+         * module-owned contexts. Process exit lets the kernel reclaim resources
          * and the failure status triggers systemd Restart=on-failure. */
         static const char message[] =
             "shutdown: workers did not exit within 5s; skipping destructors and exiting with failure\n";
@@ -312,9 +356,10 @@ static void shutdown_modules_safe(void)
     /* 3. 按创建逆序执行析构，且不重复调用（http_server_stop / video_stream_shutdown
           分别是 http / video 模块的 dtor，这里统一调用一次） */
     for (int i = MOD_COUNT - 1; i >= 0; i--) {
-        if (g_modules[i].ops.dtor) {
+        if (g_modules[i].initialized && g_modules[i].ops.dtor) {
             LOG_INFO("Shutting down module %s...", g_modules[i].name);
             g_modules[i].ops.dtor(&g_app);
+            g_modules[i].initialized = 0;
         }
     }
 }
@@ -324,26 +369,11 @@ static void shutdown_modules_safe(void)
  */
 int main(void)
 {
-    can_ctx_t           can_ctx;
-    tcp_ctx_t           tcp_ctx;
-    struct app_config_t cfg;
-
-    memset(&g_app, 0, sizeof(g_app));
-    g_app.running = 1;
-    pthread_mutex_init(&g_app.can_mutex, NULL);
-    pthread_mutex_init(&g_app.dbc_mutex, NULL);
-    g_app.can = &can_ctx;
-    g_app.tcp = &tcp_ctx;
-    g_app.cfg = &cfg;
-    g_app.dbcs = g_dbc;
-
-    /* 信号（SIGINT/SIGTERM/SIGPIPE）由 signal 模块的 init 统一注册，见 signal_setup */
-    set_current_thread_name("main");
-
     for (int i = 0; i < MOD_COUNT; i++) {
         module_t *m = &g_modules[i];
 
         if (m->ops.init && m->ops.init(&g_app) < 0) goto fail;
+        m->initialized = 1;
         if (!m->ops.task) continue;
 
         /* 按模块线程属性创建 detached 线程 */
