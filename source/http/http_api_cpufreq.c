@@ -7,7 +7,6 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
-#include <stdarg.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -89,13 +88,19 @@ static int write_frequency(const char *id, const char *file, long value)
     char text[32]; snprintf(text, sizeof(text), "%ld", value);
     return sysfs_write(id, file, text);
 }
+/* Applying or verifying limits needs only the mutable policy settings. */
+static int read_actual(const char *id, cpu_request_t *actual)
+{
+    memset(actual, 0, sizeof(*actual));
+    snprintf(actual->id, sizeof(actual->id), "%s", id);
+    return read_text(id, "scaling_governor", actual->governor, sizeof(actual->governor)) ||
+        !token_valid(actual->governor) || read_frequency(id, "scaling_min_freq", &actual->minimum) ||
+        read_frequency(id, "scaling_max_freq", &actual->maximum) ? -1 : 0;
+}
 static int read_policy(const char *id, cpu_policy_t *policy)
 {
     memset(policy, 0, sizeof(*policy));
-    snprintf(policy->actual.id, sizeof(policy->actual.id), "%s", id);
-    if (read_text(id, "scaling_governor", policy->actual.governor, sizeof(policy->actual.governor)) ||
-        !token_valid(policy->actual.governor) || read_frequency(id, "scaling_min_freq", &policy->actual.minimum) ||
-        read_frequency(id, "scaling_max_freq", &policy->actual.maximum)) return -1;
+    if (read_actual(id, &policy->actual)) return -1;
     if (read_text(id, "related_cpus", policy->related, sizeof(policy->related))) policy->related[0] = '\0';
     for (char *p = policy->related; *p; p++) {
         if (isspace((unsigned char)*p)) *p = ' ';
@@ -211,9 +216,9 @@ static int request_valid(const cpu_policy_t *policy, const cpu_request_t *reques
 }
 static int apply_request(const cpu_request_t *request)
 {
-    cpu_policy_t current;
-    if (read_policy(request->id, &current)) return -1;
-    long minimum = current.actual.minimum, maximum = current.actual.maximum;
+    cpu_request_t current;
+    if (read_actual(request->id, &current)) return -1;
+    long minimum = current.minimum, maximum = current.maximum;
     /* Widen the previous range before narrowing either boundary. */
     if (request->minimum > maximum) {
         if (write_frequency(request->id, "scaling_max_freq", request->maximum)) return -1;
@@ -225,30 +230,23 @@ static int apply_request(const cpu_request_t *request)
     }
     if (minimum != request->minimum && write_frequency(request->id, "scaling_min_freq", request->minimum)) return -1;
     if (maximum != request->maximum && write_frequency(request->id, "scaling_max_freq", request->maximum)) return -1;
-    if (strcmp(current.actual.governor, request->governor) && sysfs_write(request->id, "scaling_governor", request->governor)) return -1;
+    if (strcmp(current.governor, request->governor) && sysfs_write(request->id, "scaling_governor", request->governor)) return -1;
     /* A kernel thermal cap can legitimately reduce the effective maximum. */
-    if (read_policy(request->id, &current) || strcmp(current.actual.governor, request->governor) ||
-        current.actual.minimum > current.actual.maximum || current.actual.maximum > request->maximum ||
-        (current.actual.maximum >= request->minimum && current.actual.minimum != request->minimum)) {
+    if (read_actual(request->id, &current) || strcmp(current.governor, request->governor) ||
+        current.minimum > current.maximum || current.maximum > request->maximum ||
+        (current.maximum >= request->minimum && current.minimum != request->minimum)) {
         errno = EIO; return -1;
     }
     return 0;
 }
-static int append_json(char *json, int offset, const char *format, ...)
-{
-    if (offset < 0 || offset >= CPUFREQ_JSON) return -1;
-    va_list arguments; va_start(arguments, format);
-    int n = vsnprintf(json + offset, CPUFREQ_JSON - (size_t)offset, format, arguments); va_end(arguments);
-    return n < 0 || n >= CPUFREQ_JSON - offset ? -1 : offset + n;
-}
 static int policy_json(char *json, int offset, const cpu_policy_t *policy, const cpu_request_t *saved)
 {
     const cpu_request_t *actual = &policy->actual, *requested = saved ? saved : actual;
-    offset = append_json(json, offset, "\"id\":\"%s\",\"related_cpus\":\"%s\",\"governor\":\"%s\",\"governors\":[", actual->id, policy->related, actual->governor);
-    for (int i = 0; i < policy->ngovs; i++) offset = append_json(json, offset, "%s\"%s\"", i ? "," : "", policy->governors[i]);
-    offset = append_json(json, offset, "],\"frequencies\":[");
-    for (int i = 0; i < policy->nfreqs; i++) offset = append_json(json, offset, "%s%ld", i ? "," : "", policy->frequencies[i]);
-    return append_json(json, offset, "],\"min_freq\":%ld,\"max_freq\":%ld,\"cur_freq\":%ld,\"hardware_min_freq\":%ld,\"hardware_max_freq\":%ld,"
+    offset = http_json_append(json, CPUFREQ_JSON, offset, "\"id\":\"%s\",\"related_cpus\":\"%s\",\"governor\":\"%s\",\"governors\":[", actual->id, policy->related, actual->governor);
+    for (int i = 0; i < policy->ngovs; i++) offset = http_json_append(json, CPUFREQ_JSON, offset, "%s\"%s\"", i ? "," : "", policy->governors[i]);
+    offset = http_json_append(json, CPUFREQ_JSON, offset, "],\"frequencies\":[");
+    for (int i = 0; i < policy->nfreqs; i++) offset = http_json_append(json, CPUFREQ_JSON, offset, "%s%ld", i ? "," : "", policy->frequencies[i]);
+    return http_json_append(json, CPUFREQ_JSON, offset, "],\"min_freq\":%ld,\"max_freq\":%ld,\"cur_freq\":%ld,\"hardware_min_freq\":%ld,\"hardware_max_freq\":%ld,"
         "\"requested_min_freq\":%ld,\"requested_max_freq\":%ld,\"requested_governor\":\"%s\",\"saved\":%s,\"limited\":%s",
         actual->minimum, actual->maximum, policy->current, policy->hardware_min, policy->hardware_max,
         requested->minimum, requested->maximum, requested->governor, saved ? "true" : "false", actual->maximum < requested->maximum ? "true" : "false");
@@ -262,15 +260,15 @@ void http_cpufreq_get(app_ctx_t *app, int fd, const char *method, const char *ur
     if (count < 0) { pthread_mutex_unlock(&cpufreq_lock); http_err(fd, 503, "Unavailable", "CPU frequency policies unavailable"); return; }
     if (nsaved < 0) nsaved = 0;
     int index = request_index(saved, nsaved, policies[0].actual.id);
-    int offset = policy_json(json, append_json(json, 0, "{"), &policies[0], index >= 0 ? &saved[index] : NULL);
-    offset = append_json(json, offset, ",\"policies\":[");
+    int offset = policy_json(json, http_json_append(json, CPUFREQ_JSON, 0, "{"), &policies[0], index >= 0 ? &saved[index] : NULL);
+    offset = http_json_append(json, CPUFREQ_JSON, offset, ",\"policies\":[");
     for (int i = 0; i < count; i++) {
-        offset = append_json(json, offset, "%s{", i ? "," : "");
+        offset = http_json_append(json, CPUFREQ_JSON, offset, "%s{", i ? "," : "");
         index = request_index(saved, nsaved, policies[i].actual.id);
         offset = policy_json(json, offset, &policies[i], index >= 0 ? &saved[index] : NULL);
-        offset = append_json(json, offset, "}");
+        offset = http_json_append(json, CPUFREQ_JSON, offset, "}");
     }
-    offset = append_json(json, offset, "]}"); pthread_mutex_unlock(&cpufreq_lock);
+    offset = http_json_append(json, CPUFREQ_JSON, offset, "]}"); pthread_mutex_unlock(&cpufreq_lock);
     if (offset < 0) http_err(fd, 500, "Error", "CPU policy response is too large"); else http_ok_json(fd, json, (size_t)offset);
 }
 static int rollback_policies(const cpu_policy_t *original, int count, const int *selected)
