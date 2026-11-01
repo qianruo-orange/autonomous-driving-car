@@ -4,7 +4,7 @@
 /**
  * main.c — 模块总表框架：
  *   每个模块一个 module_t：
- *     name 模块名，tid 运行时线程句柄
+ *     name 模块名
  *     ops  模块生命周期函数（init/dtor/task）
  *     wd   看门狗参数（timeout/max_miss）
  *     big_core  视频与推理任务的大核选择
@@ -49,7 +49,6 @@ typedef struct {
 
 /* 模块总表条目：一个模块的完整描述 */
 typedef struct {
-    pthread_t           tid;
     const char         *name;
     module_ops_t        ops;
     module_wd_t         wd;
@@ -198,14 +197,24 @@ static void sig_handler(int sig) { (void)sig; g_app.running = 0; }
 static void *thread_wrapper(void *arg)
 {
     int idx = (int)(intptr_t)arg;
-    const char *name = g_modules[idx].name;
+    module_t *m = &g_modules[idx];
+    const char *name = m->name;
     set_current_thread_name(name);
     if (g_modules[idx].big_core)
         (void)cpu_bind_big();
     else
         (void)cpu_bind_little();
-    if (g_modules[idx].ops.task) g_modules[idx].ops.task(&g_app);
-    watchdog_unregister_self(name);
+    /* Register before the first heartbeat; unregister before releasing the
+     * worker count, so shutdown cannot observe an exited but registered task. */
+    int monitored = m->wd.timeout > 0;
+    if (monitored && watchdog_register_thread(pthread_self(), name,
+                                              m->wd.timeout, m->wd.max_miss) < 0) {
+        g_app.fatal = 1;
+        g_app.running = 0;
+    } else {
+        m->ops.task(&g_app);
+        if (monitored) watchdog_unregister_self(name);
+    }
     __atomic_fetch_sub(&g_app.threads_running, 1, __ATOMIC_RELEASE);
     return NULL;
 }
@@ -275,7 +284,8 @@ int main(void)
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
         __atomic_fetch_add(&g_app.threads_running, 1, __ATOMIC_RELAXED);
-        int rc = pthread_create(&m->tid, &attr, thread_wrapper, (void *)(intptr_t)i);
+        pthread_t tid;
+        int rc = pthread_create(&tid, &attr, thread_wrapper, (void *)(intptr_t)i);
         pthread_attr_destroy(&attr);
 
         if (rc != 0) {
@@ -284,9 +294,6 @@ int main(void)
             goto fail;
         }
 
-        /* 注册看门狗（timeout>0 才纳入监督） */
-        if (m->wd.timeout > 0)
-            watchdog_register_thread(m->tid, m->name, m->wd.timeout, m->wd.max_miss);
     }
 
     watchdog_register_thread(pthread_self(), "main", 15, 1);
