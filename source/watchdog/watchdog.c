@@ -13,7 +13,8 @@
 typedef struct {
     pthread_t tid;
     char   name[WD_NAME_MAX];
-    int    beat, timeout, max_miss, miss_count, last_beat;
+    unsigned beat, last_beat;
+    int timeout, max_miss, miss_count;
     int    active;
     time_t last_advance;
 } wd_entry_t;
@@ -52,35 +53,27 @@ int watchdog_register_thread(pthread_t tid, const char *name, int timeout, int m
 {
     pthread_mutex_lock(&g_wd_mutex);
     int slot = watchdog_find_slot_by_tid(tid);
+    int existing = slot >= 0;
+    if (!existing) {
+        for (int i = 0; i < WD_MAX_SLOTS; i++) {
+            if (!g_wd_slots[i].active) { slot = i; break; }
+        }
+    }
     if (slot >= 0) {
-        safe_strncpy(g_wd_slots[slot].name, sizeof(g_wd_slots[slot].name),
+        wd_entry_t *entry = &g_wd_slots[slot];
+        if (!existing) memset(entry, 0, sizeof(*entry));
+        entry->tid = tid;
+        safe_strncpy(entry->name, sizeof(entry->name),
                      (name && *name) ? name : "(unnamed)");
-        g_wd_slots[slot].timeout = timeout > 0 ? timeout : 1;
-        g_wd_slots[slot].max_miss = max_miss > 0 ? max_miss : 1;
-        g_wd_slots[slot].last_advance = time(NULL);
-        LOG_INFO("watchdog: thread '%s' tid=%lu updated timeout=%ds miss=%d",
-                 watchdog_slot_name(&g_wd_slots[slot]), (unsigned long)tid,
-                 g_wd_slots[slot].timeout, g_wd_slots[slot].max_miss);
+        entry->timeout = timeout > 0 ? timeout : 1;
+        entry->max_miss = max_miss > 0 ? max_miss : 1;
+        entry->last_advance = time(NULL);
+        entry->active = 1;
+        LOG_INFO("watchdog: thread '%s' tid=%lu %s timeout=%ds miss=%d",
+                 watchdog_slot_name(entry), (unsigned long)tid,
+                 existing ? "updated" : "registered", entry->timeout, entry->max_miss);
         pthread_mutex_unlock(&g_wd_mutex);
         return slot;
-    }
-    for (int i = 0; i < WD_MAX_SLOTS; i++) {
-        if (g_wd_slots[i].active) continue;
-        g_wd_slots[i].tid = tid;
-        safe_strncpy(g_wd_slots[i].name, sizeof(g_wd_slots[i].name),
-                     (name && *name) ? name : "(unnamed)");
-        g_wd_slots[i].timeout = timeout > 0 ? timeout : 1;
-        g_wd_slots[i].max_miss = max_miss > 0 ? max_miss : 1;
-        g_wd_slots[i].beat = 0;
-        g_wd_slots[i].last_beat = 0;
-        g_wd_slots[i].miss_count = 0;
-        g_wd_slots[i].last_advance = time(NULL);
-        g_wd_slots[i].active = 1;
-        LOG_INFO("watchdog: thread '%s' tid=%lu registered timeout=%ds miss=%d",
-                 watchdog_slot_name(&g_wd_slots[i]), (unsigned long)tid,
-                 g_wd_slots[i].timeout, g_wd_slots[i].max_miss);
-        pthread_mutex_unlock(&g_wd_mutex);
-        return i;
     }
     LOG_ERROR("watchdog: register failed for thread '%s' tid=%lu (slot full)",
               (name && *name) ? name : "(unnamed)", (unsigned long)tid);
@@ -101,15 +94,7 @@ int watchdog_unregister_thread(pthread_t tid, const char *name)
     LOG_INFO("watchdog: thread '%s' tid=%lu unregistered",
              watchdog_slot_name(&g_wd_slots[slot]),
              (unsigned long)g_wd_slots[slot].tid);
-    g_wd_slots[slot].active = 0;
-    g_wd_slots[slot].tid = (pthread_t)0;
-    g_wd_slots[slot].name[0] = '\0';
-    g_wd_slots[slot].beat = 0;
-    g_wd_slots[slot].last_beat = 0;
-    g_wd_slots[slot].timeout = 0;
-    g_wd_slots[slot].max_miss = 0;
-    g_wd_slots[slot].miss_count = 0;
-    g_wd_slots[slot].last_advance = 0;
+    memset(&g_wd_slots[slot], 0, sizeof(g_wd_slots[slot]));
     pthread_mutex_unlock(&g_wd_mutex);
     return 0;
 }
@@ -134,7 +119,7 @@ int watchdog_feed_thread(pthread_t tid, const char *name)
     }
     /* 槽位名称在注册时确定，feed 只是喂心跳，不得改写名称：
        名称用于日志与按名查找，若允许 feed 改写，误传名称会污染注册信息 */
-    __atomic_add_fetch(&g_wd_slots[slot].beat, 1, __ATOMIC_RELAXED);
+    g_wd_slots[slot].beat++;
     pthread_mutex_unlock(&g_wd_mutex);
     return slot;
 }
@@ -154,7 +139,7 @@ void *watchdog_task(void *arg)
     pthread_mutex_lock(&g_wd_mutex);
     for (int i = 0; i < WD_MAX_SLOTS; i++) {
         if (!g_wd_slots[i].active) continue;
-        g_wd_slots[i].last_beat = __atomic_load_n(&g_wd_slots[i].beat, __ATOMIC_RELAXED);
+        g_wd_slots[i].last_beat = g_wd_slots[i].beat;
         g_wd_slots[i].last_advance = now;
     }
     pthread_mutex_unlock(&g_wd_mutex);
@@ -170,12 +155,12 @@ void *watchdog_task(void *arg)
         for (int i = 0; i < WD_MAX_SLOTS; i++) {
             if (!g_wd_slots[i].active) continue;
             int timeout = g_wd_slots[i].timeout; if (timeout <= 0) continue;
-            int cur = __atomic_load_n(&g_wd_slots[i].beat, __ATOMIC_RELAXED);
+            unsigned cur = g_wd_slots[i].beat;
             if (cur != g_wd_slots[i].last_beat) { g_wd_slots[i].last_beat = cur; g_wd_slots[i].last_advance = now; g_wd_slots[i].miss_count = 0; }
             else if (now - g_wd_slots[i].last_advance >= timeout) {
                 g_wd_slots[i].miss_count++; g_wd_slots[i].last_advance = now;
                 if (g_wd_slots[i].miss_count >= g_wd_slots[i].max_miss) {
-                    LOG_ERROR("watchdog: thread '%s' tid=%lu STUCK (missed %d/%d, beat=%d)",
+                    LOG_ERROR("watchdog: thread '%s' tid=%lu STUCK (missed %d/%d, beat=%u)",
                         watchdog_slot_name(&g_wd_slots[i]),
                         (unsigned long)g_wd_slots[i].tid, g_wd_slots[i].miss_count,
                         g_wd_slots[i].max_miss, cur);
