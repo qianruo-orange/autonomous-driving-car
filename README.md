@@ -10,131 +10,171 @@ The hardware validation platform is **Radxa ROCK 4D / RK3576**. The application 
 
 The current runtime is one C/C++ application with cooperating worker threads. [main.c](source/core/main.c) coordinates module startup and shutdown; shared frame buffers, timestamped detection results, and controller snapshots connect the processing stages.
 
-The diagrams below cover the implemented runtime, service lifecycle, and motor-control decisions. Solid arrows show data or execution flow; dotted arrows show management and supervision.
+The diagrams below follow the implemented runtime from left to right. Each view focuses on one part of the system so labels remain readable at normal README width. Solid arrows show data or execution flow; dotted arrows show management and supervision. Blue nodes process data, green nodes represent outputs or healthy states, amber nodes check prerequisites, and red nodes show stop or failure paths.
 
-### Runtime modules and data flow
-
-```mermaid
-flowchart TB
-    Camera["V4L2 camera"] --> Capture
-
-    subgraph Perception["Perception: source/video + source/yolo"]
-        Capture["video thread: capture / mmap"] --> Raw["Frame ring: raw buffers / sequence / timestamps"]
-        Raw --> Decode["yolo thread: claim frame / decode RGB"]
-        Decode --> Jobs["Bounded inference task queue"]
-        Jobs --> NPU["Adaptive RKNN worker pool: resize / YOLO26 / postprocess"]
-        NPU --> Results["Completed detection metadata"]
-        NPU --> RGB["Frame ring: completed RGB buffers"]
-        Results --> Latest["Bounded result queue: latest result for rendering"]
-        Latest --> Composer["Composer: smoothing / appearance tracking / annotation"]
-        RGB --> Composer
-        Composer --> Display["Frame ring: annotated JPEG / NV12"]
-    end
-
-    subgraph Media["Streaming, recording, and reports"]
-        Display -->|JPEG| MJPEG["MJPEG client workers"]
-        Raw -->|Raw camera stream| MJPEG
-        Display -->|NV12| Encoder["rec thread: shared H.264 encoding session"]
-        Encoder --> MP4["MP4 files: recordings/YYYYMMDD"]
-        Encoder --> H264["H.264 / fMP4 client workers"]
-        Results --> Writer["Background detection report writer"]
-        Writer --> TXT["Daily TXT reports: recordings/detections"]
-    end
-
-    subgraph Motion["Control and communication"]
-        Results --> Follow["Independent following worker: target selection / PD + wheel PI"]
-        Follow -->|Bounded commands / stop| Adapter["Configured motor CAN adapter"]
-        Adapter --> CAN["Shared SocketCAN: CAN / CAN FD"]
-        CAN -->|Measured wheel speeds| Follow
-        CAN <-->|Frames| Drive["Motor drives / CAN devices"]
-        CAN --> DBC["DBC decoding / RX and TX snapshots"]
-        Follow -->|Read-only snapshot| ANO["ANO V8 telemetry"]
-        ANO --> TCP["TCP event loop"]
-        TCP --> PC["Anonymous Assistant on PC"]
-    end
-
-    subgraph Management["Web management and supervision"]
-        Browser["Browser: home / config / logs / DBC"] <-->|HTTP :80| HTTP["HTTP reactor / authenticated management APIs"]
-        HTTP -.->|Camera / model / CAN / control / network / CPU settings| Runtime["Module configuration and runtime operations"]
-        Runtime -.-> Capture
-        Runtime -.-> NPU
-        Runtime -.-> Follow
-        Runtime -.-> CAN
-        Runtime -.-> ANO
-        HTTP -.->|Visual target selection| Composer
-        HTTP --> Files["File workers: downloads / archives / cleanup"]
-        MP4 --> Files
-        TXT --> Files
-        Logs["Application logs: logs/YYYYMMDD"] --> Files
-        DBC --> HTTP
-        MJPEG --> Browser
-        H264 --> Browser
-        Files --> Browser
-        Watchdog["Watchdog: registered worker heartbeats"] -.->|Health notifications| Systemd["systemd service supervision"]
-    end
-```
-
-Frame storage is shared through [frame_ring.h](include/video/frame_ring.h); claims and buffer ownership protect frames while workers use them. Inference and rendering use bounded queues and favor recent results. Completed detections feed the controller and report writer independently of the visual tracking overlay. H.264 live streaming and MP4 recording share one encoding session.
-
-### Build, startup, and shutdown
+### Runtime overview
 
 ```mermaid
-flowchart TB
-    Source["Source code + board-compatible RKNN model + labels"] --> Build["scripts/build.sh: check dependencies / reconcile model / CMake / make"]
-    Build --> Binary["bin/autonomous-driving-car"]
-    Binary --> Deploy["scripts/deploy.sh -i: install under /opt / preserve device settings"]
-    Deploy --> Service["systemd starts application"]
-    Service --> Base["main: shared context / logging / CPU affinity / config / network IP / DBC"]
-    Base --> Modules["Initialize modules in table order; start workers and register heartbeats"]
-    Modules --> Order["CAN, CAN RX/TX, TCP, HTTP, following, ANO, video, YOLO, watchdog, recording, signals"]
-    Order --> Ready{"Startup succeeded?"}
-    Ready -->|Yes| Running["main loop + cooperating workers; watchdog reports service health"]
-    Ready -->|No| StartupFail["Request shutdown with startup-failure status"]
-    Running -->|SIGINT / SIGTERM| Stop["Set shared running flag to 0"]
-    Running -->|Watchdog failure / fatal processing error| Fatal["Set fatal flag and stop running"]
-    StartupFail --> Stop
-    Fatal --> Stop
-    Stop --> Wait{"Registered module workers exit within 5 seconds?"}
-    Wait -->|Yes| Cleanup["Run module destructors in reverse table order; close logs"]
-    Wait -->|No| Forced["Skip destructors; immediate process exit with status 1"]
-    Cleanup --> Status{"Startup or runtime failure?"}
-    Status -->|No| Normal["Exit status 0"]
-    Status -->|Yes| Failed["Exit status 1"]
-    Forced --> Restart["systemd Restart=on-failure"]
-    Failed --> Restart
-    Restart --> Service
+flowchart LR
+    Camera["V4L2<br/>camera"] --> Frames["Capture<br/>frame ring"]
+    Frames --> YOLO["RKNN<br/>YOLO26"]
+    YOLO --> Results["Completed<br/>detections"]
+    Results --> Visual["Visual tracking<br/>annotation"]
+    Visual --> Media["Live video<br/>MP4 recording"]
+    Results --> Follow["Following<br/>PD + wheel PI"]
+    Follow <-->|Commands / feedback| CAN["SocketCAN<br/>motor drives"]
+    Results --> Reports["Daily TXT<br/>reports"]
+    Follow --> ANO["ANO V8<br/>TCP telemetry"]
+    classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
+    class Camera,Frames,YOLO,Results,Visual,Follow process
+    class Media,CAN,Reports,ANO output
 ```
 
-Modules may create their own workers, including the following controller, RKNN inference pool, composer, report writer, and media/file clients. The five-second wait covers the module-table task threads; module destructors stop and join their owned workers where implemented. A timeout skips application cleanup to avoid releasing resources still used by a live module task. The kernel reclaims process resources on exit; recording finalization is not guaranteed on this failure path.
+The following controller consumes detections independently of visual target selection. LLM inference is planned and is not part of the current runtime paths.
+
+### Perception and media pipeline
+
+```mermaid
+flowchart LR
+    subgraph Input["1. Capture and decode"]
+        Raw["V4L2 mmap<br/>raw frame"] --> RGB["Claim frame<br/>decode RGB"]
+    end
+    subgraph Inference["2. Adaptive inference pool"]
+        Jobs["Bounded<br/>task queue"] --> NPU["Resize / RKNN<br/>postprocess"]
+    end
+    subgraph Render["3. Latest-result rendering"]
+        Latest["Result queue<br/>latest first"] --> Composer["Smooth / track<br/>draw labels"]
+    end
+    RGB --> Jobs
+    NPU --> Latest
+    RGB -->|Shared RGB buffer| Composer
+    Composer --> JPEG["Annotated JPEG<br/>MJPEG stream"]
+    Composer --> Encoder["NV12<br/>H.264 encoder"]
+    Encoder --> Live["fMP4 / MSE<br/>live stream"]
+    Encoder --> MP4["MP4 files<br/>recordings/YYYYMMDD"]
+    Raw -->|Raw stream| MJPEG["Raw MJPEG"]
+    NPU --> Writer["Background<br/>report writer"]
+    Writer --> TXT["Daily TXT<br/>recordings/detections"]
+    classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
+    class Raw,RGB,Jobs,NPU,Latest,Composer,Encoder,Writer process
+    class JPEG,Live,MP4,MJPEG,TXT output
+```
+
+Frame storage is shared through [frame_ring.h](include/video/frame_ring.h); claims and buffer ownership protect raw and RGB frames while workers use them. Bounded queues favor recent results for rendering. Each completed inference also feeds following and report generation. H.264 streaming and MP4 recording share one encoding session.
+
+### Web management, CAN, and supervision
+
+```mermaid
+flowchart LR
+    Browser["Browser<br/>home / config / logs / DBC"] <-->|HTTP :80| HTTP["HTTP reactor<br/>authenticated management"]
+    HTTP -.-> Settings["Camera / model / CAN<br/>control / network / CPU / ANO"]
+    Settings -.-> Modules["Runtime modules<br/>configuration and operations"]
+    HTTP -.-> Select["Visual target<br/>selection"]
+    Select -.-> Overlay["Tracking overlay"]
+    HTTP --> Files["File workers<br/>archive / download / cleanup"]
+    Storage["Logs / MP4<br/>TXT reports"] --> Files
+    Files --> Browser
+    CAN["Shared SocketCAN<br/>CAN / CAN FD"] --> DBC["DBC decoding<br/>RX / TX snapshots"]
+    DBC --> HTTP
+    CAN -->|Measured wheel speeds| Follow["Following controller"]
+    Follow -->|Bounded commands / stop| Adapter["Motor protocol<br/>adapter"]
+    Adapter --> CAN
+    Follow -->|Read-only snapshot| ANO["ANO V8<br/>TCP event loop"]
+    ANO --> PC["Anonymous Assistant<br/>on PC"]
+    Workers["Registered worker<br/>heartbeats"] -.-> Watchdog["Watchdog"]
+    Watchdog -.->|Health notifications| Systemd["systemd<br/>service supervision"]
+    classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef check fill:#fef3c7,stroke:#b45309,color:#78350f
+    class HTTP,Settings,Modules,Select,Files,CAN,DBC,Follow,Adapter,ANO,Workers process
+    class Browser,Overlay,Storage,PC,Systemd output
+    class Watchdog check
+```
+
+### Build and startup
+
+```mermaid
+flowchart LR
+    Source["Source + RKNN<br/>model + labels"] --> Build["build.sh<br/>dependencies / model sync<br/>CMake / make"]
+    Build --> Deploy["deploy.sh -i<br/>install under /opt<br/>preserve settings"]
+    Deploy --> Service["systemd<br/>starts application"]
+    Service --> Base["main<br/>context / logs / affinity<br/>config / IP / DBC"]
+    Base --> Modules["Initialize modules<br/>start workers<br/>register heartbeats"]
+    Modules --> Ready{"Startup<br/>succeeded?"}
+    Ready -->|Yes| Running["Main loop<br/>cooperating workers"]
+    Ready -->|No| Failed["Shutdown<br/>failure status"]
+    classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef check fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef failure fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class Source,Build,Deploy,Service,Base,Modules process
+    class Ready check
+    class Running output
+    class Failed failure
+```
+
+Module-table order: **CAN → CAN RX/TX → TCP → HTTP → following → ANO → video → YOLO → watchdog → recording → signals**. Modules may create additional workers for following, inference, composition, reports, and media/file clients.
+
+### Shutdown and recovery
+
+```mermaid
+flowchart LR
+    Signal["SIGINT / SIGTERM"] --> Stop["Set running = 0"]
+    Fault["Watchdog / fatal error<br/>set fatal = 1"] --> Stop
+    Startup["Startup failure"] --> Stop
+    Stop --> Wait{"Module tasks exit<br/>within 5 seconds?"}
+    Wait -->|Yes| Cleanup["Reverse-order<br/>module destructors<br/>close logs"]
+    Cleanup --> Status{"Failure<br/>recorded?"}
+    Status -->|No| Normal["Exit 0"]
+    Status -->|Yes| Failed["Exit 1"]
+    Wait -->|No| Forced["Skip destructors<br/>immediate exit 1"]
+    Failed --> Restart["systemd<br/>Restart=on-failure"]
+    Forced --> Restart
+    Restart --> Service["Start application"]
+    classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef check fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef failure fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class Signal,Stop,Cleanup,Restart,Service process
+    class Wait,Status check
+    class Normal output
+    class Fault,Startup,Failed,Forced failure
+```
+
+The five-second wait covers module-table task threads. Destructors stop and join their owned workers where implemented. If a module task remains active, cleanup is skipped to avoid releasing resources it may still use. The kernel reclaims process resources; recording finalization is not guaranteed on this failure path.
 
 ### Following and wheel-feedback loop
 
 ```mermaid
-flowchart TB
-    Detection["New completed inference / timed safety wake"] --> Enabled{"Following enabled for this session?"}
-    Enabled -->|No| Halt["Zero outputs; send stop when required"]
-    Enabled -->|Yes| Fresh{"Detection capture timestamp fresh?"}
-    Fresh -->|No| Halt
-    Fresh -->|Yes| Target["On a new result: select configured class near previous target / seed"]
-    Target --> Found{"Valid target and usable inference interval?"}
-    Found -->|No| Halt
-    Found -->|Yes| Speed["Automatic: relative target-area error / speed PD; manual: configured speed"]
-    Found -->|Yes| Turn["Horizontal target error / steering PD"]
-    Speed --> Mix["Differential mixing and limits: left / right target speed in m/s"]
-    Turn --> Mix
-    Mix --> Gate{"Motor adapter ready, FIFO admitted, CAN enabled, wheel feedback fresh?"}
-    Gate -->|No| Preview["Retain target preview; inhibit motor output / stop as required"]
-    Gate -->|Yes| PI["Left / right wheel PI: target minus measured speed; bounded integral and output"]
-    Feedback["CAN RX: measured signed wheel speeds / monotonic timestamp"] --> Gate
+flowchart LR
+    Wake["Inference result<br/>or safety wake"] --> Vision{"Enabled?<br/>Fresh detection?"}
+    Vision -->|Yes: new result| Target{"Valid target?<br/>Usable interval?"}
+    Target -->|Yes| PD["Speed PD / manual speed<br/>steering PD"]
+    PD --> Mix["Differential mix<br/>wheel targets in m/s"]
+    Mix --> Gate{"Adapter / FIFO / CAN<br/>fresh feedback?"}
+    Gate -->|Yes| PI["Wheel PI<br/>bounded output"]
+    PI --> Send{"CAN command<br/>batch sent?"}
+    Send -->|Yes| Motors["Motor drives"]
+    Motors --> Feedback["CAN RX<br/>measured wheel speeds"]
     Feedback --> PI
-    PI --> Send["Motor adapter encodes and sends bounded CAN commands"]
-    Send --> Sent{"Command batch succeeded?"}
-    Sent -->|No| Halt
-    Sent -->|Yes| Motors["Motor drives"]
-    Motors --> Feedback
+    Feedback --> Gate
+    Vision -->|No| Halt["Zero outputs<br/>stop as required"]
+    Target -->|No| Halt
+    Send -->|No| Halt
+    Gate -->|No| Preview["Target preview<br/>inhibit output / stop"]
+    classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
+    classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef check fill:#fef3c7,stroke:#b45309,color:#78350f
+    classDef failure fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class Wake,PD,Mix,PI,Feedback process
+    class Vision,Target,Gate,Send check
+    class Motors output
+    class Halt,Preview failure
 ```
 
-Safety prerequisites are also checked during timed wakes without a new inference; PID updates use accepted inference timestamps. Following always starts disabled. Visual target selection affects the overlay, while the following controller selects its own target. LLM inference is planned and is not part of these runtime paths.
+Safety prerequisites are checked on timed wakes even without a new inference; PID updates use accepted inference timestamps. Following always starts disabled. Automatic speed uses relative target-area error; steering uses horizontal target error. Each wheel PI loop compares target speed with real measured feedback. Visual selection affects the overlay, while following selects its own target by configured class and proximity to its previous target or seed.
 
 The CPU handles capture processing, appearance features, control, communication, and management; the NPU runs YOLO inference. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
 
