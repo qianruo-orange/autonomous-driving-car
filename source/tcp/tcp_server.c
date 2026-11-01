@@ -454,19 +454,29 @@ void *tcp_task(void *arg)
 int tcp_init(void *arg)
 {
     app_ctx_t *app = arg;
-    tcp_ctx_t *ctx = app->tcp;
-    if (!ctx) return -1;
+    static tcp_ctx_t storage;
+    tcp_ctx_t *ctx = &storage;
     memset(ctx, 0, sizeof(*ctx));
     ctx->epfd = ctx->wake_fd = ctx->ano_listener = -1;
-    pthread_mutex_init(&ctx->ano_mutex, NULL);
+    int rc = pthread_mutex_init(&ctx->ano_mutex, NULL);
+    if (rc != 0) {
+        LOG_ERROR("tcp: mutex init failed: %s", strerror(rc));
+        return -1;
+    }
+    app->tcp = ctx;
     ctx->ano_initialized = 1;
     for (int i = 0; i < TCP_ANO_CLIENTS; i++) ctx->ano_clients[i].fd = -1;
     ctx->epfd = epoll_create1(EPOLL_CLOEXEC);
-    if (ctx->epfd < 0) return -1;
+    if (ctx->epfd < 0) goto fail;
     ctx->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (ctx->wake_fd < 0) return -1;
+    if (ctx->wake_fd < 0) goto fail;
     struct epoll_event event = {.events = EPOLLIN, .data.u64 = TCP_WAKE_TAG};
-    return epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->wake_fd, &event);
+    if (epoll_ctl(ctx->epfd, EPOLL_CTL_ADD, ctx->wake_fd, &event) < 0) goto fail;
+    return 0;
+
+fail:
+    tcp_cleanup(app);
+    return -1;
 }
 
 void tcp_cleanup(void *arg)
@@ -480,4 +490,5 @@ void tcp_cleanup(void *arg)
     pthread_mutex_destroy(&ctx->ano_mutex);
     ctx->wake_fd = ctx->epfd = -1;
     ctx->ano_initialized = 0;
+    app->tcp = NULL;
 }

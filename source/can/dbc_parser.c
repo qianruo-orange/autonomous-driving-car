@@ -17,6 +17,41 @@
 #include "can/dbc_parser.h"
 #include "core/common.h"   /* safe_strncpy */
 #include "core/log.h"
+#include "core/config.h"
+
+/* 数据库存储及其锁归 DBC 模块管理；上下文仅借用数组指针。 */
+static dbc_t g_dbc[CAN_MAX_IFACES];
+
+int dbc_init(void *arg)
+{
+    app_ctx_t *app = arg;
+    int rc = pthread_mutex_init(&app->dbc_mutex, NULL);
+    if (rc != 0) {
+        LOG_ERROR("dbc: mutex init failed: %s", strerror(rc));
+        return -1;
+    }
+    memset(g_dbc, 0, sizeof(g_dbc));
+    app->dbcs = g_dbc;
+    /* 按 CAN 通道加载 DBC（可选）：失败不阻塞启动，仅记录日志 */
+    for (int i = 0; i < app->cfg->args.can_count; i++) {
+        const char *path = app->cfg->args.can_ifaces[i].dbc_path;
+        if (!path[0]) continue;
+        if (dbc_load(&app->dbcs[i], path) < 0)
+            LOG_ERROR("dbc: load '%s' for %s failed", path, app->cfg->args.can_ifaces[i].ifname);
+        else
+            LOG_INFO("dbc: loaded '%s' for %s (%d message(s), %d signal(s))",
+                     path, app->cfg->args.can_ifaces[i].ifname, app->dbcs[i].msg_count, app->dbcs[i].sig_count);
+    }
+
+    return 0;
+}
+
+void dbc_cleanup(void *arg)
+{
+    app_ctx_t *app = arg;
+    app->dbcs = NULL;
+    pthread_mutex_destroy(&app->dbc_mutex);
+}
 
 /* ---- 位提取 ---- */
 

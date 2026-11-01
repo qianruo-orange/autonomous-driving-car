@@ -88,51 +88,22 @@ static int signal_setup(void *arg)
 /* 文件级应用上下文（仅本文件直接访问；其他模块通过指针参数获得） */
 static app_ctx_t g_app;
 
-/* DBC 数据库数组（每个 CAN 通道一个，静态分配；其他模块经 g_app.dbcs 访问） */
-static dbc_t g_dbc[CAN_MAX_IFACES];
-
-/* 共享对象由上下文模块持有，不再依赖 main 的栈生命周期。 */
+/* 上下文仅保存运行标志和模块借出的指针，资源由各模块持有。 */
 static int context_init(void *arg)
 {
     app_ctx_t *app = arg;
-    static can_ctx_t can_ctx;
-    static tcp_ctx_t tcp_ctx;
-    static struct app_config_t cfg;
-
     memset(app, 0, sizeof(*app));
     atomic_init(&app->running, 1);
     atomic_init(&app->fatal, 0);
     atomic_init(&app->threads_running, 0);
-    int rc = pthread_mutex_init(&app->can_mutex, NULL);
-    if (rc != 0) {
-        fprintf(stderr, "context: CAN mutex init failed: %s\n", strerror(rc));
-        return -1;
-    }
-    rc = pthread_mutex_init(&app->dbc_mutex, NULL);
-    if (rc != 0) {
-        fprintf(stderr, "context: DBC mutex init failed: %s\n", strerror(rc));
-        pthread_mutex_destroy(&app->can_mutex);
-        return -1;
-    }
-    app->can = &can_ctx;
-    app->tcp = &tcp_ctx;
-    app->cfg = &cfg;
-    app->dbcs = g_dbc;
     set_current_thread_name("main");
     return 0;
-}
-
-static void context_destroy(void *arg)
-{
-    app_ctx_t *app = arg;
-    pthread_mutex_destroy(&app->dbc_mutex);
-    pthread_mutex_destroy(&app->can_mutex);
 }
 
 static module_t g_modules[] = {
     {
         .name = "context",
-        .ops = { .init = context_init, .dtor = context_destroy },
+        .ops = { .init = context_init },
         .thr = { .cpu = -1 },
     },
     /* 无独立线程：正序初始化、逆序清理，日志最后关闭。 */
@@ -143,7 +114,12 @@ static module_t g_modules[] = {
     },
     {
         .name = "config",
-        .ops = { .init = config_init },
+        .ops = { .init = config_init, .dtor = config_cleanup },
+        .thr = { .cpu = -1 },
+    },
+    {
+        .name = "dbc",
+        .ops = { .init = dbc_init, .dtor = dbc_cleanup },
         .thr = { .cpu = -1 },
     },
     /* can（只负责初始化 / 清理，不占独立线程） */

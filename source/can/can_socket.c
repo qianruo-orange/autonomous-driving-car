@@ -1314,33 +1314,45 @@ int can_init(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     app_args_t *args = &app->cfg->args;
-    can_ctx_t *ctx = app->can;
+    static can_ctx_t storage;
+    can_ctx_t *ctx = &storage;
+    int rc = pthread_mutex_init(&app->can_mutex, NULL);
+    if (rc != 0) {
+        LOG_ERROR("can: mutex init failed: %s", strerror(rc));
+        return -1;
+    }
+    app->can = ctx;
     memset(ctx, 0, sizeof(*ctx));
     ctx->recv_epfd = -1;
     ctx->send_epfd = -1;
     ctx->tx_efd    = -1;
     ctx->ifaces = args->can_ifaces;
-    ctx->count  = args->can_count;
+    ctx->count  = 0;
     /* 每个接口各初始化一个发送队列和一个接收队列 */
-    for (int i = 0; i < ctx->count; i++) {
-        can_queue_init(&ctx->ifaces[i].txq);
-        can_queue_init(&ctx->ifaces[i].rxq);
+    for (int i = 0; i < args->can_count; i++) {
+        ctx->ifaces[i].sock_fd = -1;
+        if (can_queue_init(&ctx->ifaces[i].txq) != 0) goto fail;
+        if (can_queue_init(&ctx->ifaces[i].rxq) != 0) {
+            can_queue_destroy(&ctx->ifaces[i].txq);
+            goto fail;
+        }
+        ctx->count++;
     }
     /* 接收 epoll（can_recv_task，监听各接口 EPOLLIN） */
     ctx->recv_epfd = epoll_create1(0);
-    if (ctx->recv_epfd < 0) { LOG_ERROR("can: recv epoll_create1 failed"); return -1; }
+    if (ctx->recv_epfd < 0) { LOG_ERROR("can: recv epoll_create1 failed"); goto fail; }
     /* 发送 epoll（can_send_task，监听 TX eventfd + 各接口 EPOLLOUT） */
     ctx->send_epfd = epoll_create1(0);
-    if (ctx->send_epfd < 0) { LOG_ERROR("can: send epoll_create1 failed"); return -1; }
+    if (ctx->send_epfd < 0) { LOG_ERROR("can: send epoll_create1 failed"); goto fail; }
     /* TX eventfd：跨线程唤醒 can_send_task，让其检测“有帧压入 TX 队列” */
     ctx->tx_efd = eventfd(0, EFD_NONBLOCK);
-    if (ctx->tx_efd < 0) { LOG_ERROR("can: eventfd failed"); return -1; }
+    if (ctx->tx_efd < 0) { LOG_ERROR("can: eventfd failed"); goto fail; }
 
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.u32 = 0;
     if (epoll_ctl(ctx->send_epfd, EPOLL_CTL_ADD, ctx->tx_efd, &ev) < 0) {
-        LOG_ERROR("can: epoll_ctl(tx_efd) failed"); return -1;
+        LOG_ERROR("can: epoll_ctl(tx_efd) failed"); goto fail;
     }
 
     for (int i = 0; i < args->can_count; i++) {
@@ -1372,6 +1384,10 @@ int can_init(void *arg)
     for (int i = 0; i < args->can_count; i++)
         LOG_INFO("  CAN[%d]=%s filters=%d", i, args->can_ifaces[i].ifname, args->can_ifaces[i].filter_count);
     return 0;
+
+fail:
+    can_cleanup(app);
+    return -1;
 }
 
 void can_cleanup(void *arg)
@@ -1390,4 +1406,6 @@ void can_cleanup(void *arg)
     if (ctx->tx_efd >= 0) close(ctx->tx_efd);
     if (ctx->recv_epfd >= 0) close(ctx->recv_epfd);
     if (ctx->send_epfd >= 0) close(ctx->send_epfd);
+    app->can = NULL;
+    pthread_mutex_destroy(&app->can_mutex);
 }

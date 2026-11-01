@@ -43,10 +43,10 @@ typedef struct app_ctx {
     atomic_int            fatal;      /* 运行期致命错误（如 YOLO 停摆）：置 1 并停 running，
                                          main 以退出码 1 结束 → systemd Restart=on-failure 拉起 */
     pthread_mutex_t        can_mutex; /* CAN sock_fd 并发修改互斥锁 */
-    struct can_ctx        *can;
-    struct tcp_ctx        *tcp;
-    struct app_config_t   *cfg;
-    dbc_t                 *dbcs;      /* DBC 数据库数组（按 CAN 通道索引；空则该通道不解码） */
+    struct can_ctx        *can;       /* 借用 CAN 模块持有的对象 */
+    struct tcp_ctx        *tcp;       /* 借用 TCP 模块持有的对象 */
+    struct app_config_t   *cfg;       /* 借用配置模块持有的对象 */
+    dbc_t                 *dbcs;      /* 借用 DBC 模块数组，按 CAN 通道索引 */
     pthread_mutex_t        dbc_mutex; /* DBC 数组并发访问互斥锁 */
     _Atomic int            threads_running; /* 活跃工作线程数（线程退出时递减） */
 } app_ctx_t;

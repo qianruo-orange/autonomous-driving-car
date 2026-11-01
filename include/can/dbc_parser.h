@@ -60,6 +60,10 @@ typedef struct {
     int           sig_count;
 } dbc_t;
 
+/* 模块持有各 CAN 通道的数据库，初始化时按配置加载。 */
+int dbc_init(void *arg);
+void dbc_cleanup(void *arg);
+
 /* 从文件加载 DBC；成功返回 0 */
 int dbc_load(dbc_t *dbc, const char *path);
 
