@@ -193,6 +193,12 @@ sudo coredumpctl info /opt/autonomous-driving-car/bin/autonomous-driving-car
 
 Use the executable from the matching build when analyzing a dump.
 
+## Outlook
+
+The long-term vision for Autonomous Driving Car is a Linux-based vehicle platform built around a unified perception, inference, and control architecture. Its hardware and system target is a shared computing platform running a Linux real-time kernel.
+
+Building on the existing motion-control algorithms and YOLO object detection, the project aims to integrate large language model (LLM) inference into this architecture. LLM integration remains a future development goal.
+
 ## License
 
 [GPL-3.0-or-later](LICENSE).
