@@ -20,6 +20,7 @@
 #include <sched.h>
 
 #include "core/config.h"
+#include "core/thread.h"
 #include "can/can_socket.h"
 #include "can/dbc_parser.h"
 #include "tcp/tcp_server.h"
@@ -80,6 +81,14 @@ static int signal_setup(void *arg)
 /* 文件级应用上下文（仅本文件直接访问；其他模块通过指针参数获得） */
 static app_ctx_t g_app;
 
+/* All non-inference thread creation passes through this admission point. */
+int app_thread_create(pthread_t *thread, const pthread_attr_t *attributes,
+                      void *(*task)(void *), void *argument)
+{
+    if (!g_app.running) return ECANCELED;
+    return pthread_create(thread, attributes, task, argument);
+}
+
 /* 上下文仅保存运行标志和模块借出的指针，资源由各模块持有。 */
 static int context_init(void *arg)
 {
@@ -139,10 +148,11 @@ static module_t g_modules[] = {
         .ops  = { .init = http_server_start, .dtor = http_server_stop, .task = http_server_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
     },
-    /* Event-driven differential vehicle controller owns a joinable FIFO worker. */
+    /* Main owns the controller worker; follow_task configures FIFO scheduling. */
     {
         .name = "car_sport_ctrl",
-        .ops = { .init = follow_init, .dtor = follow_destroy, .task = NULL },
+        .wd = { .timeout = 3, .max_miss = 3 },
+        .ops = { .init = follow_init, .dtor = follow_destroy, .task = follow_task },
     },
     /* Read-only Anonymous Assistant telemetry observes the controller. */
     {
@@ -285,7 +295,7 @@ int main(void)
 
         __atomic_fetch_add(&g_app.threads_running, 1, __ATOMIC_RELAXED);
         pthread_t tid;
-        int rc = pthread_create(&tid, &attr, thread_wrapper, (void *)(intptr_t)i);
+        int rc = app_thread_create(&tid, &attr, thread_wrapper, (void *)(intptr_t)i);
         pthread_attr_destroy(&attr);
 
         if (rc != 0) {

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "core/thread.h"
 #include "yolo/yolo_events.h"
 #include "core/log.h"
 #include <pthread.h>
@@ -612,7 +613,7 @@ int yolo_events_init(const char *root)
     events.root_fd = create_root(root ? root : YOLO_EVENTS_DIR);
     if (events.root_fd < 0) { pthread_mutex_unlock(&events.lock); return -1; }
     events.stopping = events.stop_prepared = events.head = events.count = events.recent_count = events.recent_next = 0;
-    int rc = pthread_create(&events.thread, NULL, writer, NULL);
+    int rc = app_thread_create(&events.thread, NULL, writer, NULL);
     if (rc) {
         close(events.root_fd); events.root_fd = -1;
         pthread_mutex_unlock(&events.lock); errno = rc; return -1;

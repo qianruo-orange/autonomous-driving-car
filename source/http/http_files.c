@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "core/thread.h"
 /* Bounded file workers: previews, native MP4 ranges, whole-page pack/clear. */
 #define _GNU_SOURCE
 #include "http/http_internal.h"
@@ -533,7 +534,7 @@ int http_files_start(app_ctx_t *app,int fd,const char *method,const char *uri,co
     job->request=strndup(request,32768);if(!job->request){free(job);goto failed;}
     pthread_attr_t attr;error=pthread_attr_init(&attr);
     if(!error){error=pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);pthread_t thread;
-        if(!error)error=pthread_create(&thread,&attr,file_worker,job);pthread_attr_destroy(&attr);if(!error)return 0;}
+        if(!error)error=app_thread_create(&thread,&attr,file_worker,job);pthread_attr_destroy(&attr);if(!error)return 0;}
     free(job->request);free(job);
 failed:
     pthread_mutex_lock(&file_worker_lock);file_workers--;pthread_mutex_unlock(&file_worker_lock);errno=error;return -1;

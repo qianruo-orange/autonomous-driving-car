@@ -22,7 +22,6 @@
 
 #include "can/dbc_parser.h"
 
-#define WD_MAX_SLOTS 8
 
 /* 公共路径 */
 #define PATH_CONFIG   "config/config.txt"

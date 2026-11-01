@@ -47,6 +47,7 @@ int follow_telemetry_snapshot(follow_telemetry_t *out);
 void follow_invalidate_feedback(void);
 int follow_init(void *app);
 void follow_destroy(void *app);
+void *follow_task(void *app);
 /* Called once for each completed inference; ignores reordered/duplicate frames.
  * Copies the latest result; never waits for the control worker to consume it. */
 void follow_submit(const yolo_event_meta_t *frame);

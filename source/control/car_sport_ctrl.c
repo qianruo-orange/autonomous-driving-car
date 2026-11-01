@@ -47,7 +47,6 @@ static const double defaults[N] = {0,    0, .3, .15, .04, 300, .4, 0,   0, .15, 
 static struct {
     pthread_mutex_t lock, feedback_lock, save_lock;
     pthread_cond_t changed;
-    pthread_t thread;
     atomic_int ready;
     int running, fifo, rt_kernel, rt_error, selected, tracked;
     int motor_running, stop_required;
@@ -256,15 +255,10 @@ static void tick(unsigned long long now, int can_enabled)
         g.reason = "active";
     }
 }
-static void *worker(void *unused)
+void *follow_task(void *unused)
 {
     (void)unused;
     pthread_setname_np(pthread_self(), "follow_pid");
-    if (watchdog_register_thread(pthread_self(), "car_sport_ctrl", 3, 3) < 0) {
-        g.app->fatal = 1;
-        g.app->running = 0;
-        return NULL;
-    }
     cpu_bind_little();
     struct sched_param p = {.sched_priority = 20};
     int err = pthread_setschedparam(pthread_self(), SCHED_FIFO, &p);
@@ -275,7 +269,7 @@ static void *worker(void *unused)
     unsigned long observed = 0;
     for (;;) {
         pthread_mutex_lock(&g.lock);
-        if (!g.running) {
+        if (!g.running || !g.app->running) {
             halt("shutdown");
             pthread_mutex_unlock(&g.lock);
             break;
@@ -302,7 +296,6 @@ static void *worker(void *unused)
         tick(now_ms(), can_enabled);
         pthread_mutex_unlock(&g.lock);
     }
-    watchdog_unregister_self("car_sport_ctrl");
     return NULL;
 }
 void follow_invalidate_feedback(void)
@@ -409,12 +402,6 @@ int follow_init(void *app)
     /* The profile remains disabled unless explicitly configured. Binding occurs
      * before the controller worker starts; the FIFO interlock stays mandatory. */
     (void)can_motor_init(g.app);
-    if (pthread_create(&g.thread, NULL, worker, NULL)) {
-        atomic_store(&g.ready, 0);
-        g.running = 0;
-        can_motor_cleanup();
-        return -1;
-    }
     return 0;
 }
 void follow_destroy(void *app)
@@ -426,7 +413,6 @@ void follow_destroy(void *app)
     g.running = 0;
     pthread_cond_signal(&g.changed);
     pthread_mutex_unlock(&g.lock);
-    pthread_join(g.thread, NULL);
     /* A transient nonblocking send failure must not discard the final stop.
      * Retry on the owner thread before closing transport, with a bounded wait. */
     finish_motor_stop();

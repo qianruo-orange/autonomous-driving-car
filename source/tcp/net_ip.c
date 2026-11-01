@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "core/thread.h"
 /**
  * net_ip.c — 网卡 IP 配置：静态/DHCP 应用（ip 命令）、运行时地址读取。
  * 供配置页 IP 设置卡片（target=ip）与开机启动应用使用。
@@ -192,7 +193,7 @@ void net_ip_apply_async(const char *ifname, const char *mode,
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&th, &attr, net_ip_worker, j) != 0) free(j);
+    if (app_thread_create(&th, &attr, net_ip_worker, j) != 0) free(j);
     pthread_attr_destroy(&attr);
 }
 
