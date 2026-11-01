@@ -289,8 +289,7 @@ void http_nettest_post(app_ctx_t *app, int fd, const char *method,
         return;
     }
     *id_arg = test_id;
-    pthread_t tid;
-    int rc = app_thread_create(&tid, NULL, is_ping ? nt_run_ping : nt_run_speed, id_arg);
+    int rc = app_thread_start_detached(is_ping ? nt_run_ping : nt_run_speed, id_arg);
     if (rc != 0) {
         free(id_arg);
         pthread_mutex_lock(&nt_mutex);
@@ -300,7 +299,6 @@ void http_nettest_post(app_ctx_t *app, int fd, const char *method,
         http_err(fd, 503, "Service Unavailable", "{\"error\":\"cannot start test\"}");
         return;
     }
-    pthread_detach(tid);
 
     char json[128];
     int off = 0;

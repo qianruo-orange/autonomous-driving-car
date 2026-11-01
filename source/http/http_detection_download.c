@@ -167,15 +167,8 @@ int http_detection_download_start(int fd, const char *uri, void (*on_close)(int)
     if (!job) goto failed;
     job->fd = fd; job->archive = archive; job->on_close = on_close;
     if (relative) memcpy(job->relative, relative, strlen(relative) + 1);
-    pthread_attr_t attributes;
-    error = pthread_attr_init(&attributes);
-    if (!error) {
-        error = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-        pthread_t thread;
-        if (!error) error = app_thread_create(&thread, &attributes, detection_download_worker, job);
-        pthread_attr_destroy(&attributes);
-        if (!error) return 0;
-    }
+    error = app_thread_start_detached(detection_download_worker, job);
+    if (!error) return 0;
     free(job);
 failed:
     pthread_mutex_lock(&detection_download_lock);

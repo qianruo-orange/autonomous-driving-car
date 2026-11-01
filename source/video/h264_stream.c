@@ -853,11 +853,9 @@ int h264_stream_client_start(int fd, h264_stream_client_close_cb on_close)
     if (!c) return -1;
     c->fd = fd;
     c->on_close = on_close;
-    pthread_t tid;
-    if (app_thread_create(&tid, NULL, h264_stream_client_task, c) != 0) {
+    if (app_thread_start_detached(h264_stream_client_task, c) != 0) {
         free(c);
         return -1;
     }
-    pthread_detach(tid);
     return 0;
 }

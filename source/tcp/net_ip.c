@@ -189,12 +189,7 @@ void net_ip_apply_async(const char *ifname, const char *mode,
     safe_strncpy(j->mask,   sizeof(j->mask),   mask);
     safe_strncpy(j->gw,     sizeof(j->gw),     gw);
 
-    pthread_t th;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (app_thread_create(&th, &attr, net_ip_worker, j) != 0) free(j);
-    pthread_attr_destroy(&attr);
+    if (app_thread_start_detached(net_ip_worker, j) != 0) free(j);
 }
 
 void net_ip_apply_cfg(const struct app_config_t *cfg)

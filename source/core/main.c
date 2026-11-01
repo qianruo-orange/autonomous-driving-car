@@ -89,6 +89,51 @@ int app_thread_create(pthread_t *thread, const pthread_attr_t *attributes,
     return pthread_create(thread, attributes, task, argument);
 }
 
+typedef struct {
+    void *(*task)(void *);
+    void *argument;
+} background_task_t;
+
+static void background_done(void *unused)
+{
+    (void)unused;
+    atomic_fetch_sub_explicit(&g_app.threads_running, 1, memory_order_release);
+}
+
+static void *background_run(void *argument)
+{
+    background_task_t job = *(background_task_t *)argument;
+    free(argument);
+    void *result;
+    pthread_cleanup_push(background_done, NULL);
+    result = job.task(job.argument);
+    pthread_cleanup_pop(1);
+    return result;
+}
+
+/* Reserve lifetime before creation so shutdown also waits for pending workers. */
+int app_thread_start_detached(void *(*task)(void *), void *argument)
+{
+    if (!task) return EINVAL;
+    background_task_t *job = malloc(sizeof(*job));
+    if (!job) return ENOMEM;
+    *job = (background_task_t){task, argument};
+    pthread_attr_t attributes;
+    int rc = pthread_attr_init(&attributes);
+    if (!rc) {
+        rc = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+        if (!rc) {
+            pthread_t thread;
+            atomic_fetch_add_explicit(&g_app.threads_running, 1, memory_order_relaxed);
+            rc = app_thread_create(&thread, &attributes, background_run, job);
+            if (rc) background_done(NULL);
+        }
+        pthread_attr_destroy(&attributes);
+    }
+    if (rc) free(job);
+    return rc;
+}
+
 /* 上下文仅保存运行标志和模块借出的指针，资源由各模块持有。 */
 static int context_init(void *arg)
 {
