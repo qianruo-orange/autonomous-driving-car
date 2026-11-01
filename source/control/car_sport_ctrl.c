@@ -5,6 +5,7 @@
 #include "can/can_motor.h"
 #include "core/cpu_affinity.h"
 #include "core/log.h"
+#include "watchdog/watchdog.h"
 #include "http/http_internal.h"
 #include <math.h>
 #include <sched.h>
@@ -106,6 +107,7 @@ static void finish_motor_stop(void)
     const unsigned long long deadline = now_ms() + 100;
     unsigned attempts = 0;
     for (;;) {
+        watchdog_feed_self("car_sport_ctrl");
         pthread_mutex_lock(&g.lock);
         int failed = stop_motor_if_needed() < 0;
         pthread_mutex_unlock(&g.lock);
@@ -258,6 +260,11 @@ static void *worker(void *unused)
 {
     (void)unused;
     pthread_setname_np(pthread_self(), "follow_pid");
+    if (watchdog_register_thread(pthread_self(), "car_sport_ctrl", 3, 3) < 0) {
+        g.app->fatal = 1;
+        g.app->running = 0;
+        return NULL;
+    }
     cpu_bind_little();
     struct sched_param p = {.sched_priority = 20};
     int err = pthread_setschedparam(pthread_self(), SCHED_FIFO, &p);
@@ -295,6 +302,7 @@ static void *worker(void *unused)
         tick(now_ms(), can_enabled);
         pthread_mutex_unlock(&g.lock);
     }
+    watchdog_unregister_self("car_sport_ctrl");
     return NULL;
 }
 void follow_invalidate_feedback(void)

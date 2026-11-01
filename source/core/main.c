@@ -296,7 +296,8 @@ int main(void)
 
     }
 
-    watchdog_register_thread(pthread_self(), "main", 15, 1);
+    if (watchdog_register_thread(pthread_self(), "main", 15, 1) < 0)
+        goto fail;
     while (g_app.running) { 
         watchdog_feed_self("main"); 
         sleep(1); 

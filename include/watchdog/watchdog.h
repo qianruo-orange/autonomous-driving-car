@@ -6,7 +6,7 @@
 
 #include "core/config.h"
 
-#define WD_MAX_SLOTS 8
+#define WD_MAX_SLOTS 16
 #define WD_NAME_MAX 32
 
 int watchdog_register_thread(pthread_t tid, const char *name, int timeout, int max_miss);
