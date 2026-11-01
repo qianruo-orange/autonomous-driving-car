@@ -1304,8 +1304,14 @@ void *rknn_yolo_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     if (!app) return NULL;
+    (void)pthread_setname_np(pthread_self(), "yolo");
+    (void)cpu_bind_big();
+    if (watchdog_register_thread(pthread_self(), "yolo", 5, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
 
-    cpu_bind_big();
     frame_ring_t *ring = yolo_ring();
 
     while (app->running && g_yolo.running) {
@@ -1372,5 +1378,8 @@ void *rknn_yolo_task(void *arg)
 
         /* The frame condition variable supplies pacing; no extra interval. */
     }
+    if (app->running) app->fatal = 1;
+    app->running = 0;
+    watchdog_unregister_self("yolo");
     return NULL;
 }

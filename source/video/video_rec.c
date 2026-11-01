@@ -214,7 +214,13 @@ static int rec_measure_fps(app_ctx_t *app, frame_ring_t *ring)
 void *video_rec_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
-    cpu_bind_big();
+    (void)pthread_setname_np(pthread_self(), "rec");
+    (void)cpu_bind_big();
+    if (watchdog_register_thread(pthread_self(), "rec", 5, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
     frame_ring_t *ring = video_stream_get_ring();
     int auto_rec = 1;                    /* 默认自动开启录制 */
     int init_fail_cnt = 0;               /* 编码器连续初始化失败计数（日志退避） */
@@ -472,6 +478,9 @@ void *video_rec_task(void *arg)
 
         usleep(100000);   /* 空转：响应命令与喂狗 */
     }
+    if (app->running) app->fatal = 1;
+    app->running = 0;
+    watchdog_unregister_self("rec");
     return NULL;
 }
 

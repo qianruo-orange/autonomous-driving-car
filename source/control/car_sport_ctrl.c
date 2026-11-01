@@ -106,7 +106,6 @@ static void finish_motor_stop(void)
     const unsigned long long deadline = now_ms() + 100;
     unsigned attempts = 0;
     for (;;) {
-        watchdog_feed_self("car_sport_ctrl");
         pthread_mutex_lock(&g.lock);
         int failed = stop_motor_if_needed() < 0;
         pthread_mutex_unlock(&g.lock);
@@ -255,11 +254,16 @@ static void tick(unsigned long long now, int can_enabled)
         g.reason = "active";
     }
 }
-void *follow_task(void *unused)
+void *follow_task(void *arg)
 {
-    (void)unused;
-    pthread_setname_np(pthread_self(), "follow_pid");
-    cpu_bind_little();
+    app_ctx_t *app = arg;
+    (void)pthread_setname_np(pthread_self(), "follow_pid");
+    (void)cpu_bind_little();
+    if (watchdog_register_thread(pthread_self(), "car_sport_ctrl", 3, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
     struct sched_param p = {.sched_priority = 20};
     int err = pthread_setschedparam(pthread_self(), SCHED_FIFO, &p);
     pthread_mutex_lock(&g.lock);
@@ -268,6 +272,7 @@ void *follow_task(void *unused)
     pthread_mutex_unlock(&g.lock);
     unsigned long observed = 0;
     for (;;) {
+        watchdog_feed_self("car_sport_ctrl");
         pthread_mutex_lock(&g.lock);
         if (!g.running || !g.app->running) {
             halt("shutdown");
@@ -296,6 +301,9 @@ void *follow_task(void *unused)
         tick(now_ms(), can_enabled);
         pthread_mutex_unlock(&g.lock);
     }
+    if (app->running) app->fatal = 1;
+    app->running = 0;
+    watchdog_unregister_self("car_sport_ctrl");
     return NULL;
 }
 void follow_invalidate_feedback(void)

@@ -14,6 +14,7 @@
 
 #define _GNU_SOURCE   /* 暴露 GNU/Linux 扩展 */
 
+#include "core/cpu_affinity.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -980,10 +981,17 @@ static void conn_sweep(time_t now)
 void *http_server_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
+    (void)pthread_setname_np(pthread_self(), "http");
+    (void)cpu_bind_little();
+    if (watchdog_register_thread(pthread_self(), "http", 5, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
     g_http_app = app;
 
     g_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (g_listen_fd < 0) { LOG_ERROR("http socket"); return NULL; }
+    if (g_listen_fd < 0) { LOG_ERROR("http socket"); goto out; }
 
     if (set_nonblock(g_listen_fd) < 0) {
         LOG_ERROR("http set nonblocking");
@@ -991,7 +999,7 @@ void *http_server_task(void *arg)
         close(g_listen_fd);
         g_listen_fd = -1;
         pthread_mutex_unlock(&g_listen_mutex);
-        return NULL;
+        goto out;
     }
 
     /* 允许端口在 TIME_WAIT 残留时立即复用，避免重启后 bind 失败 */
@@ -1019,7 +1027,7 @@ void *http_server_task(void *arg)
         close(g_listen_fd);
         g_listen_fd = -1;
         pthread_mutex_unlock(&g_listen_mutex);
-        return NULL;
+        goto out;
     }
 
     int epfd = epoll_create1(0);
@@ -1029,7 +1037,7 @@ void *http_server_task(void *arg)
         close(g_listen_fd);
         g_listen_fd = -1;
         pthread_mutex_unlock(&g_listen_mutex);
-        return NULL;
+        goto out;
     }
     g_epfd = epfd;
 
@@ -1044,7 +1052,7 @@ void *http_server_task(void *arg)
         close(g_listen_fd);
         g_listen_fd = -1;
         pthread_mutex_unlock(&g_listen_mutex);
-        return NULL;
+        goto out;
     }
 
     LOG_INFO("HTTP server listening on port %d", HTTP_DEFAULT_PORT);
@@ -1128,11 +1136,15 @@ void *http_server_task(void *arg)
     close(g_listen_fd);
     g_listen_fd = -1;
     pthread_mutex_unlock(&g_listen_mutex);
+out:
+    if (app->running) app->fatal = 1;
+    app->running = 0;
     /* Keep the HTTP module alive until its detached users release callbacks
      * and shared resources. Main retains its existing bounded shutdown guard. */
     while (atomic_load_explicit(&http_workers, memory_order_acquire))
         usleep(10000);
     LOG_INFO("HTTP server stopped");
+    watchdog_unregister_self("http");
     return NULL;
 }
 

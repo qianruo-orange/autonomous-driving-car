@@ -5,6 +5,8 @@
  * 句柄高 32 位是代际编号，低位包含端口槽及客户端槽；客户端槽 0 表示广播。
  * epoll 事件也带代际编号，避免关闭/rebind 后的旧事件落到复用 fd 上。 */
 #define _GNU_SOURCE
+#include "watchdog/watchdog.h"
+#include "core/cpu_affinity.h"
 #include "tcp/tcp_server.h"
 #include "core/epoll_util.h"
 #include <arpa/inet.h>
@@ -491,9 +493,16 @@ done:
 void *tcp_task(void *arg)
 {
     app_ctx_t *app = arg;
+    (void)pthread_setname_np(pthread_self(), "tcp");
+    (void)cpu_bind_little();
+    if (watchdog_register_thread(pthread_self(), "tcp", 5, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
     tcp_ctx_t *ctx = app->tcp;
     if (!tcp_ready(ctx))
-        return NULL;
+        goto out;
     atomic_store(&ctx->running, 1);
     while (app->running) {
         int timeout = 100;
@@ -529,6 +538,10 @@ void *tcp_task(void *arg)
         }
     }
     atomic_store(&ctx->running, 0);
+out:
+    if (app->running) app->fatal = 1;
+    app->running = 0;
+    watchdog_unregister_self("tcp");
     return NULL;
 }
 int tcp_init(void *arg)

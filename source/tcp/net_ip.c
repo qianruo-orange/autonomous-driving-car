@@ -1,5 +1,4 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "core/thread.h"
 /**
  * net_ip.c — 网卡 IP 配置：静态/DHCP 应用（ip 命令）、运行时地址读取。
  * 供配置页 IP 设置卡片（target=ip）与开机启动应用使用。
@@ -10,7 +9,6 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,49 +145,6 @@ int net_ip_get_current(const char *ifname,
         fclose(fp);
     }
     return 0;
-}
-
-/* ---- 后台延迟应用（先回 HTTP 响应，再改 IP） ---- */
-typedef struct {
-    char ifname[IFNAMSIZ];
-    char mode[8];
-    char addr[32];
-    char mask[32];
-    char gw[32];
-} net_ip_job_t;
-
-/* 串行化所有后台 IP 应用：连续保存会起多个 detached 线程，
-   不串行时各线程的 system() 命令交错执行（flush/add 竞态），接口状态不可预期 */
-static pthread_mutex_t g_apply_lock = PTHREAD_MUTEX_INITIALIZER;
-
-static void *net_ip_worker(void *p)
-{
-    net_ip_job_t *j = p;
-    usleep(300000);   /* 等响应发出后再断网 */
-    pthread_mutex_lock(&g_apply_lock);
-    net_ip_apply(j->ifname, j->mode, j->addr, j->mask, j->gw);
-    pthread_mutex_unlock(&g_apply_lock);
-    free(j);
-    return NULL;
-}
-
-void net_ip_apply_async(const char *ifname, const char *mode,
-                        const char *addr, const char *mask, const char *gw)
-{
-    net_ip_job_t *j = calloc(1, sizeof(*j));
-    if (!j) return;
-    if (!valid_ifname(ifname)) {   /* 异步入口同样校验，不把恶意串放进线程 */
-        LOG_ERROR("net_ip: invalid ifname rejected (async)");
-        free(j);
-        return;
-    }
-    safe_strncpy(j->ifname, sizeof(j->ifname), ifname);
-    safe_strncpy(j->mode,   sizeof(j->mode),   mode);
-    safe_strncpy(j->addr,   sizeof(j->addr),   addr);
-    safe_strncpy(j->mask,   sizeof(j->mask),   mask);
-    safe_strncpy(j->gw,     sizeof(j->gw),     gw);
-
-    if (app_thread_start_detached(net_ip_worker, j) != 0) free(j);
 }
 
 void net_ip_apply_cfg(const struct app_config_t *cfg)

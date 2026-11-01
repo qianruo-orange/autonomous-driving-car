@@ -5,6 +5,7 @@
  * 电机编码、反馈解析及控制条件保留在 can_motor.c。 */
 #define _GNU_SOURCE
 
+#include "core/cpu_affinity.h"
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -815,9 +816,16 @@ static void handle_can_input(app_ctx_t *app, int can_idx)
 void *can_recv_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
+    (void)pthread_setname_np(pthread_self(), "can_recv");
+    (void)cpu_bind_little();
+    if (watchdog_register_thread(pthread_self(), "can_recv", 3, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
     can_ctx_t *ctx = app->can;
     if (!ctx)
-        return NULL;
+        goto out;
 
     LOG_INFO("can_recv_task started (%d iface(s))", ctx->count);
     while (app->running) {
@@ -836,15 +844,26 @@ void *can_recv_task(void *arg)
         }
     }
     LOG_INFO("can_recv_task stopped");
+out:
+    if (app->running) app->fatal = 1;
+    app->running = 0;
+    watchdog_unregister_self("can_recv");
     return NULL;
 }
 
 void *can_send_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
+    (void)pthread_setname_np(pthread_self(), "can_send");
+    (void)cpu_bind_little();
+    if (watchdog_register_thread(pthread_self(), "can_send", 3, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
     can_ctx_t *ctx = app->can;
     if (!ctx)
-        return NULL;
+        goto out;
 
     for (int i = 0; i < ctx->count; i++)
         can_epoll_update_tx(ctx, i);
@@ -870,6 +889,10 @@ void *can_send_task(void *arg)
         }
     }
     LOG_INFO("can_send_task stopped");
+out:
+    if (app->running) app->fatal = 1;
+    app->running = 0;
+    watchdog_unregister_self("can_send");
     return NULL;
 }
 

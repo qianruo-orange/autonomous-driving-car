@@ -287,6 +287,24 @@ static int apply_yolo(app_ctx_t *app, const http_form_field_t *fields, int count
     return changed;
 }
 
+/* 改 IP 是 HTTP 请求的后台工作，由 HTTP 统计并等待退出。 */
+typedef struct {
+    char ifname[IFNAMSIZ], mode[8], addr[32], mask[32], gw[32];
+} ip_job_t;
+static pthread_mutex_t ip_apply_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *ip_apply_worker(void *argument)
+{
+    ip_job_t *job = argument;
+    usleep(300000);
+    pthread_mutex_lock(&ip_apply_lock);
+    if (http_worker_running())
+        net_ip_apply(job->ifname, job->mode, job->addr, job->mask, job->gw);
+    pthread_mutex_unlock(&ip_apply_lock);
+    free(job);
+    return NULL;
+}
+
 /* IP 设置：更新网卡静态/DHCP 地址。应用放后台线程延迟 ~300ms，
    先让 HTTP 响应发出，避免改 IP 切断当前连接导致浏览器收不到结果 */
 static void apply_ip(app_ctx_t *app, const http_form_field_t *fields, int count)
@@ -330,7 +348,18 @@ static void apply_ip(app_ctx_t *app, const http_form_field_t *fields, int count)
              addr[0] ? " addr=" : "", addr,
              mask[0] ? " mask=" : "", mask,
              gw[0] ? " gw=" : "", gw);
-    net_ip_apply_async(ifn, mode, addr, mask, gw);
+    ip_job_t *job = malloc(sizeof(*job));
+    if (!job) { LOG_ERROR("config: cannot allocate IP update"); return; }
+    safe_strncpy(job->ifname, sizeof(job->ifname), ifn);
+    safe_strncpy(job->mode, sizeof(job->mode), mode);
+    safe_strncpy(job->addr, sizeof(job->addr), addr);
+    safe_strncpy(job->mask, sizeof(job->mask), mask);
+    safe_strncpy(job->gw, sizeof(job->gw), gw);
+    int rc = http_worker_start(ip_apply_worker, job);
+    if (rc) {
+        free(job);
+        LOG_ERROR("config: cannot start IP update: %s", strerror(rc));
+    }
 }
 
 void http_config_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body)

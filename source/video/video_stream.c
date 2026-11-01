@@ -351,10 +351,16 @@ void video_stream_shutdown(void *arg)
 
 void *video_stream_task(void *arg)
 {
-    (void)arg;
-    cpu_bind_big();
+    app_ctx_t *app = arg;
+    (void)pthread_setname_np(pthread_self(), "video");
+    (void)cpu_bind_big();
+    if (watchdog_register_thread(pthread_self(), "video", 5, 3) < 0) {
+        app->fatal = 1;
+        app->running = 0;
+        return NULL;
+    }
     video_ctx_t *vs = g_ctx;
-    if (!vs) return NULL;
+    if (!vs) goto out;
 
     int failed_before = 0;   /* 连续失败标记：只在状态切换时输出详细错误 */
 
@@ -529,6 +535,10 @@ void *video_stream_task(void *arg)
     }
 
     LOG_INFO("video_stream: worker exiting");
+out:
+    if (app->running) app->fatal = 1;
+    app->running = 0;
+    watchdog_unregister_self("video");
     return NULL;
 }
 

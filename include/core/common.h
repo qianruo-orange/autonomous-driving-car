@@ -55,7 +55,6 @@ typedef struct app_ctx {
     struct app_config_t   *cfg;       /* 借用配置模块持有的对象 */
     dbc_t                 *dbcs;      /* 借用 DBC 模块数组，按 CAN 通道索引 */
     pthread_mutex_t        dbc_mutex; /* DBC 数组并发访问互斥锁 */
-    _Atomic int            threads_running; /* 活跃工作线程数（线程退出时递减） */
 } app_ctx_t;
 
 static inline void safe_strncpy(char *dst, size_t dst_size, const char *src)
