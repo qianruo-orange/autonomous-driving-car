@@ -213,12 +213,13 @@ static void *thread_wrapper(void *arg)
 /**
  * wait_threads_exit - 在有限时间内等待所有工作线程退出，避免析构与线程并发访问资源。
  */
-static void wait_threads_exit(void)
+static int wait_threads_exit(void)
 {
     for (int i = 0; i < 50; i++) {
-        if (__atomic_load_n(&g_app.threads_running, __ATOMIC_ACQUIRE) <= 0) break;
+        if (__atomic_load_n(&g_app.threads_running, __ATOMIC_ACQUIRE) <= 0) return 0;
         usleep(100000);   /* 每次 100ms，最多 5s */
     }
+    return __atomic_load_n(&g_app.threads_running, __ATOMIC_ACQUIRE) > 0 ? -1 : 0;
 }
 
 /**
@@ -230,11 +231,20 @@ static void shutdown_modules_safe(void)
 {
     LOG_INFO("Shutting down modules...");
 
-    /* 1. 先通知所有工作线程退出（各 task 均以 500ms 周期检查 running） */
+    /* 1. 先通知所有工作线程退出。 */
     g_app.running = 0;
 
     /* 2. 等待线程退出后再析构，避免析构释放资源时线程仍在访问 */
-    wait_threads_exit();
+    if (wait_threads_exit() < 0) {
+        /* A live worker may hold module/log locks or still reference resources.
+         * Do not run destructors, stdio/atexit cleanup, or return through main's
+         * stack-owned contexts. Process exit lets the kernel reclaim resources
+         * and the failure status triggers systemd Restart=on-failure. */
+        static const char message[] =
+            "shutdown: workers did not exit within 5s; skipping destructors and exiting with failure\n";
+        (void)write(STDERR_FILENO, message, sizeof(message) - 1);
+        _Exit(EXIT_FAILURE);
+    }
 
     /* 3. 按创建逆序执行析构，且不重复调用（http_server_stop / video_stream_shutdown
           分别是 http / video 模块的 dtor，这里统一调用一次） */

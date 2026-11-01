@@ -193,6 +193,7 @@ void *watchdog_task(void *arg)
         pthread_mutex_unlock(&g_wd_mutex);
 
         if (should_stop) {
+            app->fatal = 1;
             app->running = 0;
             sync();
             usleep(200000);   /* 给健康线程 200ms 清理窗口（日志落盘 / 设备关闭） */
@@ -201,7 +202,12 @@ void *watchdog_task(void *arg)
 
         if (wd_notify_sec > 0 && now >= next_notify) {
             if (sd_notify(0, "WATCHDOG=1") > 0) notify_fail = 0;
-            else if (++notify_fail >= 3) { LOG_ERROR("watchdog: sd_notify failed, exiting"); app->running = 0; break; }
+            else if (++notify_fail >= 3) {
+                LOG_ERROR("watchdog: sd_notify failed, exiting");
+                app->fatal = 1;
+                app->running = 0;
+                break;
+            }
             next_notify = now + wd_notify_sec;
         }
     }
