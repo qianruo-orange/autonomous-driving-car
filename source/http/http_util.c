@@ -82,7 +82,8 @@ int http_split_relative(const char *rel, char *directory, size_t directory_size,
         return -1;
     const char *slash = strchr(rel, '/');
     size_t length = slash ? (size_t)(slash - rel) : 0;
-    if (!slash || !length || length >= directory_size || !slash[1] || strchr(slash + 1, '/'))
+    if (!slash || !length || length >= directory_size || !slash[1] ||
+        strlen(slash + 1) >= name_size || strchr(slash + 1, '/'))
         return -1;
     memcpy(directory, rel, length);
     directory[length] = '\0';
@@ -105,16 +106,16 @@ int http_form_parse(const char *req, http_form_field_t *fields, int max_fields)
     const char *p = http_body_start(req);
     int count = 0;
     while (*p && count < max_fields) {
-        const char *eq = strchr(p, '=');
         const char *amp = strchr(p, '&');
-        if (!eq) break;
-        int klen = (int)(eq - p);
-        if (klen > HTTP_FORM_KEY_MAX - 1) klen = HTTP_FORM_KEY_MAX - 1;
-        memcpy(fields[count].key, p, (size_t)klen);
+        size_t length = amp ? (size_t)(amp - p) : strlen(p);
+        const char *eq = memchr(p, '=', length);
+        if (!eq || eq == p || (size_t)(eq - p) >= HTTP_FORM_KEY_MAX) return 0;
+        size_t klen = (size_t)(eq - p);
+        memcpy(fields[count].key, p, klen);
         fields[count].key[klen] = '\0';
 
         const char *vs = eq + 1;
-        int vlen = amp ? (int)(amp - vs) : (int)strlen(vs);
+        size_t vlen = length - klen - 1;
         int dlen = url_decode_n(vs, (size_t)vlen, fields[count].val, HTTP_FORM_VAL_MAX);
         fields[count].val[dlen] = '\0';
         count++;
