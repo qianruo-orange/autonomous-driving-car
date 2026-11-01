@@ -287,18 +287,6 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | `config/` | Device settings, model, labels, CAN databases |
 | `scripts/` | Bash build, deployment, and model synchronization |
 
-## Lifecycle regression checks
-
-The lifecycle checks compile the production shutdown and watchdog code with simulated clocks, notifications, and module callbacks. They cover missed heartbeats, repeated systemd notification failures, normal stopping, reverse-order destruction after workers drain, and failure exit without destructors or `atexit` handlers when a worker remains active. They do not start the camera, NPU, CAN interfaces, or installed service.
-
-Run from the repository root:
-
-```bash
-cc -std=c11 -Wall -Wextra -ffunction-sections -fdata-sections -Iinclude \
-    tests/lifecycle_test.c -Wl,--gc-sections -pthread -o /tmp/car-lifecycle-test
-/tmp/car-lifecycle-test
-```
-
 ## Development direction
 
 The next architectural step is to integrate LLM inference alongside YOLO and conventional motion control. This will extend the platform toward unified perception, inference, and control while retaining explicit interfaces for observations, model outputs, and actuator commands.
