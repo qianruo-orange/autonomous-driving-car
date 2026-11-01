@@ -49,8 +49,8 @@ int config_init(void *arg)
     app_ctx_t *app = arg;
     int rc = config_load(app->cfg);
     if (rc < 0) return rc;
-    log_close();
-    log_init(app->cfg->log_dir);
+    log_close(app);
+    log_init(app);
     config_apply_platform(app);
     return 0;
 }

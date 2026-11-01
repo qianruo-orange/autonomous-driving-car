@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "core/log.h"
+#include "core/config.h"
 #include "core/common.h"
 #include "core/version.h"
 
@@ -92,18 +93,23 @@ static void ensure_date(void)
     open_log_channel(1);
 }
 
-void log_init(const char *dir)
+int log_init(void *arg)
 {
+    app_ctx_t *app = arg;
+    const char *dir = app && app->cfg && app->cfg->log_dir[0]
+                          ? app->cfg->log_dir : PATH_LOGS;
     pthread_mutex_lock(&g_log.mutex);
     safe_strncpy(g_log.dir, sizeof(g_log.dir), dir);
     mkdir(dir, 0755);
     g_log.date[0] = '\0';
     ensure_date();
     pthread_mutex_unlock(&g_log.mutex);
+    return 0;
 }
 
-void log_close(void)
+void log_close(void *arg)
 {
+    (void)arg;
     pthread_mutex_lock(&g_log.mutex);
     if (g_log.fp_info  && g_log.fp_info  != stderr) fclose(g_log.fp_info);
     if (g_log.fp_error && g_log.fp_error != stderr) fclose(g_log.fp_error);

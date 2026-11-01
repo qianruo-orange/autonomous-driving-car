@@ -129,21 +129,6 @@ static void context_destroy(void *arg)
     pthread_mutex_destroy(&app->can_mutex);
 }
 
-/* 基础模块同样通过生命周期表启动：日志必须先于配置及平台操作。 */
-static int logging_init(void *arg)
-{
-    (void)arg;
-    log_init(PATH_LOGS);
-    return 0;
-}
-
-static void logging_destroy(void *arg)
-{
-    (void)arg;
-    LOG_INFO("Modules shut down successfully.");
-    log_close();
-}
-
 static module_t g_modules[] = {
     {
         .name = "context",
@@ -153,7 +138,7 @@ static module_t g_modules[] = {
     /* 无独立线程：正序初始化、逆序清理，日志最后关闭。 */
     {
         .name = "log",
-        .ops = { .init = logging_init, .dtor = logging_destroy },
+        .ops = { .init = log_init, .dtor = log_close },
         .thr = { .cpu = -1 },
     },
     {
