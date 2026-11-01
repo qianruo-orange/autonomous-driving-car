@@ -68,10 +68,15 @@ static void *http_worker_run(void *argument)
     return result;
 }
 
+int http_worker_running(void)
+{
+    return g_http_app && g_http_app->running;
+}
+
 int http_worker_start(void *(*task)(void *), void *argument)
 {
     if (!task) return EINVAL;
-    if (!g_http_app || !g_http_app->running) return ECANCELED;
+    if (!http_worker_running()) return ECANCELED;
     http_worker_t *job = malloc(sizeof(*job));
     if (!job) return ENOMEM;
     *job = (http_worker_t){task, argument};

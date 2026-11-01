@@ -134,7 +134,7 @@ static void h264s_wait_for_frame(const h264s_client_t *c, uint64_t expected)
 static int h264s_wait_until(const h264s_client_t *c, uint64_t target)
 {
     pthread_mutex_lock(&g_h264s.lock);
-    while (!g_h264s.stop && g_h264s.epoch == c->epoch) {
+    while (http_worker_running() && !g_h264s.stop && g_h264s.epoch == c->epoch) {
         uint64_t now = h264s_now_ms();
         if (now >= target) {
             pthread_mutex_unlock(&g_h264s.lock);
@@ -656,7 +656,7 @@ static void *h264_stream_client_task(void *arg)
     unsigned int sl = 0, pl = 0;
     int ok = 0;
     pthread_mutex_lock(&g_h264s.lock);
-    for (unsigned waited = 0; waited < H264S_JOIN_TIMEOUT_MS && !g_h264s.stop; ) {
+    for (unsigned waited = 0; waited < H264S_JOIN_TIMEOUT_MS && http_worker_running() && !g_h264s.stop; ) {
         if (g_h264s.epoch != 0 && g_h264s.sps_len > 0 && g_h264s.pps_len > 0) {
             c->epoch = g_h264s.epoch;
             w = g_h264s.w; h = g_h264s.h; fps = g_h264s.fps;
@@ -693,7 +693,7 @@ static void *h264_stream_client_task(void *arg)
     /* 3) 接合最新 IDR（GOP≈2s ≤ 环 8.5s，环内必有；新会话则等首 IDR ≤3s） */
     ok = 0;
     pthread_mutex_lock(&g_h264s.lock);
-    for (unsigned waited = 0; waited < H264S_JOIN_TIMEOUT_MS && !g_h264s.stop; ) {
+    for (unsigned waited = 0; waited < H264S_JOIN_TIMEOUT_MS && http_worker_running() && !g_h264s.stop; ) {
         if (g_h264s.epoch != c->epoch) break;   /* 会话轮转：重连走新配置 */
         for (size_t k = g_h264s.count; k-- > 0; ) {   /* 环尾（最新）向前扫 */
             const h264s_entry_t *e =
@@ -758,7 +758,7 @@ static void *h264_stream_client_task(void *arg)
     if (dur90_def == 0) dur90_def = 1;
 
     /* 5) 主循环：按序逐帧组片段（锁内）→ 网络写（锁外）→ 实时节流 */
-    while (1) {
+    while (http_worker_running()) {
         if (time(NULL) - c->last_write >= H264S_CLIENT_IDLE_TIMEOUT) break;
 
         /* 对端断开探测（MSG_PEEK 不消费字节；克隆 MJPEG 推流线程做法） */
