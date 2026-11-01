@@ -15,7 +15,6 @@
 #include "watchdog/watchdog.h"
 
 /* 日志目录不再硬编码 PATH_LOGS：与核心日志保持一致，使用配置的 log_dir */
-#define LOG_PACK_MAX (100UL * 1024 * 1024)  /* 日志打包体积上限 100MB，防止长时间阻塞 HTTP */
 
 /* 解析日志相对路径，要求为 YYYYMMDD/filename 形式且不含 '..' */
 static int logs_resolve_rel(const char *rel, char *subdir, size_t subdir_size,
@@ -161,68 +160,6 @@ static void serve_log_clear(int fd, const char *log_dir)
     http_ok_json(fd, json, (size_t)off);
 }
 
-/* 统计日志目录总大小，用于打包前的体积限制 */
-static int64_t logs_total_size(const char *log_dir)
-{
-    int64_t total = 0;
-    DIR *dir = opendir(log_dir);
-    if (!dir) return 0;
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        char subdir[512];
-        snprintf(subdir, sizeof(subdir), "%s/%s", log_dir, de->d_name);
-        struct stat dst;
-        if (stat(subdir, &dst) < 0 || !S_ISDIR(dst.st_mode)) continue;
-        DIR *sd = opendir(subdir);
-        if (!sd) continue;
-        struct dirent *fde;
-        while ((fde = readdir(sd)) != NULL) {
-            if (fde->d_name[0] == '.') continue;
-            char path[512];
-            snprintf(path, sizeof(path), "%s/%s", subdir, fde->d_name);
-            struct stat st;
-            if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) total += (int64_t)st.st_size;
-        }
-        closedir(sd);
-    }
-    closedir(dir);
-    return total;
-}
-
-/* 打包下载所有日志 (tar.gz)：先打成临时文件，再复用 http_serve_stream 流式
-   发送（含发送后自动清理临时文件） */
-static void serve_log_pack(int fd, const char *log_dir)
-{
-    if (logs_total_size(log_dir) > (int64_t)LOG_PACK_MAX) {
-        LOG_INFO("logs pack: total size exceeds %lld bytes, rejected", (long long)LOG_PACK_MAX);
-        http_err(fd, 413, "Payload Too Large", "logs too large");
-        return;
-    }
-
-    char tmppath[512];
-    snprintf(tmppath, sizeof(tmppath), "/tmp/rockchip_logs_pack_%d.tar.gz", (int)getpid());
-    char cmd[1400];
-    snprintf(cmd, sizeof(cmd), "tar -czf %s -C %s . 2>/dev/null", tmppath, log_dir);
-    if (system(cmd) != 0 || access(tmppath, F_OK) != 0) {
-        unlink(tmppath);
-        http_err(fd, 500, "Internal Error", NULL);
-        return;
-    }
-
-    FILE *fp = fopen(tmppath, "rb");
-    if (!fp) {
-        unlink(tmppath);
-        http_err(fd, 500, "Internal Error", NULL);
-        return;
-    }
-    size_t size = http_file_size(fp);
-
-    http_serve_stream(fd, "application/gzip",
-                      "Content-Disposition: attachment; filename=\"logs_pack.tar.gz\"\r\n",
-                      fp, size, tmppath);
-}
-
 /* 日志总入口 */
 void http_logs_handler(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf)
 {
@@ -237,8 +174,6 @@ void http_logs_handler(app_ctx_t *app, int fd, const char *method, const char *u
         serve_log_list_json(fd, log_dir);
     else if (strcmp(uri, "/api/logs/clear") == 0)
         serve_log_clear(fd, log_dir);
-    else if (strcmp(uri, "/logs/pack") == 0)
-        serve_log_pack(fd, log_dir);
     else if (strncmp(uri, "/logfile/", 9) == 0) {
         char rel[512];
         http_url_decode(uri + 9, rel, sizeof(rel));

@@ -23,6 +23,8 @@
 #define FILE_PACK_LIMIT (8ull * 1024u * 1024u * 1024u)
 #define FILE_SESSION_COUNT 64u
 #define FILE_WORKERS 4u
+#define FILE_LOG_ARCHIVE_LIMIT (100ull * 1024u * 1024u)
+#define FILE_REC_ARCHIVE_LIMIT (2ull * 1024u * 1024u * 1024u)
 typedef struct { char token[65], name[256]; uint64_t expires; } file_session_t;
 static file_session_t file_sessions[FILE_SESSION_COUNT];
 static pthread_mutex_t file_session_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -362,7 +364,7 @@ static int file_archive_command(const char *stage,int output)
 /* Clear only regular entries in the managed day folders. Archive immutable
  * videos by hard link on the same filesystem; live text is a fixed-size copy. */
 static int file_walk(const char *root,const char *stage,const char *category,int kind,int clear,
-                     unsigned *count,uint64_t *total)
+                     uint64_t limit,unsigned *count,uint64_t *total)
 {
     int rootfd=open(root,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
     if(rootfd<0)return errno==ENOENT?0:-1;
@@ -386,7 +388,7 @@ static int file_walk(const char *root,const char *stage,const char *category,int
             if(kind==1&&!file_mp4_closed(source,relative)){close(source);continue;}
             if(kind==2){close(source);source=yolo_events_export_report(relative);if(source<0){result=-1;break;}
                 if(fstat(source,&info)){close(source);result=-1;break;}}
-            if((uint64_t)info.st_size>FILE_PACK_LIMIT-*total){close(source);errno=EFBIG;result=-1;break;}
+            if(*total>limit||(uint64_t)info.st_size>limit-*total){close(source);errno=EFBIG;result=-1;break;}
             char folder[PATH_MAX],target[PATH_MAX];
             if(snprintf(folder,sizeof(folder),"%s/%s",stage,category)>=(int)sizeof(folder)){close(source);errno=ENAMETOOLONG;result=-1;break;}
             if(mkdir(folder,0700)&&errno!=EEXIST){close(source);result=-1;break;}
@@ -417,20 +419,71 @@ static int file_walk(const char *root,const char *stage,const char *category,int
     int error=errno;closedir(dir);errno=error;return result;
 }
 
+/* Legacy log/recording archives use the same bounded worker and stream path
+ * as file previews and bulk downloads. Compression must stay off the reactor. */
+static void file_legacy_archive(file_job_t *job,int kind)
+{
+    const char *root=kind==0?job->log_root:PATH_RECORDINGS;
+    const char *category=kind==0?"logs":"recordings";
+    uint64_t limit=kind==0?FILE_LOG_ARCHIVE_LIMIT:FILE_REC_ARCHIVE_LIMIT;
+    unsigned count=0;uint64_t total=0;int output=-1,error=0;
+    char stage[PATH_MAX]="";
+    pthread_mutex_lock(&file_bulk_lock);
+    int path_length=snprintf(stage,sizeof(stage),"%s/.legacy-pack-XXXXXX",PATH_RECORDINGS);
+    if(path_length<0||(size_t)path_length>=sizeof(stage))error=ENAMETOOLONG;
+    else if(!mkdtemp(stage))error=errno;
+    if(!error&&file_walk(root,stage,category,kind,0,limit,&count,&total))error=errno;
+    if(!error&&!count)error=ENOENT;
+    if(!error&&total>limit)error=EFBIG;
+    if(!error){
+        char output_path[PATH_MAX];
+        path_length=snprintf(output_path,sizeof(output_path),"%s/.legacy-output-XXXXXX",PATH_RECORDINGS);
+        if(path_length<0||(size_t)path_length>=sizeof(output_path))error=ENAMETOOLONG;
+        else if((output=mkstemp(output_path))<0)error=errno;
+        else {unlink(output_path);}
+    }
+    if(!error){
+        posix_spawn_file_actions_t actions;int rc=posix_spawn_file_actions_init(&actions);int actions_ready=!rc;
+        if(!rc)rc=posix_spawn_file_actions_adddup2(&actions,output,STDOUT_FILENO);
+        if(!rc)rc=posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
+        char archive_root[PATH_MAX];
+        int root_length=snprintf(archive_root,sizeof(archive_root),"%s/%s",stage,category);
+        if(root_length<0||(size_t)root_length>=sizeof(archive_root))rc=ENAMETOOLONG;
+        char *args[]={"tar","-czf","-","-C",archive_root,".",NULL};pid_t child;
+        extern char **environ;
+        if(!rc)rc=posix_spawnp(&child,"tar",&actions,NULL,args,environ);
+        if(actions_ready)posix_spawn_file_actions_destroy(&actions);
+        if(rc)error=rc;
+        else {int status;do{rc=waitpid(child,&status,0);}while(rc<0&&errno==EINTR);
+            if(rc<0||!WIFEXITED(status)||WEXITSTATUS(status))error=EIO;}
+    }
+    if(stage[0])file_remove_tree(stage);
+    pthread_mutex_unlock(&file_bulk_lock);
+    if(error){if(output>=0)close(output);file_error(job,error);return;}
+    struct stat info;
+    if(fstat(output,&info)||info.st_size<0||lseek(output,0,SEEK_SET)<0){close(output);file_error(job,EIO);return;}
+    const char *filename=kind==0?"logs_pack.tar.gz":"recordings_pack.tar.gz";
+    char extra[256];snprintf(extra,sizeof(extra),"Content-Disposition: attachment; filename=\"%s\"\r\n",filename);
+    file_response(job,200,"application/gzip",extra,NULL,(size_t)info.st_size);
+    char bytes[65536];uint64_t started=file_now();ssize_t n;
+    while((n=read(output,bytes,sizeof(bytes)))!=0){if(n<0&&errno==EINTR)continue;if(n<0||file_send(job->fd,bytes,(size_t)n,started))break;}
+    close(output);
+}
+
 static void file_bulk(file_job_t *job,int clear)
 {
     unsigned logs=0,recordings=0,results=0;uint64_t total=0;int output=-1,error=0;
     char stage[PATH_MAX]="";
     pthread_mutex_lock(&file_bulk_lock);
     if(clear){
-        if(file_walk(job->log_root,NULL,NULL,0,1,&logs,&total)||
-           file_walk(PATH_RECORDINGS,NULL,NULL,1,1,&recordings,&total)||yolo_events_clear_reports(&results))error=errno;
+        if(file_walk(job->log_root,NULL,NULL,0,1,FILE_PACK_LIMIT,&logs,&total)||
+           file_walk(PATH_RECORDINGS,NULL,NULL,1,1,FILE_PACK_LIMIT,&recordings,&total)||yolo_events_clear_reports(&results))error=errno;
     }else{
         snprintf(stage,sizeof(stage),"%s/.files-snapshot-XXXXXX",PATH_RECORDINGS);
         if(!mkdtemp(stage))error=errno;
-        if(!error && (file_walk(job->log_root,stage,"logs",0,0,&logs,&total)||
-            file_walk(PATH_RECORDINGS,stage,"recordings",1,0,&recordings,&total)||
-            file_walk(YOLO_EVENTS_DIR,stage,"results",2,0,&results,&total)))error=errno;
+        if(!error && (file_walk(job->log_root,stage,"logs",0,0,FILE_PACK_LIMIT,&logs,&total)||
+            file_walk(PATH_RECORDINGS,stage,"recordings",1,0,FILE_PACK_LIMIT,&recordings,&total)||
+            file_walk(YOLO_EVENTS_DIR,stage,"results",2,0,FILE_PACK_LIMIT,&results,&total)))error=errno;
         if(!error&&!logs&&!recordings&&!results)error=ENOENT;
         if(!error){char name[PATH_MAX];snprintf(name,sizeof(name),"%s/.files-pack-XXXXXX",PATH_RECORDINGS);
             output=mkstemp(name);if(output<0)error=errno;else{unlink(name);if(file_archive_command(stage,output))error=errno;}}
@@ -456,6 +509,8 @@ static void *file_worker(void *argument)
         else if(!strncmp(job->uri,"/api/files/preview?",19))file_preview(job);
         else if(!strcmp(job->uri,"/api/files/pack")&&!strcmp(job->method,"GET"))file_bulk(job,0);
         else if(!strcmp(job->uri,"/api/files/clear")&&!strcmp(job->method,"POST"))file_bulk(job,1);
+        else if(!strcmp(job->method,"GET")&&!strcmp(job->uri,"/logs/pack"))file_legacy_archive(job,0);
+        else if(!strcmp(job->method,"GET")&&!strcmp(job->uri,"/api/rec/pack"))file_legacy_archive(job,1);
         else file_response(job,405,"text/plain",NULL,NULL,0);
     }
     /* Return admission before close: the OS may immediately reuse the fd. */
