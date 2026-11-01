@@ -6,6 +6,7 @@
 <script src="/js/theme.js"></script>
 <script src="/js/i18n.js"></script>
 <script src="/js/auth.js"></script>
+<script src="/js/app.js"></script>
 </head><body>
 <div class="top-bar">
   <div class="tb-left">
@@ -86,7 +87,7 @@
 </div>
 </div>
 
-<div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" onclick="saveCpuFreq()">💾 <span data-i18n="保存">保存</span></button></h3>
+<div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" data-action="cpu-save">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="cfg-grid vid2">
 <div class="row"><label data-i18n="CPU 策略组">CPU 策略组</label><select id="cf_policy"></select></div>
 <div class="row"><label data-i18n="调度策略">调度策略</label><select id="cf_gov"></select></div>
@@ -103,7 +104,7 @@
 <div class="nt-input-group">
 <input type="text" id="nt_ping_target" data-i18n-ph="IP / 域名" placeholder="IP / 域名" value="192.168.1.1">
 </div>
-<button type="button" class="btn btn-back nt-go" onclick="runNetTest('ping')" data-i18n="测试">测试</button>
+<button type="button" class="btn btn-back nt-go" data-net-test="ping" data-i18n="测试">测试</button>
 </div>
 <div class="nt-row">
 <label data-i18n="网速测试">网速测试</label>
@@ -115,14 +116,14 @@
 </select>
 <input type="text" id="nt_speed_custom" placeholder="https://..." style="display:none">
 </div>
-<button type="button" class="btn btn-back nt-go" onclick="runNetTest('speed')" data-i18n="测速">测速</button>
+<button type="button" class="btn btn-back nt-go" data-net-test="speed" data-i18n="测速">测速</button>
 </div>
 <div class="nt-row">
 <label data-i18n="网站可达性">网站可达性</label>
 <div class="nt-input-group">
 <input type="text" id="nt_reach_target" placeholder="https://example.com">
 </div>
-<button type="button" class="btn btn-back nt-go" onclick="runNetTest('reach')" data-i18n="检测">检测</button>
+<button type="button" class="btn btn-back nt-go" data-net-test="reach" data-i18n="检测">检测</button>
 </div>
 </div>
 </div>
@@ -132,6 +133,8 @@
 </div>
 
 <script src="/js/config.js"></script>
+<script src="/js/cpu-frequency.js"></script>
+<script src="/js/network-tools.js"></script>
 <script src="/js/ano.js"></script>
 <script src="/js/camera.js"></script>
 <script src="/js/car_sport_ctrl.js"></script>

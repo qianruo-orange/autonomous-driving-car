@@ -1,65 +1,46 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#ifndef TCP_SERVER_H
-#define TCP_SERVER_H
-
-#include <pthread.h>
-#include "core/config.h"
-
-#define TCP_ANO_CLIENTS 2
-#define TCP_ANO_FRAME_BYTES 256
-
+#pragma once
+#include "core/common.h"
+#define TCP_SERVICE_MAX 4
+#define TCP_CLIENTS_PER_PORT 2
+#define TCP_REPLY_CAPACITY 256
+typedef struct tcp_ctx tcp_ctx_t;
+/* Protocol callbacks run under the port lock: bounded/nonblocking, no TCP API
+ * reentry except tcp_wake. Input is an arbitrary TCP chunk, not a message.
+ * A reply length of 0 keeps any pending reply; -1 closes the connection.
+ * ops/user must outlive the service. poll runs outside transport locks and returns the next wait in
+ * ms. */
 typedef struct {
-    int fd;
-    uint32_t token;
-    size_t offset, length;
-    unsigned long long pending_since;
-    unsigned char frame[TCP_ANO_FRAME_BYTES];
-    unsigned char input[TCP_ANO_FRAME_BYTES];
-    size_t input_length;
-    unsigned requests;
-} tcp_ano_client_t;
-
+    void (*connected)(app_ctx_t *, int port, int fd, void *user);
+    void (*disconnected)(app_ctx_t *, int port, int fd, void *user);
+    int (*receive)(app_ctx_t *, int port, int fd, const unsigned char *, size_t,
+                   unsigned char *reply, size_t capacity, void *user);
+    int (*prepare)(int fd, const unsigned char *, size_t, unsigned char *reply, size_t capacity,
+                   void *user);
+    int (*poll)(app_ctx_t *, void *user);
+} tcp_service_ops_t;
 typedef struct {
-    int fd, replace;
+    int service, fd, port, enabled, replace;
     uint32_t token;
-} tcp_ano_stage_t;
-
+} tcp_service_stage_t;
 typedef struct {
     int running, listening, clients;
     unsigned long long sent_frames, dropped_frames, errors;
     char error[40];
-} tcp_ano_status_t;
-
-/* TCP transport for ANO; HTTP manages Web connections separately on :80. */
-typedef struct tcp_ctx {
-    int epfd;
-    int wake_fd;
-    pthread_mutex_t ano_mutex;
-    int ano_initialized, ano_listener, ano_enabled, ano_port, ano_refresh;
-    uint32_t ano_nonce, ano_listener_token;
-    tcp_ano_client_t ano_clients[TCP_ANO_CLIENTS];
-    unsigned long long ano_sent_frames, ano_dropped_frames, ano_errors;
-    int ano_listener_error;
-    atomic_int task_running;
-} tcp_ctx_t;
-
-/* Stage validates/binds/registers a new ANO listener without replacing the
- * active endpoint. Commit cannot fail after configuration is persisted. */
-int tcp_ano_stage(tcp_ctx_t *ctx, int enabled, int port, tcp_ano_stage_t *stage);
-void tcp_ano_discard(tcp_ctx_t *ctx, tcp_ano_stage_t *stage);
-void tcp_ano_commit(tcp_ctx_t *ctx, int enabled, int port, tcp_ano_stage_t *stage);
-void tcp_ano_stop(tcp_ctx_t *ctx);
-void tcp_ano_get_status(tcp_ctx_t *ctx, tcp_ano_status_t *out);
-int tcp_ano_take_refresh(tcp_ctx_t *ctx);
-int tcp_ano_publish(tcp_ctx_t *ctx, const unsigned char *frame, size_t length);
-
-int tcp_listen(int port);
-
-/* Initialize the shared event loop; ANO opens its configured listener. */
-int  tcp_init(void *arg);
-void tcp_cleanup(void *ctx);
-
-/* ANO connections and configuration wakeups share one epoll worker. */
-void *tcp_task(void *arg);
-
-#endif /* TCP_SERVER_H */
+} tcp_service_status_t;
+/* Registration binds/reserves the port. id is a stable slot, not a descriptor.
+ * Use stage/commit/discard when configuration must be persisted transactionally.
+ * A disabled service still reserves its port. commit cannot fail after stage. */
+int tcp_service_register(tcp_ctx_t *, int port, const tcp_service_ops_t *, void *user, int *id);
+int tcp_service_stage(tcp_ctx_t *, int current_id, int enabled, int port, const tcp_service_ops_t *,
+                      void *user, tcp_service_stage_t *);
+void tcp_service_commit(tcp_ctx_t *, tcp_service_stage_t *);
+void tcp_service_discard(tcp_ctx_t *, tcp_service_stage_t *);
+void tcp_service_disable(tcp_ctx_t *, int id);
+int tcp_service_publish(tcp_ctx_t *, int id, const unsigned char *, size_t);
+void tcp_service_get_status(tcp_ctx_t *, int id, tcp_service_status_t *);
+int tcp_ready(tcp_ctx_t *);
+void tcp_wake(tcp_ctx_t *);
+int tcp_init(void *);
+void tcp_cleanup(void *);
+void *tcp_task(void *);

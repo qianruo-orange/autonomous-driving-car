@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "control/car_sport_ctrl.h"
 #include "can/can_socket.h"
+#include "can/can_motor.h"
 #include "core/cpu_affinity.h"
 #include "core/log.h"
 #include "http/http_internal.h"

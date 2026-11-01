@@ -5,7 +5,7 @@
 #include "telemetry/ano_protocol.h"
 #include "control/car_sport_ctrl.h"
 #include "http/http_internal.h"
-#include "tcp/tcp_server.h"
+#include "telemetry/ano_connection.h"
 #include <math.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -201,7 +201,7 @@ void ano_tick(app_ctx_t *app)
     if (!app || !atomic_load(&ano.ready))
         return;
     unsigned long long now = ano_now_ms();
-    int refresh = tcp_ano_take_refresh(app->tcp);
+    int refresh = ano_connection_take_refresh(app->tcp);
     pthread_mutex_lock(&ano_lock);
     unsigned epoch = ano.epoch;
     int due = ano.app == app && now >= ano.next_sample_ms;
@@ -228,7 +228,7 @@ void ano_tick(app_ctx_t *app)
             simulate_sample(&sample, ano.test_started_ms, now);
         unsigned char frame[ANO_FRAME_BYTES];
         size_t length = encode_sample(&sample, frame);
-        if (length && !tcp_ano_publish(app->tcp, frame, length)) {
+        if (length && !ano_connection_publish(app->tcp, frame, length)) {
             ano.samples++;
             ano.last_sample_ms = now;
         }
@@ -257,7 +257,7 @@ int ano_init(void *arg)
 {
     app_ctx_t *app = arg;
     pthread_mutex_lock(&ano_save_lock);
-    if (!app || !app->tcp || !app->tcp->ano_initialized || atomic_load(&ano.ready)) {
+    if (!app || !app->tcp || !tcp_ready(app->tcp) || atomic_load(&ano.ready)) {
         pthread_mutex_unlock(&ano_save_lock);
         return -1;
     }
@@ -276,15 +276,16 @@ int ano_init(void *arg)
     else
         ano.config = saved;
     ano.test_started_ms = ano_now_ms();
-    tcp_ano_stage_t stage;
-    if (tcp_ano_stage(app->tcp, ano.config.enabled, ano.config.port, &stage))
+    ano_connection_init();
+    ano_connection_stage_t stage;
+    if (ano_connection_stage(app->tcp, ano.config.enabled, ano.config.port, &stage))
         ano.error = "listen_failed";
     else
-        tcp_ano_commit(app->tcp, ano.config.enabled, ano.config.port, &stage);
+        ano_connection_commit(app->tcp, ano.config.enabled, ano.config.port, &stage);
     atomic_store(&ano.ready, 1);
     pthread_mutex_unlock(&ano_lock);
     pthread_mutex_unlock(&ano_save_lock);
-    eventfd_signal(app->tcp->wake_fd);
+    tcp_wake(app->tcp);
     return 0;
 }
 
@@ -301,7 +302,7 @@ void ano_destroy(void *arg)
     ano.app = NULL;
     pthread_mutex_unlock(&ano_lock);
     if (app)
-        tcp_ano_stop(app->tcp);
+        ano_connection_stop(app->tcp);
     pthread_mutex_unlock(&ano_save_lock);
 }
 
@@ -334,8 +335,8 @@ void http_ano_get(app_ctx_t *app, int fd, const char *method, const char *uri, c
     int test_active = ready && config.enabled && config.test_mode;
     if (test_active)
         simulate_sample(&latest, test_started, now);
-    tcp_ano_status_t transport;
-    tcp_ano_get_status(app ? app->tcp : NULL, &transport);
+    ano_connection_status_t transport;
+    ano_connection_get_status(app ? app->tcp : NULL, &transport);
     int length = snprintf(
         json, sizeof(json),
         "{\"config\":{\"enabled\":%s,\"port\":%d,\"rate_hz\":%d,\"test_mode\":%d},"
@@ -354,7 +355,7 @@ void http_ano_get(app_ctx_t *app, int fd, const char *method, const char *uri, c
         json_channel(latest.speed_target, channels[0], 48),
         json_channel(latest.speed_actual, channels[1], 48),
         json_channel(latest.steering_target, channels[2], 48),
-        json_channel(latest.steering_actual, channels[3], 48), TCP_ANO_CLIENTS);
+        json_channel(latest.steering_actual, channels[3], 48), TCP_CLIENTS_PER_PORT);
     http_ok_json(fd, json, (size_t)length);
 }
 
@@ -407,20 +408,20 @@ void http_ano_post(app_ctx_t *app, int fd, const char *method, const char *uri, 
         http_err(fd, 400, "Bad Request", "Invalid or repeated ANO field");
         return;
     }
-    tcp_ano_stage_t stage;
-    if (tcp_ano_stage(app->tcp, next.enabled, next.port, &stage)) {
+    ano_connection_stage_t stage;
+    if (ano_connection_stage(app->tcp, next.enabled, next.port, &stage)) {
         pthread_mutex_unlock(&ano_save_lock);
         http_err(fd, 409, "Conflict", "ANO TCP port is unavailable; settings unchanged");
         return;
     }
     if (save_config(&next)) {
-        tcp_ano_discard(app->tcp, &stage);
+        ano_connection_discard(app->tcp, &stage);
         pthread_mutex_unlock(&ano_save_lock);
         http_err(fd, 500, "Error", "Cannot save ANO settings; settings unchanged");
         return;
     }
     pthread_mutex_lock(&ano_lock);
-    tcp_ano_commit(app->tcp, next.enabled, next.port, &stage);
+    ano_connection_commit(app->tcp, next.enabled, next.port, &stage);
     if (next.enabled && next.test_mode && (!ano.config.enabled || !ano.config.test_mode))
         ano.test_started_ms = ano_now_ms();
     ano.config = next;
@@ -429,6 +430,6 @@ void http_ano_post(app_ctx_t *app, int fd, const char *method, const char *uri, 
     ano.error = "";
     pthread_mutex_unlock(&ano_lock);
     pthread_mutex_unlock(&ano_save_lock);
-    eventfd_signal(app->tcp->wake_fd);
+    tcp_wake(app->tcp);
     http_ano_get(app, fd, method, uri, req);
 }

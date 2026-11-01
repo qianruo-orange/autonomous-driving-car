@@ -20,6 +20,9 @@ typedef struct can_ctx {
     int              count;
     int              recv_epfd; /* 接收 epoll（can_recv_task） */
     int              send_epfd; /* 发送 epoll（can_send_task，监听 tx_efd + 各接口 EPOLLOUT） */
+    /* Already-sent records deferred from the real-time motor path. */
+    struct { int index; struct canfd_frame frame; } records[32];
+    unsigned record_head, record_tail;
     int              tx_efd;    /* TX eventfd：压入 TX 队列后 write，唤醒 can_send_task */
 } can_ctx_t;
 
@@ -32,6 +35,22 @@ void *can_send_task(void *arg);
 /* 异步发送一帧：入对应接口 TX 队列，由 can_send_task 排空写 socket 并做发送方向 DBC 解析。
  * ifname 为目标接口名。返回 0 表示已入队，-1 失败。 */
 int can_tx_frame(app_ctx_t *app, const char *ifname, const struct canfd_frame *frame);
+
+/* One business service per configured interface. Registration/unregistration
+ * serialize with RX/TX under can_mutex. Callbacks are bounded/nonblocking,
+ * execute with that mutex held, and must not reenter CAN or controller APIs.
+ * extra_filters may add at most two IDs; reserved_id protects actuator IDs. */
+typedef enum { CAN_FRAME_RX, CAN_FRAME_TX } can_frame_direction_t;
+typedef struct {
+    int receive_filtered;
+    void (*frame)(app_ctx_t *, const char *, const struct canfd_frame *, can_frame_direction_t, void *);
+    void (*before_close)(app_ctx_t *, const char *, void *);
+    int (*reserved_id)(const char *, canid_t, void *);
+    int (*extra_filters)(const char *, struct can_filter *, size_t, void *);
+} can_service_ops_t;
+int can_service_register(app_ctx_t *, const char *, const can_service_ops_t *, void *);
+int can_service_unregister(app_ctx_t *, const char *, const can_service_ops_t *, void *);
+void can_service_prepare_close_locked(app_ctx_t *, const char *);
 
 /* 打开/关闭单个 CAN 套接字（can_init 内部使用） */
 int  can_socket_open(const char *ifname, int fd_mode);
@@ -59,25 +78,8 @@ int  can_enumerate_system(char names[][IFNAMSIZ], int max);
 int  can_fd_supported(const char *ifname);
 
 
-/* Apply the OR-union of ordinary filters and configured motor-feedback IDs.
+/* Apply the OR-union of ordinary filters and registered service IDs.
  * Caller holds app.can_mutex; also works for a staged replacement descriptor. */
 int can_socket_apply_filters(app_ctx_t *app, can_iface_t *iface, int fd);
-
-#define CAN_MOTOR_CONFIG "config/car_motor_can.conf"
-typedef struct {
-    int configured, online;
-    unsigned long long tx_frames, tx_errors, rx_frames, decode_errors;
-    char interface_name[IFNAMSIZ];
-    char error[160];
-} can_motor_status_t;
-/* Optional payload mapping on the existing CAN interfaces, no extra socket or
- * receiver. Initialize after the stopped controller is ready; clean up after
- * joining its worker, before destroying its feedback lock. */
-int can_motor_init(app_ctx_t *app);
-void can_motor_cleanup(void);
-void can_motor_get_status(can_motor_status_t *out);
-/* Caller holds app.can_mutex. Try the documented stop before interface down,
- * reconnect or global disable, then invalidate old feedback and queued IDs. */
-void can_motor_prepare_close_locked(app_ctx_t *app, const char *ifname);
 
 #endif /* CAN_SOCKET_H */

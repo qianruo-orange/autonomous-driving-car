@@ -14,7 +14,7 @@ int can_feature_set_locked(app_ctx_t *app, int enabled)
     can_ctx_t *ctx = app->can;
     if (!!app->cfg->args.can_enabled == enabled) return 0;
     if (!enabled) {
-        can_motor_prepare_close_locked(app, NULL);
+        can_service_prepare_close_locked(app, NULL);
         app->cfg->args.can_enabled = 0;
         for (int i = 0; i < ctx->count; i++) {
             can_iface_t *iface = &ctx->ifaces[i];

@@ -120,7 +120,7 @@ void http_can_toggle(app_ctx_t *app, int fd, const char *body)
         return;
     }
     if (!strcmp(action, "down"))
-        can_motor_prepare_close_locked(app, ifname);
+        can_service_prepare_close_locked(app, ifname);
     if (strcmp(action, "up") == 0)
         rtnl_link_set_flags(ln, IFF_UP);
     else

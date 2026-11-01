@@ -53,22 +53,21 @@
       if (names.indexOf(cur) >= 0) sel.value = cur;   // 尽量保留当前选择
     }
 
-    async function update() {
+    async function update(signal) {
       try {
-        var r = await fetch(apiUrl);
-        var arr = await r.json();
+        var arr = await App.json(apiUrl, {signal});
         latest = Array.isArray(arr) ? arr : [];
         refreshChannels();
         render();
       } catch (e) {
+        if (signal.aborted) return;
         tbody.innerHTML = '<tr><td colspan="5" class="empty" data-i18n="加载失败">' + t('加载失败') + '</td></tr>';
         setI18nText(meta, '');
       }
     }
 
     sel.addEventListener('change', render);
-    update();
-    setInterval(update, 500);
+    App.poll(update, {interval: 500});
   }
 
   makeView('rows', 'meta', 'channel', '/api/can/decoded');

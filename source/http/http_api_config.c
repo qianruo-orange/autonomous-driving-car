@@ -88,7 +88,7 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
 
     /* Stop against the current descriptor/mode/up state before editing it. */
     if (app->cfg->args.can_enabled)
-        can_motor_prepare_close_locked(app, NULL);
+        can_service_prepare_close_locked(app, NULL);
 
     for (int i = 0; i < CAN_MAX_IFACES; i++) {
         char kn[32];

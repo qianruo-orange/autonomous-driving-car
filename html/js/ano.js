@@ -35,7 +35,7 @@
     }
     function disabled() {
         inputs.forEach(input => { input.disabled = busy || saving || !loaded; });
-        document.dispatchEvent(new Event('networkanostatechange'));
+        document.dispatchEvent(new CustomEvent('app:componentchange', {detail: {name: 'network-ano'}}));
     }
     function validSnapshot(data) {
         if (!data || !data.config || !data.status) throw new Error('Invalid ANO response');
@@ -57,36 +57,30 @@
         loaded = true;
         disabled();
     }
-    async function poll() {
+    async function readStatus(signal) {
         if (!busy && !saving && !document.hidden) {
             const version = generation;
-            const abort = new AbortController();
-            const timeout = setTimeout(() => abort.abort(), 5000);
             try {
-                const response = await fetch('/api/ano', {cache: 'no-store', signal: abort.signal});
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-                const data = await response.json();
+                const data = await App.json('/api/ano', {signal});
                 if (version === generation) {
                     render(data, false);
                     if (readFailed) message('', false);
                     readFailed = false;
                 }
             } catch (error) {
+                if (signal.aborted) return;
                 if (version === generation) {
                     message('无法读取匿名助手状态', true);
                     readFailed = true;
                 }
-            } finally {
-                clearTimeout(timeout);
             }
         }
-        setTimeout(poll, 1000);
     }
     inputs.forEach(input => {
         input.addEventListener('input', () => { dirty.add(input.name); });
         input.addEventListener('change', () => { dirty.add(input.name); });
     });
-    window.networkAno = {
+    App.components.register('network-ano', {
       ready: function () {
         return loaded && !busy;
       },
@@ -126,10 +120,10 @@
             disabled();
         }
       }
-    };
+    });
     document.addEventListener('languagechange', () => {
         if (latest) render(latest, false);
     });
     disabled();
-    poll();
+    App.poll(readStatus, {interval: 1000});
 })();
