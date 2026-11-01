@@ -14,6 +14,7 @@
 #define NT_CMD_BUF      512
 #define NT_OUT_BUF      2048
 #define NT_ERR_BUF      512
+#define NT_RESULT_TTL_SEC 60
 
 typedef struct {
     int      in_use;
@@ -23,16 +24,25 @@ typedef struct {
     char     target[256];
     char     result[NT_OUT_BUF];
     char     error[NT_ERR_BUF];
+    time_t   completed_at;
 } nettest_t;
 
 static nettest_t          nt_tests[NT_MAX_TESTS];
 static pthread_mutex_t    nt_mutex = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int        nt_next_id = 1;
 
+static void nt_finish(int idx)
+{
+    strcpy(nt_tests[idx].status, "done");
+    nt_tests[idx].completed_at = time(NULL);
+}
+
 static int nt_alloc(int test_id)
 {
     for (int i = 0; i < NT_MAX_TESTS; i++) {
-        if (!nt_tests[i].in_use) {
+        if (!nt_tests[i].in_use ||
+            (strcmp(nt_tests[i].status, "done") == 0 &&
+             time(NULL) - nt_tests[i].completed_at >= NT_RESULT_TTL_SEC)) {
             memset(&nt_tests[i], 0, sizeof(nt_tests[i]));
             nt_tests[i].in_use  = 1;
             nt_tests[i].test_id = test_id;
@@ -103,7 +113,7 @@ static void *nt_run_ping(void *arg)
                     snprintf(nt_tests[idx].result, NT_OUT_BUF,
                         "{\"reachable\":true,\"packet_loss\":-1}");
                 }
-                strcpy(nt_tests[idx].status, "done");
+                nt_finish(idx);
             } else {
                 /* ping 失败：提取最后一行有意义的错误信息 */
                 const char *last_nl = strrchr(output, '\n');
@@ -122,7 +132,7 @@ static void *nt_run_ping(void *arg)
                 snprintf(nt_tests[idx].result, NT_OUT_BUF,
                     "{\"reachable\":false}");
                 snprintf(nt_tests[idx].error, NT_ERR_BUF, "\"%s\"", clean);
-                strcpy(nt_tests[idx].status, "done");
+                nt_finish(idx);
             }
         }
         pthread_mutex_unlock(&nt_mutex);
@@ -130,7 +140,7 @@ static void *nt_run_ping(void *arg)
         pthread_mutex_lock(&nt_mutex);
         if (idx >= 0 && nt_tests[idx].in_use && nt_tests[idx].test_id == id) {
             snprintf(nt_tests[idx].error, NT_ERR_BUF, "\"无法执行 ping 命令\"");
-            strcpy(nt_tests[idx].status, "done");
+            nt_finish(idx);
         }
         pthread_mutex_unlock(&nt_mutex);
     }
@@ -181,16 +191,16 @@ static void *nt_run_speed(void *arg)
                         "{\"speed_bps\":%.0f,\"speed_mbps\":%.2f,"
                         "\"size_bytes\":%.0f,\"time_sec\":%.2f}",
                         speed, mbps, size, tm);
-                    strcpy(nt_tests[idx].status, "done");
+                    nt_finish(idx);
                 } else {
                     snprintf(nt_tests[idx].error, NT_ERR_BUF,
                         "\"无法解析测速结果\"");
-                    strcpy(nt_tests[idx].status, "done");
+                    nt_finish(idx);
                 }
             } else {
                 snprintf(nt_tests[idx].error, NT_ERR_BUF,
                     "\"下载失败，请检查网络连接\"");
-                strcpy(nt_tests[idx].status, "done");
+                nt_finish(idx);
             }
         }
         pthread_mutex_unlock(&nt_mutex);
@@ -198,7 +208,7 @@ static void *nt_run_speed(void *arg)
         pthread_mutex_lock(&nt_mutex);
         if (idx >= 0 && nt_tests[idx].in_use && nt_tests[idx].test_id == id) {
             snprintf(nt_tests[idx].error, NT_ERR_BUF, "\"无法执行 curl 命令\"");
-            strcpy(nt_tests[idx].status, "done");
+            nt_finish(idx);
         }
         pthread_mutex_unlock(&nt_mutex);
     }
@@ -260,16 +270,27 @@ void http_nettest_post(app_ctx_t *app, int fd, const char *method,
 
     /* 启动后台线程 */
     int *id_arg = malloc(sizeof(int));
+    if (!id_arg) {
+        pthread_mutex_lock(&nt_mutex);
+        for (int i = 0; i < NT_MAX_TESTS; i++)
+            if (nt_tests[i].in_use && nt_tests[i].test_id == test_id) nt_tests[i].in_use = 0;
+        pthread_mutex_unlock(&nt_mutex);
+        http_err(fd, 500, "Internal Server Error", "{\"error\":\"out of memory\"}");
+        return;
+    }
     *id_arg = test_id;
     pthread_t tid;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (is_ping)
-        pthread_create(&tid, &attr, nt_run_ping, id_arg);
-    else
-        pthread_create(&tid, &attr, nt_run_speed, id_arg);
-    pthread_attr_destroy(&attr);
+    int rc = pthread_create(&tid, NULL, is_ping ? nt_run_ping : nt_run_speed, id_arg);
+    if (rc != 0) {
+        free(id_arg);
+        pthread_mutex_lock(&nt_mutex);
+        for (int i = 0; i < NT_MAX_TESTS; i++)
+            if (nt_tests[i].in_use && nt_tests[i].test_id == test_id) nt_tests[i].in_use = 0;
+        pthread_mutex_unlock(&nt_mutex);
+        http_err(fd, 503, "Service Unavailable", "{\"error\":\"cannot start test\"}");
+        return;
+    }
+    pthread_detach(tid);
 
     char json[128];
     int off = 0;
@@ -310,9 +331,11 @@ void http_nettest_result(app_ctx_t *app, int fd, const char *method,
     }
 
     /* 构建基础字段 */
+    char escaped_target[sizeof(nt_tests[0].target) * 2];
+    http_json_escape(nt_tests[idx].target, escaped_target, sizeof(escaped_target));
     off = snprintf(json, sizeof(json),
         "{\"test_id\":%d,\"status\":\"%s\",\"type\":\"%s\",\"target\":\"%s\"",
-        test_id, nt_tests[idx].status, nt_tests[idx].type, nt_tests[idx].target);
+        test_id, nt_tests[idx].status, nt_tests[idx].type, escaped_target);
 
     /* result: 原始 JSON 对象或 null */
     if (nt_tests[idx].result[0])
