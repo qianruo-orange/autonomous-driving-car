@@ -86,13 +86,6 @@ static struct {
 } motor_bindings[4];
 static int motor_binding_count;
 
-static unsigned long long motor_now_ms(void)
-{
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (unsigned long long)t.tv_sec * 1000u + t.tv_nsec / 1000000u;
-}
-
 static int profile_error(char *error, size_t capacity, const char *message)
 {
     safe_strncpy(error, capacity, message);
@@ -529,7 +522,7 @@ static void can_motor_receive_locked(app_ctx_t *app, const char *ifname,
         strcmp(ifname, transport.profile.interface_name) ||
         frame->can_id & (CAN_RTR_FLAG | CAN_ERR_FLAG))
         return;
-    unsigned long long now = motor_now_ms();
+    unsigned long long now = monotonic_ms();
     if (!received_ms || received_ms > now)
         return;
     int matched = 0, updated = 0;

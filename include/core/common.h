@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,13 @@
 /* 网络监控接口 */
 #define NET_IFACE_ETH  "eth0"
 #define NET_IFACE_WLAN "wlan0"
+
+static inline uint64_t monotonic_ms(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
 
 struct can_ctx;
 struct tcp_ctx;

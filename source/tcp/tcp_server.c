@@ -43,11 +43,9 @@ struct tcp_ctx {
     tcp_port_t ports[TCP_SERVICE_MAX];
 };
 static tcp_ctx_t *server;
-static unsigned long long now_ms(void)
+static uint64_t client_handle(uint32_t generation, unsigned service, unsigned client)
 {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (unsigned long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+    return ((uint64_t)generation << 32) | ((uint32_t)service << 16) | (client + 1u);
 }
 static uint64_t event_tag(uint32_t generation, unsigned slot, uint32_t kind)
 {
@@ -96,8 +94,7 @@ static void close_client(tcp_ctx_t *ctx, tcp_port_t *p, int i, int dropped)
     tcp_client_t *c = &p->clients[i];
     if (c->fd < 0)
         return;
-    uint64_t key =
-        ((uint64_t)c->token << 32) | ((uint32_t)(p - ctx->ports) << 16) | (uint32_t)(i + 1);
+    uint64_t key = client_handle(c->token, (unsigned)(p - ctx->ports), (unsigned)i);
     if (dropped && c->length)
         p->dropped++;
     close_quiet(ctx, c);
@@ -125,7 +122,7 @@ static void flush(tcp_ctx_t *ctx, tcp_port_t *p, int slot, int i)
     tcp_client_t *c = &p->clients[i];
     if (c->fd < 0 || !c->length)
         return;
-    if (now_ms() - c->pending_ms >= PENDING_MS) {
+    if (monotonic_ms() - c->pending_ms >= PENDING_MS) {
         p->errors++;
         close_client(ctx, p, i, 1);
         return;
@@ -337,7 +334,7 @@ int tcp_send(uint64_t handle, const void *data, size_t length)
     for (int i = 0; i < TCP_CLIENTS_PER_PORT; i++) {
         tcp_client_t *c = &p->clients[i];
         if (c->fd < 0 ||
-            (key && key != (((uint64_t)c->token << 32) | ((uint32_t)id << 16) | (uint32_t)(i + 1))))
+            (key && key != client_handle(c->token, (unsigned)id, (unsigned)i)))
             continue;
         flush(ctx, p, id, i);
         if (c->fd < 0)
@@ -351,7 +348,7 @@ int tcp_send(uint64_t handle, const void *data, size_t length)
         memcpy(c->bytes, data, length);
         c->length = length;
         c->offset = 0;
-        c->pending_ms = now_ms();
+        c->pending_ms = monotonic_ms();
         flush(ctx, p, id, i);
     }
     pthread_mutex_unlock(&p->lock);
@@ -461,8 +458,7 @@ static void port_event(tcp_ctx_t *ctx, int slot, uint64_t tag, uint32_t events)
                 continue;
             }
             put_data(ctx, p, TCP_CONNECTED,
-                     ((uint64_t)c->token << 32) | ((uint32_t)slot << 16) | (uint32_t)(i + 1), NULL,
-                     0);
+                     client_handle(c->token, (unsigned)slot, (unsigned)i), NULL, 0);
         }
     } else {
         int i = (kind & 0xffffu) - 1;
@@ -483,8 +479,7 @@ static void port_event(tcp_ctx_t *ctx, int slot, uint64_t tag, uint32_t events)
                 goto done;
             }
             if (n > 0) {
-                put_data(ctx, p, TCP_DATA,
-                         ((uint64_t)c->token << 32) | ((uint32_t)slot << 16) | (uint32_t)(i + 1),
+                put_data(ctx, p, TCP_DATA, client_handle(c->token, (unsigned)slot, (unsigned)i),
                          input, (size_t)n);
             }
         }

@@ -51,6 +51,19 @@ static struct {
     can_binding_t spec;
 } bindings[CAN_BIND_MAX];
 static int can_write_frame_locked(app_ctx_t *, int, const struct canfd_frame *, int, int);
+static int can_queue_frame_locked(app_ctx_t *app, int index, const struct canfd_frame *frame,
+                                  int fd_mode)
+{
+    struct canfd_frame queued = *frame;
+    if (fd_mode)
+        queued.flags |= CANFD_FDF;
+    if (data_slot_push(&app->can->ifaces[index].txq, &queued, 0) != 0) {
+        errno = ENOBUFS;
+        return -1;
+    }
+    eventfd_signal(app->can->tx_efd);
+    return 0;
+}
 static int binding_index(uint64_t handle)
 {
     unsigned index = handle & 0xffu;
@@ -206,12 +219,7 @@ static int can_binding_send_locked(uint64_t handle, const void *bytes, size_t le
     memcpy(frame.data, bytes, length);
     if (immediate)
         return can_write_frame_locked(can_app, index, &frame, spec->fd, 1);
-    if (data_slot_push(&iface->txq, &frame, 0) != 0) {
-        errno = ENOBUFS;
-        return -1;
-    }
-    eventfd_signal(can_app->can->tx_efd);
-    return 0;
+    return can_queue_frame_locked(can_app, index, &frame, spec->fd);
 }
 int can_send_locked(uint64_t handle, const void *bytes, size_t length)
 {
@@ -235,9 +243,7 @@ int can_send(uint64_t handle, const void *bytes, size_t length)
  * 有界槽满时保留最新 CAN 帧，丢弃数量由该槽自己统计。 */
 static void can_slot_dispatch_locked(const char *port, const struct canfd_frame *frame)
 {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    uint64_t stamp = (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+    uint64_t stamp = monotonic_ms();
     canid_t id = frame->can_id & (CAN_EFF_FLAG | CAN_EFF_MASK);
     for (int i = 0; i < CAN_BIND_MAX; i++)
         if (bindings[i].used && !strcmp(bindings[i].port, port) && bindings[i].spec.id == id &&
@@ -689,16 +695,10 @@ int can_tx_frame(app_ctx_t *app, const char *ifname, const struct canfd_frame *f
         return -1;
     }
     /* 发送统一走 TX 队列：由 can_send_task 弹出写 socket 并做发送方向 DBC 解析 */
-    data_slot_t *txq = &ctx->ifaces[idx].txq;
-    struct canfd_frame queued = *frame;
-    if (ctx->ifaces[idx].fd_mode)
-        queued.flags |= CANFD_FDF;
-    if (data_slot_push(txq, &queued, 0) != 0) {
+    if (can_queue_frame_locked(app, idx, frame, ctx->ifaces[idx].fd_mode) != 0) {
         pthread_mutex_unlock(&app->can_mutex);
-        errno = ENOBUFS;
         return -1;
     }
-    eventfd_signal(ctx->tx_efd);
     pthread_mutex_unlock(&app->can_mutex);
     return 0;
 }
@@ -725,7 +725,7 @@ static void handle_can_output(app_ctx_t *app)
         data_slot_t *q = &ctx->ifaces[idx].txq;
         /* 一轮最多处理当前队列长度，避免 EAGAIN 帧重排入队尾导致死循环 */
         int limit = data_slot_count(q);
-        while (limit-- > 0 && data_slot_count(q) > 0) {
+        while (limit-- > 0) {
             struct canfd_frame f;
             if (!data_slot_pop(q, &f))
                 break;
