@@ -31,6 +31,14 @@ static nettest_t          nt_tests[NT_MAX_TESTS];
 static pthread_mutex_t    nt_mutex = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int        nt_next_id = 1;
 
+/* Caller holds nt_mutex while inspecting task slots. */
+static int nt_find(int id)
+{
+    for (int i = 0; i < NT_MAX_TESTS; i++)
+        if (nt_tests[i].in_use && nt_tests[i].test_id == id) return i;
+    return -1;
+}
+
 static void nt_finish(int idx)
 {
     strcpy(nt_tests[idx].status, "done");
@@ -59,9 +67,7 @@ static void *nt_run_ping(void *arg)
     free(arg);
 
     pthread_mutex_lock(&nt_mutex);
-    int idx = -1;
-    for (int i = 0; i < NT_MAX_TESTS; i++)
-        if (nt_tests[i].in_use && nt_tests[i].test_id == id) { idx = i; break; }
+    int idx = nt_find(id);
     if (idx < 0) { pthread_mutex_unlock(&nt_mutex); return NULL; }
     strcpy(nt_tests[idx].status, "running");
     char target[256];
@@ -154,9 +160,7 @@ static void *nt_run_speed(void *arg)
     free(arg);
 
     pthread_mutex_lock(&nt_mutex);
-    int idx = -1;
-    for (int i = 0; i < NT_MAX_TESTS; i++)
-        if (nt_tests[i].in_use && nt_tests[i].test_id == id) { idx = i; break; }
+    int idx = nt_find(id);
     if (idx < 0) { pthread_mutex_unlock(&nt_mutex); return NULL; }
     strcpy(nt_tests[idx].status, "running");
     char target[256];
@@ -295,7 +299,8 @@ void http_nettest_post(app_ctx_t *app, int fd, const char *method,
     char json[128];
     int off = 0;
     JSON_ADD(json, off, "{\"test_id\":%d,\"status\":\"pending\"}", test_id);
-    http_ok_json(fd, json, (size_t)off);
+    if (off < 0) http_err(fd, 500, "Error", "Network test response is too large");
+    else http_ok_json(fd, json, (size_t)off);
 }
 
 /* ---- GET /api/nettest/result?id=N — 查询结果 ---- */
@@ -317,9 +322,7 @@ void http_nettest_result(app_ctx_t *app, int fd, const char *method,
     }
 
     pthread_mutex_lock(&nt_mutex);
-    int idx = -1;
-    for (int i = 0; i < NT_MAX_TESTS; i++)
-        if (nt_tests[i].in_use && nt_tests[i].test_id == test_id) { idx = i; break; }
+    int idx = nt_find(test_id);
 
     char json[2560];
     int off = 0;
@@ -333,26 +336,13 @@ void http_nettest_result(app_ctx_t *app, int fd, const char *method,
     /* 构建基础字段 */
     char escaped_target[sizeof(nt_tests[0].target) * 2];
     http_json_escape(nt_tests[idx].target, escaped_target, sizeof(escaped_target));
-    off = snprintf(json, sizeof(json),
-        "{\"test_id\":%d,\"status\":\"%s\",\"type\":\"%s\",\"target\":\"%s\"",
-        test_id, nt_tests[idx].status, nt_tests[idx].type, escaped_target);
-
-    /* result: 原始 JSON 对象或 null */
-    if (nt_tests[idx].result[0])
-        off += snprintf(json + off, sizeof(json) - off,
-            ",\"result\":%s", nt_tests[idx].result);
-    else
-        off += snprintf(json + off, sizeof(json) - off, ",\"result\":null");
-
-    /* error: 带引号的字符串或 null */
-    if (nt_tests[idx].error[0])
-        off += snprintf(json + off, sizeof(json) - off,
-            ",\"error\":%s", nt_tests[idx].error);
-    else
-        off += snprintf(json + off, sizeof(json) - off, ",\"error\":null");
-
-    off += snprintf(json + off, sizeof(json) - off, "}");
+    off = http_json_append(json, sizeof(json), off,
+        "{\"test_id\":%d,\"status\":\"%s\",\"type\":\"%s\",\"target\":\"%s\",\"result\":%s,\"error\":%s}",
+        test_id, nt_tests[idx].status, nt_tests[idx].type, escaped_target,
+        nt_tests[idx].result[0] ? nt_tests[idx].result : "null",
+        nt_tests[idx].error[0] ? nt_tests[idx].error : "null");
     pthread_mutex_unlock(&nt_mutex);
 
-    http_ok_json(fd, json, (size_t)off);
+    if (off < 0) http_err(fd, 500, "Error", "Network test response is too large");
+    else http_ok_json(fd, json, (size_t)off);
 }
