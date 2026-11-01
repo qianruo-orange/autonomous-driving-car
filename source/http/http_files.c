@@ -340,7 +340,7 @@ static void file_remove_tree(const char *path)
     closedir(dir);(void)rmdir(path);
 }
 
-static int file_archive_command(const char *stage,int output)
+static int file_archive_command(const char *stage,int output,int gzip)
 {
     posix_spawn_file_actions_t actions;int rc=posix_spawn_file_actions_init(&actions);if(rc){errno=rc;return -1;}
     rc=posix_spawn_file_actions_adddup2(&actions,output,STDOUT_FILENO);
@@ -348,11 +348,13 @@ static int file_archive_command(const char *stage,int output)
     if(!rc)rc=posix_spawn_file_actions_addchdir_np(&actions,stage);
     /* H.264 files are already compressed. Stored ZIP needs no recompression,
        supports ZIP64 and opens directly in desktop file managers. */
-    char *args[]={"zip","-q","-0","-r","-D","-",".",NULL};pid_t child;
-    extern char **environ;if(!rc)rc=posix_spawnp(&child,"zip",&actions,NULL,args,environ);
+    char *zip_args[]={"zip","-q","-0","-r","-D","-",".",NULL};
+    char *tar_args[]={"tar","-czf","-",".",NULL};
+    char **args=gzip?tar_args:zip_args;pid_t child;
+    extern char **environ;if(!rc)rc=posix_spawnp(&child,args[0],&actions,NULL,args,environ);
     posix_spawn_file_actions_destroy(&actions);if(rc){errno=rc;return -1;}
     int status;do{rc=waitpid(child,&status,0);}while(rc<0&&errno==EINTR);
-    if(rc>=0&&WIFEXITED(status)&&WEXITSTATUS(status)==12){
+    if(!gzip&&rc>=0&&WIFEXITED(status)&&WEXITSTATUS(status)==12){
         /* Info-ZIP returns 12 for an empty selection. Return a valid empty ZIP. */
         static const unsigned char empty[22]={0x50,0x4b,0x05,0x06};
         if(ftruncate(output,0)||lseek(output,0,SEEK_SET)<0)return -1;
@@ -419,6 +421,24 @@ static int file_walk(const char *root,const char *stage,const char *category,int
     int error=errno;closedir(dir);errno=error;return result;
 }
 
+/* Owns output: both archive formats share validation and bounded streaming. */
+static void file_send_archive(file_job_t *job,int output,const char *mime,const char *filename)
+{
+    struct stat info;
+    if(fstat(output,&info)||info.st_size<0||lseek(output,0,SEEK_SET)<0){
+        close(output);file_error(job,EIO);return;
+    }
+    char extra[256];
+    snprintf(extra,sizeof(extra),"Content-Disposition: attachment; filename=\"%s\"\r\n",filename);
+    file_response(job,200,mime,extra,NULL,(size_t)info.st_size);
+    char bytes[65536];uint64_t started=file_now();ssize_t n;
+    while((n=read(output,bytes,sizeof(bytes)))!=0){
+        if(n<0&&errno==EINTR)continue;
+        if(n<0||file_send(job->fd,bytes,(size_t)n,started))break;
+    }
+    close(output);
+}
+
 /* Legacy log/recording archives use the same bounded worker and stream path
  * as file previews and bulk downloads. Compression must stay off the reactor. */
 static void file_legacy_archive(file_job_t *job,int kind)
@@ -443,31 +463,16 @@ static void file_legacy_archive(file_job_t *job,int kind)
         else {unlink(output_path);}
     }
     if(!error){
-        posix_spawn_file_actions_t actions;int rc=posix_spawn_file_actions_init(&actions);int actions_ready=!rc;
-        if(!rc)rc=posix_spawn_file_actions_adddup2(&actions,output,STDOUT_FILENO);
-        if(!rc)rc=posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
         char archive_root[PATH_MAX];
-        int root_length=snprintf(archive_root,sizeof(archive_root),"%s/%s",stage,category);
-        if(root_length<0||(size_t)root_length>=sizeof(archive_root))rc=ENAMETOOLONG;
-        char *args[]={"tar","-czf","-","-C",archive_root,".",NULL};pid_t child;
-        extern char **environ;
-        if(!rc)rc=posix_spawnp(&child,"tar",&actions,NULL,args,environ);
-        if(actions_ready)posix_spawn_file_actions_destroy(&actions);
-        if(rc)error=rc;
-        else {int status;do{rc=waitpid(child,&status,0);}while(rc<0&&errno==EINTR);
-            if(rc<0||!WIFEXITED(status)||WEXITSTATUS(status))error=EIO;}
+        int length=snprintf(archive_root,sizeof(archive_root),"%s/%s",stage,category);
+        if(length<0||(size_t)length>=sizeof(archive_root))error=ENAMETOOLONG;
+        else if(file_archive_command(archive_root,output,1))error=errno;
     }
     if(stage[0])file_remove_tree(stage);
     pthread_mutex_unlock(&file_bulk_lock);
     if(error){if(output>=0)close(output);file_error(job,error);return;}
-    struct stat info;
-    if(fstat(output,&info)||info.st_size<0||lseek(output,0,SEEK_SET)<0){close(output);file_error(job,EIO);return;}
-    const char *filename=kind==0?"logs_pack.tar.gz":"recordings_pack.tar.gz";
-    char extra[256];snprintf(extra,sizeof(extra),"Content-Disposition: attachment; filename=\"%s\"\r\n",filename);
-    file_response(job,200,"application/gzip",extra,NULL,(size_t)info.st_size);
-    char bytes[65536];uint64_t started=file_now();ssize_t n;
-    while((n=read(output,bytes,sizeof(bytes)))!=0){if(n<0&&errno==EINTR)continue;if(n<0||file_send(job->fd,bytes,(size_t)n,started))break;}
-    close(output);
+    file_send_archive(job,output,"application/gzip",
+                      kind==0?"logs_pack.tar.gz":"recordings_pack.tar.gz");
 }
 
 static void file_bulk(file_job_t *job,int clear)
@@ -486,18 +491,14 @@ static void file_bulk(file_job_t *job,int clear)
             file_walk(YOLO_EVENTS_DIR,stage,"results",2,0,FILE_PACK_LIMIT,&results,&total)))error=errno;
         if(!error&&!logs&&!recordings&&!results)error=ENOENT;
         if(!error){char name[PATH_MAX];snprintf(name,sizeof(name),"%s/.files-pack-XXXXXX",PATH_RECORDINGS);
-            output=mkstemp(name);if(output<0)error=errno;else{unlink(name);if(file_archive_command(stage,output))error=errno;}}
+            output=mkstemp(name);if(output<0)error=errno;else{unlink(name);if(file_archive_command(stage,output,0))error=errno;}}
         if(stage[0])file_remove_tree(stage);
     }
     pthread_mutex_unlock(&file_bulk_lock);
     if(error){if(output>=0)close(output);file_error(job,error);return;}
     if(clear){char json[256];int n=snprintf(json,sizeof(json),"{\"deleted\":%u,\"logs\":%u,\"recordings\":%u,\"results\":%u,\"kept_active\":true}",
         logs+recordings+results,logs,recordings,results);file_response(job,200,"application/json",NULL,json,(size_t)n);return;}
-    struct stat info;if(fstat(output,&info)||lseek(output,0,SEEK_SET)<0){close(output);file_error(job,EIO);return;}
-    file_response(job,200,"application/zip","Content-Disposition: attachment; filename=\"autonomous-driving-car_files.zip\"\r\n",NULL,(size_t)info.st_size);
-    char bytes[65536];uint64_t started=file_now();ssize_t n;
-    while((n=read(output,bytes,sizeof(bytes)))!=0){if(n<0&&errno==EINTR)continue;if(n<0||file_send(job->fd,bytes,(size_t)n,started))break;}
-    close(output);
+    file_send_archive(job,output,"application/zip","autonomous-driving-car_files.zip");
 }
 
 static void *file_worker(void *argument)

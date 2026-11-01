@@ -132,35 +132,23 @@ void http_yolo_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_p
     FILE *fp = fopen(tmp_path, "rb");
     if (!fp) { http_err(fd, 500, "Error", "cannot read upload"); return; }
     size_t sz = http_file_size(fp);
-    if (sz == 0) {
-        fclose(fp);
+    unsigned char magic[4] = {0};
+    int bad_magic = is_model &&
+        (fread(magic, 1, sizeof(magic), fp) != sizeof(magic) ||
+         memcmp(magic, "RKNN", sizeof(magic)));
+    fclose(fp);
+    if (!sz) {
         http_err(fd, 400, "Bad Request", "empty file");
         return;
     }
-    if (is_model) {
-        if (sz > YOLO_MODEL_MAX_SIZE) {
-            fclose(fp);
-            http_err(fd, 413, "Payload Too Large", "model too large");
-            return;
-        }
-        unsigned char magic[4] = {0};
-        int bad = (fread(magic, 1, 4, fp) != 4) ||
-                  memcmp(magic, "RKNN", 4) != 0;
-        fclose(fp);
-        if (bad) {
-            http_err(fd, 400, "Bad Request", "invalid rknn model (bad magic)");
-            return;
-        }
-    } else {
-        fclose(fp);
-        if (sz > YOLO_NAMES_MAX_SIZE) {
-            http_err(fd, 413, "Payload Too Large", "names too large");
-            return;
-        }
-        if (yolo_validate_names(tmp_path) < 0) {
-            http_err(fd, 400, "Bad Request", "invalid names file");
-            return;
-        }
+    if (sz > (is_model ? YOLO_MODEL_MAX_SIZE : YOLO_NAMES_MAX_SIZE)) {
+        http_err(fd, 413, "Payload Too Large", is_model ? "model too large" : "names too large");
+        return;
+    }
+    int classes = is_model ? 0 : yolo_validate_names(tmp_path);
+    if (bad_magic || classes < 0) {
+        http_err(fd, 400, "Bad Request", is_model ? "invalid rknn model (bad magic)" : "invalid names file");
+        return;
     }
 
     /* Model conversion and uploads use the same runtime path.
@@ -194,14 +182,10 @@ void http_yolo_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_p
     int rc = rknn_yolo_reload();
 
     char msg[512];
-    if (is_model) {
-        snprintf(msg, sizeof(msg),
-                 "{\"result\":\"%s\",\"type\":\"model\",\"path\":\"%s\",\"size\":%zu}",
-                 rc == 0 ? "ok" : "saved_reload_failed", path, sz);
-    } else {
-        snprintf(msg, sizeof(msg),
-                 "{\"result\":\"%s\",\"type\":\"names\",\"path\":\"%s\",\"size\":%zu,\"classes\":%d}",
-                 rc == 0 ? "ok" : "saved_reload_failed", path, sz, yolo_validate_names(path));
-    }
-    http_ok_json(fd, msg, strlen(msg));
+    int off = 0;
+    JSON_ADD(msg, off, "{\"result\":\"%s\",\"type\":\"%s\",\"path\":\"%s\",\"size\":%zu",
+             rc == 0 ? "ok" : "saved_reload_failed", type, path, sz);
+    if (!is_model) JSON_ADD(msg, off, ",\"classes\":%d", classes);
+    JSON_ADD(msg, off, "}");
+    http_ok_json(fd, msg, (size_t)off);
 }
