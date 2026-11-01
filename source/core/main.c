@@ -7,7 +7,7 @@
  *     name 模块名，tid 运行时线程句柄
  *     ops  模块生命周期函数（init/dtor/task）
  *     wd   看门狗参数（timeout/max_miss）
- *     thr  线程参数（stack_size/priority/cpu）
+ *     big_core  视频与推理任务的大核选择
  */
 
 #include <stdio.h>
@@ -47,20 +47,13 @@ typedef struct {
     int max_miss;
 } module_wd_t;
 
-/* 线程参数（创建属性） */
-typedef struct {
-    size_t stack_size;   /* 线程栈大小（字节），0 = 系统默认 */
-    int    priority;     /* 调度优先级，0 = 默认调度，>0 = SCHED_FIFO 实时优先级(1-99) */
-    int    cpu;          /* 绑定核心，-1 = 不绑定，>=0 = 绑定到指定 CPU */
-} module_thread_cfg_t;
-
 /* 模块总表条目：一个模块的完整描述 */
 typedef struct {
     pthread_t           tid;
     const char         *name;
     module_ops_t        ops;
     module_wd_t         wd;
-    module_thread_cfg_t thr;
+    int                 big_core; /* 视频和推理任务使用大核，其余使用小核 */
     int                 initialized; /* 仅清理已成功初始化的模块 */
 } module_t;
 
@@ -128,28 +121,24 @@ static module_t g_modules[] = {
         .name = "can_recv",
         .ops  = { .task = can_recv_task },
         .wd   = { .timeout = 3, .max_miss = 3 },
-        .thr  = { .cpu = -1 },
     },
     /* can_send —— 发送线程：排空 txq 写 socket 做发送 DBC 解析，喂狗 */
     {
         .name = "can_send",
         .ops  = { .task = can_send_task },
         .wd   = { .timeout = 3, .max_miss = 3 },
-        .thr  = { .cpu = -1 },
     },
     /* Anonymous Assistant network transport. */
     {
         .name = "tcp",
         .ops = { .init = tcp_init, .dtor = tcp_cleanup, .task = tcp_task },
         .wd = { .timeout = 5, .max_miss = 3 },
-        .thr = { .cpu = -1 },
     },
     /* http */
     {
         .name = "http",
         .ops  = { .init = http_server_start, .dtor = http_server_stop, .task = http_server_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .cpu = -1 },
     },
     /* Event-driven differential vehicle controller owns a joinable FIFO worker. */
     {
@@ -164,30 +153,29 @@ static module_t g_modules[] = {
     /* video */
     {
         .name = "video",
+        .big_core = 1,
         .ops  = { .init = video_stream_init, .dtor = video_stream_shutdown, .task = video_stream_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .cpu = -1 },
     },
     /* yolo —— RKNN YOLO26 检测（必要流程）：无模型/NPU 不可用时 init 返回 -1，
        服务启动直接失败（无 YOLO 直接报错），不进降级空转 */
     {
         .name = "yolo",
+        .big_core = 1,
         .ops  = { .init = rknn_yolo_init, .dtor = rknn_yolo_destroy, .task = rknn_yolo_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .cpu = -1 },
     },
     /* watchdog —— 监控者，不能监督自己，故 timeout=0（不注册自身） */
     {
         .name = "watchdog",
         .ops  = { .init = watchdog_init, .task = watchdog_task },
-        .thr  = { .cpu = -1 },
     },
     /* rec —— 网络录像（HTTP 控制）：空闲空转喂狗，录制中每帧喂狗 */
     {
         .name = "rec",
+        .big_core = 1,
         .ops  = { .init = video_rec_init, .dtor = video_rec_destroy, .task = video_rec_task },
         .wd   = { .timeout = 5, .max_miss = 3 },
-        .thr  = { .cpu = -1 },
     },
     /* signal */
     {
@@ -212,7 +200,7 @@ static void *thread_wrapper(void *arg)
     int idx = (int)(intptr_t)arg;
     const char *name = g_modules[idx].name;
     set_current_thread_name(name);
-    if (!strcmp(name, "video") || !strcmp(name, "yolo") || !strcmp(name, "rec"))
+    if (g_modules[idx].big_core)
         (void)cpu_bind_big();
     else
         (void)cpu_bind_little();
@@ -286,18 +274,6 @@ int main(void)
         pthread_attr_init(&attr);
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
-        if (m->thr.stack_size > 0)
-            pthread_attr_setstacksize(&attr, m->thr.stack_size);
-
-        if (m->thr.priority > 0) {
-            struct sched_param sp;
-            memset(&sp, 0, sizeof(sp));
-            sp.sched_priority = m->thr.priority;
-            pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
-            pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
-            pthread_attr_setschedparam(&attr, &sp);
-        }
-
         __atomic_fetch_add(&g_app.threads_running, 1, __ATOMIC_RELAXED);
         int rc = pthread_create(&m->tid, &attr, thread_wrapper, (void *)(intptr_t)i);
         pthread_attr_destroy(&attr);
@@ -306,16 +282,6 @@ int main(void)
             __atomic_fetch_sub(&g_app.threads_running, 1, __ATOMIC_RELAXED);
             LOG_ERROR("create thread '%s' failed: %s", m->name, strerror(rc));
             goto fail;
-        }
-
-        /* 绑核（可选） */
-        if (m->thr.cpu >= 0) {
-            cpu_set_t set;
-            CPU_ZERO(&set);
-            CPU_SET(m->thr.cpu, &set);
-            if (pthread_setaffinity_np(m->tid, sizeof(set), &set) != 0)
-                LOG_ERROR("bind thread '%s' to cpu %d failed: %s",
-                          m->name, m->thr.cpu, strerror(errno));
         }
 
         /* 注册看门狗（timeout>0 才纳入监督） */
