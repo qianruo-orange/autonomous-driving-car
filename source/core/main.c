@@ -130,7 +130,7 @@ static module_t g_modules[] = {
         .wd   = { .timeout = 0, .max_miss = 0 },
         .thr  = { .stack_size = 0, .priority = 0, .cpu = -1 },
     },
-    /* can_recv —— 接收线程：读 socket 做接收 DBC 解析并入 rxq，喂狗 */
+    /* can_recv —— 接收线程：按端口和 CAN ID 投递业务数据槽，喂狗 */
     {
         .tid  = 0,
         .name = "can_recv",

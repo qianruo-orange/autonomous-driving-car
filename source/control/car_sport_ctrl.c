@@ -286,6 +286,7 @@ static void *worker(void *unused)
             pthread_cond_timedwait(&g.changed, &g.lock, &deadline);
         observed = g.generation;
         pthread_mutex_unlock(&g.lock);
+        can_motor_poll(g.app);
         /* Never acquire can_mutex while holding the feedback lock. */
         pthread_mutex_lock(&g.app->can_mutex);
         int can_enabled = g.app->cfg->args.can_enabled;

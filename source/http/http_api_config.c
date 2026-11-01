@@ -110,9 +110,9 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
             safe_strncpy(ni->ifname, sizeof(ni->ifname), ifn);
             ni->bitrate = 500000; ni->dbitrate = 2000000;
             ni->fd_mode = 1; ni->up = 1; ni->restart_ms = 0;
-            /* 新增接口的收发队列必须初始化，否则 can_send/can_recv 任务访问未初始化队列 */
-            can_queue_init(&ni->txq);
-            can_queue_init(&ni->rxq);
+            /* 新接口的发送槽必须绑定自己的存储。 */
+            int slot_rc=data_slot_init(&ni->txq,ni->tx_frames,sizeof(struct canfd_frame),CAN_TX_SLOT_CAPACITY);
+            if(slot_rc){can->count--;LOG_ERROR("config: CAN TX slot init failed: %s",strerror(slot_rc));continue;}
             LOG_INFO("config: adding new CAN interface '%s' (runtime idx %d)", ifn, idx);
         }
 

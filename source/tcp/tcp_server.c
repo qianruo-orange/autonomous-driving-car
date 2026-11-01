@@ -1,4 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+/* TCP 只管理连接和数据槽，不解析业务协议。
+ * 锁顺序：registry_lock → port.lock → 业务 slot.lock。
+ * 消费者 pop 后已释放 slot.lock，才可调用 tcp_send，禁止反向持锁。
+ * 句柄高 32 位是代际编号，低位包含端口槽及客户端槽；客户端槽 0 表示广播。
+ * epoll 事件也带代际编号，避免关闭/rebind 后的旧事件落到复用 fd 上。 */
 #define _GNU_SOURCE
 #include "tcp/tcp_server.h"
 #include "core/epoll_util.h"
@@ -23,8 +28,8 @@ typedef struct {
 typedef struct {
     pthread_mutex_t lock;
     int assigned, active, listener, port, enabled, staged, pending_port, staged_fd;
-    uint32_t nonce, listener_token, stage_token;
-    const tcp_service_ops_t *ops;
+    uint32_t nonce, listener_token, stage_token, binding_token;
+    const tcp_component_t *ops;
     void *user;
     tcp_client_t clients[TCP_CLIENTS_PER_PORT];
     unsigned long long sent, dropped, errors;
@@ -37,6 +42,7 @@ struct tcp_ctx {
     app_ctx_t *app;
     tcp_port_t ports[TCP_SERVICE_MAX];
 };
+static tcp_ctx_t *server;
 static unsigned long long now_ms(void)
 {
     struct timespec t;
@@ -57,18 +63,45 @@ void tcp_wake(tcp_ctx_t *ctx)
     if (tcp_ready(ctx))
         eventfd_signal(ctx->wake_fd);
 }
+static void close_quiet(tcp_ctx_t *ctx, tcp_client_t *c)
+{
+    if (c->fd >= 0) {
+        epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, c->fd, NULL);
+        close(c->fd);
+    }
+    *c = (tcp_client_t){.fd = -1};
+}
+/* 在端口锁内复制到业务槽，绝不直接调用协议解析函数。 */
+static int put_data(tcp_ctx_t *ctx, tcp_port_t *p, tcp_data_kind_t kind, uint64_t client,
+                    const unsigned char *bytes, size_t length)
+{
+    tcp_data_t item = {.kind = kind, .port = p->port, .handle = client, .length = length};
+    if (length)
+        memcpy(item.bytes, bytes, length);
+    if (!data_slot_push(&p->ops->slot->queue, &item, 0))
+        return 0;
+    /* Never silently drop bytes from a TCP stream. Reset the port's clients
+     * and tell the consumer to discard every partial protocol message. */
+    p->errors++;
+    p->dropped++;
+    for (int i = 0; i < TCP_CLIENTS_PER_PORT; i++)
+        close_quiet(ctx, &p->clients[i]);
+    data_slot_clear(&p->ops->slot->queue);
+    item = (tcp_data_t){.kind = TCP_RESET, .port = p->port};
+    data_slot_push(&p->ops->slot->queue, &item, 0);
+    return -1;
+}
 static void close_client(tcp_ctx_t *ctx, tcp_port_t *p, int i, int dropped)
 {
     tcp_client_t *c = &p->clients[i];
     if (c->fd < 0)
         return;
-    if (p->ops && p->ops->disconnected)
-        p->ops->disconnected(ctx->app, p->port, c->fd, p->user);
+    uint64_t key =
+        ((uint64_t)c->token << 32) | ((uint32_t)(p - ctx->ports) << 16) | (uint32_t)(i + 1);
     if (dropped && c->length)
         p->dropped++;
-    epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, c->fd, NULL);
-    close(c->fd);
-    *c = (tcp_client_t){.fd = -1};
+    close_quiet(ctx, c);
+    put_data(ctx, p, TCP_DISCONNECTED, key, NULL, 0);
 }
 static void close_listener(tcp_ctx_t *ctx, tcp_port_t *p)
 {
@@ -129,22 +162,40 @@ static int listen_port(int port)
     }
     return fd;
 }
-int tcp_service_stage(tcp_ctx_t *ctx, int current, int enabled, int port,
-                      const tcp_service_ops_t *ops, void *user, tcp_service_stage_t *stage)
+/* 注册准备阶段同时预占新端口和 epoll 项，旧监听保持工作。
+ * pending_port 也参与冲突检查，避免配置写盘期间被另一业务抢占。 */
+int tcp_prepare_register(tcp_ctx_t *ctx, uint64_t previous, int enabled, int port,
+                         const tcp_component_t *ops, void *user, tcp_service_stage_t *stage)
 {
-    if (!tcp_ready(ctx) || !stage || !ops || !ops->receive || port < 1 || port > 65535 ||
-        (enabled != 0 && enabled != 1) || current < -1 || current >= TCP_SERVICE_MAX) {
+    int current = previous ? (int)((previous >> 16) & 0xffu) : -1;
+    if (!tcp_ready(ctx) || !stage || !ops || !ops->slot || port < 1 || port > 65535 ||
+        (enabled != 0 && enabled != 1) || current >= TCP_SERVICE_MAX || (previous & 0xffffu)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (ops->slot->queue.items != ops->slot->items ||
+        ops->slot->queue.capacity != TCP_SLOT_CAPACITY ||
+        ops->slot->queue.item_size != sizeof(tcp_data_t)) {
         errno = EINVAL;
         return -1;
     }
     *stage = (tcp_service_stage_t){.service = -1, .fd = -1};
     pthread_mutex_lock(&ctx->registry_lock);
     int id = current;
+    if (current >= 0 && (!ctx->ports[current].assigned ||
+                         (uint32_t)(previous >> 32) != ctx->ports[current].binding_token)) {
+        errno = ESTALE;
+        goto fail;
+    }
     for (int i = 0; i < TCP_SERVICE_MAX; i++) {
         tcp_port_t *other = &ctx->ports[i];
         if (i != current && other->assigned &&
             (other->port == port || (other->staged && other->pending_port == port))) {
             errno = EADDRINUSE;
+            goto fail;
+        }
+        if (i != current && other->assigned && other->ops->slot == ops->slot) {
+            errno = EEXIST;
             goto fail;
         }
     }
@@ -179,6 +230,8 @@ int tcp_service_stage(tcp_ctx_t *ctx, int current, int enabled, int port,
             goto port_fail;
         }
     }
+    if (!p->assigned)
+        p->binding_token = token;
     p->assigned = 1;
     p->staged = 1;
     p->pending_port = port;
@@ -186,12 +239,14 @@ int tcp_service_stage(tcp_ctx_t *ctx, int current, int enabled, int port,
     p->stage_token = token;
     p->ops = ops;
     p->user = user;
-    *stage = (tcp_service_stage_t){.service = id,
-                                   .fd = fd,
-                                   .port = port,
-                                   .enabled = enabled,
-                                   .replace = replace,
-                                   .token = token};
+    *stage =
+        (tcp_service_stage_t){.service = id,
+                              .fd = fd,
+                              .port = port,
+                              .enabled = enabled,
+                              .replace = replace,
+                              .token = token,
+                              .handle = ((uint64_t)p->binding_token << 32) | ((uint32_t)id << 16)};
     pthread_mutex_unlock(&p->lock);
     pthread_mutex_unlock(&ctx->registry_lock);
     return 0;
@@ -201,7 +256,7 @@ fail:
     pthread_mutex_unlock(&ctx->registry_lock);
     return -1;
 }
-void tcp_service_commit(tcp_ctx_t *ctx, tcp_service_stage_t *stage)
+void tcp_commit_register(tcp_ctx_t *ctx, tcp_service_stage_t *stage)
 {
     if (!stage || !valid(ctx, stage->service))
         return;
@@ -226,7 +281,7 @@ void tcp_service_commit(tcp_ctx_t *ctx, tcp_service_stage_t *stage)
     pthread_mutex_unlock(&ctx->registry_lock);
     tcp_wake(ctx);
 }
-void tcp_service_discard(tcp_ctx_t *ctx, tcp_service_stage_t *stage)
+void tcp_cancel_register(tcp_ctx_t *ctx, tcp_service_stage_t *stage)
 {
     if (!stage || !valid(ctx, stage->service))
         return;
@@ -247,84 +302,110 @@ void tcp_service_discard(tcp_ctx_t *ctx, tcp_service_stage_t *stage)
     pthread_mutex_unlock(&p->lock);
     pthread_mutex_unlock(&ctx->registry_lock);
 }
-int tcp_service_register(tcp_ctx_t *ctx, int port, const tcp_service_ops_t *ops, void *user,
-                         int *id)
+uint64_t tcp_component_register(int port, const tcp_component_t *component, void *user)
 {
-    if (!id) {
-        errno = EINVAL;
-        return -1;
-    }
     tcp_service_stage_t stage;
-    if (tcp_service_stage(ctx, -1, 1, port, ops, user, &stage))
-        return -1;
-    tcp_service_commit(ctx, &stage);
-    *id = stage.service;
-    return 0;
+    if (tcp_prepare_register(server, 0, 1, port, component, user, &stage))
+        return 0;
+    tcp_commit_register(server, &stage);
+    return stage.handle;
 }
-void tcp_service_disable(tcp_ctx_t *ctx, int id)
+/* 发送路径从句柄还原绑定，不接受业务传入端口、fd 或协议地址。 */
+int tcp_send(uint64_t handle, const void *data, size_t length)
 {
-    if (!valid(ctx, id))
-        return;
-    pthread_mutex_lock(&ctx->registry_lock);
-    tcp_port_t *p = &ctx->ports[id];
-    pthread_mutex_lock(&p->lock);
-    close_listener(ctx, p);
-    p->enabled = 0;
-    pthread_mutex_unlock(&p->lock);
-    pthread_mutex_unlock(&ctx->registry_lock);
-}
-int tcp_service_publish(tcp_ctx_t *ctx, int id, const unsigned char *data, size_t length)
-{
+    tcp_ctx_t *ctx = server;
+    int id = (handle >> 16) & 0xffu;
+    uint64_t key = (handle & 0xffffu) ? handle : 0;
+
     if (!valid(ctx, id) || !data || !length || length > TCP_REPLY_CAPACITY) {
         errno = EINVAL;
         return -1;
     }
     tcp_port_t *p = &ctx->ports[id];
     pthread_mutex_lock(&p->lock);
-    if (!p->active || !p->enabled || p->listener < 0) {
+    if (!key && (uint32_t)(handle >> 32) != p->binding_token) {
         pthread_mutex_unlock(&p->lock);
+        errno = ESTALE;
         return -1;
     }
+    if (!p->active || !p->enabled || p->listener < 0) {
+        pthread_mutex_unlock(&p->lock);
+        errno = ENOTCONN;
+        return -1;
+    }
+    int found = 0, busy = 0;
     for (int i = 0; i < TCP_CLIENTS_PER_PORT; i++) {
         tcp_client_t *c = &p->clients[i];
+        if (c->fd < 0 ||
+            (key && key != (((uint64_t)c->token << 32) | ((uint32_t)id << 16) | (uint32_t)(i + 1))))
+            continue;
         flush(ctx, p, id, i);
         if (c->fd < 0)
             continue;
+        found = 1;
         if (c->length) {
             p->dropped++;
+            busy = 1;
             continue;
         }
-        int n;
-        if (p->ops->prepare)
-            n = p->ops->prepare(c->fd, data, length, c->bytes, sizeof(c->bytes), p->user);
-        else {
-            memcpy(c->bytes, data, length);
-            n = (int)length;
-        }
-        if (n < 0 || (size_t)n > sizeof(c->bytes)) {
-            p->errors++;
-            close_client(ctx, p, i, 1);
-            continue;
-        }
-        if (n) {
-            c->length = (size_t)n;
-            c->offset = 0;
-            c->pending_ms = now_ms();
-            flush(ctx, p, id, i);
-        }
+        memcpy(c->bytes, data, length);
+        c->length = length;
+        c->offset = 0;
+        c->pending_ms = now_ms();
+        flush(ctx, p, id, i);
     }
     pthread_mutex_unlock(&p->lock);
+    tcp_wake(ctx);
+    if (key && (!found || busy)) {
+        errno = busy ? ENOBUFS : ENOTCONN;
+        return -1;
+    }
     return 0;
 }
-void tcp_service_get_status(tcp_ctx_t *ctx, int id, tcp_service_status_t *out)
+int tcp_component_unregister(uint64_t handle)
+{
+    tcp_ctx_t *ctx = server;
+    int id = (handle >> 16) & 0xffu;
+    if (!valid(ctx, id) || (handle & 0xffffu)) {
+        errno = EINVAL;
+        return -1;
+    }
+    pthread_mutex_lock(&ctx->registry_lock);
+    tcp_port_t *p = &ctx->ports[id];
+    pthread_mutex_lock(&p->lock);
+    if (!p->assigned || (uint32_t)(handle >> 32) != p->binding_token) {
+        pthread_mutex_unlock(&p->lock);
+        pthread_mutex_unlock(&ctx->registry_lock);
+        errno = ESTALE;
+        return -1;
+    }
+    close_listener(ctx, p);
+    if (p->staged_fd >= 0) {
+        epoll_ctl(ctx->epfd, EPOLL_CTL_DEL, p->staged_fd, NULL);
+        close(p->staged_fd);
+    }
+    p->staged_fd = -1;
+    p->assigned = p->active = p->staged = p->enabled = 0;
+    p->ops = NULL;
+    p->user = NULL;
+    pthread_mutex_unlock(&p->lock);
+    pthread_mutex_unlock(&ctx->registry_lock);
+    return 0;
+}
+void tcp_service_get_status(tcp_ctx_t *ctx, uint64_t handle, tcp_service_status_t *out)
 {
     if (!out)
         return;
     memset(out, 0, sizeof(*out));
+    int id = (handle >> 16) & 0xffu;
     if (!valid(ctx, id))
         return;
     tcp_port_t *p = &ctx->ports[id];
     pthread_mutex_lock(&p->lock);
+    if (!p->assigned || (uint32_t)(handle >> 32) != p->binding_token) {
+        pthread_mutex_unlock(&p->lock);
+        return;
+    }
     out->running = atomic_load(&ctx->running);
     out->listening = p->listener >= 0;
     for (int i = 0; i < TCP_CLIENTS_PER_PORT; i++)
@@ -379,8 +460,9 @@ static void port_event(tcp_ctx_t *ctx, int slot, uint64_t tag, uint32_t events)
                 p->errors++;
                 continue;
             }
-            if (p->ops->connected)
-                p->ops->connected(ctx->app, p->port, fd, p->user);
+            put_data(ctx, p, TCP_CONNECTED,
+                     ((uint64_t)c->token << 32) | ((uint32_t)slot << 16) | (uint32_t)(i + 1), NULL,
+                     0);
         }
     } else {
         int i = (kind & 0xffffu) - 1;
@@ -401,18 +483,9 @@ static void port_event(tcp_ctx_t *ctx, int slot, uint64_t tag, uint32_t events)
                 goto done;
             }
             if (n > 0) {
-                int reply = p->ops->receive(ctx->app, p->port, c->fd, input, (size_t)n, c->bytes,
-                                            sizeof(c->bytes), p->user);
-                if (reply < 0 || (size_t)reply > sizeof(c->bytes)) {
-                    p->errors++;
-                    close_client(ctx, p, i, 1);
-                    goto done;
-                }
-                if (reply) {
-                    c->length = (size_t)reply;
-                    c->offset = 0;
-                    c->pending_ms = now_ms();
-                }
+                put_data(ctx, p, TCP_DATA,
+                         ((uint64_t)c->token << 32) | ((uint32_t)slot << 16) | (uint32_t)(i + 1),
+                         input, (size_t)n);
             }
         }
         flush(ctx, p, slot, i);
@@ -432,11 +505,13 @@ void *tcp_task(void *arg)
         for (int i = 0; i < TCP_SERVICE_MAX; i++) {
             tcp_port_t *p = &ctx->ports[i];
             pthread_mutex_lock(&p->lock);
-            const tcp_service_ops_t *ops = p->active ? p->ops : NULL;
+            const tcp_component_t *ops = p->active ? p->ops : NULL;
             void *user = p->user;
             for (int c = 0; c < TCP_CLIENTS_PER_PORT; c++)
                 flush(ctx, p, i, c);
             pthread_mutex_unlock(&p->lock);
+            /* 业务轮询在传输锁外运行，可安全取槽、解析并按句柄发送。
+             * 不需要共享工作线程的业务，可以不用 poll，自行消费自己的槽。 */
             if (ops && ops->poll) {
                 int delay = ops->poll(app, user);
                 if (delay >= 0 && delay < timeout)
@@ -490,6 +565,7 @@ int tcp_init(void *arg)
     struct epoll_event e = {.events = EPOLLIN, .data.u64 = TCP_WAKE_TAG};
     if (epoll_ctl(storage.epfd, EPOLL_CTL_ADD, storage.wake_fd, &e))
         goto fail;
+    server = &storage;
     atomic_store(&storage.ready, 1);
     return 0;
 fail:
@@ -516,4 +592,5 @@ void tcp_cleanup(void *arg)
         close(ctx->epfd);
     pthread_mutex_destroy(&ctx->registry_lock);
     app->tcp = NULL;
+    server = NULL;
 }

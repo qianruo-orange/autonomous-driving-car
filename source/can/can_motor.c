@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
 #include "can/can_motor.h"
-#include "can/can_internal.h"
+#include "can/can_socket.h"
 #include "control/car_sport_ctrl.h"
 #include "core/log.h"
 #include <ctype.h>
@@ -75,6 +75,16 @@ static struct {
     unsigned long long stamp[2], published_stamp;
     char error[160];
 } transport;
+
+/* 电机业务独占此槽；左右轮反馈 ID 可以绑定同一实例，传输层只投递帧。
+ * 控制线程在 PID 更新前消费它，保留 CAN 层采集时间用于新鲜度检查。 */
+static can_slot_t motor_rx;
+static int motor_slot_ready;
+static struct {
+    canid_t id;
+    uint64_t handle;
+} motor_bindings[4];
+static int motor_binding_count;
 
 static unsigned long long motor_now_ms(void)
 {
@@ -418,25 +428,28 @@ static int motor_command_reserved(const char *ifname, canid_t id)
 static void discard_queued_motor_commands_locked(can_iface_t *iface)
 {
     /* Preserve unrelated manual CAN messages in their original order. */
-    struct canfd_frame keep[CAN_QUEUE_MAX_SLOTS];
-    int count = 0, limit = can_queue_count(&iface->txq);
+    struct canfd_frame keep[CAN_TX_SLOT_CAPACITY];
+    int count = 0, limit = data_slot_count(&iface->txq);
     struct canfd_frame frame;
-    while (limit-- > 0 && can_queue_pop(&iface->txq, &frame) == CAN_QUEUE_ERR_OK)
+    while (limit-- > 0 && data_slot_pop(&iface->txq, &frame))
         if (!motor_command_reserved(iface->ifname, frame.can_id))
             keep[count++] = frame;
     for (int i = 0; i < count; i++)
-        (void)can_queue_push(&iface->txq, &keep[i]);
+        (void)data_slot_push(&iface->txq, &keep[i], 0);
 }
 
 static int transmit_motor_frame_locked(app_ctx_t *app, int index, const motor_field_t *field,
                                        const unsigned char *bytes)
 {
-    struct canfd_frame frame = {0};
-    frame.can_id = field->id | (field->extended ? CAN_EFF_FLAG : 0);
-    frame.len = (unsigned char)field->length;
-    frame.flags = field->fd ? CANFD_FDF : 0;
-    memcpy(frame.data, bytes, field->length);
-    int result = can_write_frame_locked(app, index, &frame, field->fd, 1);
+    (void)app;
+    (void)index;
+    canid_t id = field->id | (field->extended ? CAN_EFF_FLAG : 0);
+    int result = -1;
+    for (int i = 0; i < motor_binding_count; i++)
+        if (motor_bindings[i].id == id) {
+            result = can_send_locked(motor_bindings[i].handle, bytes, field->length);
+            break;
+        }
     atomic_fetch_add(result ? &transport.tx_errors : &transport.tx_frames, 1);
     return result;
 }
@@ -504,21 +517,21 @@ static int motor_send(app_ctx_t *app, double left, double right)
     return send_motor_pair(app, left, right, 0);
 }
 
-static int motor_stop(app_ctx_t *app)
-{
-    return send_motor_pair(app, 0, 0, 1);
-}
+static int motor_stop(app_ctx_t *app) { return send_motor_pair(app, 0, 0, 1); }
 
 /* Existing CAN receiver invokes this while holding app.can_mutex. Feedback
  * publication only takes the controller's feedback lock, never its main lock. */
 static void can_motor_receive_locked(app_ctx_t *app, const char *ifname,
-                                     const struct canfd_frame *frame, ssize_t bytes)
+                                     const struct canfd_frame *frame, ssize_t bytes,
+                                     uint64_t received_ms)
 {
     if (atomic_load(&transport.app) != app || !atomic_load(&transport.configured) ||
         strcmp(ifname, transport.profile.interface_name) ||
         frame->can_id & (CAN_RTR_FLAG | CAN_ERR_FLAG))
         return;
     unsigned long long now = motor_now_ms();
+    if (!received_ms || received_ms > now)
+        return;
     int matched = 0, updated = 0;
     pthread_mutex_lock(&motor_lock);
     for (int i = 0; i < 2; i++) {
@@ -537,7 +550,7 @@ static void can_motor_receive_locked(app_ctx_t *app, const char *ifname,
             continue;
         }
         transport.speed[i] = speed;
-        transport.stamp[i] = now;
+        transport.stamp[i] = received_ms;
         updated = 1;
     }
     if (matched)
@@ -572,59 +585,70 @@ void can_motor_prepare_close_locked(app_ctx_t *app, const char *ifname)
         follow_invalidate_feedback();
 }
 
-static void motor_frame(app_ctx_t *app, const char *ifname, const struct canfd_frame *frame,
-                        can_frame_direction_t direction, void *user)
+/* The controller consumes measured feedback slots before each control update. */
+void can_motor_poll(app_ctx_t *app)
 {
-    (void)user;
-    if (direction == CAN_FRAME_RX)
-        can_motor_receive_locked(app, ifname, frame,
-                                 (frame->flags & CANFD_FDF) ? CANFD_MTU : CAN_MTU);
+    if (!motor_slot_ready)
+        return;
+    can_data_t item;
+    pthread_mutex_lock(&app->can_mutex);
+    for (int n = 0; n < CAN_SLOT_CAPACITY && data_slot_pop(&motor_rx.queue, &item); n++)
+        can_motor_receive_locked(app, transport.profile.interface_name, &item.frame,
+                                 (item.frame.flags & CANFD_FDF) ? CANFD_MTU : CAN_MTU,
+                                 item.received_ms);
+    pthread_mutex_unlock(&app->can_mutex);
 }
-static void motor_before_close(app_ctx_t *app, const char *ifname, void *user)
+/* 把命令/反馈 ID 转为句柄；同一帧包含双轮字段时合并为一次注册。
+ * 任一注册失败立即回收已注册项，不能让半套协议进入运动输出。 */
+static int motor_locked_register(app_ctx_t *app, const motor_profile_t *profile)
 {
-    (void)user;
-    can_motor_prepare_close_locked(app, ifname);
-}
-static int motor_reserved(const char *ifname, canid_t id, void *user)
-{
-    (void)user;
-    return motor_command_reserved(ifname, id);
-}
-static int motor_filters(const char *ifname, struct can_filter *out, size_t capacity, void *user)
-{
-    (void)user;
+    can_binding_t specs[4] = {0};
     int count = 0;
-    pthread_mutex_lock(&motor_lock);
-    if (atomic_load(&transport.configured) && !strcmp(ifname, transport.profile.interface_name)) {
-        for (int i = 0; i < 2; i++) {
-            const motor_field_t *field = &transport.profile.wheels[i].feedback;
-            if (i && same_id(field, &transport.profile.wheels[0].feedback))
-                continue;
-            if ((size_t)count >= capacity) {
-                count = -1;
-                break;
+    for (int kind = 0; kind < 2; kind++)
+        for (int side = 0; side < 2; side++) {
+            const motor_field_t *field =
+                kind ? &profile->wheels[side].feedback : &profile->wheels[side].command;
+            int port_index =
+                can_iface_index(app->can->ifaces, app->can->count, profile->interface_name);
+            if (port_index < 0 || (field->fd && !app->can->ifaces[port_index].fd_mode))
+                return -1;
+            canid_t id = field->id | (field->extended ? CAN_EFF_FLAG : 0);
+            int i;
+            for (i = 0; i < count; i++)
+                if (specs[i].id == id)
+                    break;
+            if (i == count) {
+                specs[i].port = profile->interface_name;
+                specs[i].id = id;
+                specs[i].fd = field->fd;
+                count++;
             }
-            out[count++] =
-                (struct can_filter){.can_id = field->id | (field->extended ? CAN_EFF_FLAG : 0),
-                                    .can_mask = (field->extended ? CAN_EFF_MASK : CAN_SFF_MASK) |
-                                                CAN_EFF_FLAG | CAN_RTR_FLAG};
+            specs[i].flags |= kind ? CAN_BIND_RX : (CAN_BIND_TX | CAN_BIND_RESERVED);
+            if (kind)
+                specs[i].slot = &motor_rx;
+            specs[i].before_close = can_motor_prepare_close_locked;
         }
+    for (int i = 0; i < count; i++) {
+        uint64_t handle = can_locked_register(&specs[i]);
+        if (!handle) {
+            while (motor_binding_count)
+                can_locked_unregister(motor_bindings[--motor_binding_count].handle);
+            return -1;
+        }
+        motor_bindings[motor_binding_count].id = specs[i].id;
+        motor_bindings[motor_binding_count++].handle = handle;
     }
-    pthread_mutex_unlock(&motor_lock);
-    return count;
+    return 0;
 }
-static const can_service_ops_t motor_service = {
-    .receive_filtered = 1,
-    .frame = motor_frame,
-    .before_close = motor_before_close,
-    .reserved_id = motor_reserved,
-    .extra_filters = motor_filters,
-};
 
 int can_motor_init(app_ctx_t *app)
 {
     if (!app || !app->can || !app->cfg)
         return 0;
+    if (can_slot_init(&motor_rx))
+        return -1;
+    motor_slot_ready = 1;
+    motor_binding_count = 0;
     motor_profile_t profile;
     char error[160] = {0};
     int configured = load_profile(CAN_MOTOR_CONFIG, &profile, error, sizeof(error));
@@ -648,8 +672,7 @@ int can_motor_init(app_ctx_t *app)
     atomic_store(&transport.configured, configured > 0);
     safe_strncpy(transport.error, sizeof(transport.error), error);
     pthread_mutex_unlock(&motor_lock);
-    if (configured > 0 &&
-        can_service_register_locked(app, profile.interface_name, &motor_service, NULL)) {
+    if (configured > 0 && motor_locked_register(app, &profile)) {
         pthread_mutex_lock(&motor_lock);
         atomic_store(&transport.configured, 0);
         safe_strncpy(transport.error, sizeof(transport.error), "CAN_interface_service_conflict");
@@ -695,13 +718,17 @@ void can_motor_cleanup(void)
     safe_strncpy(transport.error, sizeof(transport.error), "stopped");
     pthread_mutex_unlock(&motor_lock);
     if (app) {
-        (void)can_service_unregister_locked(app, transport.profile.interface_name, &motor_service,
-                                            NULL);
+        while (motor_binding_count)
+            can_locked_unregister(motor_bindings[--motor_binding_count].handle);
         for (int i = 0; app->can && i < app->can->count; i++)
             if (app->can->ifaces[i].sock_fd >= 0)
                 (void)can_socket_apply_filters(app, &app->can->ifaces[i],
                                                app->can->ifaces[i].sock_fd);
         pthread_mutex_unlock(&app->can_mutex);
+    }
+    if (motor_slot_ready) {
+        data_slot_destroy(&motor_rx.queue);
+        motor_slot_ready = 0;
     }
 }
 

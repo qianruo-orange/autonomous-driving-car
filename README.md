@@ -81,8 +81,8 @@ flowchart LR
     CAN -->|Measured wheel speeds| Follow["Following controller"]
     Follow -->|Bounded commands / stop| Adapter["Motor protocol<br/>adapter"]
     Adapter --> CAN
-    Follow -->|Read-only snapshot| ANO["ANO V8<br/>protocol / connection callbacks"]
-    ANO --> TCP["TCP server<br/>dispatch by registered port"]
+    Follow -->|Read-only snapshot| ANO["ANO V8<br/>business slots / protocol"]
+    ANO --> TCP["TCP server<br/>handle routing / data slots"]
     TCP --> PC["Anonymous Assistant<br/>on PC"]
     Workers["Registered worker<br/>heartbeats"] -.-> Watchdog["Watchdog"]
     Watchdog -.->|Health notifications| Systemd["systemd<br/>service supervision"]
@@ -320,85 +320,52 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | `source/core/` | Module lifecycle, shared context, configuration, logging, CPU affinity |
 | `source/video/`, `source/yolo/` | Capture, inference, annotations, streaming, recording, reports |
 | `source/control/` | Appearance features, visual tracking, motion control |
-| `source/can/` | SocketCAN transport, interface callback registration, DBC decoding, motor protocol adapter, Web observation |
-| `source/tcp/` | Protocol-independent TCP connections, port registration, bounded sends, connection status |
-| `source/telemetry/` | ANO connection callbacks, stream parsing, protocol encoding, controller telemetry |
+| `source/can/` | SocketCAN, CAN port/ID registration, shared data slots, DBC decoding, motor protocol |
+| `source/tcp/` | Protocol-independent connections, registered ports, handle routing, data slots |
+| `source/telemetry/` | ANO business slots, stream parsing, protocol encoding, controller telemetry |
 | `source/http/`, `html/` | Web server/APIs, pages, shared browser utilities, separate feature scripts |
 | `source/watchdog/` | Worker heartbeat supervision |
 | `include/` | Module interfaces and shared types |
 | `config/` | Device settings, model, labels, CAN databases |
 | `scripts/` | Bash build, deployment, and model synchronization |
 
-## Module boundaries and extension
+## Communication registration and data slots
 
-Communication follows two simple mappings: **TCP port → protocol callbacks** and **CAN interface name → device callbacks**. Transport modules own connections and frame delivery; business modules own protocol state and data interpretation. The module table in `main.c` controls lifecycle order.
+Business modules register their communication addresses and own their receive-slot instances. The transport returns generation-tagged handles. Sending uses only **handle + data + length**; transport modules resolve ports, connections, CAN IDs, and frame formats.
 
 ```mermaid
 flowchart LR
-    TCP["TCP server<br/>listen / accept / buffer"] --> Ports["Registered port"]
-    Ports --> ANO["ANO callbacks<br/>parse / encode / session state"]
-    Ports --> OtherTCP["Other TCP protocol"]
-    CAN["SocketCAN<br/>interface RX / TX"] --> Interfaces["Registered interface name"]
-    Interfaces --> Motor["Motor callbacks<br/>commands / measured feedback"]
-    Interfaces --> OtherCAN["Other CAN device"]
-    classDef transport fill:#dbeafe,stroke:#2563eb,color:#172554
-    classDef routing fill:#fef3c7,stroke:#b45309,color:#78350f
-    classDef business fill:#dcfce7,stroke:#15803d,color:#14532d
-    class TCP,CAN transport
-    class Ports,Interfaces routing
-    class ANO,OtherTCP,Motor,OtherCAN business
+    TCPReg["Business registers TCP port<br/>tcp_component_register"] --> TCP["TCP binding and connection table"]
+    CANReg["Business registers CAN port + ID<br/>can_component_register"] --> CAN["CAN port validation and ID table"]
+    TCP --> TSlot["Business-owned TCP slot"]
+    CAN --> CSlot["Business-owned CAN slot"]
+    Send["Business handle + data"] --> TCP
+    Send --> CAN
+    Shared["data_slot.h<br/>shared queue implementation"] -.-> TSlot
+    Shared -.-> CSlot
+    Shared -.-> TX["Independent TX slot per CAN interface"]
+    CAN --> TX
 ```
 
-### TCP protocols
+TCP owns sockets and connection lifetimes; `ano.c` owns ANO slot consumption, stream assembly, and telemetry framing. CAN owns registration, interface validation, slot dispatch, and frame transmission; `can_motor.c` owns command encoding and measured wheel feedback. The former connection-forwarding, CAN service/observer/feature, internal-header, and separate CAN queue files have been consolidated.
 
-[tcp_server.c](source/tcp/tcp_server.c) owns sockets, accepts, disconnects, pending sends, and port lookup. Its context is opaque to callers. It contains no ANO parser or controller logic. [ano_connection.c](source/telemetry/ano_connection.c) registers the ANO port and owns per-client input assembly, query handling, connection callbacks, and outgoing protocol framing; [ano.c](source/telemetry/ano.c) owns settings and telemetry sampling.
+The queue **implementation** is shared, while buffers, locks, cursors, and counters remain independent per **instance**. TCP registration rejects an uninitialized or already-bound receive slot. CAN validates that the configured interface is a real kernel CAN interface and routes by interface plus ID. A business may explicitly bind multiple CAN IDs to its own slot; incoming handles identify each binding.
 
-A new module provides a persistent `tcp_service_ops_t` from [tcp_server.h](include/tcp/tcp_server.h), then registers after the TCP module has initialized:
+- Register TCP with `tcp_component_register()` and CAN with `can_component_register()`.
+- Send with `tcp_send(handle, data, length)` or `can_send(handle, data, length)`.
+- Read incoming items using `data_slot_pop()` on the business-owned slot.
+- Handle TCP connection/data/disconnect/reset events; assemble protocol messages in the business module.
+- Use `tcp_prepare_register()`, `tcp_commit_register()`, and `tcp_cancel_register()` only when a port change must be committed after configuration is saved.
 
-```c
-int service_id;
-/* my_tcp_ops and my_state belong to the business module. */
-int rc = tcp_service_register(app->tcp, 9000, &my_tcp_ops, &my_state, &service_id);
-```
+TCP preserves partial writes and resets clients instead of silently dropping stream bytes when a receive slot fills. CAN feedback slots retain recent frames and preserve the original monotonic receive timestamp. Reserved motor IDs, explicit stopping, FIFO admission, measured-feedback freshness, and output limits remain enforced.
 
-Registration reserves the port, creates its listener, and connects received chunks to that port's `receive` callback. The optional `connected` and `disconnected` callbacks manage protocol sessions. `receive` returns a bounded reply length, zero for no immediate reply, or a negative result to close the client. Optional `prepare` builds per-client broadcast frames; `poll` supports periodic business work without an extra socket thread. Use `tcp_service_publish()` for broadcast data and `tcp_service_get_status()` for connection counters.
+The complete registration, receive, send, failure, and shutdown paths are documented in [CAN 和 TCP 业务流](docs/COMMUNICATION_FLOW.md), with API examples, horizontal flow diagrams, capacities, locking rules, and validation limits.
 
-The transport supports **four registered ports**, **two clients per port**, and a **256-byte pending reply per client**. TCP chunks are not message boundaries: each business module must handle fragmented and coalesced messages. Partial writes remain buffered; clients with pending data beyond 100 ms are disconnected, and broadcasts skip busy clients instead of growing a queue. Callback descriptors and user state must remain valid until TCP cleanup. Receive/connection/prepare callbacks run under the port lock and must not block or reenter TCP APIs; `poll` runs outside that lock.
+## Browser components
 
-For persisted port changes, `tcp_service_stage()` prepares and reserves the replacement, `tcp_service_commit()` applies it after saving succeeds, and `tcp_service_discard()` releases it if saving fails. Duplicate ports, including staged or disabled registrations, are rejected. This preserves the active connection when a new port cannot be acquired. ANO uses this path when its port or enabled state changes.
+`html/js/app.js` provides shared JSON requests, timeouts, non-overlapping polling, card status messages, and named component lookup. Each feature owns its DOM and state: `cpu-frequency.js` manages the CPU card, `network-tools.js` manages diagnostics, and `ano.js` manages ANO settings. The network Save action uses the registered `network-ano` component. Authentication, translation, and theme behavior stay in their existing scripts.
 
-### CAN devices and motor adapters
-
-[can_socket.c](source/can/can_socket.c) owns SocketCAN configuration, queues, bounded RX/TX work, and the common writer. [can_service.c](source/can/can_service.c) routes by interface name. [can_motor.c](source/can/can_motor.c) owns motor-profile parsing, command encoding, feedback decoding, reserved IDs, and stop behavior. [can_observer.c](source/can/can_observer.c) connects ordinary traffic to the Web and DBC views.
-
-A device module supplies persistent callbacks from [can_socket.h](include/can/can_socket.h) and registers after CAN initialization:
-
-```c
-/* The interface must already exist in the application's CAN configuration. */
-int rc = can_service_register(app, "can1", &my_can_ops, &my_state);
-```
-
-There is **one business service per interface**, up to eight services. Registration and removal serialize with traffic under `can_mutex`. The `frame` callback receives RX/TX direction. A service may provide `before_close`, `reserved_id`, and up to two `extra_filters` for protocol-specific safety and feedback. `receive_filtered` allows the device callback to process required feedback excluded from ordinary Web/RX filters; ordinary recording and queues still honor those filters. Motor feedback uses this mechanism.
-
-Use `can_tx_frame()` for ordinary queued traffic. Motor commands retain the direct, bounded shared writer so old commands are not queued behind ordinary traffic; their observation records are deferred to the CAN send worker. Disabling, reconnecting, or reconfiguring an interface invokes its registered stop hook first. The existing FIFO, freshness, measured-feedback, output-limit, and reserved-ID checks remain in place.
-
-CAN callbacks run under `can_mutex`: keep them bounded, copy expensive work into an owned bounded queue, and do not reenter CAN/control APIs. Stop business workers before calling `can_service_unregister()` and before their module is destroyed. The motor module owns its registration lifecycle and does not create another CAN socket or receive thread.
-
-### Browser components
-
-[app.js](html/js/app.js) contains shared JSON requests, timeouts, serial polling, card status messages, and a small named-component registry. It loads after authentication and before feature scripts. Authentication remains in `auth.js`; translation and theme behavior remain in their existing scripts.
-
-| Script | Responsibility |
-| --- | --- |
-| `config.js` | Configuration-page coordination and camera-model/CAN/network settings |
-| `cpu-frequency.js` | CPU policy card, rendering, polling, and save action |
-| `network-tools.js` | Network diagnostics and result rendering |
-| `ano.js` | ANO form state and registered `network-ano` component |
-| `dbc.js` | Independent RX/TX DBC views using shared polling |
-
-New feature scripts should guard against a missing root element, keep state inside their own closure, and bind events within that root. Use `App.json()` for JSON requests (`authenticated: true` for protected endpoints), `App.poll()` for non-overlapping reads, and `App.status()` for configuration-card messages. Poll tasks receive an abort signal; forward it to `App.json()` so hiding or leaving the page cancels the read. Polling pauses while hidden and resumes after visibility changes or back/forward navigation.
-
-Expose only the methods another component actually needs through `App.components.register(name, api)`; consumers use `App.components.get(name)` and the `app:componentchange` notification. The combined network/ANO Save operation uses this contract instead of a `window.networkAno` object. CPU and network-diagnostic buttons use local event listeners. Existing page-level inline handlers remain compatible; this change does not introduce a frontend framework or bundler.
+New components should guard their root element, bind local events, use `App.json()` / `App.poll()` / `App.status()`, and expose only required methods through `App.components`. Polling pauses while hidden and resumes after returning to the page. Existing page-level inline handlers remain compatible; no bundler or frontend framework is required.
 
 ## Development direction
 

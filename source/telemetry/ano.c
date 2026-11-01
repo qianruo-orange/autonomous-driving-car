@@ -1,16 +1,201 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _GNU_SOURCE
 #include "telemetry/ano.h"
-#include "telemetry/ano_simulation.h"
-#include "telemetry/ano_protocol.h"
 #include "control/car_sport_ctrl.h"
 #include "http/http_internal.h"
-#include "telemetry/ano_connection.h"
+#include "tcp/tcp_server.h"
+#include "telemetry/ano_protocol.h"
+#include "telemetry/ano_simulation.h"
 #include <math.h>
 #include <sys/stat.h>
 #include <time.h>
 
 #define ANO_FRAME_BYTES 24
+#define ANO_REQUEST_INFO 1u
+#define ANO_REQUEST_PARAMETERS 2u
+#define ANO_REQUEST_COMMANDS 4u
+
+typedef struct {
+    uint64_t handle;
+    unsigned requests;
+    unsigned char input[ANO_V8_MAX_FRAME];
+    size_t input_length;
+} ano_client_t;
+/* ANO 独占接收槽和半包状态；TCP 层只投递事件，不操作这些业务状态。 */
+static struct {
+    atomic_uint_fast64_t handle;
+    tcp_slot_t rx;
+    atomic_int refresh;
+    ano_client_t clients[TCP_CLIENTS_PER_PORT];
+} connection = {.handle = 0};
+
+static void ano_consume_input(ano_client_t *client, const unsigned char *bytes, size_t length)
+{
+    for (size_t i = 0; i < length; i++) {
+        if (client->input_length == sizeof(client->input)) {
+            memmove(client->input, client->input + 1, --client->input_length);
+        }
+        client->input[client->input_length++] = bytes[i];
+        while (client->input_length) {
+            size_t consumed = 1;
+            if (client->input[0] == ANO_V8_HEAD) {
+                if (client->input_length < 6)
+                    break;
+                size_t payload = (size_t)client->input[4] | ((size_t)client->input[5] << 8);
+                size_t frame_length = payload + ANO_V8_OVERHEAD;
+                /* This read-only endpoint accepts the one-byte query command
+                 * and the standard command + two reserved bytes only. Early
+                 * filtering prevents a corrupt length from swallowing a later
+                 * complete query while waiting for a nonexistent payload. */
+                int descriptive = client->input[1] == ANO_V8_HOST_ID &&
+                                  (client->input[2] == ANO_V8_DEVICE_ID ||
+                                   client->input[2] == ANO_V8_BROADCAST_ID) &&
+                                  (client->input[3] == ANO_V8_FID_PARAMETER ||
+                                   client->input[3] == ANO_V8_FID_COMMAND_QUERY) &&
+                                  (payload == 1 || payload == 3);
+                if (descriptive && frame_length <= sizeof(client->input)) {
+                    if (client->input_length < frame_length)
+                        break;
+                    if (ano_v8_valid(client->input, frame_length)) {
+                        consumed = frame_length;
+                        if (payload && client->input[1] == ANO_V8_HOST_ID &&
+                            (client->input[2] == ANO_V8_DEVICE_ID ||
+                             client->input[2] == ANO_V8_BROADCAST_ID)) {
+                            unsigned request = 0;
+                            if (client->input[3] == ANO_V8_FID_PARAMETER) {
+                                if (client->input[6] == 0)
+                                    request = ANO_REQUEST_INFO;
+                                if (client->input[6] == 1)
+                                    request = ANO_REQUEST_PARAMETERS;
+                            } else if (client->input[3] == ANO_V8_FID_COMMAND_QUERY &&
+                                       client->input[6] == 0) {
+                                request = ANO_REQUEST_COMMANDS;
+                            }
+                            client->requests |= request;
+                            if (request)
+                                connection.refresh = 1;
+                        }
+                    }
+                }
+            }
+            client->input_length -= consumed;
+            memmove(client->input, client->input + consumed, client->input_length);
+        }
+    }
+}
+
+static ano_client_t *client_state(uint64_t handle)
+{
+    for (int i = 0; i < TCP_CLIENTS_PER_PORT; i++)
+        if (connection.clients[i].handle == handle)
+            return &connection.clients[i];
+    return NULL;
+}
+/* 同一数据槽维持连接事件顺序；溢出复位时丢弃所有旧半包。
+ * 每次最多处理一个槽容量，防止持续收包饿死遥测发送。 */
+static void ano_process_slot(void)
+{
+    tcp_data_t item;
+    for (int n = 0; n < TCP_SLOT_CAPACITY && data_slot_pop(&connection.rx.queue, &item); n++) {
+        if (item.kind == TCP_RESET) {
+            memset(connection.clients, 0, sizeof(connection.clients));
+            continue;
+        }
+        ano_client_t *client = client_state(item.handle);
+        if (item.kind == TCP_CONNECTED) {
+            if (!client)
+                for (int i = 0; i < TCP_CLIENTS_PER_PORT; i++)
+                    if (!connection.clients[i].handle) {
+                        client = &connection.clients[i];
+                        break;
+                    }
+            if (client) {
+                *client = (ano_client_t){.handle = item.handle, .requests = ANO_REQUEST_INFO};
+                connection.refresh = 1;
+            }
+        } else if (client && item.kind == TCP_DISCONNECTED) {
+            *client = (ano_client_t){0};
+        } else if (client && item.kind == TCP_DATA) {
+            ano_consume_input(client, item.bytes, item.length);
+        }
+    }
+}
+static int prepare_sample(uint64_t handle, const unsigned char *frame, size_t length,
+                          unsigned char *reply, size_t capacity, void *user)
+{
+    (void)user;
+    ano_client_t *client = client_state(handle);
+    if (!client || length > capacity)
+        return -1;
+    size_t used = 0, bytes;
+    /* Only descriptive queries are supported. Parameters and movement
+     * commands remain controlled by the authenticated Web/CAN paths. */
+    if (client->requests & ANO_REQUEST_INFO) {
+        bytes = ano_v8_device_info(reply, capacity - length);
+        if (bytes) {
+            used += bytes;
+            client->requests &= ~ANO_REQUEST_INFO;
+        }
+    }
+    if (client->requests & ANO_REQUEST_PARAMETERS) {
+        const unsigned char empty[] = {1, 0, 0};
+        bytes = ano_v8_frame(ANO_V8_FID_PARAMETER, empty, sizeof(empty), reply + used,
+                             capacity - length - used);
+        if (bytes) {
+            used += bytes;
+            client->requests &= ~ANO_REQUEST_PARAMETERS;
+        }
+    }
+    if (client->requests & ANO_REQUEST_COMMANDS) {
+        const unsigned char empty[] = {0, 0, 0};
+        bytes = ano_v8_frame(ANO_V8_FID_COMMAND_QUERY, empty, sizeof(empty), reply + used,
+                             capacity - length - used);
+        if (bytes) {
+            used += bytes;
+            client->requests &= ~ANO_REQUEST_COMMANDS;
+        }
+    }
+
+    memcpy(reply + used, frame, length);
+    if (client->requests)
+        connection.refresh = 1;
+    return (int)(used + length);
+}
+static int poll_connection(app_ctx_t *app, void *user)
+{
+    (void)user;
+    ano_process_slot();
+    ano_tick(app);
+    return ano_wait_ms(app);
+}
+static const tcp_component_t protocol = {.slot = &connection.rx, .poll = poll_connection};
+static int ano_slot_init(void)
+{
+    atomic_store(&connection.handle, 0);
+    atomic_store(&connection.refresh, 0);
+    memset(connection.clients, 0, sizeof(connection.clients));
+    return tcp_slot_init(&connection.rx);
+}
+/* 先在业务层组 ANO 帧，再只用目标句柄发送；发送失败时恢复未确认的查询状态。 */
+static int ano_publish(const unsigned char *data, size_t length)
+{
+    int result = 0;
+    for (int i = 0; i < TCP_CLIENTS_PER_PORT; i++) {
+        ano_client_t *client = &connection.clients[i];
+        if (!client->handle)
+            continue;
+        unsigned saved = client->requests;
+        unsigned char frame[TCP_REPLY_CAPACITY];
+        int n = prepare_sample(client->handle, data, length, frame, sizeof(frame), NULL);
+        if (n < 0 || tcp_send(client->handle, frame, (size_t)n)) {
+            client->requests = saved;
+            connection.refresh = 1;
+            result = -1;
+        }
+    }
+    return result;
+}
+
 #define ANO_CONFIG "config/ano.conf"
 
 typedef struct {
@@ -151,9 +336,8 @@ static int save_config(const ano_config_t *config)
         unlink(temporary);
         return -1;
     }
-    int failed = fprintf(file, "enabled %d\nport %d\nrate_hz %d\ntest_mode %d\n",
-                         config->enabled, config->port, config->rate_hz,
-                         config->test_mode) < 0;
+    int failed = fprintf(file, "enabled %d\nport %d\nrate_hz %d\ntest_mode %d\n", config->enabled,
+                         config->port, config->rate_hz, config->test_mode) < 0;
     failed |= fflush(file) != 0;
     failed |= fsync(fd) != 0;
     failed |= fclose(file) != 0;
@@ -167,7 +351,7 @@ static int save_config(const ano_config_t *config)
 static size_t encode_sample(const follow_telemetry_t *sample, unsigned char *frame)
 {
     float channels[4] = {(float)sample->speed_target, (float)sample->speed_actual,
-                          (float)sample->steering_target, (float)sample->steering_actual};
+                         (float)sample->steering_target, (float)sample->steering_actual};
     return ano_v8_sample(channels, frame, ANO_FRAME_BYTES);
 }
 
@@ -193,7 +377,6 @@ static void simulate_sample(follow_telemetry_t *sample, unsigned long long start
     sample->feedback_ms = sample->feedback_valid_until_ms = 0;
 }
 
-
 /* Invoked by tcp_task only. Controller snapshots are obtained before either
  * ANO configuration or shared TCP transport locks are acquired. */
 void ano_tick(app_ctx_t *app)
@@ -201,7 +384,7 @@ void ano_tick(app_ctx_t *app)
     if (!app || !atomic_load(&ano.ready))
         return;
     unsigned long long now = ano_now_ms();
-    int refresh = ano_connection_take_refresh(app->tcp);
+    int refresh = atomic_exchange(&connection.refresh, 0);
     pthread_mutex_lock(&ano_lock);
     unsigned epoch = ano.epoch;
     int due = ano.app == app && now >= ano.next_sample_ms;
@@ -228,13 +411,13 @@ void ano_tick(app_ctx_t *app)
             simulate_sample(&sample, ano.test_started_ms, now);
         unsigned char frame[ANO_FRAME_BYTES];
         size_t length = encode_sample(&sample, frame);
-        if (length && !ano_connection_publish(app->tcp, frame, length)) {
+        if (length && !ano_publish(frame, length)) {
             ano.samples++;
             ano.last_sample_ms = now;
         }
     }
-    unsigned interval = ano.config.enabled ? (1000 + ano.config.rate_hz - 1) /
-                                                  ano.config.rate_hz : 100;
+    unsigned interval =
+        ano.config.enabled ? (1000 + ano.config.rate_hz - 1) / ano.config.rate_hz : 100;
     /* A new connection receives a synchronization sample immediately without
      * moving the deadline of the regular periodic stream. */
     if (due)
@@ -267,8 +450,8 @@ int ano_init(void *arg)
     ano.epoch = epoch;
     ano.app = app;
     ano.config = (ano_config_t){.port = 8080, .rate_hz = 30};
-    ano.latest = (follow_telemetry_t){.speed_target = NAN, .speed_actual = NAN,
-                                      .steering_target = NAN, .steering_actual = NAN};
+    ano.latest = (follow_telemetry_t){
+        .speed_target = NAN, .speed_actual = NAN, .steering_target = NAN, .steering_actual = NAN};
     ano.error = "";
     ano_config_t saved = ano.config;
     if (load_config(&saved))
@@ -276,12 +459,20 @@ int ano_init(void *arg)
     else
         ano.config = saved;
     ano.test_started_ms = ano_now_ms();
-    ano_connection_init();
-    ano_connection_stage_t stage;
-    if (ano_connection_stage(app->tcp, ano.config.enabled, ano.config.port, &stage))
+    if (ano_slot_init()) {
+        pthread_mutex_unlock(&ano_lock);
+        pthread_mutex_unlock(&ano_save_lock);
+        return -1;
+    }
+    tcp_service_stage_t stage;
+    if (tcp_prepare_register(app->tcp, atomic_load(&connection.handle), ano.config.enabled,
+                             ano.config.port, &protocol, NULL, &stage))
         ano.error = "listen_failed";
-    else
-        ano_connection_commit(app->tcp, ano.config.enabled, ano.config.port, &stage);
+    else {
+        tcp_commit_register(app->tcp, &stage);
+        atomic_store(&connection.handle, stage.handle);
+        connection.refresh = 1;
+    }
     atomic_store(&ano.ready, 1);
     pthread_mutex_unlock(&ano_lock);
     pthread_mutex_unlock(&ano_save_lock);
@@ -302,7 +493,8 @@ void ano_destroy(void *arg)
     ano.app = NULL;
     pthread_mutex_unlock(&ano_lock);
     if (app)
-        ano_connection_stop(app->tcp);
+        tcp_component_unregister(atomic_load(&connection.handle));
+    data_slot_destroy(&connection.rx.queue);
     pthread_mutex_unlock(&ano_save_lock);
 }
 
@@ -314,7 +506,6 @@ static const char *json_channel(double value, char *out, size_t length)
         snprintf(out, length, "null");
     return out;
 }
-
 
 void http_ano_get(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
@@ -335,8 +526,8 @@ void http_ano_get(app_ctx_t *app, int fd, const char *method, const char *uri, c
     int test_active = ready && config.enabled && config.test_mode;
     if (test_active)
         simulate_sample(&latest, test_started, now);
-    ano_connection_status_t transport;
-    ano_connection_get_status(app ? app->tcp : NULL, &transport);
+    tcp_service_status_t transport;
+    tcp_service_get_status(app ? app->tcp : NULL, atomic_load(&connection.handle), &transport);
     int length = snprintf(
         json, sizeof(json),
         "{\"config\":{\"enabled\":%s,\"port\":%d,\"rate_hz\":%d,\"test_mode\":%d},"
@@ -348,8 +539,8 @@ void http_ano_get(app_ctx_t *app, int fd, const char *method, const char *uri, c
         "\"steering_actual\":%s},\"protocol\":\"ANOv8\",\"frame_bytes\":24,\"max_clients\":%d}",
         config.enabled ? "true" : "false", config.port, config.rate_hz, config.test_mode,
         ready && transport.running ? "true" : "false", transport.listening ? "true" : "false",
-        transport.clients, samples, transport.sent_frames, transport.dropped_frames, transport.errors,
-        latest.feedback_valid ? "true" : "false", test_active ? "true" : "false",
+        transport.clients, samples, transport.sent_frames, transport.dropped_frames,
+        transport.errors, latest.feedback_valid ? "true" : "false", test_active ? "true" : "false",
         test_active ? "simulation" : "controller", last_sample,
         *module_error ? module_error : transport.error,
         json_channel(latest.speed_target, channels[0], 48),
@@ -391,7 +582,6 @@ static int parse_form(const char *request, ano_config_t *config)
     return -1;
 }
 
-
 void http_ano_post(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
     pthread_mutex_lock(&ano_save_lock);
@@ -408,20 +598,23 @@ void http_ano_post(app_ctx_t *app, int fd, const char *method, const char *uri, 
         http_err(fd, 400, "Bad Request", "Invalid or repeated ANO field");
         return;
     }
-    ano_connection_stage_t stage;
-    if (ano_connection_stage(app->tcp, next.enabled, next.port, &stage)) {
+    tcp_service_stage_t stage;
+    if (tcp_prepare_register(app->tcp, atomic_load(&connection.handle), next.enabled, next.port,
+                             &protocol, NULL, &stage)) {
         pthread_mutex_unlock(&ano_save_lock);
         http_err(fd, 409, "Conflict", "ANO TCP port is unavailable; settings unchanged");
         return;
     }
     if (save_config(&next)) {
-        ano_connection_discard(app->tcp, &stage);
+        tcp_cancel_register(app->tcp, &stage);
         pthread_mutex_unlock(&ano_save_lock);
         http_err(fd, 500, "Error", "Cannot save ANO settings; settings unchanged");
         return;
     }
     pthread_mutex_lock(&ano_lock);
-    ano_connection_commit(app->tcp, next.enabled, next.port, &stage);
+    tcp_commit_register(app->tcp, &stage);
+    atomic_store(&connection.handle, stage.handle);
+    connection.refresh = 1;
     if (next.enabled && next.test_mode && (!ano.config.enabled || !ano.config.test_mode))
         ano.test_started_ms = ano_now_ms();
     ano.config = next;
