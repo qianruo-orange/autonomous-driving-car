@@ -62,6 +62,7 @@
 #include "yolo/yolo_events.h"
 #include "core/common.h"
 #include "core/cpu_affinity.h"
+#include "core/thread.h"
 #include "core/log.h"
 #include "core/config.h"
 #include "watchdog/watchdog.h"
@@ -559,6 +560,7 @@ static void yolo_smooth(const yolo_result_t *prev, yolo_result_t *cur)
 static void *yolo_worker_task(void *arg)
 {
     int idx = (int)(intptr_t)arg;
+    (void)pthread_setname_np(pthread_self(), "yolo_infer");
     cpu_bind_big();
     yolo_worker_t *wk = &g_yolo.workers[idx];
     frame_ring_t *ring = yolo_ring();
@@ -760,6 +762,7 @@ static void yolo_record_result(const yolo_job_t *job, const yolo_result_t *resul
 static void *yolo_render_task(void *arg)
 {
     (void)arg;
+    (void)pthread_setname_np(pthread_self(), "yolo_render");
     cpu_bind_big();
     frame_ring_t *ring = yolo_ring();
     while (g_yolo.running && g_yolo.pool_running) {
@@ -1165,15 +1168,15 @@ static int yolo_start_pool(void)
     /* 启动推理工作线程池 + 按序渲染线程 */
     g_yolo.pool_running = 1;
     for (int i = 0; i < g_yolo.nthreads; i++) {
-        if (pthread_create(&g_yolo.w_tid[i], NULL, yolo_worker_task,
-                           (void *)(intptr_t)i) != 0) {
+        if (app_thread_create(&g_yolo.w_tid[i], "yolo_infer", yolo_worker_task,
+                              (void *)(intptr_t)i, 0) != 0) {
             LOG_ERROR("yolo: worker thread %d create failed", i);
             yolo_stop_pool();
             return -1;
         }
         g_yolo.n_created = i + 1;
     }
-    if (pthread_create(&g_yolo.render_tid, NULL, yolo_render_task, NULL) != 0) {
+    if (app_thread_create(&g_yolo.render_tid, "yolo_render", yolo_render_task, NULL, 0) != 0) {
         LOG_ERROR("yolo: render thread create failed (annotated stream stalled)");
         g_yolo.render_tid = 0;
         yolo_stop_pool();
@@ -1216,6 +1219,10 @@ int rknn_yolo_reload(void)
 
 int rknn_yolo_init(void *arg)
 {
+    if (yolo_image_init() < 0) {
+        LOG_ERROR("yolo: cannot configure OpenCV for calling-thread processing");
+        return -1;
+    }
     memset(&g_yolo, 0, sizeof(g_yolo));
     app_ctx_t *app = (app_ctx_t *)arg;
     g_yolo.app = app;

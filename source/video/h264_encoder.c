@@ -333,7 +333,7 @@ static int ff_encoder_open_sw(h264_encoder_t *e, int fps, int bitrate_bps)
     ctx->max_b_frames = 0;
     /* Size the software pool from the recording worker's allowed CPU group,
        rather than relying on library-specific automatic thread selection.
-       Encoder helpers inherit this mask and share it with inference workers.
+       Encoder helpers inherit this mask and the recorder's FIFO scheduling.
        Keep preset, bitrate, pixel format and zerolatency behavior unchanged. */
     cpu_set_t allowed;
     ctx->thread_count = sched_getaffinity(0, sizeof(allowed), &allowed) == 0

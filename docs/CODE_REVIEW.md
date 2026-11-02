@@ -2,6 +2,8 @@
 
 审查日期：2026-11-01。基线：`83ff177`，另包含本轮 main 简化与控制线程心跳修正。下面的问题均针对当前工作区；除“本轮完成”中的内容外，其余问题的修复状态在对应条目中注明。
 
+2026-11-02 调度更新：线程策略与优先级现统一保存在 main 的模块表中。`core/thread.h` 重新提供创建接口，仅设置 pthread 属性并直接创建线程，不恢复入口包装、共享存活计数或后台任务层。HTTP、推理和日报模块仍持有自身线程生命周期；控制状态接口读取实际策略与优先级。部署脚本在停止服务前处理 cgroup v2 与实时分组调度冲突。实测结果与影响见 [内核与调度验证报告](KERNEL_VERIFICATION.md)；以下其余问题未因此宣告修复。
+
 ## 范围与结论
 
 已通读项目维护的 C/C++ 实现、头文件、浏览器脚本、HTML/CSS、构建与部署脚本、现有测试，以及 CMake 和 systemd 配置。范围为 44 个实现文件、37 个已跟踪头文件、25 个前端文件、3 个脚本、1 个测试文件和 2 个构建/服务文件，共 112 个文件。RKNN 厂商头文件包含在接口阅读范围内；编译生成的 version.h、模型二进制、构建产物与运行日志不作为维护代码计入。
@@ -12,8 +14,8 @@ P1 表示可能导致崩溃、主要功能静默失效或退出丢失数据，�
 
 ## 本轮完成
 
-- main.c 从 371 行精简到 141 行。保留模块表，模块表只保留 name/init/dtor/task 四列并改为常量；用成功初始化的连续前缀代替每项 initialized 标记。
-- 删除 app_thread_create、app_thread_start_detached 和空的 core/thread.h。main 直接将 m->task 交给 pthread_create，使用默认的可等待线程；推理模块直接创建自己的子线程。background_run、background_task_t 和额外堆分配已移除。
+- 首次精简将 main.c 从 371 行减至 141 行。模块表当时保留 name/init/dtor/task 四列并改为常量（2026-11-02 合并调度配置后增加 priority）；用成功初始化的连续前缀代替每项 initialized 标记。
+- 首次精简删除旧 app_thread_create、app_thread_start_detached 和空的 core/thread.h；2026-11-02 仅重新提供显式调度属性的创建接口。main 仍直接提交 m->task，推理模块管理自己的子线程。background_run、background_task_t 和额外堆分配已移除。
 - 删除 app_thread_finished 和共享 threads_running 计数。main 保存成功创建的线程句柄，停止后在同一个 CLOCK_MONOTONIC 的 5 秒期限内逐个 join；创建失败不会登记无效句柄。HTTP 改 IP 的异步任务移入 http_api_config.c，由现有 HTTP worker 统计与等待；网络模块只保留同步网络操作。
 - 删除 thread_wrapper。线程命名、绑核和看门狗 register/unregister 由各模块自己的入口承担；所有注册后的提前返回统一经过注销，注册失败和意外退出会请求失败停机。watchdog 监控线程继续免于自我注册。
 - 删除 wait_threads_exit 和 shutdown_modules_safe，正常退出、启动失败共用 main 中的停止、等待和逆序析构段。工作线程未退出时仍保留 5 秒失败退出保护。

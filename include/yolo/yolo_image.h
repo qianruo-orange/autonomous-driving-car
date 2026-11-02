@@ -6,8 +6,12 @@
 
 /**
  * yolo/yolo_image.h — 图像处理模块：解码 / 编码 / 色彩空间 / 缩放。
- * 纯函数，无全局状态，可被任意线程并发调用。
+ * 初始化后，图像转换可被任意线程并发调用。
  */
+
+/* Call before starting image workers. Keep OpenCV work on its calling thread
+ * so a reused library pool cannot bypass that thread's realtime scheduling. */
+int yolo_image_init(void);
 
 /* JPEG → RGB24（解码进调用方缓冲，dst 需 w*h*3 字节；实际尺寸与 w/h 不符
    返回 -1）。零拷贝解码路径：yolo_task 把采集帧直接解码进环形队列池缓冲，

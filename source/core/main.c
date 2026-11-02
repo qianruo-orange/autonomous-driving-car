@@ -19,6 +19,7 @@
 #include "watchdog/watchdog.h"
 #include "core/log.h"
 #include "core/common.h"
+#include "core/thread.h"
 #include "video/video_stream.h"
 #include "video/video_rec.h"
 #include "yolo/rknn_yolo.h"
@@ -30,9 +31,11 @@ typedef struct {
     int (*init)(void *);
     void (*dtor)(void *);
     void *(*task)(void *);
+    int priority;
 } module_t;
 
 static void sig_handler(int sig);
+static int scheduling_init(void *arg);
 
 static int signal_setup(void *arg)
 {
@@ -48,6 +51,10 @@ static int signal_setup(void *arg)
 /* 文件级应用上下文（仅本文件直接访问；其他模块通过指针参数获得） */
 static app_ctx_t g_app;
 
+/* Application threads start with explicit attributes; codec/runtime helpers
+ * inherit their owner's scheduler. All policy and priority choices live here. */
+static const int g_thread_policy = SCHED_FIFO;
+
 /* 上下文仅保存运行标志和模块借出的指针，资源由各模块持有。 */
 static int context_init(void *arg)
 {
@@ -59,28 +66,69 @@ static int context_init(void *arg)
     return 0;
 }
 
-/* 无 task 的模块只初始化/销毁；各模块在自己的 task 中管理看门狗。 */
+/* 同表管理生命周期和调度。只有优先级的行由所属模块创建内部线程；
+ * 无 task 的行不由 main 创建线程。各模块自行注册/注销看门狗。 */
 static const module_t g_modules[] = {
-    /* name             init                 dtor                   task */
+    /* name             init                 dtor                   task                 priority */
     {"context",         context_init},
     {"log",             log_init,            log_close},
     {"config",          config_init,         config_cleanup},
+    {"main",            scheduling_init,     .priority = 5},
     {"dbc",             dbc_init,            dbc_cleanup},
     {"can",             can_init,            can_cleanup},
-    {"can_recv",        NULL,                NULL,                  can_recv_task},
-    {"can_send",        NULL,                NULL,                  can_send_task},
-    {"tcp",             tcp_init,            tcp_cleanup,           tcp_task},
-    {"http",            http_server_start,   http_server_stop,      http_server_task},
-    {"car_sport_ctrl",  follow_init,         follow_destroy,        follow_task},
+    {"can_recv",        NULL,                NULL,                  can_recv_task,       15},
+    {"can_send",        NULL,                NULL,                  can_send_task,       15},
+    {"tcp",             tcp_init,            tcp_cleanup,           tcp_task,             5},
+    {"http",            http_server_start,   http_server_stop,      http_server_task,     5},
+    {"http_worker",     .priority = 1},
+    {"car_sport_ctrl",  follow_init,         follow_destroy,        follow_task,         20},
     {"ano",             ano_init,            ano_destroy},
-    {"video",           video_stream_init,   video_stream_shutdown, video_stream_task},
+    {"video",           video_stream_init,   video_stream_shutdown, video_stream_task,   15},
     /* YOLO 为必要模块：初始化失败即回滚启动。 */
-    {"yolo",            rknn_yolo_init,      rknn_yolo_destroy,     rknn_yolo_task},
-    {"watchdog",        watchdog_init,       NULL,                  watchdog_task},
-    {"rec",             video_rec_init,      video_rec_destroy,     video_rec_task},
+    {"yolo",            rknn_yolo_init,      rknn_yolo_destroy,     rknn_yolo_task,       10},
+    {"yolo_infer",      .priority = 12},
+    {"yolo_render",     .priority = 10},
+    {"yolo_report",     .priority = 1},
+    {"watchdog",        watchdog_init,       NULL,                  watchdog_task,       30},
+    {"rec",             video_rec_init,      video_rec_destroy,     video_rec_task,      10},
     {"signal",          signal_setup},
 };
 #define MOD_COUNT (sizeof(g_modules) / sizeof(g_modules[0]))
+
+static int thread_priority(const char *name)
+{
+    for (size_t i = 0; i < MOD_COUNT; i++)
+        if (!strcmp(name, g_modules[i].name)) return g_modules[i].priority > 0 ? g_modules[i].priority : -1;
+    return -1;
+}
+
+int app_thread_create(pthread_t *thread, const char *name,
+                      void *(*task)(void *), void *argument, int detached)
+{
+    if (!thread || !name || !task || (detached != 0 && detached != 1)) return EINVAL;
+    struct sched_param param = {.sched_priority = thread_priority(name)};
+    if (param.sched_priority < 0) return EINVAL;
+    pthread_attr_t attributes;
+    int rc = pthread_attr_init(&attributes);
+    if (rc) return rc;
+    rc = pthread_attr_setschedpolicy(&attributes, g_thread_policy);
+    if (!rc) rc = pthread_attr_setschedparam(&attributes, &param);
+    if (!rc) rc = pthread_attr_setinheritsched(&attributes, PTHREAD_EXPLICIT_SCHED);
+    if (!rc && detached) rc = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+    if (!rc) rc = pthread_create(thread, &attributes, task, argument);
+    pthread_attr_destroy(&attributes);
+    if (rc) LOG_ERROR("create thread '%s' failed: %s", name, strerror(rc));
+    return rc;
+}
+
+static int scheduling_init(void *arg)
+{
+    (void)arg;
+    struct sched_param param = {.sched_priority = thread_priority("main")};
+    int rc = pthread_setschedparam(pthread_self(), g_thread_policy, &param);
+    if (rc) LOG_ERROR("main: scheduling setup failed: %s", strerror(rc));
+    return rc ? -1 : 0;
+}
 
 /**
  * sig_handler - 处理退出信号，通知主循环停止服务。
@@ -101,11 +149,8 @@ int main(void)
         initialized++;
         if (!m->task) continue;
 
-        int rc = g_app.running ? pthread_create(&threads[started], NULL, m->task, &g_app) : ECANCELED;
-        if (rc) {
-            LOG_ERROR("create thread '%s' failed: %s", m->name, strerror(rc));
-            goto shutdown;
-        }
+        int rc = g_app.running ? app_thread_create(&threads[started], m->name, m->task, &g_app, 0) : ECANCELED;
+        if (rc) goto shutdown;
         started++;
     }
 

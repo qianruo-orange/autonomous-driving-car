@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#define _GNU_SOURCE
 #include "yolo/yolo_events.h"
 #include "core/log.h"
+#include "core/thread.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -541,6 +543,7 @@ static int flush_report_retry(const char day[9], const char *rows, size_t length
 static void *writer(void *unused)
 {
     (void)unused;
+    (void)pthread_setname_np(pthread_self(), "yolo_report");
     char batch[REPORT_BUFFER_SIZE], rows[REPORT_BUFFER_SIZE], day[9] = "";
     size_t used = 0;
     unsigned long long batch_epoch = 0;
@@ -612,7 +615,7 @@ int yolo_events_init(const char *root)
     events.root_fd = create_root(root ? root : YOLO_EVENTS_DIR);
     if (events.root_fd < 0) { pthread_mutex_unlock(&events.lock); return -1; }
     events.stopping = events.stop_prepared = events.head = events.count = events.recent_count = events.recent_next = 0;
-    int rc = pthread_create(&events.thread, NULL, writer, NULL);
+    int rc = app_thread_create(&events.thread, "yolo_report", writer, NULL, 0);
     if (rc) {
         close(events.root_fd); events.root_fd = -1;
         pthread_mutex_unlock(&events.lock); errno = rc; return -1;

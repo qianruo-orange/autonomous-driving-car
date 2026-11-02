@@ -43,6 +43,13 @@ static const char *const kCoco80[] = {
 
 extern "C" {
 
+int yolo_image_init(void)
+{
+    try { cv::setNumThreads(1); }
+    catch (const cv::Exception &) { return -1; }
+    return 0;
+}
+
 int yolo_classes_load(const char *path, yolo_classes_t *out)
 {
     memset(out, 0, sizeof(*out));

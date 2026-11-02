@@ -179,7 +179,7 @@ Safety prerequisites are checked on timed wakes even without a new inference; PI
 
 The CPU handles capture processing, appearance features, control, communication, and management; the NPU runs YOLO inference. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
 
-A Linux real-time kernel is the system target. The current controller requests `SCHED_FIFO` priority **20** and reports scheduling admission separately from PREEMPT_RT kernel support through `/api/follow`. Timing and latency must be evaluated on the deployed hardware.
+A Linux real-time kernel is the system target. `main.c` selects `SCHED_FIFO` for application threads, and its single module table declares lifecycle callbacks and priorities, including internally owned HTTP and inference workers. The controller runs at priority **20** and reports its actual scheduler separately from PREEMPT_RT kernel support through `/api/follow`. See [kernel and scheduling verification](docs/KERNEL_VERIFICATION.md) for deployed measurements and limits.
 
 ## Perception and motion control
 
@@ -242,6 +242,8 @@ The build produces `bin/autonomous-driving-car`. Deployment installs the executa
 | `sudo bash scripts/deploy.sh -r` | Uninstall, then install again; installed data is removed |
 
 Normal updates use `deploy.sh -i` and restart the service. The service runs from `/opt/autonomous-driving-car`, monitors worker heartbeats, and restarts on failure.
+
+On cgroup v2 systems with effective kernel RT group scheduling, deployment first installs `/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf` to disable the CPU controller and permit FIFO threads in service groups. CPU group quotas and weights are unavailable across the hierarchy while this setting is active; deployment leaves the existing service running if the controller cannot be disabled. The setting is retained on uninstall, and the global RT runtime budget is unchanged.
 
 ## Browser operation
 

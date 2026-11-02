@@ -15,6 +15,7 @@
 #define _GNU_SOURCE   /* 暴露 GNU/Linux 扩展 */
 
 #include "core/cpu_affinity.h"
+#include "core/thread.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -62,6 +63,7 @@ static void *http_worker_run(void *argument)
 {
     http_worker_t job = *(http_worker_t *)argument;
     free(argument);
+    (void)pthread_setname_np(pthread_self(), "http_worker");
     void *result;
     pthread_cleanup_push(http_worker_done, NULL);
     result = job.task(job.argument);
@@ -81,19 +83,13 @@ int http_worker_start(void *(*task)(void *), void *argument)
     http_worker_t *job = malloc(sizeof(*job));
     if (!job) return ENOMEM;
     *job = (http_worker_t){task, argument};
-    pthread_attr_t attributes;
-    int rc = pthread_attr_init(&attributes);
-    if (!rc) {
-        rc = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
-        if (!rc) {
-            pthread_t thread;
-            atomic_fetch_add_explicit(&http_workers, 1, memory_order_relaxed);
-            rc = pthread_create(&thread, &attributes, http_worker_run, job);
-            if (rc) http_worker_done(NULL);
-        }
-        pthread_attr_destroy(&attributes);
+    pthread_t thread;
+    atomic_fetch_add_explicit(&http_workers, 1, memory_order_relaxed);
+    int rc = app_thread_create(&thread, "http_worker", http_worker_run, job, 1);
+    if (rc) {
+        http_worker_done(NULL);
+        free(job);
     }
-    if (rc) free(job);
     return rc;
 }
 

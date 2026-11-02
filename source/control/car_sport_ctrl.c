@@ -10,6 +10,7 @@
 #include <math.h>
 #include <sched.h>
 #include <time.h>
+#include <sys/utsname.h>
 
 enum {
     ENABLED,
@@ -48,7 +49,7 @@ static struct {
     pthread_mutex_t lock, feedback_lock, save_lock;
     pthread_cond_t changed;
     atomic_int ready;
-    int running, fifo, rt_kernel, rt_error, selected, tracked;
+    int running, fifo, priority, rt_kernel, rt_error, selected, tracked;
     int motor_running, stop_required;
     app_ctx_t *app;
     follow_motor_ops_t motor;
@@ -264,10 +265,13 @@ void *follow_task(void *arg)
         app->running = 0;
         return NULL;
     }
-    struct sched_param p = {.sched_priority = 20};
-    int err = pthread_setschedparam(pthread_self(), SCHED_FIFO, &p);
+    int policy = 0;
+    struct sched_param param = {0};
+    int err = pthread_getschedparam(pthread_self(), &policy, &param);
+    if (!err && policy != SCHED_FIFO) err = ENOTSUP;
     pthread_mutex_lock(&g.lock);
     g.fifo = !err;
+    g.priority = err ? 0 : param.sched_priority;
     g.rt_error = err;
     pthread_mutex_unlock(&g.lock);
     unsigned long observed = 0;
@@ -397,9 +401,14 @@ int follow_init(void *app)
         if (valid(loaded))
             memcpy(g.cfg, loaded, sizeof(loaded));
     }
+    /* Mainline RT kernels may omit the legacy sysfs flag. Their running
+       kernel version still advertises PREEMPT_RT independently of the release name. */
+    struct utsname kernel;
+    g.rt_kernel = uname(&kernel) == 0 && strstr(kernel.version, "PREEMPT_RT") != NULL;
     f = fopen("/sys/kernel/realtime", "r");
     if (f) {
-        fscanf(f, "%d", &g.rt_kernel);
+        int realtime;
+        if (fscanf(f, "%d", &realtime) == 1) g.rt_kernel = realtime == 1;
         fclose(f);
     }
     reset();
@@ -493,7 +502,7 @@ void http_follow_get(app_ctx_t *app, int fd, const char *method, const char *uri
     }
     struct {
         double cfg[N], ex, ey, area_error, left_target, right_target, left_output, right_output;
-        int fifo, rt_kernel, rt_error, selected, adapter;
+        int fifo, priority, rt_kernel, rt_error, selected, adapter;
         unsigned long long processed;
         const char *reason;
         yolo_event_meta_t frame;
@@ -508,6 +517,7 @@ void http_follow_get(app_ctx_t *app, int fd, const char *method, const char *uri
     s.left_output = g.left_output;
     s.right_output = g.right_output;
     s.fifo = g.fifo;
+    s.priority = g.priority;
     s.rt_kernel = g.rt_kernel;
     s.rt_error = g.rt_error;
     s.selected = g.selected;
@@ -533,7 +543,7 @@ void http_follow_get(app_ctx_t *app, int fd, const char *method, const char *uri
                     "\"rt_error\":%d,\"adapter\":%s,\"seq\":%llu,\"selected\":%d,\"error_x\":%.5f,"
                     "\"error_y\":%.5f,\"area_error\":%.5f,\"left_target\":%.5f,\"right_target\":%."
                     "5f,\"left_output\":%.5f,\"right_output\":%.5f},\"targets\":[",
-                    s.reason, s.fifo ? "true" : "false", s.fifo ? 20 : 0,
+                    s.reason, s.fifo ? "true" : "false", s.priority,
                     s.rt_kernel ? "true" : "false", s.rt_error, s.adapter ? "true" : "false",
                     s.processed, s.selected, s.ex, s.ey, s.area_error, s.left_target,
                     s.right_target, s.left_output, s.right_output);

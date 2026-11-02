@@ -22,6 +22,53 @@ usage() {
     exit 0
 }
 
+prepare_realtime_cgroup() {
+    # cgroup v2 has no per-group RT budget controls. With RT group scheduling
+    # enabled, its CPU controller otherwise leaves service groups unable to run FIFO.
+    [ -f /sys/fs/cgroup/cgroup.controllers ] || return 0
+    local config enabled=1 option disabled controllers
+    local -a bootargs
+    if [ -r /proc/config.gz ]; then
+        config=$(gzip -cd /proc/config.gz) || return 1
+    elif [ -r "/boot/config-$(uname -r)" ]; then
+        config=$(cat "/boot/config-$(uname -r)") || return 1
+    else
+        echo "[ERROR] cannot read the running kernel configuration; keeping the existing service running"
+        return 1
+    fi
+    config=$'\n'"$config"$'\n'
+    [[ $config == *$'\nCONFIG_RT_GROUP_SCHED=y\n'* ]] || return 0
+    [[ $config != *$'\nCONFIG_RT_GROUP_SCHED_DEFAULT_DISABLED=y\n'* ]] || enabled=0
+    read -r -a bootargs < /proc/cmdline
+    for option in "${bootargs[@]}"; do
+        case "$option" in
+            rt_group_sched=0) enabled=0 ;;
+            rt_group_sched=1) enabled=1 ;;
+        esac
+    done
+    [ "$enabled" = 1 ] || return 0
+    controllers=$(cat /sys/fs/cgroup/cgroup.subtree_control) || return 1
+
+    echo "[RT] disabling cgroup v2 CPU group quotas/weights for FIFO compatibility"
+    mkdir -p /etc/systemd/system/-.slice.d
+    cat > /etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf <<'EOF'
+# Managed by autonomous-driving-car/scripts/deploy.sh.
+[Slice]
+DisableControllers=cpu
+EOF
+    systemctl daemon-reload
+    if [[ " $controllers " == *" cpu "* ]]; then
+        disabled=$(systemctl show --value --property=DisableControllers -- -.slice)
+        [[ " $disabled " == *" cpu "* ]] || disabled="${disabled:+$disabled }cpu"
+        systemctl set-property --runtime -- -.slice "DisableControllers=$disabled"
+    fi
+    controllers=$(cat /sys/fs/cgroup/cgroup.subtree_control) || return 1
+    if [[ " $controllers " == *" cpu "* ]]; then
+        echo "[ERROR] CPU controller remains enabled; keeping the existing service running"
+        return 1
+    fi
+}
+
 do_uninstall() {
     echo "=== uninstall $APP_NAME ==="
     
@@ -65,6 +112,8 @@ do_install() {
     # Check for independently changed models before interrupting the service.
     bash "$PROJECT_DIR/scripts/model_sync.sh" reconcile \
         --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR" --platform "$platform"
+
+    prepare_realtime_cgroup
 
     echo "[STOP] existing service (if running)"
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
@@ -128,7 +177,7 @@ ACTION="${1:--i}"
 case "$ACTION" in
     -i) do_install ;;
     -u) do_uninstall ;;
-    -r) do_uninstall; do_install ;;
+    -r) prepare_realtime_cgroup; do_uninstall; do_install ;;
     -h|--help) usage ;;
     *)  echo "[ERROR] unknown option: $ACTION"; usage ;;
 esac
