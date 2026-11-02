@@ -17,9 +17,9 @@ Stopping, reloading and camera quiescence cancel outstanding subscriptions, incl
 
 The camera format remains MJPEG at the configured 1280×720 and requested 30 FPS. The attached UGREEN Camera 2K supports no direct RGB/BGR output; its YUYV modes reach 640×480 at 30 FPS or 800×600 at 20 FPS. The raw-format change was cancelled, so this update does not reduce resolution or switch formats. Negotiated FPS is not a measurement of actual frame cadence.
 
-## Verified YOLO26n artifact
+## Verified YOLO26n FP16 baseline
 
-On 2026-11-02, the existing model was verified against the [official YOLO26n checkpoint](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt). The canonical runtime filename remains `config/yolo26.rknn`; the file already contains YOLO26n, so an equivalent conversion was not installed.
+On 2026-11-02, the original FP16 model was verified against the [official YOLO26n checkpoint](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt). It was already YOLO26n. The subsequent W8A8/FP16 conversion and optional 128-channel P4 output are documented in the [Chinese quantization report](YOLO26N_QUANTIZATION.md). The canonical runtime filename remains `config/yolo26.rknn`.
 
 | Artifact | SHA-256 |
 | --- | --- |

@@ -8,10 +8,10 @@
  *             投递任务队列。claim 随任务移交 worker：任务在途期间槽位被
  *             claims 钉住，不会被采集复用/退让清空
  *   worker i: 出队 → 双线性缩放 → NPU 推理（独立 context，按实际 NPU 核数轮流绑定）→
- *             单输出后处理（NMS）→ rgb 写槽（rgb_done=1）→ unclaim；
- *             NMS 最终结果（目标名称 + 置信度 + 标注框四点坐标）入结果队列
+ *             检测后处理（NMS）及可选 P4 ROI 特征提取 → rgb 写槽 → unclaim；
+ *             框、类别、置信度和目标特征按值入结果队列
  *   composer: 事件驱动消费结果队列，排空只留最新（seq 严格递增，绝不回退；
- *             旧结果条目直接丢弃）→ EMA 时间平滑 → 槽内 rgb 原地画框 →
+ *             旧结果条目直接丢弃）→ 特征/运动跟踪 → 显示 EMA → rgb 原地画框 →
  *             JPEG（含标签）+ NV12 写槽（display_done=1，display_seq 推进）；
  *             渲染节拍 ~30fps
  *
@@ -57,6 +57,7 @@
 #include "control/car_sport_ctrl.h"
 #include "yolo/yolo_image.h"
 #include "yolo/yolo_postprocess.h"
+#include "yolo/yolo_features.h"
 #include "yolo/yolo_draw.h"
 #include "control/image_tracking.h"
 #include "yolo/yolo_events.h"
@@ -89,23 +90,12 @@ static int yolo_event_describe_result(yolo_event_meta_t *meta, const yolo_result
                                       unsigned long long now_unix_ms);
 static void yolo_record_result(const yolo_job_t *job, const yolo_result_t *result);
 
-/* 推理结果队列条目：NMS 后处理的最终检测结果，只携带目标名称、置信度与
-   标注框四点坐标（seq 定位待渲染帧；渲染尺寸取自槽位）。纯元数据，无缓冲所有权 */
-typedef struct {
-    unsigned long long seq;
-    int count;
-    struct {
-        char  name[YOLO_CLASS_NAME_LEN];
-        float conf;
-        float x1, y1, x2, y2;
-    } dets[YOLO_MAX_DETS];
-} yolo_result_item_t;
-
 /* 单个推理工作线程：独立 rknn context，可与其它线程并行 run */
 typedef struct {
     rknn_context    ctx;
     unsigned char  *in_buf;                 /* 缩放后输入缓冲 */
-    rknn_tensor_attr out_attr;              /* 单输出张量属性 */
+    rknn_tensor_attr out_attr;              /* Decoded detection output. */
+    rknn_tensor_attr feature_attr;
 } yolo_worker_t;
 
 typedef struct {
@@ -143,6 +133,7 @@ static struct {
     unsigned char *model;                    /* 模型文件内存（共享给所有 worker init） */
     size_t         model_len;
     int            in_w, in_h;
+    unsigned       n_outputs;                /* Detection, optionally followed by P4 features. */
 
     yolo_worker_t  workers[YOLO_MAX_WORKERS];
 
@@ -154,7 +145,7 @@ static struct {
     pthread_cond_t  q_not_full;
 
     /* 有界结果队列（worker 生产推理结果 / composer 消费渲染） */
-    yolo_result_item_t results[YOLO_RESULT_CAP];
+    yolo_result_t results[YOLO_RESULT_CAP];
     int            r_head, r_tail, r_count;
     pthread_mutex_t r_lock;
     pthread_cond_t  r_not_empty;
@@ -438,7 +429,7 @@ static int yolo_queue_pop(yolo_job_t *job, int worker_index)
 
 /* ---- 推理结果队列（worker 生产 / composer 消费）---- */
 
-static int yolo_result_push(const yolo_result_item_t *item)
+static int yolo_result_push(const yolo_result_t *item)
 {
     pthread_mutex_lock(&g_yolo.r_lock);
     while (g_yolo.r_count >= YOLO_RESULT_CAP && g_yolo.running && g_yolo.pool_running)
@@ -456,7 +447,7 @@ static int yolo_result_push(const yolo_result_item_t *item)
 }
 
 /* 非阻塞出队：队列空返回 -1 */
-static int yolo_result_try_pop(yolo_result_item_t *item)
+static int yolo_result_try_pop(yolo_result_t *item)
 {
     pthread_mutex_lock(&g_yolo.r_lock);
     if (g_yolo.r_count == 0) {
@@ -473,7 +464,7 @@ static int yolo_result_try_pop(yolo_result_item_t *item)
 
 /* 阻塞出队：timeout_ms 超时仅用于调用方周期性检查退出条件；
    超时/停池/退出且队列空返回 -1 */
-static int yolo_result_pop(yolo_result_item_t *item, int timeout_ms)
+static int yolo_result_pop(yolo_result_t *item, int timeout_ms)
 {
     pthread_mutex_lock(&g_yolo.r_lock);
     struct timespec ts;
@@ -501,10 +492,10 @@ static int yolo_result_pop(yolo_result_item_t *item, int timeout_ms)
 
 /* Worker completion order is not capture order. Keep the largest sequence,
    rather than the last arrival, when coalescing a burst of ready results. */
-static int yolo_result_pop_latest(yolo_result_item_t *item, int timeout_ms)
+static int yolo_result_pop_latest(yolo_result_t *item, int timeout_ms)
 {
     if (yolo_result_pop(item, timeout_ms) != 0) return -1;
-    yolo_result_item_t newer;
+    yolo_result_t newer;
     while (yolo_result_try_pop(&newer) == 0)
         if (newer.seq > item->seq) *item = newer;
     return 0;
@@ -589,16 +580,18 @@ static void *yolo_worker_task(void *arg)
         if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
         unsigned long long inference_us = yolo_now_us();
 
-        rknn_output output;
-        memset(&output, 0, sizeof(output));
-        output.want_float = 1;
-        if (rknn_outputs_get(wk->ctx, 1, &output, NULL) != RKNN_SUCC) {
+        rknn_output output[2] = {0};
+        for (unsigned i = 0; i < g_yolo.n_outputs; ++i) {
+            output[i].index = i;
+            output[i].want_float = 1;
+        }
+        if (rknn_outputs_get(wk->ctx, g_yolo.n_outputs, output, NULL) != RKNN_SUCC) {
             yolo_job_abandon(&job);
             continue;
         }
         unsigned long long outputs_us = yolo_now_us();
 
-        const float *out_buf[1] = { (const float *)output.buf };
+        const float *out_buf[1] = { (const float *)output[0].buf };
         yolo_result_t res;
         memset(&res, 0, sizeof(res));
         res.seq = job.seq;
@@ -607,7 +600,11 @@ static void *yolo_worker_task(void *arg)
         res.count = yolo_postprocess(out_buf, &wk->out_attr, 1,
                                      lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, job.w, job.h,
                                      res.dets, YOLO_MAX_DETS, g_yolo.conf, g_yolo.nms, NULL);
-        rknn_outputs_release(wk->ctx, 1, &output);
+        if (g_yolo.n_outputs == 2 && output[1].buf &&
+            output[1].size >= (size_t)wk->feature_attr.n_elems * sizeof(float))
+            yolo_features_extract(output[1].buf, &wk->feature_attr, g_yolo.in_w, g_yolo.in_h,
+                                  lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, res.dets, res.count);
+        rknn_outputs_release(wk->ctx, g_yolo.n_outputs, output);
         /* Persist every completed inference before the display queue can
            coalesce it. Empty detections are records too; no photo is encoded. */
         yolo_record_result(&job, &res);
@@ -650,22 +647,8 @@ static void *yolo_worker_task(void *arg)
         }
         frame_ring_unlock(ring);
 
-        /* NMS 后处理结果入结果队列：条目只携带目标名称、置信度与标注框
-           四点坐标（纯元数据；rgb 已入槽，随显示推进由维护规则释放） */
-        yolo_result_item_t item;
-        memset(&item, 0, sizeof(item));
-        item.seq = job.seq;
-        for (int i = 0; i < res.count && i < YOLO_MAX_DETS; i++) {
-            const yolo_det_t *d = &res.dets[i];
-            const char *nm = (d->cls >= 0 && d->cls < g_yolo.classes.count)
-                             ? g_yolo.classes.names[d->cls] : "obj";
-            snprintf(item.dets[i].name, sizeof(item.dets[i].name), "%s", nm);
-            item.dets[i].conf = d->conf;
-            item.dets[i].x1 = d->x1; item.dets[i].y1 = d->y1;
-            item.dets[i].x2 = d->x2; item.dets[i].y2 = d->y2;
-        }
-        item.count = res.count;
-        yolo_result_push(&item);   /* 停池/退出拒绝入队时条目直接丢弃（无资源持有） */
+        /* Detection geometry and descriptors travel together by value. */
+        yolo_result_push(&res);
     }
     return NULL;
 }
@@ -677,14 +660,6 @@ static void *yolo_worker_task(void *arg)
    被跳过的旧结果条目直接丢弃（纯元数据，无资源）；EMA 平滑本身即可容忍帧间小跳跃。
    渲染节拍与推流/显示速率匹配（~30fps），同时把 OpenCV 渲染 + JPEG 编码 +
    NV12 转换的 CPU 锁定在上限内。 */
-
-/* 名称回查类别下标（条目只携带名称；正常必命中，未命中兜底 0 保着色合法） */
-static int yolo_class_index(const char *name)
-{
-    for (int i = 0; i < g_yolo.classes.count; i++)
-        if (strcmp(g_yolo.classes.names[i], name) == 0) return i;
-    return 0;
-}
 
 /* Move ownership out of the slot before unlocking. Camera quiesce may clear
  * every slot while rendering; it must never recycle an in-flight RGB buffer. */
@@ -737,6 +712,7 @@ static int yolo_event_describe_result(yolo_event_meta_t *meta, const yolo_result
         snprintf(object->name, sizeof(object->name), "%s",
                  det->cls >= 0 && det->cls < g_yolo.classes.count ? g_yolo.classes.names[det->cls] : "obj");
         object->conf = det->conf;
+        object->feature = det->feature;
         object->x1 = det->x1; object->y1 = det->y1;
         object->x2 = det->x2; object->y2 = det->y2;
     }
@@ -766,7 +742,7 @@ static void *yolo_render_task(void *arg)
         if (!ring) { usleep(200000); continue; }   /* 防御：video 未初始化 */
 
         /* 事件驱动：等推理结果入队（40ms 超时仅用于退出检查） */
-        yolo_result_item_t item;
+        yolo_result_t item;
         if (yolo_result_pop_latest(&item, 40) != 0) continue;
         /* 结果须晚于已渲染 seq（渲染 seq 严格递增，绝不回退） */
         if (item.seq <= g_yolo.next_seq) continue;
@@ -792,28 +768,19 @@ static void *yolo_render_task(void *arg)
         unsigned long long tracking_capture_ms = s->capture_ms;
         frame_ring_unlock(ring);
 
-        /* 结果条目 → 渲染结果：名称回查类别下标（标签含置信度） */
-        yolo_result_t disp;
-        memset(&disp, 0, sizeof(disp));
-        disp.seq = seq;
+        yolo_result_t disp = item;
         disp.w = w; disp.h = h;
         disp.count = item.count < 0 ? 0 : item.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : item.count;
-        for (int i = 0; i < disp.count; i++) {
-            disp.dets[i].cls  = yolo_class_index(item.dets[i].name);
-            disp.dets[i].conf = item.dets[i].conf;
-            disp.dets[i].x1 = item.dets[i].x1;
-            disp.dets[i].y1 = item.dets[i].y1;
-            disp.dets[i].x2 = item.dets[i].x2;
-            disp.dets[i].y2 = item.dets[i].y2;
-        }
 
         /* 锁外渲染：EMA 平滑（prev 仅本线程访问）+ 槽内 rgb 原地画框标签。
            无 MJPEG 观看者时跳过 JPEG 编码（省 CPU）；观看者接入后下一帧
            （≤33ms）恢复编码，get_frame 对 len==0 帧返回 -1 由客户端等待 */
-        yolo_smooth(&g_yolo.prev, &disp);
         unsigned long long object_ids[YOLO_MAX_DETS];
         int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms,
-                                                  rgbb.buf, rgbb.cap, object_ids);
+                                                  object_ids);
+        /* Keep velocity estimation and feature geometry on raw detections;
+         * EMA only changes the boxes drawn for this frame. */
+        yolo_smooth(&g_yolo.prev, &disp);
         unsigned char *jbuf = jpegb.buf;
         size_t jcap = jpegb.cap, jlen = 0;
         int ok = (nv12b.buf &&
@@ -979,6 +946,16 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
         LOG_ERROR("yolo: worker rknn_query OUTPUT_ATTR failed");
         return -1;
     }
+    memset(&wk->feature_attr, 0, sizeof(wk->feature_attr));
+    if (g_yolo.n_outputs == 2) {
+        wk->feature_attr.index = 1;
+        if (rknn_query(wk->ctx, RKNN_QUERY_OUTPUT_ATTR, &wk->feature_attr,
+                       sizeof(wk->feature_attr)) != RKNN_SUCC ||
+            !yolo_features_supported(&wk->feature_attr)) {
+            LOG_ERROR("yolo: unsupported 128-channel appearance output");
+            return -1;
+        }
+    }
     wk->in_buf = malloc((size_t)g_yolo.in_w * g_yolo.in_h * 3);
     if (!wk->in_buf) {
         LOG_ERROR("yolo: worker input buffer alloc failed");
@@ -1055,6 +1032,7 @@ static void yolo_stop_pool(void)
     memset(&g_yolo.result, 0, sizeof(g_yolo.result));
     pthread_mutex_unlock(&g_yolo.result_mutex);
     memset(&g_yolo.prev, 0, sizeof(g_yolo.prev));
+    image_tracking_reset();
     g_yolo.last_seq = 0;
 
     yolo_free_workers();
@@ -1114,14 +1092,15 @@ static int yolo_start_pool(void)
     rknn_input_output_num io_num;
     memset(&io_num, 0, sizeof(io_num));
     if (rknn_query(probe, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num)) != RKNN_SUCC ||
-        io_num.n_input < 1 || io_num.n_output != 1) {
-        LOG_ERROR("yolo: outputs=%u != 1, 需官方 rknn 单输出模型 (yolo export format=rknn) — YOLO unavailable",
+        io_num.n_input != 1 || (io_num.n_output != 1 && io_num.n_output != 2)) {
+        LOG_ERROR("yolo: outputs=%u, expected detection plus optional appearance map — YOLO unavailable",
                   io_num.n_output);
         rknn_destroy(probe);
         yolo_free_workers();
         g_yolo.enabled = 0;
         return -1;
     }
+    g_yolo.n_outputs = io_num.n_output;
     rknn_tensor_attr in_attr;
     memset(&in_attr, 0, sizeof(in_attr));
     in_attr.index = 0;
@@ -1147,6 +1126,9 @@ static int yolo_start_pool(void)
         g_yolo.in_w = s;
         g_yolo.in_h = s;
     }
+    LOG_INFO("yolo: input %s, quantization %s, scale %.8g zp %d; descriptor dimensions %d",
+             get_type_string(in_attr.type), get_qnt_type_string(in_attr.qnt_type),
+             in_attr.scale, in_attr.zp, g_yolo.n_outputs == 2 ? YOLO_FEATURE_DIM : 0);
 
     /* 类别名表：官方 COCO 格式文件（缺失/为空时回退内置 80 类） */
     int ncls = yolo_classes_load(g_yolo.names_path, &g_yolo.classes);
@@ -1183,9 +1165,9 @@ static int yolo_start_pool(void)
     /* 环内 raw 释放规则切回推理路径（infer_done 门槛） */
     if (yolo_ring()) frame_ring_set_yolo_active(yolo_ring(), 1);
     LOG_INFO("yolo: model '%s' loaded, classes '%s' (%d), input %dx%d, "
-             "single output, adaptive threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
+             "%u outputs, adaptive threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
              model_path, g_yolo.names_path, ncls, g_yolo.in_w, g_yolo.in_h,
-             rknn_yolo_active_workers(), g_yolo.nthreads, cores, g_yolo.conf, g_yolo.nms);
+             g_yolo.n_outputs, rknn_yolo_active_workers(), g_yolo.nthreads, cores, g_yolo.conf, g_yolo.nms);
     return 0;
 }
 

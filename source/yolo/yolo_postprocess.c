@@ -107,10 +107,8 @@ static int yolo_nms_finish(float *cand, int ncand, yolo_det_t *dets,
             if (uni <= 0) continue;
             if (inter / uni > nms) suppressed[j] = 1;
         }
-        dets[ndet].x1 = bx1; dets[ndet].y1 = by1;
-        dets[ndet].x2 = bx2; dets[ndet].y2 = by2;
-        dets[ndet].conf = cand[i*6+4]; dets[ndet].cls = (int)cand[i*6+5];
-        ndet++;
+        dets[ndet++] = (yolo_det_t){ .x1 = bx1, .y1 = by1, .x2 = bx2, .y2 = by2,
+            .conf = cand[i*6+4], .cls = (int)cand[i*6+5] };
     }
     return ndet;
 }

@@ -11,7 +11,8 @@
  *
  * 模块组成（见 source/yolo/ 下各文件）：
  *  - yolo_image.c      图像处理（JPEG 编解码 / YUYV→RGB / 缩放）
- *  - yolo_postprocess.c YOLO26 单输出模式后处理（sigmoid + stride + NMS）
+ *  - yolo_postprocess.c decoded YOLO26 detection filtering and NMS
+ *  - yolo_features.c   model-feature ROI pooling and normalization
  *  - yolo_draw.c       画框 + 标签 + JPEG 编码
  *  - rknn_yolo.c       模型加载、推理线程池（每线程独立 rknn context，并行推理）、
  *                      任务队列、结果队列（NMS 后处理结果：目标名称 + 置信度 +

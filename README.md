@@ -177,17 +177,19 @@ flowchart LR
 
 Safety prerequisites are checked on timed wakes even without a new inference; PID updates use accepted inference timestamps. Following always starts disabled. Automatic speed uses relative target-area error; steering uses horizontal target error. Each wheel PI loop compares target speed with real measured feedback. Visual selection affects the overlay, while following selects its own target by configured class and proximity to its previous target or seed.
 
-The CPU handles capture processing, appearance features, control, communication, and management; the NPU runs YOLO inference. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
+The CPU handles capture processing, feature pooling, tracking, control, communication, and management; the NPU runs YOLO detection and feature extraction. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
 
 A Linux real-time kernel is the system target. `main.c` declares each thread's scheduling policy, priority, and CPU group alongside lifecycle callbacks in one module table, including internally owned HTTP and inference workers. Current thread rows select `SCHED_FIFO`; explicit creation attributes apply the selected CPU group before each thread starts. The controller runs at priority **20** and reports its actual scheduler separately from PREEMPT_RT kernel support through `/api/follow`. See [kernel and scheduling verification](docs/KERNEL_VERIFICATION.md) for deployed measurements and limits.
 
 ## Perception and motion control
 
-**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Available camera modes and hardware encoding depend on the device and drivers.
+**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Available camera modes and hardware encoding depend on the device and drivers.
 
 Capture and rendering publish frame notifications to their subscribers; inference and result queues wake the next stage as work becomes available. See [frame handoff and the verified YOLO26n artifact](docs/FRAME_PIPELINE.md) for ownership, cancellation and model details.
 
-**Visual tracking.** Click a detection on the home page to select it and record its appearance. Numbered labels and the selected object's cyan box are drawn into the video and included in recordings. Tracking combines appearance, overlap, and motion to attempt recovery after short interruptions. Object IDs and appearance references are local to the running process.
+**Visual tracking.** Click a detection on the home page to select it and enroll its model descriptor. Numbered labels and the selected object's cyan box are drawn into the video and included in recordings. Matching uses descriptor cosine similarity, velocity prediction, predicted box overlap, size changes, and class gates. Fixed references and slow descriptor adaptation support recovery after short interruptions; ambiguous matches are rejected. Object IDs and references are local to the running process.
+
+The prepared YOLO26n model also outputs a P4 feature map. Each detection carries a normalized 128-dimensional descriptor into tracking and the daily result file. Selected-target distant reacquisition requires a stronger feature match and two confirming frames; missing descriptors permit nearby motion association only. The previous HSV/LBP/gradient descriptor has been removed. `/api/tracking` exposes descriptor availability and the selected target's vector. See the [complete Chinese quantization and tracking report](docs/YOLO26N_QUANTIZATION.md) for preparation, measured accuracy and timing, output format, validation, and rollback. Detector-neck descriptors are not a separately trained ReID model.
 
 **Intelligent Following.** The wheel controller consumes detection results independently of visual tracking. Automatic speed uses relative target size; manual mode uses the configured speed. Steering uses PD control, while the left and right wheels each use PI control with measured feedback. Wheel-speed targets and differential steering correction use **m/s**.
 
@@ -219,10 +221,12 @@ Prepare the model and labels before the first build:
 
 | File | Requirement |
 | --- | --- |
-| `config/yolo26.rknn` | Prepared YOLO26 model matching the board's NPU platform and supported output layout |
+| `config/yolo26.rknn` | Board-compatible model: one decoded detection output, optionally followed by a 128-channel feature map |
 | `config/coco.names` | Class labels matching the model |
 
 The RKNN model is not included in Git. Model preparation takes place outside this repository's build process; the scripts do not train, convert, or download models. Working model initialization is required for normal service startup.
+
+The verified RK3576 artifact takes 640×640 RGB and returns FP16 `[1,84,8400]` decoded pixel boxes and probabilities plus INT8 P4 `[1,128,40,40]`. The SDK returns float outputs for detection and ROI pooling. A compatible single-output model runs without model descriptors and uses nearby motion association. Raw multi-head or normalized-coordinate exports require adaptation and cannot be substituted solely because their files have the `.rknn` extension.
 
 Run builds and deployments through the existing scripts from the repository root:
 
@@ -285,7 +289,7 @@ Runtime paths are relative to the working directory; the installed service uses 
 | `config/*.dbc` | CAN databases |
 | `logs/YYYYMMDD/` | Application information and error logs |
 | `recordings/YYYYMMDD/` | Annotated MP4 recordings |
-| `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | Daily inference results |
+| `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | Daily inference results and per-target 128-dimensional descriptors |
 
 **Export config** downloads actual configuration files and the model as `.tar.gz`. Empty directories and internal synchronization metadata are omitted; the total uncompressed file size is limited to **64 MiB**.
 
@@ -293,7 +297,7 @@ Runtime paths are relative to the working directory; the installed service uses 
 
 H.264/MSE and MJPEG provide live video. H.264 streaming shares its encoding session with MP4 recording. Recording starts automatically when a session can start; manually stopping recording ends that H.264 session and disables automatic continuation.
 
-Daily TXT reports record completed inferences, including results with no detected objects. Entries contain capture time, image dimensions, lens position when available, class/confidence, and `X1 X2 Y1 Y2` coordinates in the original image. Processing favors recent frames, so reports and videos need not include every captured frame.
+Daily TXT reports record completed inferences, including results with no detected objects. Entries contain capture time, frame sequence, image dimensions, lens position when available, target index/class/confidence, and `X1 X2 Y1 Y2` coordinates in the original image. Each target also records `feature_valid` and its full 128-dimensional vector using nine significant digits; unavailable descriptors produce `feature_valid[0] feature[]`. The existing writer batches records without doing file I/O on inference threads. Existing report content remains intact when new fields are appended. Processing favors recent frames, so reports and videos need not include every captured frame.
 
 The Driving Logs page provides individual downloads and a whole-page ZIP. Bulk deletion protects recordings that are active or being finalized. ZIP downloads omit active or incomplete videos.
 
