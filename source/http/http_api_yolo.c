@@ -5,7 +5,7 @@
  * 请求 body 为原始文件内容（前端 fetch 直接以二进制上传，不用 multipart）。
  * HTTP 层（http.c）在解析请求头后把 body 流式落盘到 /tmp 临时文件，
  * 处理完成后把临时路径传给本接口；本接口负责：
- *   1) 校验（模型：RKNN magic + 大小；标签：文本格式 + 行数/长度）
+ *   1) 校验（模型：RKNN magic + 大小 + SDK 单输入/单输出；标签：文本格式 + 行数/长度）
  *   2) 模型原子替换 config/yolo26.rknn；标签保存在 config/
  *   3) 更新运行时配置并落盘 config.txt
  *   4) 热重载推理池 rknn_yolo_reload()，无需重启服务
@@ -148,6 +148,10 @@ void http_yolo_upload(app_ctx_t *app, int fd, const char *uri, const char *tmp_p
     int classes = is_model ? 0 : yolo_validate_names(tmp_path);
     if (bad_magic || classes < 0) {
         http_err(fd, 400, "Bad Request", is_model ? "invalid rknn model (bad magic)" : "invalid names file");
+        return;
+    }
+    if (is_model && rknn_yolo_validate_model(tmp_path) < 0) {
+        http_err(fd, 400, "Bad Request", "incompatible rknn model; expected one input and one detection output");
         return;
     }
 

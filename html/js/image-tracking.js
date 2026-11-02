@@ -9,22 +9,14 @@
 
     function updateStatus() {
         const states = {
-            idle: '点击识别框记录外观并开始追踪',
+            idle: '点击画面中的识别框开始追踪',
             tracking: '正在追踪所选目标',
             lost: '目标丢失，请重新选择',
             stale: '等待实时识别画面'
         };
-        const appearance = latest && latest.appearance;
-        if (appearance && appearance.reference_ready) {
-            states.tracking = '正在按外观追踪目标';
-            if (appearance.reacquire_remaining_ms > 0) states.lost = '目标丢失，正在按外观找回…';
-        }
         const text = message || (latest ? states[latest.state] : states.stale);
         status.textContent = t(text) + (!message && latest && latest.state === 'tracking' ?
             ' #' + latest.track_id : '');
-        if (!message && latest && latest.state === 'tracking' && appearance &&
-                Number.isFinite(appearance.similarity))
-            status.textContent += ' · ' + t('外观相似度') + ' ' + Math.round(appearance.similarity * 100) + '%';
         stop.disabled = busy || !latest || !latest.active;
     }
 
@@ -55,8 +47,7 @@
             }
             retained.add(key);
             button.dataset.seq = String(latest.seq);
-            button.disabled = busy || target.appearance_available === false;
-            button.title = target.appearance_available === false ? t('目标太小，无法提取外观特征') : '';
+            button.disabled = busy;
             const label = target.name + ' #' + (target.object_id || target.index + 1) + ' ' + Math.round(target.confidence * 100) + '%';
             button.setAttribute('aria-label', t('追踪目标') + ': ' + label);
             button.setAttribute('aria-pressed', String(latest.active && latest.selected === target.index));
@@ -78,10 +69,10 @@
         try {
             const response = await authFetch('/api/tracking', {method: 'POST', body});
             if (!response.ok) throw new Error(response.status === 409 ?
-                '目标已过期或外观特征不足，请重新选择' : '无法更新追踪目标');
+                '目标已过期或丢失，请重新选择' : '无法更新追踪目标');
             message = '';
         } catch (error) {
-            message = error.message === '目标已过期或外观特征不足，请重新选择' ? error.message : '无法更新追踪目标';
+            message = error.message === '目标已过期或丢失，请重新选择' ? error.message : '无法更新追踪目标';
         } finally {
             busy = false;
             render();

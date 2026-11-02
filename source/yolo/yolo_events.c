@@ -20,9 +20,8 @@
 #include <spawn.h>
 #include <sys/wait.h>
 
-/* 32 objects: up to 96 four-byte escaped name characters, long fixed-point
- * coordinates and 128 signed float32 values each need more than 64 KiB. */
-#define REPORT_BUFFER_SIZE (128u * 1024u)
+/* Covers 32 objects with escaped names and fixed-point coordinates. */
+#define REPORT_BUFFER_SIZE (64u * 1024u)
 
 static struct {
     pthread_mutex_t lock;
@@ -128,18 +127,6 @@ static int append_target(char *out, size_t cap, size_t *length, const char *name
     return append_escaped(out, cap, length, name, YOLO_EVENT_NAME_LEN);
 }
 
-static int report_feature_valid(const yolo_feature_t *feature)
-{
-    if (!feature->valid) return 0;
-    double norm = 0;
-    for (int i = 0; i < YOLO_FEATURE_DIM; ++i) {
-        double value = feature->values[i];
-        if (!isfinite(value)) return 0;
-        norm += value * value;
-    }
-    return norm > 0;
-}
-
 /* The public TXT follows the frame/object layout used by field tools. Focus
  * positions have no calibrated millimetre mapping, so label raw values honestly. */
 static int format_report(const yolo_event_meta_t *meta, char day[9], char *out, size_t cap)
@@ -153,10 +140,9 @@ static int format_report(const yolo_event_meta_t *meta, char day[9], char *out, 
     if (meta->focus_valid) snprintf(focus, sizeof(focus), "raw:%d", meta->focus_position);
     size_t length = 0;
     if (append(out, cap, &length, "%s.%03llu%s：num[%d] size[%d %d] FocalLength[%s]"
-               " seq[%llu] capture_ms[%llu] feature_method[yolo26n_p4_roi] feature_dim[%d]\n",
+               " seq[%llu] capture_ms[%llu]\n",
                stamp, meta->capture_unix_ms % 1000u, zone, meta->count,
-               meta->width, meta->height, focus, meta->seq, meta->capture_monotonic_ms,
-               YOLO_FEATURE_DIM)) return -1;
+               meta->width, meta->height, focus, meta->seq, meta->capture_monotonic_ms)) return -1;
     for (int i = 0; i < meta->count; i++) {
         const yolo_event_object_t *object = &meta->objects[i];
         if (append(out, cap, &length, "\t") ||
@@ -164,14 +150,7 @@ static int format_report(const yolo_event_meta_t *meta, char day[9], char *out, 
             append(out, cap, &length, " %.6f position[%.3f %.3f %.3f %.3f]",
                    (double)object->conf, (double)object->x1, (double)object->x2,
                    (double)object->y1, (double)object->y2)) return -1;
-        int feature_valid = report_feature_valid(&object->feature);
-        if (append(out, cap, &length, " index[%d] class[%d] feature_valid[%d] feature[",
-                   i, object->cls, feature_valid)) return -1;
-        if (feature_valid)
-            for (int j = 0; j < YOLO_FEATURE_DIM; ++j)
-                if (append(out, cap, &length, "%s%.9g", j ? " " : "",
-                           (double)object->feature.values[j])) return -1;
-        if (append(out, cap, &length, "]\n")) return -1;
+        if (append(out, cap, &length, " index[%d] class[%d]\n", i, object->cls)) return -1;
     }
     return (int)length;
 }

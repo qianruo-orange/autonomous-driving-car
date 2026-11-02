@@ -16,7 +16,6 @@ typedef struct {
     char name[YOLO_EVENT_NAME_LEN];
     float conf;
     float x1, y1, x2, y2;
-    yolo_feature_t feature; /* Same inference/object, copied by value into the queue. */
 } yolo_event_object_t;
 
 typedef struct {
@@ -39,9 +38,8 @@ int yolo_events_init(const char *root);
 int yolo_events_due(int count, unsigned long long monotonic_ms);
 /* Copies metadata into the bounded queue, waiting for space rather than dropping
  * frames. Returns -1 for invalid data or shutdown. Zero-target frames produce a
- * header with num[0]. Model descriptors are appended to each object's TXT row;
- * invalid descriptors produce feature_valid[0] feature[] without losing a frame.
- * The writer appends daily TXT blocks every second or 128 KiB; downloads copy a
+ * header with num[0]. Each object's TXT row contains its class, confidence and box.
+ * The writer appends daily TXT blocks every second or 64 KiB; downloads copy a
  * stable prefix without regenerating the day. */
 int yolo_events_submit_meta(const yolo_event_meta_t *meta);
 /* Compatibility entry point. Image arguments are ignored; no photo is saved. */

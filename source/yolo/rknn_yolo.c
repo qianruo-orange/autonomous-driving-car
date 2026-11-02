@@ -8,10 +8,10 @@
  *             投递任务队列。claim 随任务移交 worker：任务在途期间槽位被
  *             claims 钉住，不会被采集复用/退让清空
  *   worker i: 出队 → 双线性缩放 → NPU 推理（独立 context，按实际 NPU 核数轮流绑定）→
- *             检测后处理（NMS）及可选 P4 ROI 特征提取 → rgb 写槽 → unclaim；
- *             框、类别、置信度和目标特征按值入结果队列
+ *             检测后处理（NMS）→ rgb 写槽 → unclaim；
+ *             框、类别和置信度按值入结果队列
  *   composer: 事件驱动消费结果队列，排空只留最新（seq 严格递增，绝不回退；
- *             旧结果条目直接丢弃）→ 特征/运动跟踪 → 显示 EMA → rgb 原地画框 →
+ *             旧结果条目直接丢弃）→ 运动学跟踪 → 显示 EMA → rgb 原地画框 →
  *             JPEG（含标签）+ NV12 写槽（display_done=1，display_seq 推进）；
  *             渲染节拍 ~30fps
  *
@@ -57,7 +57,6 @@
 #include "control/car_sport_ctrl.h"
 #include "yolo/yolo_image.h"
 #include "yolo/yolo_postprocess.h"
-#include "yolo/yolo_features.h"
 #include "yolo/yolo_draw.h"
 #include "control/image_tracking.h"
 #include "yolo/yolo_events.h"
@@ -95,7 +94,6 @@ typedef struct {
     rknn_context    ctx;
     unsigned char  *in_buf;                 /* 缩放后输入缓冲 */
     rknn_tensor_attr out_attr;              /* Decoded detection output. */
-    rknn_tensor_attr feature_attr;
 } yolo_worker_t;
 
 typedef struct {
@@ -133,7 +131,6 @@ static struct {
     unsigned char *model;                    /* 模型文件内存（共享给所有 worker init） */
     size_t         model_len;
     int            in_w, in_h;
-    unsigned       n_outputs;                /* Detection, optionally followed by P4 features. */
 
     yolo_worker_t  workers[YOLO_MAX_WORKERS];
 
@@ -580,18 +577,14 @@ static void *yolo_worker_task(void *arg)
         if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
         unsigned long long inference_us = yolo_now_us();
 
-        rknn_output output[2] = {0};
-        for (unsigned i = 0; i < g_yolo.n_outputs; ++i) {
-            output[i].index = i;
-            output[i].want_float = 1;
-        }
-        if (rknn_outputs_get(wk->ctx, g_yolo.n_outputs, output, NULL) != RKNN_SUCC) {
+        rknn_output output = {.index = 0, .want_float = 1};
+        if (rknn_outputs_get(wk->ctx, 1, &output, NULL) != RKNN_SUCC) {
             yolo_job_abandon(&job);
             continue;
         }
         unsigned long long outputs_us = yolo_now_us();
 
-        const float *out_buf[1] = { (const float *)output[0].buf };
+        const float *out_buf[1] = { (const float *)output.buf };
         yolo_result_t res;
         memset(&res, 0, sizeof(res));
         res.seq = job.seq;
@@ -600,11 +593,7 @@ static void *yolo_worker_task(void *arg)
         res.count = yolo_postprocess(out_buf, &wk->out_attr, 1,
                                      lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, job.w, job.h,
                                      res.dets, YOLO_MAX_DETS, g_yolo.conf, g_yolo.nms, NULL);
-        if (g_yolo.n_outputs == 2 && output[1].buf &&
-            output[1].size >= (size_t)wk->feature_attr.n_elems * sizeof(float))
-            yolo_features_extract(output[1].buf, &wk->feature_attr, g_yolo.in_w, g_yolo.in_h,
-                                  lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, res.dets, res.count);
-        rknn_outputs_release(wk->ctx, g_yolo.n_outputs, output);
+        rknn_outputs_release(wk->ctx, 1, &output);
         /* Persist every completed inference before the display queue can
            coalesce it. Empty detections are records too; no photo is encoded. */
         yolo_record_result(&job, &res);
@@ -647,7 +636,7 @@ static void *yolo_worker_task(void *arg)
         }
         frame_ring_unlock(ring);
 
-        /* Detection geometry and descriptors travel together by value. */
+        /* Detection results travel through the queue by value. */
         yolo_result_push(&res);
     }
     return NULL;
@@ -712,7 +701,6 @@ static int yolo_event_describe_result(yolo_event_meta_t *meta, const yolo_result
         snprintf(object->name, sizeof(object->name), "%s",
                  det->cls >= 0 && det->cls < g_yolo.classes.count ? g_yolo.classes.names[det->cls] : "obj");
         object->conf = det->conf;
-        object->feature = det->feature;
         object->x1 = det->x1; object->y1 = det->y1;
         object->x2 = det->x2; object->y2 = det->y2;
     }
@@ -778,7 +766,7 @@ static void *yolo_render_task(void *arg)
         unsigned long long object_ids[YOLO_MAX_DETS];
         int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms,
                                                   object_ids);
-        /* Keep velocity estimation and feature geometry on raw detections;
+        /* Keep velocity estimation on raw detections;
          * EMA only changes the boxes drawn for this frame. */
         yolo_smooth(&g_yolo.prev, &disp);
         unsigned char *jbuf = jpegb.buf;
@@ -840,6 +828,32 @@ static int load_model_file(const char *path, unsigned char **buf_out, size_t *le
     *buf_out = buf;
     *len_out = (size_t)sz;
     return 0;
+}
+
+static int yolo_model_io_valid(rknn_context probe)
+{
+    rknn_input_output_num io_num = {0};
+    if (rknn_query(probe, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num)) != RKNN_SUCC ||
+        io_num.n_input != 1 || io_num.n_output != 1) {
+        LOG_ERROR("yolo: model inputs=%u outputs=%u, expected one RGB input and one decoded detection output",
+                  io_num.n_input, io_num.n_output);
+        return -1;
+    }
+    return 0;
+}
+
+int rknn_yolo_validate_model(const char *path)
+{
+    unsigned char *model = NULL;
+    size_t length = 0;
+    rknn_context probe = 0;
+    if (!path || !*path || load_model_file(path, &model, &length) < 0) return -1;
+    int result = -1;
+    if (length <= UINT32_MAX && rknn_init(&probe, model, (uint32_t)length, 0, NULL) == RKNN_SUCC)
+        result = yolo_model_io_valid(probe);
+    if (probe) rknn_destroy(probe);
+    free(model);
+    return result;
 }
 
 /* 通过设备树 compatible 推断 NPU 核心数（合法 core mask 上限 = 2^npu_cores - 1）。
@@ -945,16 +959,6 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
                    sizeof(wk->out_attr)) != RKNN_SUCC) {
         LOG_ERROR("yolo: worker rknn_query OUTPUT_ATTR failed");
         return -1;
-    }
-    memset(&wk->feature_attr, 0, sizeof(wk->feature_attr));
-    if (g_yolo.n_outputs == 2) {
-        wk->feature_attr.index = 1;
-        if (rknn_query(wk->ctx, RKNN_QUERY_OUTPUT_ATTR, &wk->feature_attr,
-                       sizeof(wk->feature_attr)) != RKNN_SUCC ||
-            !yolo_features_supported(&wk->feature_attr)) {
-            LOG_ERROR("yolo: unsupported 128-channel appearance output");
-            return -1;
-        }
     }
     wk->in_buf = malloc((size_t)g_yolo.in_w * g_yolo.in_h * 3);
     if (!wk->in_buf) {
@@ -1089,18 +1093,12 @@ static int yolo_start_pool(void)
         g_yolo.enabled = 0;
         return -1;
     }
-    rknn_input_output_num io_num;
-    memset(&io_num, 0, sizeof(io_num));
-    if (rknn_query(probe, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num)) != RKNN_SUCC ||
-        io_num.n_input != 1 || (io_num.n_output != 1 && io_num.n_output != 2)) {
-        LOG_ERROR("yolo: outputs=%u, expected detection plus optional appearance map — YOLO unavailable",
-                  io_num.n_output);
+    if (yolo_model_io_valid(probe)) {
         rknn_destroy(probe);
         yolo_free_workers();
         g_yolo.enabled = 0;
         return -1;
     }
-    g_yolo.n_outputs = io_num.n_output;
     rknn_tensor_attr in_attr;
     memset(&in_attr, 0, sizeof(in_attr));
     in_attr.index = 0;
@@ -1126,9 +1124,9 @@ static int yolo_start_pool(void)
         g_yolo.in_w = s;
         g_yolo.in_h = s;
     }
-    LOG_INFO("yolo: input %s, quantization %s, scale %.8g zp %d; descriptor dimensions %d",
+    LOG_INFO("yolo: input %s, quantization %s, scale %.8g zp %d",
              get_type_string(in_attr.type), get_qnt_type_string(in_attr.qnt_type),
-             in_attr.scale, in_attr.zp, g_yolo.n_outputs == 2 ? YOLO_FEATURE_DIM : 0);
+             in_attr.scale, in_attr.zp);
 
     /* 类别名表：官方 COCO 格式文件（缺失/为空时回退内置 80 类） */
     int ncls = yolo_classes_load(g_yolo.names_path, &g_yolo.classes);
@@ -1165,9 +1163,9 @@ static int yolo_start_pool(void)
     /* 环内 raw 释放规则切回推理路径（infer_done 门槛） */
     if (yolo_ring()) frame_ring_set_yolo_active(yolo_ring(), 1);
     LOG_INFO("yolo: model '%s' loaded, classes '%s' (%d), input %dx%d, "
-             "%u outputs, adaptive threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
+             "1 detection output, adaptive threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
              model_path, g_yolo.names_path, ncls, g_yolo.in_w, g_yolo.in_h,
-             g_yolo.n_outputs, rknn_yolo_active_workers(), g_yolo.nthreads, cores, g_yolo.conf, g_yolo.nms);
+             rknn_yolo_active_workers(), g_yolo.nthreads, cores, g_yolo.conf, g_yolo.nms);
     return 0;
 }
 

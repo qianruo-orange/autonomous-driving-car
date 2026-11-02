@@ -12,7 +12,6 @@
  * 模块组成（见 source/yolo/ 下各文件）：
  *  - yolo_image.c      图像处理（JPEG 编解码 / YUYV→RGB / 缩放）
  *  - yolo_postprocess.c decoded YOLO26 detection filtering and NMS
- *  - yolo_features.c   model-feature ROI pooling and normalization
  *  - yolo_draw.c       画框 + 标签 + JPEG 编码
  *  - rknn_yolo.c       模型加载、推理线程池（每线程独立 rknn context，并行推理）、
  *                      任务队列、结果队列（NMS 后处理结果：目标名称 + 置信度 +
@@ -45,6 +44,10 @@ int npu_core_count(void);
 const char *npu_platform_name(void);
 /* Conversion, runtime defaults and uploads share config/yolo26.rknn. */
 void rknn_yolo_default_model_path(char *out, size_t size);
+/* Probe an uploaded model before replacing the active file. Returns 0 for one
+ * input/one output, -1 for an unreadable/incompatible model. Leaves the running
+ * pool untouched and releases the temporary SDK context before returning. */
+int rknn_yolo_validate_model(const char *path);
 /* 当前自适应启用的推理 worker 数；推理池不可用时返回 0。 */
 int rknn_yolo_active_workers(void);
 

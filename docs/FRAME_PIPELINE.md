@@ -19,7 +19,7 @@ The camera format remains MJPEG at the configured 1280×720 and requested 30 FPS
 
 ## Verified YOLO26n FP16 baseline
 
-On 2026-11-02, the original FP16 model was verified against the [official YOLO26n checkpoint](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt). It was already YOLO26n. The subsequent W8A8/FP16 conversion and optional 128-channel P4 output are documented in the [Chinese quantization report](YOLO26N_QUANTIZATION.md). The canonical runtime filename remains `config/yolo26.rknn`.
+On 2026-11-02, the original FP16 model was verified against the [official YOLO26n checkpoint](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt). It was already YOLO26n. The subsequent W8A8/FP16 conversion and the single detection output are documented in the [Chinese quantization report](YOLO26N_QUANTIZATION.md). The experimental P4 output and target descriptors have been removed. The canonical runtime filename remains `config/yolo26.rknn`.
 
 | Artifact | SHA-256 |
 | --- | --- |

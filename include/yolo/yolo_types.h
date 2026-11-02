@@ -11,19 +11,11 @@
 #define RKNN_FMT_MJPEG 0
 #define RKNN_FMT_YUYV  1
 
-/* Detection-neck appearance descriptor; not a separately trained ReID head. */
-#define YOLO_FEATURE_DIM 128
-typedef struct {
-    float values[YOLO_FEATURE_DIM];
-    int valid;
-} yolo_feature_t;
-
 /* 单条检测结果（坐标在原图坐标系，x1<x2, y1<y2） */
 typedef struct {
     float x1, y1, x2, y2;
     float conf;
     int   cls;
-    yolo_feature_t feature; /* Same frame and post-NMS detection as this box. */
 } yolo_det_t;
 
 /* 一帧的检测结果快照 */
