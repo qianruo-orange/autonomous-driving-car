@@ -14,7 +14,7 @@
  *
  * 帧来源为视频帧环形队列（video/frame_ring.h）编码游标：
  *   YOLO 画框帧 → encode_pick 锁内窃取槽内 nv12（零拷贝，用毕回池）。
- * YOLO 为必要流程：停摆（>1s 无标注帧）不回退原始帧，直接置 app->fatal、
+ * YOLO 为必要流程：连续 5s 无标注帧时不回退原始帧，直接置 app->fatal、
  * 停 running 整体宕机（main 退出码 1 → systemd Restart=on-failure 拉起）。
  * 会话期间置 rec_active（槽位释放规则改走编码路径），结束即清除。
  */
@@ -44,6 +44,7 @@
 #include "watchdog/watchdog.h"
 
 #define REC_DIR        PATH_RECORDINGS
+#define YOLO_STALL_TIMEOUT_MS 5000u
 
 /* 命令（HTTP 线程 → 录制线程） */
 #define REC_CMD_NONE   0
@@ -365,12 +366,12 @@ void *video_rec_task(void *arg)
                                       pw, ph, &frame_capture_ms) == 0) {
                     g_last_yolo_ms = now_ms();
                 } else {
-                    /* YOLO 必要流程：停摆 >1s（无新标注帧）直接宕机——置 fatal
-                       使 main 以退出码 1 结束，systemd Restart=on-failure 拉起 */
+                    /* 硬解超时后 STREAMOFF 可能等驱动 2s 复位，再重建队列。
+                       留出恢复时间；持续 5s 无标注帧仍失败退出，由 systemd 拉起。 */
                     if (rknn_yolo_reloading()) g_last_yolo_ms = now_ms();
-                    else if (now_ms() - g_last_yolo_ms >= 1000) {
-                        LOG_ERROR("rec: YOLO inference stalled >1s (mandatory YOLO, "
-                                  "no raw fallback) — aborting service");
+                    else if (now_ms() - g_last_yolo_ms >= YOLO_STALL_TIMEOUT_MS) {
+                        LOG_ERROR("rec: YOLO inference stalled >=%ums (mandatory YOLO, "
+                                  "no raw fallback) — aborting service", YOLO_STALL_TIMEOUT_MS);
                         app->fatal = 1;
                         app->running = 0;
                         sync();
