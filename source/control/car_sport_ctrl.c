@@ -3,7 +3,6 @@
 #include "control/car_sport_ctrl.h"
 #include "can/can_socket.h"
 #include "can/can_motor.h"
-#include "core/cpu_affinity.h"
 #include "core/log.h"
 #include "watchdog/watchdog.h"
 #include "http/http_internal.h"
@@ -259,7 +258,6 @@ void *follow_task(void *arg)
 {
     app_ctx_t *app = arg;
     (void)pthread_setname_np(pthread_self(), "follow_pid");
-    (void)cpu_bind_little();
     if (watchdog_register_thread(pthread_self(), "car_sport_ctrl", 3, 3) < 0) {
         app->fatal = 1;
         app->running = 0;

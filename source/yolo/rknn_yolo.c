@@ -61,7 +61,6 @@
 #include "control/image_tracking.h"
 #include "yolo/yolo_events.h"
 #include "core/common.h"
-#include "core/cpu_affinity.h"
 #include "core/thread.h"
 #include "core/log.h"
 #include "core/config.h"
@@ -561,7 +560,6 @@ static void *yolo_worker_task(void *arg)
 {
     int idx = (int)(intptr_t)arg;
     (void)pthread_setname_np(pthread_self(), "yolo_infer");
-    cpu_bind_big();
     yolo_worker_t *wk = &g_yolo.workers[idx];
     frame_ring_t *ring = yolo_ring();
 
@@ -763,7 +761,6 @@ static void *yolo_render_task(void *arg)
 {
     (void)arg;
     (void)pthread_setname_np(pthread_self(), "yolo_render");
-    cpu_bind_big();
     frame_ring_t *ring = yolo_ring();
     while (g_yolo.running && g_yolo.pool_running) {
         if (!ring) { usleep(200000); continue; }   /* 防御：video 未初始化 */
@@ -1326,7 +1323,6 @@ void *rknn_yolo_task(void *arg)
     app_ctx_t *app = (app_ctx_t *)arg;
     if (!app) return NULL;
     (void)pthread_setname_np(pthread_self(), "yolo");
-    (void)cpu_bind_big();
     if (watchdog_register_thread(pthread_self(), "yolo", 5, 3) < 0) {
         app->fatal = 1;
         app->running = 0;

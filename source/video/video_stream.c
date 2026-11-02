@@ -19,7 +19,6 @@
 #include "video/frame_ring.h"
 #include "core/log.h"
 #include "core/common.h"
-#include "core/cpu_affinity.h"
 #include "core/epoll_util.h"
 #include "watchdog/watchdog.h"
 #include "yolo/rknn_yolo.h"
@@ -353,7 +352,6 @@ void *video_stream_task(void *arg)
 {
     app_ctx_t *app = arg;
     (void)pthread_setname_np(pthread_self(), "video");
-    (void)cpu_bind_big();
     if (watchdog_register_thread(pthread_self(), "video", 5, 3) < 0) {
         app->fatal = 1;
         app->running = 0;

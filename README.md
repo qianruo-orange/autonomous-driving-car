@@ -179,7 +179,7 @@ Safety prerequisites are checked on timed wakes even without a new inference; PI
 
 The CPU handles capture processing, appearance features, control, communication, and management; the NPU runs YOLO inference. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
 
-A Linux real-time kernel is the system target. `main.c` selects `SCHED_FIFO` for application threads, and its single module table declares lifecycle callbacks and priorities, including internally owned HTTP and inference workers. The controller runs at priority **20** and reports its actual scheduler separately from PREEMPT_RT kernel support through `/api/follow`. See [kernel and scheduling verification](docs/KERNEL_VERIFICATION.md) for deployed measurements and limits.
+A Linux real-time kernel is the system target. `main.c` declares each thread's scheduling policy, priority, and CPU group alongside lifecycle callbacks in one module table, including internally owned HTTP and inference workers. Current thread rows select `SCHED_FIFO`; explicit creation attributes apply the selected CPU group before each thread starts. The controller runs at priority **20** and reports its actual scheduler separately from PREEMPT_RT kernel support through `/api/follow`. See [kernel and scheduling verification](docs/KERNEL_VERIFICATION.md) for deployed measurements and limits.
 
 ## Perception and motion control
 

@@ -14,7 +14,6 @@
 
 #define _GNU_SOURCE   /* 暴露 GNU/Linux 扩展 */
 
-#include "core/cpu_affinity.h"
 #include "core/thread.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -978,7 +977,6 @@ void *http_server_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     (void)pthread_setname_np(pthread_self(), "http");
-    (void)cpu_bind_little();
     if (watchdog_register_thread(pthread_self(), "http", 5, 3) < 0) {
         app->fatal = 1;
         app->running = 0;

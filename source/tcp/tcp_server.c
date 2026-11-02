@@ -6,7 +6,6 @@
  * epoll 事件也带代际编号，避免关闭/rebind 后的旧事件落到复用 fd 上。 */
 #define _GNU_SOURCE
 #include "watchdog/watchdog.h"
-#include "core/cpu_affinity.h"
 #include "tcp/tcp_server.h"
 #include "core/epoll_util.h"
 #include <arpa/inet.h>
@@ -494,7 +493,6 @@ void *tcp_task(void *arg)
 {
     app_ctx_t *app = arg;
     (void)pthread_setname_np(pthread_self(), "tcp");
-    (void)cpu_bind_little();
     if (watchdog_register_thread(pthread_self(), "tcp", 5, 3) < 0) {
         app->fatal = 1;
         app->running = 0;

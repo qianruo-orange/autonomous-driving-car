@@ -12,7 +12,6 @@
 #include "core/config.h"
 #include "can/can_socket.h"
 #include "core/log.h"
-#include "core/cpu_affinity.h"
 #include "tcp/net_ip.h"
 #include "core/version.h"
 #include "yolo/rknn_yolo.h"
@@ -22,14 +21,6 @@
 /* 串行化配置持久化：http_config_post 与 http_can_dbc_upload 等
    并发保存时避免写坏 config.txt */
 static pthread_mutex_t g_config_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void config_apply_platform(app_ctx_t *app)
-{
-    cpu_affinity_init();
-    (void)cpu_bind_little();
-    /* 启动时按配置应用网卡 IP（静态/DHCP）；未配置则跳过 */
-    net_ip_apply_cfg(app->cfg);
-}
 
 /* 模块表入口：加载配置、切换日志目录，再应用平台配置。 */
 int config_init(void *arg)
@@ -41,7 +32,8 @@ int config_init(void *arg)
     if (rc < 0) { app->cfg = NULL; return rc; }
     log_close(app);
     log_init(app);
-    config_apply_platform(app);
+    /* 启动时按配置应用网卡 IP（静态/DHCP）；未配置则跳过。 */
+    net_ip_apply_cfg(app->cfg);
     return 0;
 }
 

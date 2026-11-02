@@ -20,6 +20,7 @@
 #include "core/log.h"
 #include "core/common.h"
 #include "core/thread.h"
+#include "core/cpu_affinity.h"
 #include "video/video_stream.h"
 #include "video/video_rec.h"
 #include "yolo/rknn_yolo.h"
@@ -31,7 +32,8 @@ typedef struct {
     int (*init)(void *);
     void (*dtor)(void *);
     void *(*task)(void *);
-    int priority;
+    int policy, priority;
+    cpu_group_t cpus;
 } module_t;
 
 static void sig_handler(int sig);
@@ -51,10 +53,6 @@ static int signal_setup(void *arg)
 /* 文件级应用上下文（仅本文件直接访问；其他模块通过指针参数获得） */
 static app_ctx_t g_app;
 
-/* Application threads start with explicit attributes; codec/runtime helpers
- * inherit their owner's scheduler. All policy and priority choices live here. */
-static const int g_thread_policy = SCHED_FIFO;
-
 /* 上下文仅保存运行标志和模块借出的指针，资源由各模块持有。 */
 static int context_init(void *arg)
 {
@@ -66,55 +64,61 @@ static int context_init(void *arg)
     return 0;
 }
 
-/* 同表管理生命周期和调度。只有优先级的行由所属模块创建内部线程；
- * 无 task 的行不由 main 创建线程。各模块自行注册/注销看门狗。 */
+/* 同表管理生命周期、调度策略、优先级和 CPU 分组。policy=-1 表示无线程；
+ * 内部线程配置行由所属模块创建。各模块自行注册/注销看门狗。 */
 static const module_t g_modules[] = {
-    /* name             init                dtor                    task                priority */
-    {"context",         context_init,       NULL,                   NULL,                0},
-    {"log",             log_init,           log_close,              NULL,                0},
-    {"config",          config_init,        config_cleanup,         NULL,                0},
-    {"main",            scheduling_init,    NULL,                   NULL,                5},
-    {"dbc",             dbc_init,           dbc_cleanup,            NULL,                0},
-    {"can",             can_init,           can_cleanup,            NULL,                0},
-    {"can_recv",        NULL,               NULL,                   can_recv_task,      15},
-    {"can_send",        NULL,               NULL,                   can_send_task,      15},
-    {"tcp",             tcp_init,           tcp_cleanup,            tcp_task,            5},
-    {"http",            http_server_start,  http_server_stop,       http_server_task,    5},
-    {"http_worker",     NULL,               NULL,                   NULL,                1},
-    {"car_sport_ctrl",  follow_init,        follow_destroy,         follow_task,        20},
-    {"ano",             ano_init,           ano_destroy,            NULL,                0},
-    {"video",           video_stream_init,  video_stream_shutdown,  video_stream_task,  15},
+    /* name             init                dtor                    task                policy       priority  cpus */
+    {"context",         context_init,       NULL,                   NULL,               -1,           0,       CPU_INHERIT},
+    {"log",             log_init,           log_close,              NULL,               -1,           0,       CPU_INHERIT},
+    {"config",          config_init,        config_cleanup,         NULL,               -1,           0,       CPU_INHERIT},
+    {"main",            scheduling_init,    NULL,                   NULL,               SCHED_FIFO,   5,       CPU_LITTLE},
+    {"dbc",             dbc_init,           dbc_cleanup,            NULL,               -1,           0,       CPU_INHERIT},
+    {"can",             can_init,           can_cleanup,            NULL,               -1,           0,       CPU_INHERIT},
+    {"can_recv",        NULL,               NULL,                   can_recv_task,      SCHED_FIFO,  15,       CPU_LITTLE},
+    {"can_send",        NULL,               NULL,                   can_send_task,      SCHED_FIFO,  15,       CPU_LITTLE},
+    {"tcp",             tcp_init,           tcp_cleanup,            tcp_task,           SCHED_FIFO,   5,       CPU_LITTLE},
+    {"http",            http_server_start,  http_server_stop,       http_server_task,   SCHED_FIFO,   5,       CPU_LITTLE},
+    {"http_worker",     NULL,               NULL,                   NULL,               SCHED_FIFO,   1,       CPU_LITTLE},
+    {"car_sport_ctrl",  follow_init,        follow_destroy,         follow_task,        SCHED_FIFO,  20,       CPU_LITTLE},
+    {"ano",             ano_init,           ano_destroy,            NULL,               -1,           0,       CPU_INHERIT},
+    {"video",           video_stream_init,  video_stream_shutdown,  video_stream_task,  SCHED_FIFO,  15,       CPU_BIG},
     /* YOLO 为必要模块：初始化失败即回滚启动。 */
-    {"yolo",            rknn_yolo_init,     rknn_yolo_destroy,      rknn_yolo_task,     10},
-    {"yolo_infer",      NULL,               NULL,                   NULL,               12},
-    {"yolo_render",     NULL,               NULL,                   NULL,               10},
-    {"yolo_report",     NULL,               NULL,                   NULL,                1},
-    {"watchdog",        watchdog_init,      NULL,                   watchdog_task,      30},
-    {"rec",             video_rec_init,     video_rec_destroy,      video_rec_task,     10},
-    {"signal",          signal_setup,       NULL,                   NULL,                0},
+    {"yolo",            rknn_yolo_init,     rknn_yolo_destroy,      rknn_yolo_task,     SCHED_FIFO,  10,       CPU_BIG},
+    {"yolo_infer",      NULL,               NULL,                   NULL,               SCHED_FIFO,  12,       CPU_BIG},
+    {"yolo_render",     NULL,               NULL,                   NULL,               SCHED_FIFO,  10,       CPU_BIG},
+    {"yolo_report",     NULL,               NULL,                   NULL,               SCHED_FIFO,   1,       CPU_LITTLE},
+    {"watchdog",        watchdog_init,      NULL,                   watchdog_task,      SCHED_FIFO,  30,       CPU_LITTLE},
+    {"rec",             video_rec_init,     video_rec_destroy,      video_rec_task,     SCHED_FIFO,  10,       CPU_BIG},
+    {"signal",          signal_setup,       NULL,                   NULL,               -1,           0,       CPU_INHERIT},
 };
 #define MOD_COUNT (sizeof(g_modules) / sizeof(g_modules[0]))
 
-static int thread_priority(const char *name)
+static const module_t *thread_config(const char *name)
 {
     for (size_t i = 0; i < MOD_COUNT; i++)
-        if (!strcmp(name, g_modules[i].name)) return g_modules[i].priority > 0 ? g_modules[i].priority : -1;
-    return -1;
+        if (!strcmp(name, g_modules[i].name)) return g_modules[i].policy >= 0 ? &g_modules[i] : NULL;
+    return NULL;
 }
 
 int app_thread_create(pthread_t *thread, const char *name,
                       void *(*task)(void *), void *argument, int detached)
 {
     if (!thread || !name || !task || (detached != 0 && detached != 1)) return EINVAL;
-    struct sched_param param = {.sched_priority = thread_priority(name)};
-    if (param.sched_priority < 0) return EINVAL;
+    const module_t *m = thread_config(name);
+    if (!m) return EINVAL;
+    struct sched_param param = {.sched_priority = m->priority};
     pthread_attr_t attributes;
     int rc = pthread_attr_init(&attributes);
     if (rc) return rc;
-    rc = pthread_attr_setschedpolicy(&attributes, g_thread_policy);
+    rc = pthread_attr_setschedpolicy(&attributes, m->policy);
     if (!rc) rc = pthread_attr_setschedparam(&attributes, &param);
     if (!rc) rc = pthread_attr_setinheritsched(&attributes, PTHREAD_EXPLICIT_SCHED);
     if (!rc && detached) rc = pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_DETACHED);
+    if (!rc && m->cpus != CPU_INHERIT) {
+        cpu_set_t cpus;
+        rc = cpu_affinity_get(m->cpus, &cpus) < 0 ? errno
+             : pthread_attr_setaffinity_np(&attributes, sizeof(cpus), &cpus);
+    }
     if (!rc) rc = pthread_create(thread, &attributes, task, argument);
     pthread_attr_destroy(&attributes);
     if (rc) LOG_ERROR("create thread '%s' failed: %s", name, strerror(rc));
@@ -124,8 +128,16 @@ int app_thread_create(pthread_t *thread, const char *name,
 static int scheduling_init(void *arg)
 {
     (void)arg;
-    struct sched_param param = {.sched_priority = thread_priority("main")};
-    int rc = pthread_setschedparam(pthread_self(), g_thread_policy, &param);
+    const module_t *m = thread_config("main");
+    if (!m) { LOG_ERROR("main: missing scheduling configuration"); return -1; }
+    int rc = 0;
+    if (m->cpus != CPU_INHERIT) {
+        cpu_set_t cpus;
+        rc = cpu_affinity_get(m->cpus, &cpus) < 0 ? errno
+             : pthread_setaffinity_np(pthread_self(), sizeof(cpus), &cpus);
+    }
+    struct sched_param param = {.sched_priority = m->priority};
+    if (!rc) rc = pthread_setschedparam(pthread_self(), m->policy, &param);
     if (rc) LOG_ERROR("main: scheduling setup failed: %s", strerror(rc));
     return rc ? -1 : 0;
 }

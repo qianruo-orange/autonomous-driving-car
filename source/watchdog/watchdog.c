@@ -8,7 +8,6 @@
 #include <pthread.h>
 #include <systemd/sd-daemon.h>
 #include "watchdog/watchdog.h"
-#include "core/cpu_affinity.h"
 #include "core/common.h"
 #include "core/log.h"
 
@@ -138,7 +137,6 @@ void *watchdog_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     (void)pthread_setname_np(pthread_self(), "watchdog");
-    (void)cpu_bind_little();
     time_t now = time(NULL);
     pthread_mutex_lock(&g_wd_mutex);
     for (int i = 0; i < WD_MAX_SLOTS; i++) {

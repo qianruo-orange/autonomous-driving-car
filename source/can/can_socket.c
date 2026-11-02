@@ -5,7 +5,6 @@
  * 电机编码、反馈解析及控制条件保留在 can_motor.c。 */
 #define _GNU_SOURCE
 
-#include "core/cpu_affinity.h"
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -817,7 +816,6 @@ void *can_recv_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     (void)pthread_setname_np(pthread_self(), "can_recv");
-    (void)cpu_bind_little();
     if (watchdog_register_thread(pthread_self(), "can_recv", 3, 3) < 0) {
         app->fatal = 1;
         app->running = 0;
@@ -855,7 +853,6 @@ void *can_send_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     (void)pthread_setname_np(pthread_self(), "can_send");
-    (void)cpu_bind_little();
     if (watchdog_register_thread(pthread_self(), "can_send", 3, 3) < 0) {
         app->fatal = 1;
         app->running = 0;

@@ -40,7 +40,6 @@
 #include "video/frame_ring.h"
 #include "yolo/rknn_yolo.h"
 #include "core/common.h"
-#include "core/cpu_affinity.h"
 #include "core/log.h"
 #include "watchdog/watchdog.h"
 
@@ -215,7 +214,6 @@ void *video_rec_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     (void)pthread_setname_np(pthread_self(), "rec");
-    (void)cpu_bind_big();
     /* main starts this task with FIFO; encoder helpers inherit it. */
     if (watchdog_register_thread(pthread_self(), "rec", 5, 3) < 0) {
         app->fatal = 1;

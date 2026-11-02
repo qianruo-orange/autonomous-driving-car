@@ -7,7 +7,6 @@
 #include <sched.h>
 #include <errno.h>
 #include <limits.h>
-#include <stdatomic.h>
 #include "core/cpu_affinity.h"
 #include "core/log.h"
 
@@ -15,8 +14,7 @@
 
 static pthread_once_t affinity_once = PTHREAD_ONCE_INIT;
 static cpu_set_t heavy_set, light_set;
-static int affinity_ready;
-static atomic_int heavy_error_logged, light_error_logged;
+static int affinity_ready, affinity_error;
 
 /* Only initially permitted CPUs participate. Do not infer core numbers from
  * a SoC name or from thermally capped scaling frequencies. */
@@ -90,8 +88,10 @@ static void initialize_affinity(void)
 {
     cpu_set_t allowed;
     CPU_ZERO(&allowed);
-    if (sched_getaffinity(0, sizeof(allowed), &allowed) || !CPU_COUNT(&allowed)) {
-        LOG_ERROR("cpu: cannot read allowed CPU set; keeping scheduler affinity: %s", strerror(errno));
+    if (sched_getaffinity(0, sizeof(allowed), &allowed)) affinity_error = errno;
+    else if (!CPU_COUNT(&allowed)) affinity_error = EINVAL;
+    if (affinity_error) {
+        LOG_ERROR("cpu: cannot read allowed CPU set; keeping scheduler affinity: %s", strerror(affinity_error));
         return;
     }
     const char *source = detect_groups(CPU_AFFINITY_ROOT, &allowed, &heavy_set, &light_set);
@@ -106,21 +106,14 @@ int cpu_affinity_init(void)
 {
     int result = pthread_once(&affinity_once, initialize_affinity);
     if (result) { errno = result; return -1; }
-    return affinity_ready ? 0 : -1;
-}
-
-static int bind_group(const cpu_set_t *set, atomic_int *logged, const char *name)
-{
-    if (cpu_affinity_init()) return -1;
-    int result = pthread_setaffinity_np(pthread_self(), sizeof(*set), set);
-    if (result) {
-        if (!atomic_exchange(logged, 1))
-            LOG_ERROR("cpu: cannot bind %s work: %s", name, strerror(result));
-        errno = result;
-        return -1;
-    }
+    if (!affinity_ready) { errno = affinity_error ? affinity_error : EIO; return -1; }
     return 0;
 }
 
-int cpu_bind_big(void) { return bind_group(&heavy_set, &heavy_error_logged, "heavy"); }
-int cpu_bind_little(void) { return bind_group(&light_set, &light_error_logged, "light"); }
+int cpu_affinity_get(cpu_group_t group, cpu_set_t *set)
+{
+    if (!set || (group != CPU_LITTLE && group != CPU_BIG)) { errno = EINVAL; return -1; }
+    if (cpu_affinity_init()) return -1;
+    *set = group == CPU_BIG ? heavy_set : light_set;
+    return 0;
+}
