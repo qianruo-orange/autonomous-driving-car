@@ -10,6 +10,9 @@
 #include <setjmp.h>
 #include <jpeglib.h>
 #include <jerror.h>   /* ERREXIT 宏（自定义输出管理器报错用） */
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 #include "yolo/yolo_image.h"
 
@@ -175,6 +178,53 @@ void yolo_yuyv_to_rgb(const unsigned char *src, int w, int h, unsigned char *dst
             *dst++ = (unsigned char)r;
             *dst++ = (unsigned char)g;
             *dst++ = (unsigned char)b;
+        }
+    }
+}
+
+#if defined(__aarch64__)
+static uint8x16_t jpeg_rgb_channel(uint8x16_t y, int16x8_t delta)
+{
+    int16x8_t lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(y)));
+    int16x8_t hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(y)));
+    return vcombine_u8(vqmovun_s16(vaddq_s16(lo, vzip1q_s16(delta, delta))),
+                       vqmovun_s16(vaddq_s16(hi, vzip2q_s16(delta, delta))));
+}
+#endif
+
+void yolo_nv12_to_rgb_full(const unsigned char *y, const unsigned char *uv,
+                            int stride, int w, int h, unsigned char *rgb)
+{
+    for (int row = 0; row < h; ++row) {
+        const unsigned char *luma = y + (size_t)row * stride;
+        const unsigned char *chroma = uv + (size_t)(row / 2) * stride;
+        unsigned char *dst = rgb + (size_t)row * w * 3;
+        int x = 0;
+#if defined(__aarch64__)
+        for (; x + 16 <= w; x += 16) {
+            uint8x8x2_t pair = vld2_u8(chroma + x);
+            int16x8_t u = vreinterpretq_s16_u16(vsubl_u8(pair.val[0], vdup_n_u8(128)));
+            int16x8_t v = vreinterpretq_s16_u16(vsubl_u8(pair.val[1], vdup_n_u8(128)));
+            int16x8_t r = vcombine_s16(vrshrn_n_s32(vmull_n_s16(vget_low_s16(v), 1436), 10),
+                                       vrshrn_n_s32(vmull_n_s16(vget_high_s16(v), 1436), 10));
+            int16x8_t b = vcombine_s16(vrshrn_n_s32(vmull_n_s16(vget_low_s16(u), 1815), 10),
+                                       vrshrn_n_s32(vmull_n_s16(vget_high_s16(u), 1815), 10));
+            int32x4_t gl = vmlal_n_s16(vmull_n_s16(vget_low_s16(u), 352), vget_low_s16(v), 731);
+            int32x4_t gh = vmlal_n_s16(vmull_n_s16(vget_high_s16(u), 352), vget_high_s16(v), 731);
+            int16x8_t g = vnegq_s16(vcombine_s16(vrshrn_n_s32(gl, 10), vrshrn_n_s32(gh, 10)));
+            uint8x16_t yy = vld1q_u8(luma + x);
+            uint8x16x3_t output = {{jpeg_rgb_channel(yy, r), jpeg_rgb_channel(yy, g), jpeg_rgb_channel(yy, b)}};
+            vst3q_u8(dst + (size_t)x * 3, output);
+        }
+#endif
+        for (; x < w; ++x) {
+            int u = chroma[x & ~1] - 128, v = chroma[(x & ~1) + 1] - 128;
+            int r = luma[x] + ((1436 * v + 512) >> 10);
+            int g = luma[x] - ((352 * u + 731 * v + 512) >> 10);
+            int b = luma[x] + ((1815 * u + 512) >> 10);
+            dst[x * 3] = (unsigned char)(r < 0 ? 0 : r > 255 ? 255 : r);
+            dst[x * 3 + 1] = (unsigned char)(g < 0 ? 0 : g > 255 ? 255 : g);
+            dst[x * 3 + 2] = (unsigned char)(b < 0 ? 0 : b > 255 ? 255 : b);
         }
     }
 }

@@ -67,6 +67,7 @@
 #include "watchdog/watchdog.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
+#include "video/jpeg_decoder.h"
 
 #define YOLO_MAX_WORKERS 15    /* Actual count is a multiple of detected NPU cores. */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
@@ -120,6 +121,7 @@ static struct {
     _Atomic int    enabled;                  /* 推理池可用（画框流可用） */
     _Atomic int    running;                  /* 模块生命周期（destroy 置 0） */
     _Atomic int    pool_running;             /* 推理池生命周期（reload 置 0 停池） */
+    _Atomic int    hardware_decode;
     app_ctx_t     *app;
     float          conf, nms;
     int            nthreads;                 /* Workers evenly assigned to detected NPU cores. */
@@ -1215,6 +1217,8 @@ int rknn_yolo_init(void *arg)
         LOG_ERROR("yolo: init without config");
         return -1;
     }
+    g_yolo.hardware_decode = jpeg_decoder_available();
+    LOG_INFO("yolo: JPEG decoder %s", g_yolo.hardware_decode ? "rockchip-jpegd (hardware)" : "libjpeg-turbo (software)");
     if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable; live inference remains enabled");
     /* YOLO 为必要流程：无 YOLO（模型缺失/NPU 不可用）直接报错，服务启动失败 */
@@ -1297,6 +1301,11 @@ unsigned long long rknn_yolo_get_frame_seq(void)
 }
 
 /* ---- YOLO 采集线程（main 模块框架 task）：等新帧 → claim → 解码 → 投递队列 ---- */
+int rknn_yolo_hardware_decoder(void)
+{
+    return atomic_load(&g_yolo.hardware_decode);
+}
+
 void *rknn_yolo_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
@@ -1307,6 +1316,8 @@ void *rknn_yolo_task(void *arg)
         app->running = 0;
         return NULL;
     }
+
+    jpeg_decoder_t *decoder = NULL;
 
     frame_ring_t *ring = yolo_ring();
     frame_subscription_t capture;
@@ -1360,12 +1371,20 @@ void *rknn_yolo_task(void *arg)
         frame_ring_buf_take_locked(ring, FRAME_RING_POOL_RGB, (size_t)w * h * 3, &rgbb);
         frame_ring_unlock(ring);
 
-        /* 锁外解码：槽 raw 由 claim 保护（零拷贝读 mmap，不再整帧拷贝） */
+        /* The claim holds the camera buffer while JPEG is submitted to DMA. */
         int decode_ok = 0;
         unsigned long long decode_start_us = yolo_now_us();
         if (raw && rgbb.buf && w > 0 && h > 0) {
-            if (fmt == FRAME_RING_FMT_MJPEG)
-                decode_ok = yolo_jpeg_to_rgb_buf(raw, raw_len, rgbb.buf, w, h) == 0;
+            if (fmt == FRAME_RING_FMT_MJPEG) {
+                if (g_yolo.hardware_decode) {
+                    if (!decoder) decoder = jpeg_decoder_open();
+                    decode_ok = decoder && jpeg_decoder_rgb(decoder, raw, raw_len, rgbb.buf, w, h) == 0;
+                } else {
+                    jpeg_decoder_close(decoder);
+                    decoder = NULL;
+                    decode_ok = yolo_jpeg_to_rgb_buf(raw, raw_len, rgbb.buf, w, h) == 0;
+                }
+            }
             else   /* YUYV */
                 { yolo_yuyv_to_rgb(raw, w, h, rgbb.buf); decode_ok = 1; }
         }
@@ -1393,6 +1412,7 @@ void *rknn_yolo_task(void *arg)
     }
     if (app->running) app->fatal = 1;
     app->running = 0;
+    jpeg_decoder_close(decoder);
     watchdog_unregister_self("yolo");
     return NULL;
 }

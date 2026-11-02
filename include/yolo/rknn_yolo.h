@@ -50,6 +50,8 @@ void rknn_yolo_default_model_path(char *out, size_t size);
 int rknn_yolo_validate_model(const char *path);
 /* 当前自适应启用的推理 worker 数；推理池不可用时返回 0。 */
 int rknn_yolo_active_workers(void);
+/* Read-only backend selection; the image thread owns the decoder. */
+int rknn_yolo_hardware_decoder(void);
 
 /* 热重载推理池（停止 → 重读配置 → 重建）；返回 0 = 新池可用，-1 = 未运行/降级 */
 int rknn_yolo_reload(void);

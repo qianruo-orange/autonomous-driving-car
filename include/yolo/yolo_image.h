@@ -28,6 +28,10 @@ int yolo_rgb_to_jpeg_reuse(const unsigned char *rgb, int w, int h,
 /* YUYV（V4L2）→ RGB24（BT.601），dst 需 w*h*3 字节 */
 void yolo_yuyv_to_rgb(const unsigned char *src, int w, int h, unsigned char *dst);
 
+/* Full-range BT.601 NV12 from the JPEG decoder; planes may include padding. */
+void yolo_nv12_to_rgb_full(const unsigned char *y, const unsigned char *uv,
+                            int stride, int w, int h, unsigned char *rgb);
+
 /* RGB24 → NV12（BT.601 limited，Y 全分辨率 + UV 四分之一分辨率交错）；
    dst 需 w*h*3/2 字节。供录像硬件编码链路复用画框帧，免去二次 JPEG 解码 */
 void yolo_rgb_to_nv12(const unsigned char *rgb, int w, int h, unsigned char *nv12);

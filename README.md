@@ -177,13 +177,13 @@ flowchart LR
 
 Safety prerequisites are checked on timed wakes even without a new inference; PID updates use accepted inference timestamps. Following always starts disabled. Automatic speed uses relative target-area error; steering uses horizontal target error. Each wheel PI loop compares target speed with real measured feedback. Visual selection affects the overlay, while following selects its own target by configured class and proximity to its previous target or seed.
 
-The CPU handles capture processing, tracking, control, communication, and management; the NPU runs YOLO detection. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
+The CPU handles capture processing, tracking, control, communication, and management; the NPU runs YOLO detection. On the RK3576, the JPEG block decodes camera MJPEG into cached DMA-BUF surfaces, then a full-range BT.601 NEON conversion supplies RGB to inference. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
 
 A Linux real-time kernel is the system target. `main.c` declares each thread's scheduling policy, priority, and CPU group alongside lifecycle callbacks in one module table, including internally owned HTTP and inference workers. Current thread rows select `SCHED_FIFO`; explicit creation attributes apply the selected CPU group before each thread starts. The controller runs at priority **20** and reports its actual scheduler separately from PREEMPT_RT kernel support through `/api/follow`. See [kernel and scheduling verification](docs/KERNEL_VERIFICATION.md) for deployed measurements and limits.
 
 ## Perception and motion control
 
-**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Available camera modes and hardware encoding depend on the device and drivers.
+**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Codec backends are managed by the application: the RK3576 camera uses V4L2 JPEG hardware decoding when the prepared driver is available; recording uses the validated software H.264 encoder. Available camera modes depend on the attached camera and drivers.
 
 Capture and rendering publish frame notifications to their subscribers; inference and result queues wake the next stage as work becomes available. See [frame handoff and the verified YOLO26n artifact](docs/FRAME_PIPELINE.md) for ownership, cancellation and model details.
 
@@ -213,9 +213,11 @@ Build dependencies:
 - C11/C++11 compiler, GNU Make, CMake **3.18+**, and Bash.
 - libsystemd, libnl-3/libnl-route-3, libjpeg, and OpenCV core/imgproc development libraries.
 - Standard Linux utilities including `flock`, `sha256sum`, `strings`, `awk`, `tar`, and `zip`.
-- Optional FFmpeg libavcodec/libavutil development libraries and pkg-config for the FFmpeg backend. Software H.264 uses `libx264`; hardware encoding uses an available RKMPP or V4L2 backend.
+- Recording uses FFmpeg libavcodec/libavutil, pkg-config and a runtime with `libx264`. Hardware encoding remains experimental and is excluded from the application backend selection.
 
 ## Build and deployment
+
+For the validated ROCK 4D hardware JPEG path, first follow the [JPEG driver installation](kernel/rockchip-jpegd/README.md). See the [Chinese codec measurements](docs/CODEC_PERFORMANCE.md) for timing, quality checks and the encoder limitations. The front end exposes capture device, resolution and frame rate; codec selection is internal.
 
 Prepare the model and labels before the first build:
 
@@ -335,7 +337,8 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | `source/watchdog/` | Worker heartbeat supervision |
 | `include/` | Module interfaces and shared types |
 | `config/` | Device settings, model, labels, CAN databases |
-| `scripts/` | Bash build, deployment, and model synchronization |
+| `scripts/` | Bash build, deployment, model synchronization and JPEG driver installation |
+| `kernel/` | JPEG driver sources, provenance and RK3576 activation overlay |
 
 ## Communication registration and data slots
 

@@ -64,8 +64,6 @@ void http_config_get(app_ctx_t *app, int fd, const char *method, const char *uri
     if (cfg->video_device[0]) JSON_ADD(json, off, ",\"video_device\":\"%s\"", cfg->video_device);
     JSON_ADD(json, off, ",\"video_width\":%d,\"video_height\":%d,\"video_fps\":%d",
              cfg->video_width, cfg->video_height, cfg->video_fps);
-    JSON_ADD(json, off, ",\"video_codec\":\"%s\"", cfg->video_codec);
-    JSON_ADD(json, off, ",\"video_decoder\":\"%s\"", cfg->video_decoder[0] ? cfg->video_decoder : "software");
     /* YOLO 检测配置（必要流程：推理不可关停，前端默认展示画框流） */
     JSON_ADD(json, off, ",\"yolo_model\":\"%s\",\"yolo_names\":\"%s\",\"yolo_input_size\":%d,"
         "\"yolo_conf\":%.2f,\"yolo_nms\":%.2f,\"yolo_interval_ms\":0,\"yolo_threads\":%d,\"yolo_threads_auto\":true",
@@ -213,27 +211,13 @@ static void apply_can(app_ctx_t *app, const http_form_field_t *fields, int count
     }
 }
 
-/* 视频：更新设备/分辨率/码率系数，返回 APPLY_VIDEO_* 位组合标识需要重启的部件 */
+/* Capture changes rebuild the shared recording encoder and the camera. */
 #define APPLY_VIDEO_CAPTURE  0x1   /* 采集参数变化：重启视频流 */
-#define APPLY_VIDEO_ENCODER  0x2   /* 编码参数变化：滚动录制会话（编码器随会话创建） */
-
-/* This build has no hardware capture decoder. Reject unsupported requests
-   before applying any fields, including a mixed request with other changes. */
-static int video_decoder_fields_valid(const http_form_field_t *fields, int count)
-{
-    for (int i = 0; i < count; i++)
-        if (strcmp(fields[i].key, "video_decoder") == 0 &&
-            strcmp(fields[i].val, "software") != 0) return 0;
-    return 1;
-}
 
 static int apply_video(app_ctx_t *app, const http_form_field_t *fields, int count)
 {
     struct app_config_t *cfg = app->cfg;
     int changed = 0;
-
-    const char *decoder = http_form_find(fields, count, "video_decoder");
-    if (decoder) safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), decoder);
 
     const char *v = http_form_find(fields, count, "video_device");
     if (v && strcmp(v, cfg->video_device) != 0) {
@@ -256,15 +240,6 @@ static int apply_video(app_ctx_t *app, const http_form_field_t *fields, int coun
         if (nf != cfg->video_fps) { changed |= APPLY_VIDEO_CAPTURE; cfg->video_fps = nf; }
     }
 
-    v = http_form_find(fields, count, "video_codec");
-    if (v) {
-        if (strcmp(v, "hardware") == 0 || strcmp(v, "software") == 0) {
-            if (strcmp(v, cfg->video_codec) != 0) {
-                changed |= APPLY_VIDEO_ENCODER;
-                safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), v);
-            }
-        }
-    }
     return changed;
 }
 
@@ -402,10 +377,10 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
         return;
     }
 
-    if ((!target || strcmp(target, "all") == 0 || strcmp(target, "video") == 0) &&
-        !video_decoder_fields_valid(fields, count)) {
-        http_err(fd, 400, "Bad Request", "Only software video decoding is available");
+    if (http_form_find(fields, count, "video_codec") ||
+        http_form_find(fields, count, "video_decoder")) {
         pthread_mutex_unlock(&app->can_mutex);
+        http_err(fd, 400, "Bad Request", "Video codecs are managed by the application");
         return;
     }
 
@@ -440,7 +415,7 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
     /* The recording and live stream share a session-owned encoder. Rebuild it
        before capture changes, otherwise every frame at the new dimensions is
        rejected by the old encoder and reported as an inference stall. */
-    if (vid_changed & (APPLY_VIDEO_CAPTURE | APPLY_VIDEO_ENCODER))
+    if (vid_changed & (APPLY_VIDEO_CAPTURE))
         video_rec_cycle_session();
     if (vid_changed & APPLY_VIDEO_CAPTURE) video_stream_restart();
     /* YOLO 参数变更后热重载推理池（停旧池 → 重读配置重建），无需重启服务 */

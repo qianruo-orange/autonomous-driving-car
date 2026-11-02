@@ -1,0 +1,34 @@
+/dts-v1/;
+/plugin/;
+/ {
+ fragment@0 {
+  target-path = "/soc";
+  __overlay__ {
+   #address-cells = <2>;
+   #size-cells = <2>;
+   jpegd@27910000 {
+    compatible = "rockchip,rk3576-jpegd";
+    reg = <0 0x27910000 0 0x330>;
+    interrupt-parent = <@GIC@>;
+    interrupts = <0 331 4>;
+    clocks = <@CRU@ 338>, <@CRU@ 339>;
+    clock-names = "axi", "ahb";
+    resets = <@CRU@ 301>, <@CRU@ 302>;
+    power-domains = <@POWER@ 13>;
+    iommus = <&jpeg_mmu>;
+    status = "okay";
+   };
+   jpeg_mmu: iommu@27910f00 {
+    compatible = "rockchip,rk3576-iommu", "rockchip,rk3568-iommu";
+    reg = <0 0x27910f00 0 0x100>;
+    interrupt-parent = <@GIC@>;
+    interrupts = <0 332 4>;
+    clocks = <@CRU@ 338>, <@CRU@ 339>;
+    clock-names = "aclk", "iface";
+    #iommu-cells = <0>;
+    power-domains = <@POWER@ 13>;
+    status = "okay";
+   };
+  };
+ };
+};

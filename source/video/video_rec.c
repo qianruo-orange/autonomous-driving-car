@@ -282,7 +282,7 @@ void *video_rec_task(void *arg)
             if (bitrate < 300000)  bitrate = 300000;
             if (bitrate > 16000000) bitrate = 16000000;
             h264_encoder_t *enc = h264_encoder_create(pw, ph, fps, bitrate,
-                strcmp(app->cfg->video_codec, "hardware") == 0 ? H264_CODEC_HARDWARE : H264_CODEC_SOFTWARE);
+                H264_CODEC_SOFTWARE);
             if (!enc) {
                 init_fail_cnt++;
                 pthread_mutex_lock(&g_rec.lock);

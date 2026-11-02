@@ -1,5 +1,7 @@
 # Frame publication and model verification
 
+Update on 2026-11-03: RK3576 camera MJPEG now uses the prepared V4L2 JPEG driver, cached DMA-BUF and full-range BT.601 NEON conversion to RGB. The image thread owns this context; frame topics and ownership below remain unchanged. See [codec validation and measurements](CODEC_PERFORMANCE.md) for the current backend and experimental encoder limits.
+
 ## Frame handoff
 
 The frame ring publishes two topics under its mutex:

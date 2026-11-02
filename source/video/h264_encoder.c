@@ -455,13 +455,23 @@ h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps, h264
                      w, h, fps, bitrate_bps);
             return e;
         }
-        LOG_ERROR("h264: libx264 open failed, falling back to hardware backend");
+        LOG_ERROR("h264: libx264 open failed");
+        free(e);
+        return NULL;
     } else {
         if (ff_encoder_open(e, fps, bitrate_bps) == 0) {
             LOG_INFO("h264: FFmpeg rkmpp encoder ready %dx%d fps=%d bitrate=%d",
                      w, h, fps, bitrate_bps);
             return e;
         }
+    }
+#endif
+
+#ifndef HAVE_AVCODEC
+    if (codec == H264_CODEC_SOFTWARE) {
+        LOG_ERROR("h264: software encoder requires FFmpeg libavcodec");
+        free(e);
+        return NULL;
     }
 #endif
 

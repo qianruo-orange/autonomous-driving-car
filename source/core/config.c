@@ -62,8 +62,6 @@ static void config_defaults(struct app_config_t *cfg)
     cfg->video_width  = 640;
     cfg->video_height = 480;
     cfg->video_fps    = 0;    /* 0 = driver default frame rate */
-    safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), "software");
-    safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
 
     rknn_yolo_default_model_path(cfg->yolo_model, sizeof(cfg->yolo_model));
     safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), "config/coco.names");
@@ -98,8 +96,6 @@ int config_load(struct app_config_t *cfg)
     memset(cfg, 0, sizeof(*cfg));
     safe_strncpy(cfg->log_dir, sizeof(cfg->log_dir), PATH_LOGS);
     cfg->video_width = 640; cfg->video_height = 480;
-    safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), "software");
-    safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
     rknn_yolo_default_model_path(cfg->yolo_model, sizeof(cfg->yolo_model));
     safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), "config/coco.names");
     cfg->yolo_input_size = 640; cfg->yolo_conf = 0.25f; cfg->yolo_nms = 0.45f;
@@ -165,12 +161,6 @@ int config_load(struct app_config_t *cfg)
         else if (strcmp(key, "video_width") == 0) cfg->video_width = parse_int_clamped(val, 1, 4096, 640);
         else if (strcmp(key, "video_height") == 0) cfg->video_height = parse_int_clamped(val, 1, 4096, 480);
         else if (strcmp(key, "video_fps") == 0) cfg->video_fps = parse_int_clamped(val, 0, 120, 0);
-        else if (strcmp(key, "video_codec") == 0) safe_strncpy(cfg->video_codec, sizeof(cfg->video_codec), val);
-        else if (strcmp(key, "video_decoder") == 0) {
-            if (strcmp(val, "software") != 0)
-                LOG_ERROR("config: unsupported video decoder '%s'; using software decoding", val);
-            safe_strncpy(cfg->video_decoder, sizeof(cfg->video_decoder), "software");
-        }
         else if (strcmp(key, "yolo_model") == 0) safe_strncpy(cfg->yolo_model, sizeof(cfg->yolo_model), val);
         else if (strcmp(key, "yolo_names") == 0) safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), val);
         else if (strcmp(key, "yolo_input_size") == 0) cfg->yolo_input_size = parse_int_clamped(val, 32, 2048, 640);
@@ -250,8 +240,6 @@ void config_save(app_ctx_t *app)
     fprintf(fp, "video_width %d\n", cfg->video_width);
     fprintf(fp, "video_height %d\n", cfg->video_height);
     fprintf(fp, "video_fps %d\n", cfg->video_fps);
-    fprintf(fp, "video_codec %s\n", cfg->video_codec);
-    fprintf(fp, "video_decoder %s\n", cfg->video_decoder[0] ? cfg->video_decoder : "software");
     fprintf(fp, "\n# --- YOLO 检测 (YOLO26, RKNN) ---\n");
     fprintf(fp, "yolo_model %s\n", cfg->yolo_model);
     fprintf(fp, "yolo_names %s\n", cfg->yolo_names[0] ? cfg->yolo_names : "config/coco.names");
