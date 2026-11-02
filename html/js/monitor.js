@@ -58,7 +58,45 @@
     if (lastBlobUrl) { URL.revokeObjectURL(lastBlobUrl); lastBlobUrl = null; }
   }
 
+  /* Retain only JPEG data and scan each incoming byte once. Blob copies the
+     completed view before this reusable buffer receives the next frame. */
+  function createJpegParser(onFrame) {
+    var limit = 16 * 1024 * 1024, frame = new Uint8Array(64 * 1024);
+    var used = 0, previous = 0, inside = false;
+    function append(bytes) {
+      var needed = used + bytes.length;
+      if (needed > limit) throw new Error('MJPEG frame exceeds 16 MiB');
+      if (needed > frame.length) {
+        var grown = new Uint8Array(Math.min(limit, Math.max(needed, frame.length * 2)));
+        grown.set(frame.subarray(0, used));
+        frame = grown;
+      }
+      frame.set(bytes, used);
+      used = needed;
+    }
+    return function(chunk) {
+      var start = 0;
+      for (var i = 0; i < chunk.length; i++) {
+        var byte = chunk[i];
+        if (!inside) {
+          if (previous === 0xff && byte === 0xd8) {
+            inside = true; used = 2;
+            frame[0] = 0xff; frame[1] = 0xd8;
+            start = i + 1;
+          }
+        } else if (previous === 0xff && byte === 0xd9) {
+          append(chunk.subarray(start, i + 1));
+          onFrame(frame.subarray(0, used));
+          inside = false; used = 0; start = i + 1;
+        }
+        previous = byte;
+      }
+      if (inside) append(chunk.subarray(start));
+    };
+  }
+
   function streamStart(url) {
+    if (document.hidden || playerSuspended) return;
     if (streamUrl === url && streamRunning) return;   /* 同一流已在播放 */
     streamStop();
     streamUrl = url;
@@ -66,7 +104,13 @@
     resetFps();
     var ac = new AbortController();
     streamAbort = ac;
-    var buf = new Uint8Array(0);
+    var parse = createJpegParser(function(frame) {
+      if (!imgEl) return;
+      fpsCnt++;
+      var blob = new Blob([frame], {type: 'image/jpeg'});
+      if (imgBusy) pendingBlob = blob;
+      else showFrame(blob);
+    });
 
     fetch(url, {signal: ac.signal}).then(function(r) {
       if (streamAbort !== ac) return;
@@ -76,31 +120,7 @@
         rd.read().then(function(c) {
           if (streamAbort !== ac) return;
           if (c.done) { streamRunning = false; streamAbort = null; return; }
-          var b = c.value;
-          var nb = new Uint8Array(buf.length + b.length);
-          nb.set(buf, 0); nb.set(b, buf.length);
-          buf = nb;
-          /* 扫 SOI(FF D8)…EOI(FF D9) 成帧（multipart 头被自然跳过；跨块帧头尾由缓冲续接） */
-          var p = 0;
-          while (p < buf.length - 1) {
-            if (buf[p] === 0xFF && buf[p + 1] === 0xD8) {
-              var q = p + 2;
-              while (q < buf.length - 1 && !(buf[q] === 0xFF && buf[q + 1] === 0xD9)) q++;
-              if (q >= buf.length - 1) break;          /* 帧未收全：等下一块 */
-              if (imgEl) {
-                fpsCnt++;                              /* 计数含被丢弃的帧（真实码流速率） */
-                var blob = new Blob([buf.subarray(p, q + 2)], {type: 'image/jpeg'});
-                if (imgBusy) pendingBlob = blob;       /* 解码忙：只留最新帧，防 src 覆盖风暴 */
-                else showFrame(blob);
-              }
-              p = q + 2;
-            } else p++;
-          }
-          /* 丢弃已消费数据，仅保留未完成帧的尾部 */
-          if (p > 0) buf = buf.subarray(p);
-          /* A partial JPEG may legitimately exceed 64 KiB. Keep its SOI until
-             EOI arrives; discard a corrupt/unbounded frame by reconnecting. */
-          else if (buf.length > 16 * 1024 * 1024) throw new Error('MJPEG frame exceeds 16 MiB');
+          parse(c.value);
           pump();
         }).catch(function() {
           if (streamAbort === ac) { ac.abort(); streamRunning = false; streamAbort = null; }
@@ -126,9 +146,10 @@
   var mseOverLeadSince = null;
   var mseStableSince = 0, mseRateLastAt = 0, mseRateLastMedia = 0;
   var mseWaitingAt = null, mseStartedAt = 0;
-  var mseFrameCallback = null, msePresentedMediaTime = null, mseDecodeMs = null;
+  var mseFrameCallback = null, msePresentedMediaTime = null, msePresentedAt = 0, mseDecodeMs = null;
   var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0,
-    bufferReductions: 0, bufferRecoveries: 0, lastError: '' };
+    bufferReductions: 0, bufferRecoveries: 0, queuedBytes: 0, peakQueuedBytes: 0,
+    appendBatches: 0, lastError: '' };
 
   function mseProfileReset() {
     mseTargetLead = chromePlayback ? 0.08 : 0.2;
@@ -191,7 +212,7 @@
     if (mseFrameCallback !== null && vid && vid.cancelVideoFrameCallback)
       vid.cancelVideoFrameCallback(mseFrameCallback);
     mseFrameCallback = null;
-    msePresentedMediaTime = null;
+    msePresentedMediaTime = null; msePresentedAt = 0;
     mseOverLeadSince = null;
     mseStableSince = mseRateLastAt = 0;
     mseWaitingAt = null;
@@ -212,6 +233,7 @@
       mseMs = null;
     }
     mseSb = null;
+    mseDiag.queuedBytes = 0;
     mseUrl = '';
     mseTail[0] = mseTail[1] = mseTail[2] = 0;
     if (vid && hadMse) {
@@ -230,8 +252,8 @@
     mseStop();
   }
 
-  /* One mutation at a time, completed by updateend. The fetch pump awaits this
-     promise, so network chunks cannot overtake earlier bytes in the MP4 stream. */
+  /* Serialize SourceBuffer mutations; the reader coalesces pending chunks
+     independently, preserving every byte and every H.264 dependency in order. */
   function mseUpdate(sb, action, generation) {
     return new Promise(function(resolve, reject) {
       if (!mseRunning || mseSb !== sb || generation !== mseGeneration) {
@@ -315,6 +337,7 @@
       } else if (ahead <= mseTargetLead + (chromePlayback ? 0.01 : 0.02) + 0.000001) {
         vid.playbackRate = 1;
       }
+      if (!msePrimed && end - start >= primeSpan) msePrimed = true;
     } catch(e) {}
   }
 
@@ -332,6 +355,7 @@
   }
 
   function mseStart(url) {
+    if (document.hidden || playerSuspended) return;
     if (mseUrl === url && mseRunning) return;        /* 同一流已在播放 */
     if (Date.now() - mseLastFail < 1000) return;     /* 失败 1s 节流（update 200ms 轮询） */
     mseStop();
@@ -345,7 +369,7 @@
     mseOverLeadSince = null;
     mseClockAgeMs = null;
     mseClockAt = 0;
-    msePresentedMediaTime = null;
+    msePresentedMediaTime = null; msePresentedAt = 0;
     mseDecodeMs = null;
     mseDiag.starts++;
     var generation = mseGeneration;
@@ -388,15 +412,44 @@
         var p = vid.play();
         if (p && p.catch) p.catch(function(){});     /* muted+autoplay 正常应成功 */
 
+        var chunks = [], queued = 0, appending = false, ended = false;
+        function appendPending() {
+          if (appending || !queued || generation !== mseGeneration || !mseRunning) return;
+          var batch = chunks[0];
+          if (chunks.length > 1) {
+            batch = new Uint8Array(queued);
+            var offset = 0;
+            chunks.forEach(function(chunk) { batch.set(chunk, offset); offset += chunk.length; });
+          }
+          chunks = []; queued = 0; mseDiag.queuedBytes = 0;
+          appending = true;
+          mseDiag.appendBatches++;
+          mseAppend(sb, batch, generation).then(function() {
+            appending = false;
+            if (generation !== mseGeneration || !mseRunning) return;
+            if (queued) appendPending();
+            else if (ended) mseStop();
+          }).catch(function(e) { mseFail(generation, e); });
+        }
         (async function pump() {
           try {
             while (generation === mseGeneration && mseRunning) {
               var c = await rd.read();
               if (generation !== mseGeneration) return;
-              if (c.done) { mseStop(); return; }
+              if (c.done) {
+                ended = true;
+                if (!appending && !queued) mseStop();
+                return;
+              }
               mseLastData = Date.now();
               mseScanMoof(c.value);
-              await mseAppend(sb, c.value, generation);
+              if (!c.value.length) continue;
+              queued += c.value.length;
+              if (queued > 8 * 1024 * 1024) throw new Error('Video append queue exceeds 8 MiB');
+              chunks.push(c.value);
+              mseDiag.queuedBytes = queued;
+              mseDiag.peakQueuedBytes = Math.max(mseDiag.peakQueuedBytes, queued);
+              appendPending();
             }
           } catch(e) { mseFail(generation, e); }
         })();
@@ -409,6 +462,7 @@
     function presented(now, metadata) {
       if (!mseRunning || generation !== mseGeneration) return;
       msePresentedMediaTime = metadata.mediaTime;
+      msePresentedAt = Date.now();
       if (typeof metadata.processingDuration === 'number') mseDecodeMs = metadata.processingDuration * 1000;
       mseFrameCallback = vid.requestVideoFrameCallback(presented);
     }
@@ -442,7 +496,11 @@
         result.buffered.push([mseSb.buffered.start(i), mseSb.buffered.end(i)]);
     }
     if (mseRunning && vid && mseClockAgeMs !== null) {
-      var mediaTime = msePresentedMediaTime === null ? vid.currentTime : msePresentedMediaTime;
+      /* Occluded video can suspend presentation callbacks while media keeps
+         advancing. A stale callback must not make the delay estimate grow. */
+      var recent = msePresentedMediaTime !== null && Date.now() - msePresentedAt < 250;
+      var mediaTime = recent ? msePresentedMediaTime : vid.currentTime;
+      result.delayClock = recent ? 'presented' : 'playhead';
       result.estimatedStreamDelayMs = Math.max(0, mseClockAgeMs + Date.now() - mseClockAt - mediaTime * 1000);
     }
     result.estimatedTotalDelayMs = result.estimatedStreamDelayMs === null ? null : result.estimatedStreamDelayMs + processingAgeMs;
@@ -484,9 +542,17 @@
     playerVideo.addEventListener('seeking', resetCatchUp);
     if (document.addEventListener)
       document.addEventListener('visibilitychange', function() {
-        if (document.hidden) resetCatchUp();
+        if (document.hidden) { resetCatchUp(); mseStop(); streamStop(); }
+        else updatePlayer();
       });
   }
+
+  window.addEventListener('pagehide', function() {
+    playerSuspended = true; mseStop(); streamStop();
+  });
+  window.addEventListener('pageshow', function() {
+    playerSuspended = false; updatePlayer();
+  });
 
   function barColor(p) { return p < 60 ? 'green' : p < 85 ? 'yellow' : 'red'; }
 
@@ -690,58 +756,63 @@
       db.style.width = dp + '%'; db.className = barColor(dp);
 
       document.getElementById('datetime').textContent = fmtTime();
-      /* 视频流：默认走 H.264 fMP4/MSE（~2Mbps，弱网不卡顿）；
-         显式配置 URL 或浏览器不支持 MSE 时回退原 img/video 管线 */
-      try {
-        var streamUrl = window.STREAM_URL || '';
-        var explicit = !!streamUrl;
-        if (!explicit) {
-          var r2 = await fetch('/api/config');
-          if (r2.ok) {
-            var cfg = await r2.json();
-            if (cfg.stream_url || cfg.video_url) {
-              streamUrl = cfg.stream_url || cfg.video_url;
-              explicit = true;
-            }
-          }
-        }
-        var vid = document.getElementById('stream_video');
-        var img = document.getElementById('stream_img');
-        var useMse = !explicit && mseSupported();
-        if (!explicit && !useMse) streamUrl = '/video/mjpeg_yolo';   /* 无 MSE：回退画框流 */
-        if (useMse) {
-          /* MSE 路径：录制编码扇出（无会话 503 节流重试，会话轮转断流自动重连） */
-          imgEl = null;
-          streamStop();
-          img.style.display = 'none';
-          vid.style.display = '';
-          mseStart('/video/stream');        /* 每次轮询都调用：内部幂等 + 失败节流重连 */
-        } else if (streamUrl) {
-          mseStop();
-          var useImg = streamUrl.indexOf('/video/mjpeg') === 0
-                     || streamUrl.match(/\.mjpeg$|\.jpg$|\.jpeg$/i);
-          if (useImg) {
-            imgEl = img;                    /* 播放器逐帧喂 blob URL，显示与计数同一条连接 */
-            img.style.display = '';
-            vid.style.display = 'none';
-            streamStart(streamUrl);         /* 每次轮询都调用：内部幂等，流中断时自动重连 */
-          } else {
-            imgEl = null;
-            streamStop();
-            if (!vid.src || vid.getAttribute('data-src') !== streamUrl) {
-              vid.setAttribute('data-src', streamUrl);
-              vid.src = streamUrl;
-              vid.style.display = '';
-              img.style.display = 'none';
-              resetFps();
-            }
-          }
-        }
-      } catch(e) {}
+
     } catch(e) {}
     updateNet();
     updateVideoStats();
   }
+
+  var playerConfig = {}, playerBusy = false, playerSuspended = false;
+  async function updatePlayer() {
+    if (playerBusy || document.hidden || playerSuspended) return;
+    playerBusy = true;
+    try {
+      if (!window.STREAM_URL) {
+        try {
+          var response = await fetch('/api/config', {signal: AbortSignal.timeout(2500)});
+          if (response.ok) playerConfig = await response.json();
+        } catch(e) {}
+      }
+      if (document.hidden || playerSuspended) return;
+      var streamUrl = window.STREAM_URL || playerConfig.stream_url || playerConfig.video_url || '';
+      var explicit = !!streamUrl;
+      var vid = document.getElementById('stream_video');
+      var img = document.getElementById('stream_img');
+      var useMse = !explicit && mseSupported();
+      if (!explicit && !useMse) streamUrl = '/video/mjpeg_yolo';   /* 无 MSE：回退画框流 */
+      if (useMse) {
+        /* MSE 路径：录制编码扇出（无会话 503 节流重试，会话轮转断流自动重连） */
+        imgEl = null;
+        streamStop();
+        img.style.display = 'none';
+        vid.style.display = '';
+        mseStart('/video/stream');        /* 每次轮询都调用：内部幂等 + 失败节流重连 */
+      } else if (streamUrl) {
+        mseStop();
+        var useImg = streamUrl.indexOf('/video/mjpeg') === 0
+                   || streamUrl.match(/\.mjpeg$|\.jpg$|\.jpeg$/i);
+        if (useImg) {
+          imgEl = img;                    /* 播放器逐帧喂 blob URL，显示与计数同一条连接 */
+          img.style.display = '';
+          vid.style.display = 'none';
+          streamStart(streamUrl);         /* 每次轮询都调用：内部幂等，流中断时自动重连 */
+        } else {
+          imgEl = null;
+          streamStop();
+          if (!vid.src || vid.getAttribute('data-src') !== streamUrl) {
+            vid.setAttribute('data-src', streamUrl);
+            vid.src = streamUrl;
+            vid.style.display = '';
+            img.style.display = 'none';
+            resetFps();
+          }
+        }
+      }
+    } finally { playerBusy = false; }
+  }
+  (function pollPlayer() {
+    updatePlayer().catch(function() {}).then(function() { setTimeout(pollPlayer, 1000); });
+  })();
 
   /* Do not overlap API polls while a slow response is still in flight. */
   (function poll() {
