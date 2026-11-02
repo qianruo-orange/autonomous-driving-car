@@ -69,29 +69,29 @@ static int context_init(void *arg)
 /* 同表管理生命周期和调度。只有优先级的行由所属模块创建内部线程；
  * 无 task 的行不由 main 创建线程。各模块自行注册/注销看门狗。 */
 static const module_t g_modules[] = {
-    /* name             init                 dtor                   task                 priority */
-    {"context",         context_init},
-    {"log",             log_init,            log_close},
-    {"config",          config_init,         config_cleanup},
-    {"main",            scheduling_init,     .priority = 5},
-    {"dbc",             dbc_init,            dbc_cleanup},
-    {"can",             can_init,            can_cleanup},
-    {"can_recv",        NULL,                NULL,                  can_recv_task,       15},
-    {"can_send",        NULL,                NULL,                  can_send_task,       15},
-    {"tcp",             tcp_init,            tcp_cleanup,           tcp_task,             5},
-    {"http",            http_server_start,   http_server_stop,      http_server_task,     5},
-    {"http_worker",     .priority = 1},
-    {"car_sport_ctrl",  follow_init,         follow_destroy,        follow_task,         20},
-    {"ano",             ano_init,            ano_destroy},
-    {"video",           video_stream_init,   video_stream_shutdown, video_stream_task,   15},
+    /* name             init                dtor                    task                priority */
+    {"context",         context_init,       NULL,                   NULL,                0},
+    {"log",             log_init,           log_close,              NULL,                0},
+    {"config",          config_init,        config_cleanup,         NULL,                0},
+    {"main",            scheduling_init,    NULL,                   NULL,                5},
+    {"dbc",             dbc_init,           dbc_cleanup,            NULL,                0},
+    {"can",             can_init,           can_cleanup,            NULL,                0},
+    {"can_recv",        NULL,               NULL,                   can_recv_task,      15},
+    {"can_send",        NULL,               NULL,                   can_send_task,      15},
+    {"tcp",             tcp_init,           tcp_cleanup,            tcp_task,            5},
+    {"http",            http_server_start,  http_server_stop,       http_server_task,    5},
+    {"http_worker",     NULL,               NULL,                   NULL,                1},
+    {"car_sport_ctrl",  follow_init,        follow_destroy,         follow_task,        20},
+    {"ano",             ano_init,           ano_destroy,            NULL,                0},
+    {"video",           video_stream_init,  video_stream_shutdown,  video_stream_task,  15},
     /* YOLO 为必要模块：初始化失败即回滚启动。 */
-    {"yolo",            rknn_yolo_init,      rknn_yolo_destroy,     rknn_yolo_task,       10},
-    {"yolo_infer",      .priority = 12},
-    {"yolo_render",     .priority = 10},
-    {"yolo_report",     .priority = 1},
-    {"watchdog",        watchdog_init,       NULL,                  watchdog_task,       30},
-    {"rec",             video_rec_init,      video_rec_destroy,     video_rec_task,      10},
-    {"signal",          signal_setup},
+    {"yolo",            rknn_yolo_init,     rknn_yolo_destroy,      rknn_yolo_task,     10},
+    {"yolo_infer",      NULL,               NULL,                   NULL,               12},
+    {"yolo_render",     NULL,               NULL,                   NULL,               10},
+    {"yolo_report",     NULL,               NULL,                   NULL,                1},
+    {"watchdog",        watchdog_init,      NULL,                   watchdog_task,      30},
+    {"rec",             video_rec_init,     video_rec_destroy,      video_rec_task,     10},
+    {"signal",          signal_setup,       NULL,                   NULL,                0},
 };
 #define MOD_COUNT (sizeof(g_modules) / sizeof(g_modules[0]))
 
