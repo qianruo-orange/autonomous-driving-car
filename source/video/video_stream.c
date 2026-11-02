@@ -346,6 +346,7 @@ void video_stream_shutdown(void *arg)
     /* 仅置停止标志：环形队列随进程退出（推流客户端线程为 detached，
        可能仍在退出检查前短暂访问环，不能在此销毁） */
     g_ctx->running = 0;
+    frame_ring_signal(&g_ctx->ring);
 }
 
 void *video_stream_task(void *arg)
@@ -630,6 +631,14 @@ static void *video_stream_client_task(void *arg)
     video_stream_client_close_cb on_close = a->on_close;
     free(a);
 
+    video_ctx_t *vs = g_ctx;
+    if (!vs) {
+        if (on_close) on_close(fd);
+        return NULL;
+    }
+    frame_subscription_t displayed;
+    frame_ring_subscribe(&vs->ring, &displayed, FRAME_TOPIC_DISPLAYED);
+
     /* YOLO 为必要流程：画框流在 YOLO 不可用时直接报错（503），不回退原始帧 */
     if (yolo_mode && !rknn_yolo_enabled()) {
         const char *err = "HTTP/1.1 503 Service Unavailable\r\n"
@@ -647,9 +656,9 @@ static void *video_stream_client_task(void *arg)
     fd_write_all_blocking(fd, hdr, strlen(hdr));
     __atomic_fetch_add(&g_client_count, 1, __ATOMIC_RELAXED);
     int last_raw = 0;   /* 原始帧 pacing：seq 单调递增，wait_next 依赖此不变量 */
-    unsigned long long last_ann = (unsigned long long)-1; /* 已推的标注帧 seq（-1 表示尚未推过） */
+    unsigned long long last_ann = 0; /* 已消费的显示帧序号；订阅会立即返回已有的新帧 */
     time_t last_write = time(NULL);   /* 最近一次成功写帧的时间，用于空闲超时 */
-    while (g_ctx && g_ctx->app->running) {
+    while (vs->running && vs->app->running) {
         /* 空闲超时：长时间未成功写出任何帧（客户端不读/网络黑洞），释放连接，
            避免推流线程与 fd 永久占用 */
         if (time(NULL) - last_write >= VIDEO_CLIENT_IDLE_TIMEOUT) break;
@@ -660,7 +669,7 @@ static void *video_stream_client_task(void *arg)
         if (pr == 0) break;
         if (pr < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) break;
 
-        /* 推流线程基于非阻塞写 + 轮询，不会长期阻塞，无需独立看门狗监督 */
+        /* 帧发布驱动推流；socket 写入有界等待，无需独立看门狗监督。 */
         unsigned char *frame = NULL; size_t flen = 0;
         if (yolo_mode) {
             /* YOLO 必要流程：运行期 YOLO 失效（热重载失败等）→ 直接断流报错，不回退原始帧 */
@@ -671,13 +680,16 @@ static void *video_stream_client_task(void *arg)
                标注帧用独立的 last_ann 去重：不能与原始帧共用 last，
                否则标注帧 seq（推理时刻，必然滞后于最新原始帧）会把 last 拉回过去，
                wait_next 永不阻塞，同一对帧被无限重复发送（死循环刷流）。 */
-            unsigned long long aseq_now = rknn_yolo_get_frame_seq();
-            if (aseq_now != last_ann) {
-                unsigned long long aseq = 0;
-                if (rknn_yolo_get_frame(&frame, &flen, &aseq) == 0)
-                    last_ann = aseq;
+            /* 渲染发布即唤醒；200ms 仅检查退出和断连，不增加逐帧等待。 */
+            if (!frame_ring_wait(&displayed, last_ann, 200)) continue;
+            unsigned long long aseq_now = rknn_yolo_get_frame_seq(), aseq = 0;
+            if (rknn_yolo_get_frame(&frame, &flen, &aseq) == 0)
+                last_ann = aseq;
+            else {
+                /* 首个观看者可能遇到尚未生成 JPEG 的显示帧，等下次发布。 */
+                last_ann = aseq_now;
+                continue;
             }
-            if (!frame) { usleep(10000); continue; }   /* 等标注帧，不回退原始帧 */
         } else {
             int seq = video_stream_wait_next(last_raw, &frame, &flen);
             if (seq < 0) break;

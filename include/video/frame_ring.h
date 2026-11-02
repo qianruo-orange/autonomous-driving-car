@@ -30,7 +30,9 @@
  *   nv12 → 池：seq != display_seq 且（encode_done || !rec_active）；
  *             当前显示槽 nv12 始终钉住供 rec 窃取（显示推进后按本规则回收）
  *
- * 并发：单一互斥锁 + 条件变量。锁内：标志/指针交接/池/客户端拷贝（~百 µs）、
+ * 并发：单一互斥锁 + 按采集/显示主题发布的条件变量；订阅者用帧序号判断新消息。
+ * 发布时立即唤醒该主题的所有订阅者，无轮询间隔，也不复制帧数据。
+ * 锁内：标志/指针交接/池/客户端拷贝（~百 µs）、
  * QBUF 回调（ioctl ~µs）；锁外：JPEG 解码、NPU 推理、渲染、H.264 编码。
  * 锁序约束：不得在持有本锁时获取其他模块锁（q_lock/slot_mutex 等）。
  *
@@ -49,6 +51,12 @@
 #define FRAME_RING_POOL_RGB  0
 #define FRAME_RING_POOL_NV12 1
 #define FRAME_RING_POOL_JPEG 2
+
+typedef enum {
+    FRAME_TOPIC_CAPTURED,
+    FRAME_TOPIC_DISPLAYED,
+    FRAME_TOPIC_COUNT
+} frame_topic_t;
 
 /* 阶段缓冲：槽位只持有指针；cap 记录实际分配容量（回池复用时 len 可小于 cap） */
 typedef struct {
@@ -121,13 +129,22 @@ typedef struct frame_ring {
     pool_item_t *pool_rgb, *pool_nv12, *pool_jpeg;
 
     pthread_mutex_t lock;
-    pthread_cond_t  cond;
+    pthread_cond_t published[FRAME_TOPIC_COUNT];
+    pthread_cond_t released;  /* 相机退让时等待锁外引用归零 */
+    unsigned long long cancel_generation;
 
     /* mmap 释放回调（video_stream 注册：QBUF 驱动缓冲）。
        锁内调用，ioctl 微秒级，勿在其中获取其他锁 */
     void (*raw_release_cb)(void *arg, int vbuf_index);
     void *raw_release_arg;
 } frame_ring_t;
+
+/* 每个消费者独立持有订阅；取消代次使停止/重载通知在进入 wait 前也不会丢失。 */
+typedef struct {
+    frame_ring_t *ring;
+    frame_topic_t topic;
+    unsigned long long generation;
+} frame_subscription_t;
 
 typedef struct {
     unsigned long long produce_seq;
@@ -151,13 +168,13 @@ void frame_ring_set_raw_release_cb(frame_ring_t *r,
 /* ---- 锁（所有 *_locked 接口须在持锁下调用） ---- */
 void frame_ring_lock(frame_ring_t *r);
 void frame_ring_unlock(frame_ring_t *r);
-void frame_ring_signal(frame_ring_t *r);   /* 广播唤醒（如停止线程时） */
+void frame_ring_signal(frame_ring_t *r);   /* 内部加锁：取消所有既有订阅的等待 */
 
 /* ---- 采集（video worker） ---- */
 /* 为下一帧分配槽位（seq = produce_seq+1）。调用方填 raw 各字段后 commit。
    无空闲槽返回 NULL：应立即 QBUF 该驱动缓冲并 frame_ring_produce_drop_locked */
 frame_slot_t *frame_ring_produce_slot_locked(frame_ring_t *r);
-void frame_ring_produce_commit_locked(frame_ring_t *r);
+void frame_ring_produce_commit_locked(frame_ring_t *r); /* 发布 CAPTURED */
 void frame_ring_produce_drop_locked(frame_ring_t *r);   /* capture_dropped++ */
 void frame_ring_add_driver_dropped_locked(frame_ring_t *r, unsigned long long n);
 
@@ -173,7 +190,7 @@ void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decod
    调用方持锁拷贝 res、取出 rgb 指针并 take 池缓冲，解锁后渲染，再 commit */
 frame_slot_t *frame_ring_display_pick_locked(frame_ring_t *r, unsigned long long next_seq);
 /* 渲染完成：display_done=1，释放被跳过槽与旧槽的 rgb/jpeg/nv12 */
-void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s);
+void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s); /* 发布 DISPLAYED */
 
 /* ---- 编码（rec） ---- */
 /* 取 seq > next_seq 的最新 display_done 槽（YOLO 录像）；无则 NULL。
@@ -192,9 +209,14 @@ frame_slot_t *frame_ring_raw_newest_locked(frame_ring_t *r);
 void frame_ring_set_yolo_active(frame_ring_t *r, int on);
 void frame_ring_set_rec_active(frame_ring_t *r, int on);
 
-/* ---- 事件等待（内部加锁；超时返回 0） ---- */
+/* ---- 发布订阅（内部加锁；帧序号是消息游标，缓冲仍由 claim/所有权保护） ---- */
+/* 在检查退出/启用状态前建立订阅，以覆盖检查状态到进入等待之间的取消窗口。 */
+void frame_ring_subscribe(frame_ring_t *r, frame_subscription_t *sub, frame_topic_t topic);
+/* topic 最新帧 seq > last_seq 返回 1；超时/取消返回 0。
+   取消后自动更新代次，订阅可继续使用；超时仅供调用方检查退出状态。 */
+int frame_ring_wait(frame_subscription_t *sub, unsigned long long last_seq, int timeout_ms);
+/* 临时订阅的兼容接口；编码等待同时确认对应 NV12 缓冲仍可消费。 */
 int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeout_ms);
-int frame_ring_wait_render(frame_ring_t *r, unsigned long long next_seq, int timeout_ms);
 int frame_ring_wait_encode(frame_ring_t *r, unsigned long long next_seq, int timeout_ms);
 
 /* ---- 缓冲池（须持锁） ---- */

@@ -26,7 +26,13 @@ void frame_ring_init(frame_ring_t *r)
 {
     memset(r, 0, sizeof(*r));
     pthread_mutex_init(&r->lock, NULL);
-    pthread_cond_init(&r->cond, NULL);
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    for (int i = 0; i < FRAME_TOPIC_COUNT; i++)
+        pthread_cond_init(&r->published[i], &attr);
+    pthread_cond_init(&r->released, &attr);
+    pthread_condattr_destroy(&attr);
 }
 
 void frame_ring_destroy(frame_ring_t *r)
@@ -49,7 +55,9 @@ void frame_ring_destroy(frame_ring_t *r)
         }
     }
     pthread_mutex_destroy(&r->lock);
-    pthread_cond_destroy(&r->cond);
+    for (int i = 0; i < FRAME_TOPIC_COUNT; i++)
+        pthread_cond_destroy(&r->published[i]);
+    pthread_cond_destroy(&r->released);
     memset(r, 0, sizeof(*r));
 }
 
@@ -63,7 +71,20 @@ void frame_ring_set_raw_release_cb(frame_ring_t *r,
 
 void frame_ring_lock(frame_ring_t *r)   { pthread_mutex_lock(&r->lock); }
 void frame_ring_unlock(frame_ring_t *r) { pthread_mutex_unlock(&r->lock); }
-void frame_ring_signal(frame_ring_t *r) { pthread_cond_broadcast(&r->cond); }
+
+static void cancel_waits_locked(frame_ring_t *r)
+{
+    r->cancel_generation++;
+    for (int i = 0; i < FRAME_TOPIC_COUNT; i++)
+        pthread_cond_broadcast(&r->published[i]);
+}
+
+void frame_ring_signal(frame_ring_t *r)
+{
+    frame_ring_lock(r);
+    cancel_waits_locked(r);
+    frame_ring_unlock(r);
+}
 
 /* ---- 缓冲池 ---- */
 
@@ -180,7 +201,7 @@ void frame_ring_produce_commit_locked(frame_ring_t *r)
     if (!s->capture_ms) s->capture_ms = ring_now_ms();
     r->produce_seq = s->seq;
     frame_ring_maintain_locked(r);
-    pthread_cond_broadcast(&r->cond);
+    pthread_cond_broadcast(&r->published[FRAME_TOPIC_CAPTURED]);
 }
 
 void frame_ring_produce_drop_locked(frame_ring_t *r)
@@ -212,8 +233,7 @@ void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decod
     s->infer_done = 1;                 /* 解码结束（含失败），raw 可释放 */
     if (!decode_ok) r->infer_dropped++;
     frame_ring_maintain_locked(r);
-    /* 唤醒可能的 quiesce_wait（claims 归零等待者） */
-    pthread_cond_broadcast(&r->cond);
+    if (r->quiescing) pthread_cond_broadcast(&r->released);
 }
 
 /* ---- 显示 ---- */
@@ -244,7 +264,7 @@ void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
         r->render_skipped += s->seq - r->display_seq - 1;
     r->display_seq = s->seq;
     frame_ring_maintain_locked(r);     /* 释放被跳过槽的 rgb、旧 jpeg 与可回收 nv12 */
-    pthread_cond_broadcast(&r->cond);
+    pthread_cond_broadcast(&r->published[FRAME_TOPIC_DISPLAYED]);
 }
 
 /* ---- 编码 ---- */
@@ -328,57 +348,56 @@ static void timespec_add_ms(struct timespec *ts, int ms)
     }
 }
 
-int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeout_ms)
+void frame_ring_subscribe(frame_ring_t *r, frame_subscription_t *sub, frame_topic_t topic)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    timespec_add_ms(&ts, timeout_ms);
     frame_ring_lock(r);
-    while (r->produce_seq <= last_seq) {
-        if (pthread_cond_timedwait(&r->cond, &r->lock, &ts) != 0) {
-            frame_ring_unlock(r);
-            return 0;   /* 超时：调用方借此检查退出条件 */
-        }
-    }
+    *sub = (frame_subscription_t){ r, topic, r->cancel_generation };
     frame_ring_unlock(r);
-    return 1;
 }
 
-int frame_ring_wait_render(frame_ring_t *r, unsigned long long next_seq, int timeout_ms)
+static int wait_for_frame(frame_subscription_t *sub, unsigned long long last_seq,
+                          int timeout_ms, int require_nv12)
 {
+    frame_ring_t *r = sub->ring;
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     timespec_add_ms(&ts, timeout_ms);
     frame_ring_lock(r);
-    for (;;) {
-        for (int i = 0; i < FRAME_RING_N; i++) {
-            frame_slot_t *s = &r->slots[i];
-            if (s->seq > next_seq && s->rgb_done && s->rgb.buf) {
-                frame_ring_unlock(r);
-                return 1;
-            }
+    while (sub->generation == r->cancel_generation) {
+        int ready = sub->topic == FRAME_TOPIC_CAPTURED ? r->produce_seq > last_seq :
+                    require_nv12 ? frame_ring_encode_pick_locked(r, last_seq) != NULL :
+                                   r->display_seq > last_seq;
+        if (ready) {
+            frame_ring_unlock(r);
+            return 1;
         }
-        if (pthread_cond_timedwait(&r->cond, &r->lock, &ts) != 0) {
+        if (pthread_cond_timedwait(&r->published[sub->topic], &r->lock, &ts) != 0) {
             frame_ring_unlock(r);
             return 0;
         }
     }
+    sub->generation = r->cancel_generation;
+    frame_ring_unlock(r);
+    return 0;
+}
+
+int frame_ring_wait(frame_subscription_t *sub, unsigned long long last_seq, int timeout_ms)
+{
+    return wait_for_frame(sub, last_seq, timeout_ms, 0);
+}
+
+int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeout_ms)
+{
+    frame_subscription_t sub;
+    frame_ring_subscribe(r, &sub, FRAME_TOPIC_CAPTURED);
+    return frame_ring_wait(&sub, last_seq, timeout_ms);
 }
 
 int frame_ring_wait_encode(frame_ring_t *r, unsigned long long next_seq, int timeout_ms)
 {
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    timespec_add_ms(&deadline, timeout_ms);
-    frame_ring_lock(r);
-    while (!frame_ring_encode_pick_locked(r, next_seq)) {
-        if (pthread_cond_timedwait(&r->cond, &r->lock, &deadline) != 0) {
-            frame_ring_unlock(r);
-            return 0;
-        }
-    }
-    frame_ring_unlock(r);
-    return 1;
+    frame_subscription_t sub;
+    frame_ring_subscribe(r, &sub, FRAME_TOPIC_DISPLAYED);
+    return wait_for_frame(&sub, next_seq, timeout_ms, 1);
 }
 
 /* ---- 相机重启退让 ---- */
@@ -387,6 +406,7 @@ void frame_ring_quiesce_begin(frame_ring_t *r)
 {
     frame_ring_lock(r);
     r->quiescing = 1;
+    cancel_waits_locked(r);
     frame_ring_unlock(r);
 }
 
@@ -403,20 +423,20 @@ static void quiesce_clear_all_locked(frame_ring_t *r)
         memset(s, 0, sizeof(*s));
     }
     r->quiescing = 0;
-    pthread_cond_broadcast(&r->cond);
+    cancel_waits_locked(r);
 }
 
 int frame_ring_quiesce_wait(frame_ring_t *r, int timeout_ms)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     timespec_add_ms(&ts, timeout_ms);
     frame_ring_lock(r);
     for (;;) {
         int claims = 0;
         for (int i = 0; i < FRAME_RING_N; i++) claims += r->slots[i].raw_claims;
         if (claims == 0) break;
-        if (pthread_cond_timedwait(&r->cond, &r->lock, &ts) != 0) {
+        if (pthread_cond_timedwait(&r->released, &r->lock, &ts) != 0) {
             frame_ring_unlock(r);
             return -1;   /* 超时：调用方记 ERROR 后仍须执行 STREAMOFF/munmap */
         }

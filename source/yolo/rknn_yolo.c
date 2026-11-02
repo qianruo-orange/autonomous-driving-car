@@ -1015,8 +1015,7 @@ static void yolo_stop_pool(void)
     pthread_cond_broadcast(&g_yolo.q_not_empty);
     pthread_cond_broadcast(&g_yolo.q_not_full);
     pthread_mutex_unlock(&g_yolo.q_lock);
-    /* raw 释放规则切回编码路径（yolo_active=0），并唤醒等待中的
-       yolo_task（wait_new）与 composer（wait_render） */
+    /* raw 释放规则切回编码路径，并取消采集订阅等待，避免停池时等无帧超时。 */
     if (ring) {
         frame_ring_set_yolo_active(ring, 0);
         frame_ring_signal(ring);
@@ -1330,6 +1329,8 @@ void *rknn_yolo_task(void *arg)
     }
 
     frame_ring_t *ring = yolo_ring();
+    frame_subscription_t capture;
+    if (ring) frame_ring_subscribe(ring, &capture, FRAME_TOPIC_CAPTURED);
 
     while (app->running && g_yolo.running) {
         watchdog_feed_self("yolo");
@@ -1344,9 +1345,9 @@ void *rknn_yolo_task(void *arg)
             continue;
         }
 
-        /* 事件驱动：阻塞等新帧（2s 超时仅用于周期性检查退出/热插拔），
-           替代旧版 10ms 轮询，唤醒即处理、无帧即休眠 */
-        if (!frame_ring_wait_new(ring, g_yolo.last_seq, 2000)) {
+        /* 订阅采集主题：发布即醒；取消代次覆盖状态检查到 wait 之间的停池窗口。
+           2s 超时仅用于周期性检查退出/热插拔，不控制处理间隔。 */
+        if (!frame_ring_wait(&capture, g_yolo.last_seq, 2000)) {
             pthread_mutex_unlock(&g_producer_mutex);
             continue;
         }
