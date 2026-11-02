@@ -1,0 +1,54 @@
+Subject: [PATCH] aic8800: respect caller build parallelism
+
+The vendor makefiles append -j$(nproc) to MAKEFLAGS. This overrides the
+caller's selected job limit and resets a parent make jobserver during
+external-module builds. Remove the override so the wrapper controls the
+whole build with its selected parallelism.
+
+Developed with OpenAI Codex for the local ROCK 4D kernel source bundle.
+
+---
+diff --git a/USB/driver_fw/drivers/aic8800/Makefile b/USB/driver_fw/drivers/aic8800/Makefile
+--- a/USB/driver_fw/drivers/aic8800/Makefile
++++ b/USB/driver_fw/drivers/aic8800/Makefile
+@@ -58,7 +58,6 @@
+ 
+ ###########################################
+ 
+-MAKEFLAGS +=-j$(shell nproc)
+ 
+ all: modules
+ modules:
+diff --git a/USB/driver_fw/drivers/aic8800/aic8800_fdrv/Makefile b/USB/driver_fw/drivers/aic8800/aic8800_fdrv/Makefile
+--- a/USB/driver_fw/drivers/aic8800/aic8800_fdrv/Makefile
++++ b/USB/driver_fw/drivers/aic8800/aic8800_fdrv/Makefile
+@@ -349,7 +349,6 @@
+ ccflags-$(CONFIG_POWER_LIMIT) += -DCONFIG_POWER_LIMIT
+ ccflags-$(CONFIG_EXT_FEM_8800DCDW) += -DCONFIG_EXT_FEM_8800DCDW
+ ccflags-$(CONFIG_WOWLAN) += -DCONFIG_WOWLAN
+-MAKEFLAGS +=-j$(shell nproc)
+ 
+ # Platform support list
+ CONFIG_PLATFORM_ROCKCHIP ?= n
+diff --git a/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/Makefile b/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/Makefile
+--- a/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/Makefile
++++ b/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/Makefile
+@@ -57,7 +57,6 @@
+ 
+ ###########################################
+ 
+-MAKEFLAGS +=-j$(shell nproc)
+ 
+ $(warning =============================================)
+ $(warning aic wifi driver LINUX_SRC=$(KERNEL_SRC))
+diff --git a/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/aic8800_fdrv/Makefile b/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/aic8800_fdrv/Makefile
+--- a/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/aic8800_fdrv/Makefile
++++ b/USB/patch/for_Amlogic/950/Android13/mod/vendor/wifi_driver/aic/aic8800/aic8800_fdrv/Makefile
+@@ -314,7 +314,6 @@
+ ccflags-$(CONFIG_FILTER_TCP_ACK) += -DCONFIG_FILTER_TCP_ACK
+ ccflags-$(CONFIG_TEMP_COMP) += -DCONFIG_TEMP_COMP
+ ccflags-$(CONFIG_POWER_LIMIT) += -DCONFIG_POWER_LIMIT
+-MAKEFLAGS +=-j$(shell nproc)
+ 
+ # Platform support list
+ CONFIG_PLATFORM_ROCKCHIP ?= n

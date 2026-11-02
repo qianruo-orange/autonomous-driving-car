@@ -1,0 +1,74 @@
+Subject: [PATCH] media: enable the RK3576 JPEG decoder on ROCK 4D
+
+Wire the carried rkjpegd v7 driver into Kbuild and provide the verified
+RK3576 clock, reset, power-domain and IOMMU resources.
+The driver files are copied from kernel/rockchip-jpegd in this project.
+Apply after 0001-kiln-npu.patch. This is a local board adaptation.
+
+Developed with OpenAI Codex for the local ROCK 4D source bundle.
+
+---
+diff --git a/arch/arm64/boot/dts/rockchip/rk3576.dtsi b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
+--- a/arch/arm64/boot/dts/rockchip/rk3576.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
+@@ -1545,6 +1545,29 @@
+ 			};
+ 		};
+ 
++		jpegd: jpegd@27910000 {
++			compatible = "rockchip,rk3576-jpegd";
++			reg = <0x0 0x27910000 0x0 0x330>;
++			interrupts = <GIC_SPI 331 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&cru ACLK_JPEG>, <&cru HCLK_JPEG>;
++			clock-names = "axi", "ahb";
++			resets = <&cru SRST_A_JPEG>, <&cru SRST_H_JPEG>;
++			power-domains = <&power RK3576_PD_VPU>;
++			iommus = <&jpeg_mmu>;
++			status = "disabled";
++		};
++
++		jpeg_mmu: iommu@27910f00 {
++			compatible = "rockchip,rk3576-iommu", "rockchip,rk3568-iommu";
++			reg = <0x0 0x27910f00 0x0 0x100>;
++			interrupts = <GIC_SPI 332 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&cru ACLK_JPEG>, <&cru HCLK_JPEG>;
++			clock-names = "aclk", "iface";
++			#iommu-cells = <0>;
++			power-domains = <&power RK3576_PD_VPU>;
++			status = "disabled";
++		};
++
+ 		vop: vop@27d00000 {
+ 			compatible = "rockchip,rk3576-vop";
+ 			reg = <0x0 0x27d00000 0x0 0x3000>, <0x0 0x27d05000 0x0 0x1000>;
+diff --git a/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts b/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts
+--- a/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts
+@@ -882,3 +882,11 @@
+ &rknpu_mmu_1 {
+ 	status = "okay";
+ };
++
++&jpegd {
++	status = "okay";
++};
++
++&jpeg_mmu {
++	status = "okay";
++};
+diff --git a/drivers/media/platform/rockchip/Kconfig b/drivers/media/platform/rockchip/Kconfig
+--- a/drivers/media/platform/rockchip/Kconfig
++++ b/drivers/media/platform/rockchip/Kconfig
+@@ -6,3 +6,4 @@
+ source "drivers/media/platform/rockchip/rkcif/Kconfig"
+ source "drivers/media/platform/rockchip/rkisp1/Kconfig"
+ source "drivers/media/platform/rockchip/rkvdec/Kconfig"
++source "drivers/media/platform/rockchip/rkjpegd/Kconfig"
+diff --git a/drivers/media/platform/rockchip/Makefile b/drivers/media/platform/rockchip/Makefile
+--- a/drivers/media/platform/rockchip/Makefile
++++ b/drivers/media/platform/rockchip/Makefile
+@@ -3,3 +3,4 @@
+ obj-y += rkcif/
+ obj-y += rkisp1/
+ obj-y += rkvdec/
++obj-y += rkjpegd/

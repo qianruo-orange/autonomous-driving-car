@@ -1,0 +1,107 @@
+Subject: [PATCH] aic8800: adapt cfg80211 key operations for Linux 7.4
+
+Linux 7.4 cfg80211 passes enum nl80211_key_type rather than bool pairwise
+for add_key/get_key/del_key. The old callbacks cause incompatible pointer
+type errors when compiling the vendor USB driver against 7.4 headers.
+
+Keep the pre-7.4 ABI unchanged, map only GROUP/PAIRWISE to the firmware's
+bool interface, reject unsupported key types, and pass GROUP explicitly
+in the internal WEP connection path.
+
+Developed with OpenAI Codex after reproducing the compiler error on
+7.4.0-rc1. This is a local out-of-tree driver compatibility patch.
+No Linux upstream introducing commit is asserted for the vendor package.
+
+---
+Base: installed aic8800-usb/5.0-kiln source, USB variant.
+No hardware association, roaming, or data-transfer verification on 7.4.
+
+diff --git a/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_main.c b/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_main.c
+--- a/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_main.c
++++ b/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_main.c
+@@ -2950,7 +2950,13 @@
+ #if (LINUX_VERSION_CODE >= HIGH_KERNEL_VERSION2)
+                                                                  int link_id,
+ #endif
+-                                 u8 key_index, bool pairwise, const u8 *mac_addr,
++				 u8 key_index,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++				 enum nl80211_key_type key_type,
++#else
++				 bool pairwise,
++#endif
++				 const u8 *mac_addr,
+                                  struct key_params *params)
+ {
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
+@@ -2963,6 +2969,13 @@
+     u8_l cipher = 0;
+     struct rwnx_sta *sta = NULL;
+     struct rwnx_key *rwnx_key;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	bool pairwise = key_type == NL80211_KEYTYPE_PAIRWISE;
++
++	/* The firmware API only distinguishes group and pairwise keys. */
++	if (key_type != NL80211_KEYTYPE_GROUP && !pairwise)
++		return -EOPNOTSUPP;
++#endif
+ 
+     RWNX_DBG(RWNX_FN_ENTRY_STR);
+ 
+@@ -3074,7 +3087,13 @@
+                                                                  int link_id,
+ #endif
+ 
+-                                 u8 key_index, bool pairwise, const u8 *mac_addr,
++				 u8 key_index,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++				 enum nl80211_key_type key_type,
++#else
++				 bool pairwise,
++#endif
++				 const u8 *mac_addr,
+                                  void *cookie,
+                                  void (*callback)(void *cookie, struct key_params*))
+ {
+@@ -3098,7 +3117,13 @@
+                                                                  int link_id,
+ #endif
+ 
+-                                 u8 key_index, bool pairwise, const u8 *mac_addr)
++				 u8 key_index,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++				 enum nl80211_key_type key_type,
++#else
++				 bool pairwise,
++#endif
++				 const u8 *mac_addr)
+ {
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0))
+     struct net_device *netdev = wdev->netdev;
+@@ -3108,6 +3133,11 @@
+     int error;
+     struct rwnx_sta *sta = NULL;
+     struct rwnx_key *rwnx_key;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	if (key_type != NL80211_KEYTYPE_GROUP &&
++	    key_type != NL80211_KEYTYPE_PAIRWISE)
++		return -EOPNOTSUPP;
++#endif
+ 	if (!key_flag && vif->wdev.iftype == NL80211_IFTYPE_STATION)
+ 		return 0;
+ 
+@@ -3255,7 +3285,13 @@
+ #if (LINUX_VERSION_CODE >= HIGH_KERNEL_VERSION2)
+                                 0,
+ #endif
+-	sme->key_idx, false, NULL, &key_params);
++				sme->key_idx,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++				NL80211_KEYTYPE_GROUP,
++#else
++				false,
++#endif
++				NULL, &key_params);
+     }
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 17, 0) || defined(CONFIG_WPA3_FOR_OLD_KERNEL)
+     else if ((sme->auth_type == NL80211_AUTHTYPE_SAE) &&

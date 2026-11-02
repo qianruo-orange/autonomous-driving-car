@@ -1,0 +1,439 @@
+Subject: [PATCH] arm64: carry the ROCK 4D Kiln NPU board adaptation
+
+Retain the validated local power-domain, IOMMU and vendor-NPU device
+tree changes on the user-provided Linux 7.4-rc1 source. These are carried
+Kiln changes, not a claim that the vendor runtime is supported upstream.
+Experimental VEPU nodes are intentionally excluded.
+
+Prepared with OpenAI Codex from the installed ROCK 4D adaptation.
+
+---
+diff --git a/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts b/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts
+--- a/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3576-rock-4d.dts
+@@ -442,6 +442,7 @@
+ 			};
+ 
+ 			vdd_npu_s0: dcdc-reg2 {
++				regulator-always-on;
+ 				regulator-boot-on;
+ 				regulator-enable-ramp-delay = <400>;
+ 				regulator-min-microvolt = <550000>;
+@@ -868,3 +869,16 @@
+ 		remote-endpoint = <&hdmi_in_vp0>;
+ 	};
+ };
++
++&rknpu {
++	npu-supply = <&vdd_npu_s0>;
++	status = "okay";
++};
++
++&rknpu_mmu_0 {
++	status = "okay";
++};
++
++&rknpu_mmu_1 {
++	status = "okay";
++};
+diff --git a/arch/arm64/boot/dts/rockchip/rk3576.dtsi b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
+--- a/arch/arm64/boot/dts/rockchip/rk3576.dtsi
++++ b/arch/arm64/boot/dts/rockchip/rk3576.dtsi
+@@ -863,6 +863,78 @@
+ 			reg = <0x0 0x26018000 0x0 0x2000>;
+ 		};
+ 
++		/*
++		 * Kiln: vendor-shaped RK3576 NPU for the out-of-tree rknpu (v0.9.8) driver.
++		 * Mainline has no NPU compute node (its accel/rocket path uses a different
++		 * rknn_core layout), so Kiln adds this one. clk_npu is the DSU clock taken
++		 * via CRU CLK_RKNN_DSU0 (the driver bumps it to 594 MHz; the SCMI route is
++		 * clamped to 198 MHz by this board's firmware and the NPU core then wedges).
++		 * PCLK_NPUTOP_ROOT ("pclk") MUST be listed: it clocks the NPU-top control
++		 * block, so without it reading the core version register async-SErrors.
++		 */
++		rknpu: npu@27700000 {
++			compatible = "rockchip,rk3576-rknpu";
++			reg = <0x0 0x27700000 0x0 0x8000>,
++			      <0x0 0x27708000 0x0 0x8000>;
++			interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "npu0_irq", "npu1_irq";
++			clocks = <&cru CLK_RKNN_DSU0>, <&cru ACLK_RKNN0>,
++				 <&cru ACLK_RKNN1>, <&cru HCLK_RKNN_ROOT>,
++				 <&cru ACLK_RKNN_CBUF>, <&cru HCLK_RKNN_CBUF>,
++				 <&cru PCLK_NPUTOP_ROOT>;
++			clock-names = "clk_npu", "aclk0", "aclk1", "hclk_root",
++				      "aclk_cbuf", "hclk_cbuf", "pclk";
++			assigned-clocks = <&cru CLK_RKNN_DSU0>;
++			assigned-clock-rates = <198000000>;
++			resets = <&cru SRST_A_RKNN0>, <&cru SRST_A_RKNN1>,
++				 <&cru SRST_A_RKNN_CBUF>, <&cru SRST_H_RKNN_CBUF>;
++			reset-names = "srst_a0", "srst_a1", "srst_a_cbuf", "srst_h_cbuf";
++			power-domains = <&power RK3576_PD_NPU0>, <&power RK3576_PD_NPU1>;
++			power-domain-names = "npu0", "npu1";
++			operating-points-v2 = <&npu_opp_table>;
++			iommus = <&rknpu_mmu_0>, <&rknpu_mmu_1>;
++			#cooling-cells = <2>;
++			dynamic-power-coefficient = <2570>;
++			status = "disabled";
++
++			npu_opp_table: opp-table {
++				compatible = "operating-points-v2";
++				opp-300000000 { opp-hz = /bits/ 64 <300000000>; opp-microvolt = <725000>; };
++				opp-400000000 { opp-hz = /bits/ 64 <400000000>; opp-microvolt = <725000>; };
++				opp-500000000 { opp-hz = /bits/ 64 <500000000>; opp-microvolt = <725000>; };
++				opp-600000000 { opp-hz = /bits/ 64 <600000000>; opp-microvolt = <725000>; };
++				opp-700000000 { opp-hz = /bits/ 64 <700000000>; opp-microvolt = <725000>; };
++				opp-800000000 { opp-hz = /bits/ 64 <800000000>; opp-microvolt = <800000>; };
++			};
++		};
++
++		rknpu_mmu_0: iommu@27702000 {
++			compatible = "rockchip,rk3576-iommu", "rockchip,rk3568-iommu";
++			reg = <0x0 0x27702000 0x0 0x100>,
++			      <0x0 0x27702100 0x0 0x100>;
++			interrupts = <GIC_SPI 247 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&cru ACLK_RKNN0>, <&cru HCLK_RKNN_ROOT>,
++				 <&cru CLK_RKNN_DSU0>, <&cru ACLK_RKNN_CBUF>,
++				 <&cru HCLK_RKNN_CBUF>;
++			#iommu-cells = <0>;
++			power-domains = <&power RK3576_PD_NPU0>;
++			status = "disabled";
++		};
++
++		rknpu_mmu_1: iommu@2770a000 {
++			compatible = "rockchip,rk3576-iommu", "rockchip,rk3568-iommu";
++			reg = <0x0 0x2770a000 0x0 0x100>,
++			      <0x0 0x2770a100 0x0 0x100>;
++			interrupts = <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&cru ACLK_RKNN1>, <&cru HCLK_RKNN_ROOT>,
++				 <&cru CLK_RKNN_DSU0>, <&cru ACLK_RKNN_CBUF>,
++				 <&cru HCLK_RKNN_CBUF>;
++			#iommu-cells = <0>;
++			power-domains = <&power RK3576_PD_NPU1>;
++			status = "disabled";
++		};
++
+ 		vo0_grf: syscon@2601a000 {
+ 			compatible = "rockchip,rk3576-vo0-grf", "syscon";
+ 			reg = <0x0 0x2601a000 0x0 0x2000>;
+@@ -1085,14 +1157,22 @@
+ 						power-domain@RK3576_PD_NPU0 {
+ 							reg = <RK3576_PD_NPU0>;
+ 							clocks = <&cru HCLK_RKNN_ROOT>,
+-								 <&cru ACLK_RKNN0>;
++								 <&cru ACLK_RKNN0>,
++								 <&cru CLK_RKNN_DSU0>,
++								 <&cru ACLK_RKNN_CBUF>,
++								 <&cru HCLK_RKNN_CBUF>;
++							resets = <&cru SRST_A_RKNN0_BIU>;
+ 							pm_qos = <&qos_npu_m0>;
+ 							#power-domain-cells = <0>;
+ 						};
+ 						power-domain@RK3576_PD_NPU1 {
+ 							reg = <RK3576_PD_NPU1>;
+ 							clocks = <&cru HCLK_RKNN_ROOT>,
+-								 <&cru ACLK_RKNN1>;
++								 <&cru ACLK_RKNN1>,
++								 <&cru CLK_RKNN_DSU0>,
++								 <&cru ACLK_RKNN_CBUF>,
++								 <&cru HCLK_RKNN_CBUF>;
++							resets = <&cru SRST_A_RKNN1_BIU>;
+ 							pm_qos = <&qos_npu_m1>;
+ 							#power-domain-cells = <0>;
+ 						};
+diff --git a/drivers/iommu/rockchip-iommu.c b/drivers/iommu/rockchip-iommu.c
+--- a/drivers/iommu/rockchip-iommu.c
++++ b/drivers/iommu/rockchip-iommu.c
+@@ -376,9 +376,23 @@
+ 	bool active = true;
+ 	int i;
+ 
+-	for (i = 0; i < iommu->num_mmu; i++)
+-		active &= !!(rk_iommu_read(iommu->bases[i], RK_MMU_STATUS) &
+-					   RK_MMU_STATUS_STALL_ACTIVE);
++	for (i = 0; i < iommu->num_mmu; i++) {
++		u32 status = rk_iommu_read(iommu->bases[i], RK_MMU_STATUS);
++
++		/*
++		 * A bank stuck with PAGE_FAULT_ACTIVE but without STALL_ACTIVE
++		 * and with IDLE set has an orphaned fault left by firmware before
++		 * paging was configured.  It cannot enter stall mode but has no
++		 * transaction in flight, so it is already quiescent.  Skip it
++		 * rather than treating it as "not stalled."
++		 */
++		if ((status & RK_MMU_STATUS_PAGE_FAULT_ACTIVE) &&
++		    !(status & RK_MMU_STATUS_STALL_ACTIVE) &&
++		    (status & RK_MMU_STATUS_IDLE))
++			continue;
++
++		active &= !!(status & RK_MMU_STATUS_STALL_ACTIVE);
++	}
+ 
+ 	return active;
+ }
+@@ -431,7 +445,21 @@
+ 			       iommu->bases[i] + RK_MMU_COMMAND);
+ 	}
+ 
+-	rk_iommu_command(iommu, RK_MMU_CMD_ENABLE_STALL);
++	/*
++	 * Do not send CMD_ENABLE_STALL to orphaned-fault banks
++	 * (PAGE_FAULT_ACTIVE & !STALL_ACTIVE & IDLE): the command is ignored
++	 * by such a bank but its presence on the shared bus delays the other
++	 * banks from reaching STALL_ACTIVE within the poll timeout.
++	 */
++	for (i = 0; i < iommu->num_mmu; i++) {
++		u32 status = rk_iommu_read(iommu->bases[i], RK_MMU_STATUS);
++
++		if ((status & RK_MMU_STATUS_PAGE_FAULT_ACTIVE) &&
++		    !(status & RK_MMU_STATUS_STALL_ACTIVE) &&
++		    (status & RK_MMU_STATUS_IDLE))
++			continue;
++		writel(RK_MMU_CMD_ENABLE_STALL, iommu->bases[i] + RK_MMU_COMMAND);
++	}
+ 
+ 	ret = readx_poll_timeout(rk_iommu_is_stall_active, iommu, val,
+ 				 val, RK_MMU_POLL_PERIOD_US,
+diff --git a/drivers/pmdomain/rockchip/pm-domains.c b/drivers/pmdomain/rockchip/pm-domains.c
+--- a/drivers/pmdomain/rockchip/pm-domains.c
++++ b/drivers/pmdomain/rockchip/pm-domains.c
+@@ -18,6 +18,7 @@
+ #include <linux/of_address.h>
+ #include <linux/of_clk.h>
+ #include <linux/clk.h>
++#include <linux/reset.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/consumer.h>
+ #include <linux/mfd/syscon.h>
+@@ -59,6 +60,7 @@
+ 	u32 pwr_offset;
+ 	u32 mem_offset;
+ 	u32 req_offset;
++	u32 delay_us;
+ };
+ 
+ struct rockchip_pmu_info {
+@@ -101,6 +103,7 @@
+ 	struct clk_bulk_data *clks;
+ 	struct device_node *node;
+ 	struct regulator *supply;
++	struct reset_control *resets;
+ };
+ 
+ struct rockchip_pmu {
+@@ -185,7 +188,7 @@
+ 	.need_regulator = regulator,			\
+ }
+ 
+-#define DOMAIN_M_O_R_G(_name, p_offset, pwr, status, m_offset, m_status, r_status, r_offset, req, idle, ack, g_mask, wakeup)	\
++#define DOMAIN_M_O_R_G(_name, p_offset, pwr, status, m_offset, m_status, r_status, r_offset, req, idle, ack, g_mask, delay, wakeup)	\
+ {							\
+ 	.name = _name,					\
+ 	.pwr_offset = p_offset,				\
+@@ -200,6 +203,7 @@
+ 	.req_mask = (req),				\
+ 	.idle_mask = (idle),				\
+ 	.clk_ungate_mask = (g_mask),			\
++	.delay_us = (delay),				\
+ 	.ack_mask = (ack),				\
+ 	.active_wakeup = wakeup,			\
+ }
+@@ -258,8 +262,8 @@
+ #define DOMAIN_RK3568(name, pwr, req, wakeup, regulator)		\
+ 	DOMAIN_M_R(name, pwr, pwr, req, req, req, wakeup, regulator)
+ 
+-#define DOMAIN_RK3576(name, p_offset, pwr, status, r_status, r_offset, req, idle, g_mask, wakeup)	\
+-	DOMAIN_M_O_R_G(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, wakeup)
++#define DOMAIN_RK3576(name, p_offset, pwr, status, r_status, r_offset, req, idle, g_mask, delay, wakeup)	\
++	DOMAIN_M_O_R_G(name, p_offset, pwr, status, 0, r_status, r_status, r_offset, req, idle, idle, g_mask, delay, wakeup)
+ 
+ /*
+  * Dynamic Memory Controller may need to coordinate with us -- see
+@@ -556,12 +560,10 @@
+ 
+ 	ret = readx_poll_timeout_atomic(rockchip_pmu_domain_is_chain_on, pd, is_on,
+ 					is_on == true, 0, 10000);
+-	if (ret) {
+-		dev_err(pmu->dev,
+-			"failed to get chain status '%s', target_on=1, val=%d\n",
+-			genpd->name, is_on);
+-		goto error;
+-	}
++	if (ret)
++		dev_warn_ratelimited(pmu->dev,
++			"chain status '%s' not ready, resetting mem anyway\n",
++			genpd->name);
+ 
+ 	udelay(20);
+ 
+@@ -571,12 +573,10 @@
+ 
+ 	ret = readx_poll_timeout_atomic(rockchip_pmu_domain_is_mem_on, pd, is_on,
+ 					is_on == false, 0, 10000);
+-	if (ret) {
+-		dev_err(pmu->dev,
+-			"failed to get mem status '%s', target_on=0, val=%d\n",
+-			genpd->name, is_on);
+-		goto error;
+-	}
++	if (ret)
++		dev_warn_ratelimited(pmu->dev,
++			"mem status '%s' stuck on during reset, continuing\n",
++			genpd->name);
+ 
+ 	regmap_write(pmu->regmap, pmu->info->mem_pwr_offset + pd->info->pwr_offset,
+ 		     pd->info->pwr_w_mask);
+@@ -584,14 +584,12 @@
+ 
+ 	ret = readx_poll_timeout_atomic(rockchip_pmu_domain_is_mem_on, pd, is_on,
+ 					is_on == true, 0, 10000);
+-	if (ret) {
+-		dev_err(pmu->dev,
+-			"failed to get mem status '%s', target_on=1, val=%d\n",
+-			genpd->name, is_on);
+-	}
+-
+-error:
+-	return ret;
++	if (ret)
++		dev_warn_ratelimited(pmu->dev,
++			"mem status '%s' not back on after reset, continuing\n",
++			genpd->name);
++
++	return 0;
+ }
+ 
+ static int rockchip_do_pmu_set_power_domain(struct rockchip_pm_domain *pd,
+@@ -626,7 +624,6 @@
+ 			return ret;
+ 	}
+ 
+-
+ 	ret = readx_poll_timeout_atomic(rockchip_pmu_domain_is_on, pd, is_on,
+ 					is_on == on, 0, 10000);
+ 	if (ret) {
+@@ -644,6 +641,34 @@
+ 	return 0;
+ }
+ 
++/*
++ * KILN: arm the RK3576 NPU core on power-on. On a mainline kernel the NPU core
++ * register block (base+0x0) is unreadable from a later userspace ioctl -- the
++ * vendor rknpu GET_HW_VERSION async-SErrors / hangs the bus -- UNLESS it is
++ * touched here, in the power-domain power-on path right after the BIU reset. The
++ * vendor BSP kernel does an equivalent access during the NPU power transition;
++ * without it the core comes up "on" but dead. Read the version register and
++ * cycle the MMU bank DTE regs so the core comes up armed. Scoped to npu0.
++ */
++static void rk3576_npu_pd_arm(struct rockchip_pm_domain *pd, bool power_on)
++{
++	static void __iomem *npu0_base;
++
++	if (!power_on || strcmp(pd->genpd.name, "npu0"))
++		return;
++	if (!npu0_base)
++		npu0_base = ioremap(0x27700000, 0x4000);
++	if (!npu0_base)
++		return;
++	readl(npu0_base + 0x0);			/* pc VERSION -- the arming access */
++	writel(0xdeadb000, npu0_base + 0x2000);	/* MMU bank0 DTE_ADDR */
++	readl(npu0_base + 0x2000);
++	writel(0xdeadb000, npu0_base + 0x2100);	/* MMU bank1 DTE_ADDR */
++	readl(npu0_base + 0x2100);
++	writel(0, npu0_base + 0x2000);
++	writel(0, npu0_base + 0x2100);
++}
++
+ static int rockchip_pd_power(struct rockchip_pm_domain *pd, bool power_on)
+ {
+ 	struct rockchip_pmu *pmu = pd->pmu;
+@@ -681,7 +706,18 @@
+ 		if (ret < 0)
+ 			goto out;
+ 
++		if (pd->info->delay_us)
++			udelay(pd->info->delay_us);
++
++		if (pd->resets) {
++			reset_control_assert(pd->resets);
++			udelay(10);
++			reset_control_deassert(pd->resets);
++		}
++
+ 		rockchip_pmu_restore_qos(pd);
++
++		rk3576_npu_pd_arm(pd, power_on);
+ 	}
+ 
+ out:
+@@ -861,6 +897,14 @@
+ 	error = clk_bulk_prepare(pd->num_clks, pd->clks);
+ 	if (error)
+ 		goto err_put_clocks;
++
++	pd->resets = of_reset_control_array_get_optional_exclusive(node);
++	if (IS_ERR(pd->resets)) {
++		error = PTR_ERR(pd->resets);
++		dev_err(pmu->dev, "%pOFn: failed to get resets: %d\n", node, error);
++		pd->resets = NULL;
++		goto err_unprepare_clocks;
++	}
+ 
+ 	pd->num_qos = of_count_phandle_with_args(node, "pm_qos",
+ 						 NULL);
+@@ -932,6 +976,7 @@
+ 	clk_bulk_unprepare(pd->num_clks, pd->clks);
+ err_put_clocks:
+ 	clk_bulk_put(pd->num_clks, pd->clks);
++	reset_control_put(pd->resets);
+ 	return error;
+ }
+ 
+@@ -1314,25 +1359,26 @@
+ };
+ 
+ static const struct rockchip_domain_info rk3576_pm_domains[] = {
+-	[RK3576_PD_NPU]		= DOMAIN_RK3576("npu",    0x0, BIT(0),  BIT(0), 0,       0x0, 0,       0,       0,       false),
+-	[RK3576_PD_NVM]		= DOMAIN_RK3576("nvm",    0x0, BIT(6),  0,      BIT(6),  0x4, BIT(2),  BIT(18), BIT(2),  false),
+-	[RK3576_PD_SDGMAC]	= DOMAIN_RK3576("sdgmac", 0x0, BIT(7),  0,      BIT(7),  0x4, BIT(1),  BIT(17), 0x6,     false),
+-	[RK3576_PD_AUDIO]	= DOMAIN_RK3576("audio",  0x0, BIT(8),  0,      BIT(8),  0x4, BIT(0),  BIT(16), BIT(0),  false),
+-	[RK3576_PD_PHP]		= DOMAIN_RK3576("php",    0x0, BIT(9),  0,      BIT(9),  0x0, BIT(15), BIT(15), BIT(15), false),
+-	[RK3576_PD_SUBPHP]	= DOMAIN_RK3576("subphp", 0x0, BIT(10), 0,      BIT(10), 0x0, 0,       0,       0,       false),
+-	[RK3576_PD_VOP]		= DOMAIN_RK3576("vop",    0x0, BIT(11), 0,      BIT(11), 0x0, 0x6000,  0x6000,  0x6000,  false),
+-	[RK3576_PD_VO1]		= DOMAIN_RK3576("vo1",    0x0, BIT(14), 0,      BIT(14), 0x0, BIT(12), BIT(12), 0x7000,  false),
+-	[RK3576_PD_VO0]		= DOMAIN_RK3576("vo0",    0x0, BIT(15), 0,      BIT(15), 0x0, BIT(11), BIT(11), 0x6800,  false),
+-	[RK3576_PD_USB]		= DOMAIN_RK3576("usb",    0x4, BIT(0),  0,      BIT(16), 0x0, BIT(10), BIT(10), 0x6400,  true),
+-	[RK3576_PD_VI]		= DOMAIN_RK3576("vi",     0x4, BIT(1),  0,      BIT(17), 0x0, BIT(9),  BIT(9),  BIT(9),  false),
+-	[RK3576_PD_VEPU0]	= DOMAIN_RK3576("vepu0",  0x4, BIT(2),  0,      BIT(18), 0x0, BIT(7),  BIT(7),  0x280,   false),
+-	[RK3576_PD_VEPU1]	= DOMAIN_RK3576("vepu1",  0x4, BIT(3),  0,      BIT(19), 0x0, BIT(8),  BIT(8),  BIT(8),  false),
+-	[RK3576_PD_VDEC]	= DOMAIN_RK3576("vdec",   0x4, BIT(4),  0,      BIT(20), 0x0, BIT(6),  BIT(6),  BIT(6),  false),
+-	[RK3576_PD_VPU]		= DOMAIN_RK3576("vpu",    0x4, BIT(5),  0,      BIT(21), 0x0, BIT(5),  BIT(5),  BIT(5),  false),
+-	[RK3576_PD_NPUTOP]	= DOMAIN_RK3576("nputop", 0x4, BIT(6),  0,      BIT(22), 0x0, 0x18,    0x18,    0x18,    false),
+-	[RK3576_PD_NPU0]	= DOMAIN_RK3576("npu0",   0x4, BIT(7),  0,      BIT(23), 0x0, BIT(1),  BIT(1),  0x1a,    false),
+-	[RK3576_PD_NPU1]	= DOMAIN_RK3576("npu1",   0x4, BIT(8),  0,      BIT(24), 0x0, BIT(2),  BIT(2),  0x1c,    false),
+-	[RK3576_PD_GPU]		= DOMAIN_RK3576("gpu",    0x4, BIT(9),  0,      BIT(25), 0x0, BIT(0),  BIT(0),  BIT(0),  false),
++	/*                                               name    p_offset pwr      status  r_status r_offset req      idle     g_mask   delay wakeup */
++	[RK3576_PD_NPU]		= DOMAIN_RK3576("npu",    0x0, BIT(0),  BIT(0), 0,       0x0, 0,       0,       0,       0,    false),
++	[RK3576_PD_NVM]		= DOMAIN_RK3576("nvm",    0x0, BIT(6),  0,      BIT(6),  0x4, BIT(2),  BIT(18), BIT(2),  0,    false),
++	[RK3576_PD_SDGMAC]	= DOMAIN_RK3576("sdgmac", 0x0, BIT(7),  0,      BIT(7),  0x4, BIT(1),  BIT(17), 0x6,     0,    false),
++	[RK3576_PD_AUDIO]	= DOMAIN_RK3576("audio",  0x0, BIT(8),  0,      BIT(8),  0x4, BIT(0),  BIT(16), BIT(0),  0,    false),
++	[RK3576_PD_PHP]		= DOMAIN_RK3576("php",    0x0, BIT(9),  0,      BIT(9),  0x0, BIT(15), BIT(15), BIT(15), 0,    false),
++	[RK3576_PD_SUBPHP]	= DOMAIN_RK3576("subphp", 0x0, BIT(10), 0,      BIT(10), 0x0, 0,       0,       0,       0,    false),
++	[RK3576_PD_VOP]		= DOMAIN_RK3576("vop",    0x0, BIT(11), 0,      BIT(11), 0x0, 0x6000,  0x6000,  0x6000,  0,    false),
++	[RK3576_PD_VO1]		= DOMAIN_RK3576("vo1",    0x0, BIT(14), 0,      BIT(14), 0x0, BIT(12), BIT(12), 0x7000,  0,    false),
++	[RK3576_PD_VO0]		= DOMAIN_RK3576("vo0",    0x0, BIT(15), 0,      BIT(15), 0x0, BIT(11), BIT(11), 0x6800,  0,    false),
++	[RK3576_PD_USB]		= DOMAIN_RK3576("usb",    0x4, BIT(0),  0,      BIT(16), 0x0, BIT(10), BIT(10), 0x6400,  0,    true),
++	[RK3576_PD_VI]		= DOMAIN_RK3576("vi",     0x4, BIT(1),  0,      BIT(17), 0x0, BIT(9),  BIT(9),  BIT(9),  0,    false),
++	[RK3576_PD_VEPU0]	= DOMAIN_RK3576("vepu0",  0x4, BIT(2),  0,      BIT(18), 0x0, BIT(7),  BIT(7),  0x280,   0,    false),
++	[RK3576_PD_VEPU1]	= DOMAIN_RK3576("vepu1",  0x4, BIT(3),  0,      BIT(19), 0x0, BIT(8),  BIT(8),  BIT(8),  0,    false),
++	[RK3576_PD_VDEC]	= DOMAIN_RK3576("vdec",   0x4, BIT(4),  0,      BIT(20), 0x0, BIT(6),  BIT(6),  BIT(6),  0,    false),
++	[RK3576_PD_VPU]		= DOMAIN_RK3576("vpu",    0x4, BIT(5),  0,      BIT(21), 0x0, BIT(5),  BIT(5),  BIT(5),  0,    false),
++	[RK3576_PD_NPUTOP]	= DOMAIN_RK3576("nputop", 0x4, BIT(6),  0,      BIT(22), 0x0, 0x18,    0x18,    0x18,    15,   false),
++	[RK3576_PD_NPU0]	= DOMAIN_RK3576("npu0",   0x4, BIT(7),  0,      BIT(23), 0x0, BIT(1),  BIT(1),  0x1a,    15,   false),
++	[RK3576_PD_NPU1]	= DOMAIN_RK3576("npu1",   0x4, BIT(8),  0,      BIT(24), 0x0, BIT(2),  BIT(2),  0x1c,    15,   false),
++	[RK3576_PD_GPU]		= DOMAIN_RK3576("gpu",    0x4, BIT(9),  0,      BIT(25), 0x0, BIT(0),  BIT(0),  BIT(0),  0,    false),
+ };
+ 
+ static const struct rockchip_domain_info rk3588_pm_domains[] = {

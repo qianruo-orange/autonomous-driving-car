@@ -36,6 +36,7 @@ recordings/
 *.orig
 *.rej
 *.patch
+!kernel/**/*.patch
 
 # 本地调试 / 覆盖率 / 缓存
 *.gcda
