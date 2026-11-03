@@ -62,3 +62,15 @@ nice -n 10 bash /home/qianruo/autonomous-driving-car/scripts/build_kernel74.sh \
 ## 验证边界
 
 打入补丁、设备树编译、驱动接口预检、完整打包和实机启动是不同阶段。本文不提前宣称完整构建或新内核启动成功。安装前还需检查匹配的镜像、设备树、initramfs、外置模块和回退引导；启动后分别验证网络、NPU 推理、JPEG 硬解及实时调度。现有 7.3 内核和启动配置继续保留。
+
+## 本机安装
+
+本轮完整构建于 2026 年 11 月 3 日 07:01:18 成功结束：3475 个内核树模块与四个外置模块均通过严格构建，image/headers 包通过 36 项独立检查。
+
+```bash
+sudo bash /home/qianruo/autonomous-driving-car/scripts/install_kernel74.sh
+```
+
+安装脚本先备份现有启动配置，临时保护 Armbian 自动改写 uInitrd 的钩子，安装匹配的 headers、image 和 DKMS 驱动，校验版本化 Image、设备树及 uInitrd，最后统一设置下次启动。Wi-Fi/蓝牙登记为 `aic8800-usb/5.0-kiln-linux74`，仅自动构建 7.4 内核；旧版本源码、模块和固件继续保留。安装脚本本身不重启。
+
+安装记录保存在 `/home/qianruo/kbuild/car-kernel-7.4-user/install.log` 与 `installation-verification.json`，备份路径见 `install-backup-path.txt`。备份内的 `rollback.sh` 恢复原启动链接与开机检查，不自动重启。本机此次备份为 `/var/backups/rock4d-linux74-LzD3gw0c`。安装成功不能替代重启后的实机验证。
