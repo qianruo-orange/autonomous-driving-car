@@ -1,6 +1,6 @@
 # ROCK 4D：Linux 7.4-rc1 适配
 
-本轮直接使用用户提供的 `linux-master.zip` 解压源码，路径为 `/home/qianruo/kbuild/linux-7.4-rc1-user`。旧的“7.3 源码加官方增量”构建已按要求停止；新构建不复用旧目录的 `.o`、`.ko` 或其他构建产物。
+本轮直接使用用户提供的 `linux-master.zip` 解压源码，路径为 `/home/qianruo/kbuild/kernels/7.4-rc1/source`。旧的“7.3 源码加官方增量”构建已按要求停止；新构建不复用旧目录的 `.o`、`.ko` 或其他构建产物。
 
 归档的全部文件 CRC 已验证，保留了符号链接及执行权限。ZIP 注释中的提交 `6628e7d4c6b25c8d18f1345e3a20d21829aae7e4` 与 [官方 Linux 7.4-rc1 提交](https://github.com/torvalds/linux/commit/6628e7d4c6b25c8d18f1345e3a20d21829aae7e4) 对应；未独立验证上游签名。ZIP SHA-256：
 
@@ -8,7 +8,7 @@
 8b6d02fd5e730d8ebcc09dd241b924e8c50dcfca33512da3774a91836e46a25d
 ```
 
-原始校验记录在 `/home/qianruo/kbuild/car-kernel-7.4-rc/user-source-verification.json`，源树副本在 `.rock4d/source-verification.json`。
+原始校验记录在 `/home/qianruo/kbuild/kernels/7.4-rc1/preparation/user-source-verification.json`，源树副本在 `.rock4d/source-verification.json`。
 
 ## 适配内容
 
@@ -49,19 +49,19 @@ nice -n 10 bash /home/qianruo/autonomous-driving-car/scripts/build_kernel74.sh
 
 ```bash
 nice -n 10 bash /home/qianruo/autonomous-driving-car/scripts/build_kernel74.sh \
-  /home/qianruo/kbuild/linux-7.4-rc1-user \
-  /home/qianruo/kbuild/car-kernel-7.4-user
+  /home/qianruo/kbuild/kernels/7.4-rc1/source \
+  /home/qianruo/kbuild/kernels/7.4-rc1/records
 ```
 
 流程依次构建内核 Debian 包、NPU、Wi-Fi 和蓝牙模块，任一步失败即停止，不启用忽略缺失符号的选项。`bindeb-pkg` 可能同时生成 `linux-libc-dev` 头文件包，脚本不会安装它，也不会替换宿主用户态库。
 
 日志目录分别保存 `kernel.log`、`rknpu.log`、`wifi.log`、`bluetooth.log` 和各阶段时间、退出码。总状态见 `build-stage.txt`、`build-started.txt`、`build-finished.txt`、`build-exit-code.txt`；成功后 `artifacts.sha256` 记录 image、headers 包及四个外置模块的校验值。
 
-完整构建于 2026 年 11 月 3 日启动。脚本在严格链接前清理外置模块预检产物，避免把缺少最终符号版本的临时 `.ko` 当成交付文件。完成状态以本轮日志和退出码为准，旧目录 `/home/qianruo/kbuild/car-kernel-7.4-rc` 的日志仅作历史记录。
+完整构建于 2026 年 11 月 3 日启动。脚本在严格链接前清理外置模块预检产物，避免把缺少最终符号版本的临时 `.ko` 当成交付文件。完成状态以本轮日志和退出码为准，旧目录 `/home/qianruo/kbuild/kernels/7.4-rc1/preparation` 的日志仅作历史记录。
 
 ## 验证边界
 
-打入补丁、设备树编译、驱动接口预检、完整打包和实机启动是不同阶段。本文不提前宣称完整构建或新内核启动成功。安装前还需检查匹配的镜像、设备树、initramfs、外置模块和回退引导；启动后分别验证网络、NPU 推理、JPEG 硬解及实时调度。现有 7.3 内核和启动配置继续保留。
+本机已完成严格构建、安装与重启，实际运行 `7.4.0-rc1-npu-rt`、`SMP PREEMPT_RT`。开机检查确认四个外置驱动已加载、Wi-Fi 已联网，NPU 推理后的显示及编码计数持续增长，JPEG 使用硬解，26 个应用线程均为 FIFO。车辆跟随保持关闭。蓝牙仅验证模块加载，未进行配对测试。
 
 ## 本机安装
 
@@ -71,6 +71,25 @@ nice -n 10 bash /home/qianruo/autonomous-driving-car/scripts/build_kernel74.sh \
 sudo bash /home/qianruo/autonomous-driving-car/scripts/install_kernel74.sh
 ```
 
-安装脚本先备份现有启动配置，临时保护 Armbian 自动改写 uInitrd 的钩子，安装匹配的 headers、image 和 DKMS 驱动，校验版本化 Image、设备树及 uInitrd，最后统一设置下次启动。Wi-Fi/蓝牙登记为 `aic8800-usb/5.0-kiln-linux74`，仅自动构建 7.4 内核；旧版本源码、模块和固件继续保留。安装脚本本身不重启。
+安装脚本先备份现有启动配置，临时保护 Armbian 自动改写 uInitrd 的钩子，安装匹配的 headers、image 和 DKMS 驱动，校验版本化 Image、设备树及 uInitrd，最后统一设置下次启动。Wi-Fi/蓝牙登记为 `aic8800-usb/5.0-kiln-linux74`，仅自动构建 7.4 内核。安装阶段保留原有源码、模块和固件，脚本本身不重启；本机之后执行的清理见下文。
 
-安装记录保存在 `/home/qianruo/kbuild/car-kernel-7.4-user/install.log` 与 `installation-verification.json`，备份路径见 `install-backup-path.txt`。备份内的 `rollback.sh` 恢复原启动链接与开机检查，不自动重启。本机此次备份为 `/var/backups/rock4d-linux74-LzD3gw0c`。安装成功不能替代重启后的实机验证。
+安装记录保存在 `/home/qianruo/kbuild/kernels/7.4-rc1/records/install.log` 与 `installation-verification.json`，重启结果在 `boot-verification.json`。随后按用户要求，已清除 7.2.8、7.3 两个分支的旧启动内核、源码、包、模块、headers 和旧回退载荷；当前仅保留 7.4。原安装阶段的旧回退脚本已移除，不能再按旧备份路径执行回退。清理与目录迁移清单位于 `/home/qianruo/kbuild/records/maintenance-20261103/`。
+
+## kbuild 目录
+
+```text
+kbuild/
+  kernels/7.4-rc1/
+    source/        当前内核源码及构建产物
+    packages/      当前 image、headers、dbg、libc-dev 与打包元数据
+    records/       构建、安装、启动验证与交付补丁包
+    preparation/   适配来源、校验与干净驱动包
+    provenance/    原始 Kiln 补丁
+  models/          模型与量化资料
+  media/           摄像头、编解码与时延资料
+  tools/           浏览器、PDF 工具
+  backups/         工程与模型备份
+  records/         审查、历史记录与整理清单
+```
+
+构建脚本把新生成的软件包收集到 `packages/`。根目录保留八个必要的兼容软链接，供既有脚本、模型清单和虚拟环境使用；它们不代表重复副本。

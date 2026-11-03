@@ -3,12 +3,13 @@
 # Install the verified ROCK 4D candidate and select it for the next boot.
 set -euo pipefail
 export PATH="$PATH:/usr/sbin:/sbin"
-source_tree=${1:-/home/qianruo/kbuild/linux-7.4-rc1-user}
-status_dir=${2:-/home/qianruo/kbuild/car-kernel-7.4-user}
+source_tree=$(realpath -e "${1:-/home/qianruo/kbuild/kernels/7.4-rc1/source}")
+status_dir=$(realpath -e "${2:-/home/qianruo/kbuild/kernels/7.4-rc1/records}")
 release=7.4.0-rc1-npu-rt
 version=7.4~rc1-npu-rt-2
 aic_version=5.0-kiln-linux74
-package_dir=$(dirname "$source_tree")
+package_dir=$(dirname "$source_tree")/packages
+vendor_source=$(dirname "$source_tree")/preparation/bundle/aic8800-usb-5.0-kiln
 hook=/etc/initramfs/post-update.d/99-uboot
 checker=/usr/local/sbin/rock4d-rt-boot-check
 expected=/var/lib/rock4d-rt/expected-kernel
@@ -22,7 +23,7 @@ tr '\0' '\n' </proc/device-tree/compatible | grep -qx radxa,rock-4d
 [[ $(cat "$status_dir/build-stage.txt") == complete ]]
 [[ -f $hook && ! -e $hook.disabled && -f $checker ]]
 [[ ! -e /usr/src/aic8800-usb-$aic_version ]]
-[[ -d /home/qianruo/kbuild/car-kernel-7.4-rc/bundle/aic8800-usb-5.0-kiln ]]
+[[ -d $vendor_source ]]
 for name in Image uInitrd dtb; do [[ -L /boot/$name ]]; done
 sha256sum --check "$status_dir/artifacts.sha256"
 
@@ -90,7 +91,7 @@ if ! dkms status -m kiln-rknpu -v 0.9.8 -k "$release" -a aarch64 | grep -q ': in
 fi
 
 # Keep the old DKMS source and installed 7.3 modules for rollback.
-cp -a /home/qianruo/kbuild/car-kernel-7.4-rc/bundle/aic8800-usb-5.0-kiln \
+cp -a "$vendor_source" \
       "/usr/src/aic8800-usb-$aic_version"
 python3 - "/usr/src/aic8800-usb-$aic_version/dkms.conf" "$aic_version" <<'PY'
 from pathlib import Path

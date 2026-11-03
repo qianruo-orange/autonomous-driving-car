@@ -13,8 +13,8 @@ if [[ ${1:-} == -h || ${1:-} == --help ]]; then
 fi
 [[ $# -le 2 ]] || { usage >&2; exit 2; }
 
-source_tree=$(realpath -e "${1:-/home/qianruo/kbuild/linux-7.4-rc1-user}")
-status_dir=${2:-/home/qianruo/kbuild/car-kernel-7.4-user}
+source_tree=$(realpath -e "${1:-/home/qianruo/kbuild/kernels/7.4-rc1/source}")
+status_dir=${2:-/home/qianruo/kbuild/kernels/7.4-rc1/records}
 package_version=7.4~rc1-npu-rt-2
 release=7.4.0-rc1-npu-rt
 jobs=24
@@ -100,7 +100,17 @@ for module in "${modules[@]}"; do
         printf 'Module ABI mismatch: %s\n' "$module" >&2; exit 1;
     }
 done
-package_dir=$(dirname "$source_tree")
+package_parent=$(dirname "$source_tree")
+package_dir=$package_parent/packages
+mkdir -p "$package_dir"
+for artifact in "linux-image-${release}_${package_version}_arm64.deb" \
+                "linux-image-${release}-dbg_${package_version}_arm64.deb" \
+                "linux-headers-${release}_${package_version}_arm64.deb" \
+                "linux-libc-dev_${package_version}_arm64.deb" \
+                "linux-upstream_${package_version}_arm64.buildinfo" \
+                "linux-upstream_${package_version}_arm64.changes"; do
+    [[ ! -f $package_parent/$artifact ]] || mv -f -- "$package_parent/$artifact" "$package_dir/"
+done
 packages=("$package_dir/linux-image-${release}_${package_version}_arm64.deb"
           "$package_dir/linux-headers-${release}_${package_version}_arm64.deb")
 sha256sum "${packages[@]}" "${modules[@]}" > "$status_dir/artifacts.sha256"

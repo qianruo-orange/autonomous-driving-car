@@ -1,5 +1,7 @@
 # RK3576 内核编译、安装与实时调度验证报告
 
+> 历史报告：本文记录 2026 年 11 月 2 日的 7.3 构建。当前系统已切换至 7.4-rc1，旧内核与回退载荷已按用户要求清理；当前状态和目录见 [7.4 适配说明](../kernel/rock4d-linux74/README.md)。
+
 文档日期：2026 年 11 月 2 日（Asia/Shanghai）  
 工程：autonomous-driving-car  
 设备：Radxa ROCK 4D，Rockchip RK3576，ARM64  
