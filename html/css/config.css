@@ -94,6 +94,7 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #car_fields>[data-car-group="speed"]{grid-column:2;grid-row:1}
 #car_fields>[data-car-group="steering"]{grid-column:1;grid-row:2}
 #car_fields>[data-car-group="automatic"],#car_fields>[data-car-group="wheels"]{grid-column:2;grid-row:2}
+#car_fields>[data-car-group="automatic"]>.cfg-grid{grid-template-columns:minmax(0,1fr)}
 .car-param-group{min-width:0;border:1px solid var(--card-border);border-radius:12px;padding:14px}
 .car-param-group h4{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;color:var(--accent)}
 .car-param-group h4 button{margin:0;padding:6px 12px}
@@ -123,11 +124,11 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #card_yolo{grid-column:1 / -1;grid-row:1}
 #card_can{grid-column:1 / -1;grid-row:2}
 #card_net{grid-column:1;grid-row:3}
-#card_video{grid-column:2;grid-row:3}
+#camera_form{grid-column:2;grid-row:3}
 #card_cpufreq{grid-column:1;grid-row:4}
 #card_nettest{grid-column:2;grid-row:4}
 @media(min-width:641px){
-  .can-grid.can-disabled #card_net{grid-row:2}
+  .can-grid.can-disabled #card_net,.can-grid.can-disabled #camera_form{grid-row:2}
   .can-grid.can-disabled #card_cpufreq,.can-grid.can-disabled #card_nettest{grid-row:3}
 }
 /* 网络测试卡片 */
@@ -148,7 +149,7 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .can-grid .card h3{min-height:38px;display:flex;align-items:center;gap:8px}
 @media(max-width:640px){
   .can-grid{grid-template-columns:minmax(0,1fr)}
-  #card_can,#card_net,#card_video,#card_cpufreq,#card_nettest{grid-column:1;grid-row:auto}
+  #card_can,#card_net,#camera_form,#card_cpufreq,#card_nettest{grid-column:1;grid-row:auto}
   body{padding:12px}
   .top{flex-wrap:wrap;gap:8px}
   .top h1{font-size:20px}
