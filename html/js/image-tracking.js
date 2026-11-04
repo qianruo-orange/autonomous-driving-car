@@ -59,6 +59,7 @@
             }
             retained.add(key);
             button.dataset.seq = String(latest.seq);
+            button.dataset.objectId = String(target.object_id || 0);
             button.disabled = busy;
             const label = target.name + ' #' + (target.object_id || target.index + 1) + ' ' + Math.round(target.confidence * 100) + '%';
             button.setAttribute('aria-label', t('追踪目标') + ': ' + label);
@@ -101,7 +102,11 @@
         const button = event.target.closest('.tracking-target');
         if (!button || busy) return;
         // 一次点击选中；再次点击同一个目标即取消追踪（等同于原来的停止按钮）。
-        if (latest && latest.active && String(latest.selected) === button.dataset.index) {
+        // 用稳定的目标 ID 判断"同一个"：检测序号会逐帧重排，ID 不会。
+        const same = latest && latest.active && (latest.track_id ?
+            String(latest.track_id) === button.dataset.objectId :
+            String(latest.selected) === button.dataset.index);
+        if (same) {
             command(new URLSearchParams({action: 'stop'}));
             return;
         }
