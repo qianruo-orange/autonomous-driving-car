@@ -313,10 +313,15 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
     int out = 0;
     for (int k = 0; k < n; ++k) {
         int i = idx[k];
-        float bx1 = yolo_deq_i8(bp[bx_nchw ? (size_t)0 * (size_t)A + (size_t)i : (size_t)i * 4 + 0], b_zp, b_sc);
-        float by1 = yolo_deq_i8(bp[bx_nchw ? (size_t)1 * (size_t)A + (size_t)i : (size_t)i * 4 + 1], b_zp, b_sc);
-        float bx2 = yolo_deq_i8(bp[bx_nchw ? (size_t)2 * (size_t)A + (size_t)i : (size_t)i * 4 + 2], b_zp, b_sc);
-        float by2 = yolo_deq_i8(bp[bx_nchw ? (size_t)3 * (size_t)A + (size_t)i : (size_t)i * 4 + 3], b_zp, b_sc);
+        /* Mul_2 输出为像素单位 cx,cy,w,h（实测：第 0 列≈cx、第 2 列≈w），
+           先换回 xyxy 再做 letterbox 逆映射 */
+        float bcx = yolo_deq_i8(bp[bx_nchw ? (size_t)0 * (size_t)A + (size_t)i : (size_t)i * 4 + 0], b_zp, b_sc);
+        float bcy = yolo_deq_i8(bp[bx_nchw ? (size_t)1 * (size_t)A + (size_t)i : (size_t)i * 4 + 1], b_zp, b_sc);
+        float bw  = yolo_deq_i8(bp[bx_nchw ? (size_t)2 * (size_t)A + (size_t)i : (size_t)i * 4 + 2], b_zp, b_sc);
+        float bh  = yolo_deq_i8(bp[bx_nchw ? (size_t)3 * (size_t)A + (size_t)i : (size_t)i * 4 + 3], b_zp, b_sc);
+
+        float bx1 = bcx - bw * 0.5f, by1 = bcy - bh * 0.5f;
+        float bx2 = bcx + bw * 0.5f, by2 = bcy + bh * 0.5f;
 
         float x1 = (bx1 - (float)lb_pad_x) / lb_scale_x;
         float y1 = (by1 - (float)lb_pad_y) / lb_scale_y;
