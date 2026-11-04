@@ -4,8 +4,14 @@
 
 #include <stdint.h>
 
-#define HTTP_MAX_CLIENTS 2
+/* Two slots were not enough: a browser page holds one identity while it
+ * streams video, and any script or dashboard from another address then loses
+ * the remaining slot, which turns every API call into 503. */
+#define HTTP_MAX_CLIENTS 8
 #define HTTP_CLIENT_GRACE_MS 30000ULL
+/* An identity whose sockets never came back (aborted stream, lost close
+ * callback) would otherwise hold its slot for the process lifetime. */
+#define HTTP_CLIENT_STALE_MS 120000ULL
 
 unsigned long long http_client_now_ms(void);
 /* One client is one source IPv4 address, in network byte order. Parallel page,

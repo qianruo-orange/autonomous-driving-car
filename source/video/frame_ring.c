@@ -236,8 +236,10 @@ void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
     r->displayed_frames++;
     if (s->capture_ms) {
         r->processing_age_ms = ring_now_ms() - s->capture_ms;
-        if (r->processing_age_ms > r->processing_age_max_ms)
+        if (r->processing_age_ms > r->processing_age_max_ms) {
             r->processing_age_max_ms = r->processing_age_ms;
+            r->processing_age_max_at_ms = ring_now_ms();
+        }
     }
     /* 最新结果优先：本帧与上次渲染之间被跳过的帧 */
     if (s->seq > r->display_seq + 1 && s->seq > r->display_seq)
@@ -386,6 +388,7 @@ void frame_ring_stats(frame_ring_t *r, frame_ring_stats_t *out)
     out->displayed_frames = r->displayed_frames;
     out->processing_age_ms = r->processing_age_ms;
     out->processing_age_max_ms = r->processing_age_max_ms;
+    out->processing_age_max_at_ms = r->processing_age_max_at_ms;
     out->capture_fps = r->capture_fps_den ? (double)r->capture_fps_num / r->capture_fps_den : 0;
     out->capture_dropped  = r->capture_dropped;
     out->driver_dropped   = r->driver_dropped;

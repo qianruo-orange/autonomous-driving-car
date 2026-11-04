@@ -107,12 +107,35 @@ int log_init(void *arg)
     return 0;
 }
 
+/* 掉电/强制重启时文件系统可能留下未落盘的数据页，读出来是一串 0；尾部 NUL
+ * 会让 grep 等工具把日志判成二进制并跳过整份文件。关闭前把尾部零字节截掉。 */
+static void trim_tail(FILE *fp)
+{
+    if (!fp || fp == stderr) return;
+    if (fflush(fp) != 0) return;
+    int fd = fileno(fp);
+    off_t end = lseek(fd, 0, SEEK_END);
+    if (end <= 0) return;
+    off_t keep = end;
+    unsigned char buf[4096];
+    while (keep > 0) {
+        size_t n = keep > (off_t)sizeof(buf) ? sizeof(buf) : (size_t)keep;
+        if (lseek(fd, keep - (off_t)n, SEEK_SET) < 0) return;
+        if (read(fd, buf, n) != (ssize_t)n) return;
+        size_t i = n;
+        while (i > 0 && buf[i - 1] == 0) i--;
+        keep = keep - (off_t)n + (off_t)i;
+        if (i != 0) break;
+    }
+    if (keep < end) (void)ftruncate(fd, keep);
+}
+
 void log_close(void *arg)
 {
     (void)arg;
     pthread_mutex_lock(&g_log.mutex);
-    if (g_log.fp_info  && g_log.fp_info  != stderr) fclose(g_log.fp_info);
-    if (g_log.fp_error && g_log.fp_error != stderr) fclose(g_log.fp_error);
+    if (g_log.fp_info  && g_log.fp_info  != stderr) { trim_tail(g_log.fp_info);  fclose(g_log.fp_info); }
+    if (g_log.fp_error && g_log.fp_error != stderr) { trim_tail(g_log.fp_error); fclose(g_log.fp_error); }
     g_log.fp_info = g_log.fp_error = NULL;
     pthread_mutex_unlock(&g_log.mutex);
 }

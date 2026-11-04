@@ -335,11 +335,12 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
         "\"render_skipped\":%llu,\"raw_pinned\":%d,"
         "\"pool_rgb\":%d,"
         "\"capture_fps\":%.3f,\"display_seq\":%llu,\"displayed_frames\":%llu,"
-        "\"processing_age_ms\":%llu,\"processing_age_max_ms\":%llu,\"now_ms\":%llu}",
+        "\"processing_age_ms\":%llu,\"processing_age_max_ms\":%llu,"
+        "\"processing_age_max_at_ms\":%llu,\"now_ms\":%llu}",
         st.produce_seq, st.capture_dropped, st.driver_dropped, st.capture_stall_ms,
         st.infer_dropped, st.render_skipped,
         st.raw_pinned, st.pool_rgb,
         st.capture_fps, st.display_seq, st.displayed_frames,
-        st.processing_age_ms, st.processing_age_max_ms, now_ms);
+        st.processing_age_ms, st.processing_age_max_ms, st.processing_age_max_at_ms, now_ms);
     http_ok_json(fd, json, (size_t)off);
 }

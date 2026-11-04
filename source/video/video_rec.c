@@ -551,6 +551,25 @@ void *video_rec_task(void *arg)
 
                 /* 定期回填头部并落盘：掉电后文件仍可按最后刷新点播放 */
                 if (wts - last_refresh >= REC_REFRESH_MS) {
+                    /* 相机帧率随光照变化（实测 30 → 10 fps），而 AVI 头只能声明
+                     * 一个速率；段内变化会让回放时长失真最多 3 倍。偏差超过 25%
+                     * 就按帧边界切段，新段用实测速率写头。 */
+                    uint64_t elapsed = wts - rec_mjpeg_start_ms(mjp);
+                    uint64_t done_frames = rec_mjpeg_frames(mjp);
+                    if (elapsed >= 8000 && done_frames > 0 && fps > 0) {
+                        double measured = (double)done_frames * 1000.0 / (double)elapsed;
+                        if (measured > (double)fps * 1.25 || measured < (double)fps * 0.75) {
+                            int next_fps = (int)(measured + 0.5);
+                            if (next_fps < 1) next_fps = 1;
+                            if (next_fps > 120) next_fps = 120;
+                            LOG_INFO("rec: capture rate %.1f fps vs header %d fps, splitting",
+                                     measured, fps);
+                            fps = next_fps;
+                            pthread_mutex_lock(&g_rec.lock);
+                            g_rec.split_pending = 1;
+                            pthread_mutex_unlock(&g_rec.lock);
+                        }
+                    }
                     if (rec_mjpeg_refresh(mjp) != 0) {
                         pthread_mutex_lock(&g_rec.lock);
                         g_rec.io_error = 2;

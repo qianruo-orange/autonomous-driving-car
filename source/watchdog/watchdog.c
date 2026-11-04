@@ -26,9 +26,22 @@ static pthread_mutex_t g_wd_mutex = PTHREAD_MUTEX_INITIALIZER;
 static time_t g_feed_miss_log_at = 0;
 static char g_feed_miss_name[WD_NAME_MAX];
 
-static int watchdog_find_slot_by_tid(pthread_t tid)
+/* 只有运动/感知链路上的线程失步才值得停机。管理面线程（HTTP、TCP、日报）
+ * 一次慢请求——模型重载、相机重开、大文件下载——曾把 http 判成 STUCK，
+ * 进而停掉整车应用；这类线程改为记录并复位，不影响行驶。 */
+static int watchdog_is_critical(const char *name)
 {
-    for (int i = 0; i < WD_MAX_SLOTS; i++) {
+    static const char *const critical[] = {
+        "main", "video", "rec", "yolo", "car_sport_ctrl", "can_recv", "can_send"
+    };
+    if (!name) return 1;                 /* 未知线程按关键处理，保持原语义 */
+    for (size_t i = 0; i < sizeof(critical) / sizeof(critical[0]); i++)
+        if (!strcmp(critical[i], name)) return 1;
+    return 0;
+}
+
+static int watchdog_find_slot_by_tid(pthread_t tid)
+{    for (int i = 0; i < WD_MAX_SLOTS; i++) {
         if (g_wd_slots[i].active && pthread_equal(g_wd_slots[i].tid, tid))
             return i;
     }
@@ -162,6 +175,16 @@ void *watchdog_task(void *arg)
             else if (now - g_wd_slots[i].last_advance >= timeout) {
                 g_wd_slots[i].miss_count++; g_wd_slots[i].last_advance = now;
                 if (g_wd_slots[i].miss_count >= g_wd_slots[i].max_miss) {
+                    if (!watchdog_is_critical(watchdog_slot_name(&g_wd_slots[i]))) {
+                        LOG_ERROR("watchdog: thread '%s' tid=%lu STUCK (missed %d/%d, beat=%u); "
+                                  "management thread, keeping the vehicle running",
+                            watchdog_slot_name(&g_wd_slots[i]),
+                            (unsigned long)g_wd_slots[i].tid, g_wd_slots[i].miss_count,
+                            g_wd_slots[i].max_miss, cur);
+                        g_wd_slots[i].miss_count = 0;
+                        g_wd_slots[i].last_advance = now;
+                        continue;
+                    }
                     LOG_ERROR("watchdog: thread '%s' tid=%lu STUCK (missed %d/%d, beat=%u)",
                         watchdog_slot_name(&g_wd_slots[i]),
                         (unsigned long)g_wd_slots[i].tid, g_wd_slots[i].miss_count,

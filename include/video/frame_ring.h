@@ -96,6 +96,8 @@ typedef struct frame_ring {
     unsigned long long display_seq;   /* 最新已渲染 seq（maintain 释放 rgb 用） */
     unsigned long long displayed_frames;
     unsigned long long processing_age_ms, processing_age_max_ms;
+    /* 产生 processing_age_max_ms 那一刻的单调时钟，用于和 frames.tsv 事后对时 */
+    unsigned long long processing_age_max_at_ms;
     unsigned capture_fps_num, capture_fps_den;
 
     /* 运行模式（消费者侧在锁内更新，维护释放规则用） */
@@ -134,6 +136,7 @@ typedef struct {
     unsigned long long produce_seq;
     unsigned long long display_seq, displayed_frames;
     unsigned long long processing_age_ms, processing_age_max_ms;
+    unsigned long long processing_age_max_at_ms;   /* 峰值发生时刻（单调 ms） */
     double capture_fps;
     unsigned long long capture_dropped, driver_dropped, capture_stall_ms;
     unsigned long long infer_dropped, render_skipped;

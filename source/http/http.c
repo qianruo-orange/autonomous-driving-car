@@ -954,7 +954,7 @@ void *http_server_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     (void)pthread_setname_np(pthread_self(), "http");
-    if (watchdog_register_thread(pthread_self(), "http", 5, 3) < 0) {
+    if (watchdog_register_thread(pthread_self(), "http", 20, 3) < 0) {
         app->fatal = 1;
         app->running = 0;
         return NULL;
