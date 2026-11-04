@@ -23,6 +23,20 @@
   var pendingBlob = null;   /* 解码期间收到的最新帧，仅保留最后一张，解码完立即补显 */
   var pendingBlobSeq = 0;   /* 与该帧对应的采集序号（X-Seq） */
 
+  /* ---- MJPEG 透传链路的延迟/丢帧统计 ----
+     H.264 走 MSE 时可以问 <video> 要 droppedVideoFrames、用 buffered 算延迟；
+     透传链路没有 MSE，改用每帧自带的 X-Seq：
+       · 丢帧 = 相邻两帧序号跳号（seq 由采集环单调递增，跳号只可能是没发出来/没收到）
+       · 延迟 = 屏上这帧落后服务端最新采集帧多少帧 × 帧间隔，即端到端（采集→屏幕） */
+  var mjShownSeq = 0;         /* 屏上那一帧的采集序号 */
+  var mjLastSeq = 0;          /* 上一帧收到的序号 */
+  var mjDropTotal = 0;        /* 收到的帧里累计跳过的帧数 */
+  var mjDropPerSec = 0;       /* 每秒丢帧（1s 窗口差值） */
+  var mjDropMark = null;      /* 上一窗口的累计值 */
+  var mjLagFrames = 0;        /* 落后最新采集帧的帧数（指数平滑） */
+  var mjLatestSeq = 0;        /* 服务端最新采集序号 */
+  var mjCaptureFps = 30;      /* 采集帧率（用于帧数换算毫秒） */
+
   /* ---- 检测框叠加：MJPEG 透传链路下画面是相机原始帧，服务端不再烧框，
      前端用每帧的 X-Seq 与 /api/detections/live 返回的 seq 对齐后画在 canvas 上 ---- */
   var detMap = new Map(), detLastSeq = 0, detPollBusy = false;
@@ -36,6 +50,8 @@
     fpsCnt = 0; shownCnt = 0; fpsWin = Date.now(); fpsVal = 0;
     lastPresented = null; receivedFps = 0;
     lastDropped = null; droppedPerSecond = 0;
+    mjShownSeq = 0; mjLastSeq = 0; mjDropTotal = 0;
+    mjDropPerSec = 0; mjDropMark = null; mjLagFrames = 0;
   }
 
   /* 显示一帧：仅在上一次 onload/onerror 之后调用，上一帧 URL 此时已被完整消费，
@@ -49,6 +65,7 @@
       if (streamAbort !== session || imgEl !== target) return;
       if (event.type === 'load') {
         shownCnt++;
+        if (seq) mjShownSeq = seq;   /* 延迟统计：屏上这帧的采集序号 */
         overlayDraw(seq);          /* 该帧已经在屏幕上，按同一 seq 叠框 */
       }
       imgBusy = false;
@@ -105,12 +122,16 @@
       .then(function() { detPollBusy = false; });
   }
 
-  /* 按显示中的帧序号取检测结果并绘制：object-fit:contain 的留边也要对齐 */
+  /* 按显示中的帧序号取检测结果并绘制。
+     坐标换算不再靠「假设 object-fit 是 contain 且内容居中」：直接读 <img> 的实际布局
+     矩形和计算后的 object-fit，按内容真实位置换算。改样式、全屏、窗口拉伸都不会让框跑偏。 */
   function overlayDraw(seq) {
     var c = overlayCanvas;
     if (!c || !overlayCtx || !imgEl) return;
     var wrap = c.parentNode;
-    var cw = wrap.clientWidth, ch = wrap.clientHeight;
+    if (!wrap) return;
+    var wr = wrap.getBoundingClientRect();
+    var cw = wr.width, ch = wr.height;
     if (!cw || !ch) return;
     var dpr = window.devicePixelRatio || 1;
     var pw = Math.round(cw * dpr), ph = Math.round(ch * dpr);
@@ -133,27 +154,47 @@
       if (!best || (seq - best.seq) > 6) return;
       rec = best;
     }
-    var iw = rec.w || imgEl.naturalWidth || 1280;
-    var ih = rec.h || imgEl.naturalHeight || 720;
-    var scale = Math.min(cw / iw, ch / ih);
-    var ox = (cw - iw * scale) / 2, oy = (ch - ih * scale) / 2;
     if (!rec.d || !rec.d.length) return;
 
-    ctx.lineWidth = 2;
-    ctx.font = '500 13px system-ui,-apple-system,sans-serif';
+    var iw = rec.w || imgEl.naturalWidth || 1280;
+    var ih = rec.h || imgEl.naturalHeight || 720;
+    var ir = imgEl.getBoundingClientRect();
+    var boxW = ir.width || cw, boxH = ir.height || ch;
+    var fit = '';
+    try { fit = (window.getComputedStyle(imgEl).objectFit || '').trim(); } catch (e) {}
+    var sx, sy;
+    if (fit === 'fill') {
+      sx = boxW / iw; sy = boxH / ih;          /* 非等比拉伸：两轴各自换算 */
+    } else {
+      var s;
+      if (fit === 'cover')          s = Math.max(boxW / iw, boxH / ih);
+      else if (fit === 'none')      s = 1;
+      else                          s = Math.min(boxW / iw, boxH / ih);   /* contain/默认 */
+      if (fit === 'scale-down')     s = Math.min(1, s);
+      sx = sy = s;
+    }
+    /* 内容左上角（wrapper 坐标系）：img 元素偏移 + letterbox 留边 */
+    var ox = (ir.left - wr.left) + (boxW - iw * sx) / 2;
+    var oy = (ir.top - wr.top) + (boxH - ih * sy) / 2;
+
+    /* 线宽/字号跟随显示尺寸缩放，小窗不糊、大屏不细 */
+    var ui = Math.max(0.8, Math.min(2.2, sx / 0.97));
+    ctx.lineWidth = Math.round(2 * ui * 10) / 10;
+    ctx.font = '500 ' + Math.round(13 * ui) + 'px system-ui,-apple-system,sans-serif';
     ctx.textBaseline = 'top';
+    var labelH = Math.round(16 * ui);
     for (var i = 0; i < rec.d.length; i++) {
       var d = rec.d[i];
-      var x1 = ox + d[0] * scale, y1 = oy + d[1] * scale;
-      var x2 = ox + d[2] * scale, y2 = oy + d[3] * scale;
+      var x1 = ox + d[0] * sx, y1 = oy + d[1] * sy;
+      var x2 = ox + d[2] * sx, y2 = oy + d[3] * sy;
       var col = DET_COLORS[Math.abs(d[4]) % DET_COLORS.length];
       ctx.strokeStyle = col;
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
       var label = d[6] + ' ' + Number(d[5]).toFixed(2);
       var tw = ctx.measureText(label).width;
-      var ty = (y1 - 17 < oy) ? y2 + 2 : y1 - 17;
+      var ty = (y1 - labelH - 1 < oy) ? y2 + 2 : y1 - labelH - 1;
       ctx.fillStyle = col;
-      ctx.fillRect(x1 - 1, ty, tw + 8, 16);
+      ctx.fillRect(x1 - 1, ty, tw + 8, labelH);
       ctx.fillStyle = '#ffffff';
       ctx.fillText(label, x1 + 3, ty + 1);
     }
@@ -226,6 +267,11 @@
     var parse = createJpegParser(function(frame, seq) {
       if (!imgEl) return;
       fpsCnt++;
+      /* 序号跳号 = 中间有帧没送到（服务端跳帧或链路丢弃），据此统计丢帧 */
+      if (seq) {
+        if (mjLastSeq && seq > mjLastSeq + 1) mjDropTotal += seq - mjLastSeq - 1;
+        if (seq > mjLastSeq) mjLastSeq = seq;
+      }
       var blob = new Blob([frame], {type: 'image/jpeg'});
       if (imgBusy) { pendingBlob = blob; pendingBlobSeq = seq; }
       else showFrame(blob, seq);
@@ -625,6 +671,16 @@
       result.estimatedStreamDelayMs = Math.max(0, mseClockAgeMs + Date.now() - mseClockAt - mediaTime * 1000);
     }
     result.estimatedTotalDelayMs = result.estimatedStreamDelayMs === null ? null : result.estimatedStreamDelayMs + processingAgeMs;
+    /* 透传链路没有 MSE buffered/playbackQuality，按 X-Seq 落后帧数换算端到端延迟，
+       丢帧用序号跳号统计（比 <video> 的 droppedVideoFrames 更贴近真实链路损失） */
+    if (!mseRunning && streamRunning) {
+      var lagMs = mjCaptureFps > 0 ? (mjLagFrames / mjCaptureFps) * 1000 : null;
+      result.lagFrames = mjLagFrames;
+      result.droppedFramesPerSecond = mjDropPerSec;
+      result.bufferAheadSeconds = lagMs === null ? 0 : lagMs / 1000;
+      result.estimatedStreamDelayMs = lagMs;
+      result.estimatedTotalDelayMs = lagMs;
+    }
     return result;
   };
 
@@ -687,6 +743,9 @@
       cameraFps = stats.capture_fps || 0;
       processingAgeMs = stats.capture_to_encode_ms || stats.processing_age_ms || 0;
       sourceDrops = (stats.capture_dropped || 0) + (stats.driver_dropped || 0) + (stats.infer_dropped || 0);
+      /* 透传链路延迟基准：服务端最新采集序号 + 采集帧率 */
+      if (stats.produce_seq) mjLatestSeq = stats.produce_seq;
+      if (cameraFps > 1) mjCaptureFps = cameraFps;
     } catch(e) {} finally { videoStatsBusy = false; }
   }
 
@@ -978,6 +1037,16 @@
         lastDropped = quality.droppedVideoFrames;
       } else {
         fpsVal = streamRunning ? shownCnt * 1000 / elapsed : receivedFps;
+        /* 延迟 = 落后服务端最新采集帧多少帧 × 帧间隔（含网络与解码排队） */
+        if (streamRunning && mjLatestSeq && mjShownSeq) {
+          var lag = mjLatestSeq - mjShownSeq;
+          if (lag < 0) lag = 0;
+          if (lag > 150) lag = 150;         /* 钳位，避免重启/暂停后的异常值拖拽平均 */
+          mjLagFrames = mjLagFrames ? mjLagFrames * 0.6 + lag * 0.4 : lag;
+        }
+        mjDropPerSec = mjDropMark === null ? 0
+                       : Math.max(0, mjDropTotal - mjDropMark) * 1000 / elapsed;
+        mjDropMark = mjDropTotal;
       }
       fpsCnt = 0; shownCnt = 0; fpsWin = now;
     }

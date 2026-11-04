@@ -34,6 +34,7 @@
 
 #include "video/video_rec.h"
 #include "video/rec_mp4.h"
+#include "video/rec_mjpeg.h"
 #include "video/h264_encoder.h"
 #include "video/h264_stream.h"
 #include "video/video_stream.h"
@@ -75,7 +76,7 @@ int video_rec_delete_file(int day_fd, const char *relative)
     if (length < 14 || length >= 256 || relative[8] != '/' ||
         strstr(relative, "..") ||
         (strncmp(relative + 9, "video_", 6) && strncmp(relative + 9, "rec_", 4)) ||
-        strcmp(relative + length - 4, ".mp4")) {
+        (strcmp(relative + length - 4, ".mp4") && strcmp(relative + length - 4, ".avi"))) {
         errno = EINVAL;
         return -1;
     }
@@ -149,6 +150,44 @@ static int rec_take_yolo_frame(frame_ring_t *ring, unsigned char **out, size_t *
     s->nv12.buf = NULL;
     s->nv12.len = s->nv12.cap = 0;
     frame_ring_encode_advance_locked(ring, s);
+    frame_ring_unlock(ring);
+    return 0;
+}
+
+/* ---- 无损录像取帧：相机原始 JPEG（不经解码/重编码） ---- */
+
+static unsigned long long g_raw_rec_seq = 0;   /* 录像已消费到的原始帧序号 */
+
+/* 取 seq 大于游标的最小可用 raw 槽，锁内整帧拷贝（调用方 free）。
+   raw 指向 V4L2 mmap：采集侧 QBUF 后缓冲归驱动，只能在锁内读完，
+   因此这里是拷贝而非零拷贝窃取。录像线程由 CAPTURED 事件唤醒，
+   正常节奏下拷贝发生在帧仍被钉住的窗口内；确实落后时跳过中间帧
+   并在 *gap 里返回跳过的帧数，而不是把旧帧重复写进文件。 */
+static int rec_take_raw_jpeg(frame_ring_t *ring, unsigned char **out, size_t *len,
+                             int *w, int *h, unsigned long long *seq_out,
+                             unsigned long long *gap)
+{
+    if (!ring) return -1;
+    frame_ring_lock(ring);
+    frame_slot_t *best = NULL;
+    for (int i = 0; i < FRAME_RING_N; i++) {
+        frame_slot_t *s = &ring->slots[i];
+        if (!s->raw_present || !s->raw.buf || s->raw.len == 0) continue;
+        if (s->fmt != FRAME_RING_FMT_MJPEG) continue;
+        if (s->seq <= g_raw_rec_seq) continue;
+        if (!best || s->seq < best->seq) best = s;
+    }
+    if (!best) { frame_ring_unlock(ring); return -1; }
+    unsigned char *copy = malloc(best->raw.len);
+    if (!copy) { frame_ring_unlock(ring); return -1; }
+    memcpy(copy, best->raw.buf, best->raw.len);
+    if (gap) *gap = best->seq - g_raw_rec_seq - 1;
+    g_raw_rec_seq = best->seq;
+    *out = copy;
+    *len = best->raw.len;
+    if (w) *w = best->w;
+    if (h) *h = best->h;
+    if (seq_out) *seq_out = best->seq;
     frame_ring_unlock(ring);
     return 0;
 }
@@ -262,7 +301,7 @@ void *video_rec_task(void *arg)
                 free(probe);
             }
 
-            /* 实测帧率（不写死）→ 按分辨率动态码率 → 创建 H.264 编码器 */
+            /* 实测帧率（不写死）：无损模式只用来填 AVI 头部的 dwRate */
             int fps = rec_measure_fps(app, ring);
             if (fps <= 0) {
                 pthread_mutex_lock(&g_rec.lock);
@@ -271,35 +310,39 @@ void *video_rec_task(void *arg)
                 usleep(100000);
                 continue;
             }
-            /* bitrate = width * height * COEFF/100, with a fixed COEFF=175 (1.75 bps/px,
-               ~1.6M at 720p, VBR target). The ceiling is set by the live-stream link, not by
-               quality preference: in practice WiFi can only reliably deliver ~2Mbps, and beyond
-               that fMP4 over TCP won't drop frames but keeps buffering, so the live view lags more
-               and more until it drops and reconnects. The same encoder feeds both recording and
-               the live stream, so before raising the coefficient confirm the link can handle it
-               (H.264 at equal quality costs ~30% more bitrate than H.265; when quality is lacking,
-               lower the resolution first rather than blindly raising the bitrate). */
-            int ppx = 175;  /* fixed coefficient: 1.75 bps/px */
-            int bitrate = (int)((uint64_t)pw * ph * (unsigned)ppx / 100u);
-            if (bitrate < 300000)  bitrate = 300000;
-            if (bitrate > 16000000) bitrate = 16000000;
-            h264_encoder_t *enc = h264_encoder_create(pw, ph, fps, bitrate);
-            if (!enc) {
-                init_fail_cnt++;
-                pthread_mutex_lock(&g_rec.lock);
-                g_rec.start_fail = 2;   /* 编码器不可用 */
-                pthread_mutex_unlock(&g_rec.lock);
-                /* 日志退避：首次与每 25 次失败打一条，避免设备不可用时刷屏 */
-                if (init_fail_cnt == 1 || init_fail_cnt % 25 == 0)
-                    LOG_ERROR("rec: h264 encoder init failed (%dx%d), retrying...", pw, ph);
-                usleep(500000);
-                continue;
-            }
-            init_fail_cnt = 0;
 
-            /* 直播扇出：新会话（新编码器 → 新 SPS/PPS）告知推流模块清环换 epoch。
-               rkmpp 首帧前 extradata 可能为空，sps/pps 传空由首 IDR 内嵌补齐 */
-            {
+            /* rec_format=mjpeg（默认）：相机原生 JPEG 原样写 AVI(MJPG)。
+               全程不解码、不重编码、不缩放 —— 文件里每一帧与传感器输出逐字节相同。
+               代价是体积即相机原生码率：720p 约 18~26 Mbps，约 3.1 MB/s、11 GB/小时。
+               rec_format=h264：保留原路径（H.264 重编码，有损，约 1.6 Mbps）。 */
+            const int lossless = strcmp(app->cfg->rec_format, "h264") != 0;
+            h264_encoder_t *enc = NULL;
+            rec_mp4_t      *mp4 = NULL;
+            rec_mjpeg_t    *mjp = NULL;
+
+            if (!lossless) {
+                /* bitrate = width*height*COEFF/100, fixed COEFF=175 (1.75 bps/px,
+                   ~1.6M at 720p, VBR target). 仅供有损回退路径使用。 */
+                int ppx = 175;  /* fixed coefficient: 1.75 bps/px */
+                int bitrate = (int)((uint64_t)pw * ph * (unsigned)ppx / 100u);
+                if (bitrate < 300000)  bitrate = 300000;
+                if (bitrate > 16000000) bitrate = 16000000;
+                enc = h264_encoder_create(pw, ph, fps, bitrate);
+                if (!enc) {
+                    init_fail_cnt++;
+                    pthread_mutex_lock(&g_rec.lock);
+                    g_rec.start_fail = 2;   /* 编码器不可用 */
+                    pthread_mutex_unlock(&g_rec.lock);
+                    /* 日志退避：首次与每 25 次失败打一条，避免设备不可用时刷屏 */
+                    if (init_fail_cnt == 1 || init_fail_cnt % 25 == 0)
+                        LOG_ERROR("rec: h264 encoder init failed (%dx%d), retrying...", pw, ph);
+                    usleep(500000);
+                    continue;
+                }
+                init_fail_cnt = 0;
+
+                /* 直播扇出：新会话（新编码器 → 新 SPS/PPS）告知推流模块清环换 epoch。
+                   rkmpp 首帧前 extradata 可能为空，sps/pps 传空由首 IDR 内嵌补齐 */
                 const unsigned char *sps = NULL, *pps = NULL;
                 unsigned int slen = 0, plen = 0;
                 h264_encoder_sps_pps(enc, &sps, &slen, &pps, &plen);
@@ -318,11 +361,13 @@ void *video_rec_task(void *arg)
 
             char fname[128] = "";
             pthread_mutex_lock(&g_rec_files_lock);
-            rec_mp4_t *s = rec_mp4_create(dir, "video", pw, ph,
-                                          fname, sizeof(fname));
-            if (!s) {
+            if (lossless)
+                mjp = rec_mjpeg_create(dir, "video", pw, ph, fps, fname, sizeof(fname));
+            else
+                mp4 = rec_mp4_create(dir, "video", pw, ph, fname, sizeof(fname));
+            if (!mjp && !mp4) {
                 pthread_mutex_unlock(&g_rec_files_lock);
-                h264_encoder_destroy(enc);
+                if (enc) h264_encoder_destroy(enc);
                 pthread_mutex_lock(&g_rec.lock);
                 g_rec.start_fail = 3;
                 pthread_mutex_unlock(&g_rec.lock);
@@ -330,14 +375,23 @@ void *video_rec_task(void *arg)
                 usleep(100000);
                 continue;
             }
+            /* 无损模式从采集环当前游标起步，别把会话开始前的旧帧写进新文件 */
+            if (lossless && ring) {
+                frame_ring_lock(ring);
+                g_raw_rec_seq = ring->produce_seq;
+                frame_ring_unlock(ring);
+            }
             char rel[192];
             snprintf(rel, sizeof(rel), "%s/%s", day, fname);
-            LOG_INFO("rec: recording started -> %s (%dx%d @%dfps)", rel, pw, ph, fps);
+            LOG_INFO("rec: recording started -> %s (%dx%d @%dfps, %s)", rel, pw, ph, fps,
+                     lossless ? "lossless MJPEG/AVI, camera native frames"
+                              : "H.264/MP4 re-encode");
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 1;
-            safe_strncpy(g_rec.encoder, sizeof(g_rec.encoder), h264_encoder_name(enc));
+            safe_strncpy(g_rec.encoder, sizeof(g_rec.encoder),
+                         lossless ? "mjpeg-native" : h264_encoder_name(enc));
             g_rec.start_fail = 0;
-            g_rec.start_ms = rec_mp4_start_ms(s);
+            g_rec.start_ms = lossless ? rec_mjpeg_start_ms(mjp) : rec_mp4_start_ms(mp4);
             g_rec.frames = 0;
             g_rec.bytes = 0;
             g_rec.last_frame_ts = 0;
@@ -347,16 +401,91 @@ void *video_rec_task(void *arg)
             pthread_mutex_unlock(&g_rec.lock);
             pthread_mutex_unlock(&g_rec_files_lock);
 
-            /* ---- 录制内层循环：快照轮询 20ms ---- */
-            if (ring) frame_ring_set_rec_active(ring, 1);   /* 会话开始：释放规则走编码路径 */
+            /* ---- 录制内层循环 ---- */
+            /* rec_active 只对「窃取 NV12」的 H.264 路径有意义：它让显示槽的 nv12 被钉住
+               等 rec 取走。无损模式读的是 raw，若也置 rec_active，nv12 将永远等不到
+               encode_done 而无法回池，32 个槽很快耗尽、采集直接停摆（实测 produce_seq
+               卡死、capture_dropped 每秒涨 30）。因此无损模式不进入编码释放规则。 */
+            if (ring && !lossless) frame_ring_set_rec_active(ring, 1);
             g_last_yolo_ms = now_ms();   /* 会话起点计时，避免启动初期误判停摆 */
             int done = 0;
+            unsigned long long rec_raw_gap = 0;   /* 因落后于采集而跳过的帧 */
+            unsigned long long rec_size_skip = 0; /* 尺寸与配置不符而跳过的帧 */
             while (app->running && !done) {
                 watchdog_feed_self("rec");
                 pthread_mutex_lock(&g_rec.lock);
                 int still = g_rec.recording;
                 pthread_mutex_unlock(&g_rec.lock);
                 if (!still) break;
+
+                /* ---- 无损模式：相机原生 JPEG 原样写进 AVI，本分支内不碰编码器 ----
+                   录像不依赖 YOLO 标注帧（原始帧里没有框），因此这里不消费
+                   NV12，也不做停摆判定——框只在网页前端叠加。 */
+                if (lossless) {
+                    unsigned char *jpg = NULL;
+                    size_t jlen = 0;
+                    int jw = 0, jh = 0;
+                    unsigned long long jseq = 0, gap = 0;
+                    if (rec_take_raw_jpeg(ring, &jpg, &jlen, &jw, &jh, &jseq, &gap) != 0) {
+                        /* 落后时 CAPTURED 已翻页：按 seq 等待，避免空转 */
+                        if (ring) frame_ring_wait_new(ring, g_raw_rec_seq, 50);
+                        else usleep(10000);
+                        continue;
+                    }
+                    rec_raw_gap += gap;
+                    if (jw != pw || jh != ph) { free(jpg); rec_size_skip++; continue; }
+
+                    pthread_mutex_lock(&g_rec.lock);
+                    int split = g_rec.split_pending && g_rec.recording;
+                    pthread_mutex_unlock(&g_rec.lock);
+                    if (split) {
+                        /* 每帧都是关键帧，直接对齐到下一帧切分 */
+                        char next_name[128] = "", next_day[16], next_dir[512];
+                        time_t split_time = time(NULL);
+                        struct tm split_tm;
+                        localtime_r(&split_time, &split_tm);
+                        strftime(next_day, sizeof(next_day), "%Y%m%d", &split_tm);
+                        snprintf(next_dir, sizeof(next_dir), "%s/%s", REC_DIR, next_day);
+                        pthread_mutex_lock(&g_rec_files_lock);
+                        rec_mjpeg_t *next = rec_mjpeg_create(next_dir, "video", pw, ph,
+                                                             fps, next_name, sizeof(next_name));
+                        if (next) {
+                            int finalized = rec_mjpeg_finalize(mjp);
+                            mjp = next;
+                            snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
+                            pthread_mutex_lock(&g_rec.lock);
+                            safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
+                            g_rec.start_ms = rec_mjpeg_start_ms(mjp);
+                            g_rec.frames = g_rec.bytes = 0;
+                            g_rec.last_frame_ts = 0;
+                            g_rec.split_pending = 0;
+                            g_rec.split_error = finalized == 0 ? 0 : 2;
+                            pthread_mutex_unlock(&g_rec.lock);
+                            LOG_INFO("rec: file split, continuing -> %s", rel);
+                        } else {
+                            pthread_mutex_lock(&g_rec.lock);
+                            g_rec.split_pending = 0;
+                            g_rec.split_error = 1;
+                            pthread_mutex_unlock(&g_rec.lock);
+                            LOG_ERROR("rec: split file creation failed; continuing current recording");
+                        }
+                        pthread_mutex_unlock(&g_rec_files_lock);
+                    }
+
+                    uint64_t wts = now_ms();
+                    if (rec_mjpeg_write_frame(mjp, jpg, jlen, wts) != 0) {
+                        free(jpg);
+                        done = 1;   /* 达 ~2GB 上限或写失败：收尾后续录下一段 */
+                        break;
+                    }
+                    free(jpg);
+                    pthread_mutex_lock(&g_rec.lock);
+                    g_rec.frames = rec_mjpeg_frames(mjp);
+                    g_rec.bytes  = rec_mjpeg_bytes(mjp);
+                    g_rec.last_frame_ts = wts;
+                    pthread_mutex_unlock(&g_rec.lock);
+                    continue;
+                }
 
                 /* 取帧：YOLO 画框帧（渲染时已转 NV12，锁内窃取零拷贝），无原始帧回退 */
                 unsigned char *nv12 = NULL;
@@ -419,12 +548,12 @@ void *video_rec_task(void *arg)
                     rec_mp4_t *next = rec_mp4_create(next_dir, "video", pw, ph,
                                                     next_name, sizeof(next_name));
                     if (next) {
-                        int finalized = rec_mp4_finalize(s);
-                        s = next;
+                        int finalized = rec_mp4_finalize(mp4);
+                        mp4 = next;
                         snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
                         pthread_mutex_lock(&g_rec.lock);
                         safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
-                        g_rec.start_ms = rec_mp4_start_ms(s);
+                        g_rec.start_ms = rec_mp4_start_ms(mp4);
                         g_rec.frames = g_rec.bytes = 0;
                         g_rec.last_frame_ts = 0;
                         g_rec.split_pending = 0;
@@ -440,7 +569,7 @@ void *video_rec_task(void *arg)
                     }
                     pthread_mutex_unlock(&g_rec_files_lock);
                 }
-                if (rec_mp4_write_frame(s, h264, hlen, keyframe, ts) != 0) {
+                if (rec_mp4_write_frame(mp4, h264, hlen, keyframe, ts) != 0) {
                     free(h264);
                     done = 1;   /* 达上限或写失败：结束本段（自动续录下一段） */
                     break;
@@ -448,18 +577,19 @@ void *video_rec_task(void *arg)
                 free(h264);
 
                 pthread_mutex_lock(&g_rec.lock);
-                g_rec.frames = rec_mp4_frames(s);
-                g_rec.bytes  = rec_mp4_bytes(s);
+                g_rec.frames = rec_mp4_frames(mp4);
+                g_rec.bytes  = rec_mp4_bytes(mp4);
                 g_rec.last_frame_ts = ts;
                 pthread_mutex_unlock(&g_rec.lock);
             }
 
             /* ---- 结束会话（finalize 内部释放对象） ---- */
-            if (ring) frame_ring_set_rec_active(ring, 0);   /* 会话结束：回池 nv12 等 */
-            uint32_t n_frames = rec_mp4_frames(s);
-            uint32_t n_bytes  = rec_mp4_bytes(s);
+            if (ring && !lossless) frame_ring_set_rec_active(ring, 0);
+            uint32_t n_frames = lossless ? rec_mjpeg_frames(mjp) : rec_mp4_frames(mp4);
+            uint32_t n_bytes  = lossless ? rec_mjpeg_bytes(mjp)  : rec_mp4_bytes(mp4);
             pthread_mutex_lock(&g_rec_files_lock);
-            rec_mp4_finalize(s);
+            if (lossless) rec_mjpeg_finalize(mjp);
+            else          rec_mp4_finalize(mp4);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
             g_rec.split_pending = 0;
@@ -467,8 +597,11 @@ void *video_rec_task(void *arg)
             g_rec.file[0] = '\0';
             pthread_mutex_unlock(&g_rec.lock);
             pthread_mutex_unlock(&g_rec_files_lock);
-            h264_encoder_destroy(enc);
-            h264_stream_push_end();
+            if (enc) h264_encoder_destroy(enc);
+            if (!lossless) h264_stream_push_end();
+            if (lossless && (rec_raw_gap || rec_size_skip))
+                LOG_INFO("rec: lossless skipped %llu frames (cadence), %llu (size)",
+                         rec_raw_gap, rec_size_skip);
             if (n_frames > 0)
                 LOG_INFO("rec: recording finished -> %s (%u frames, %u bytes)",
                          rel, n_frames, n_bytes);
@@ -588,7 +721,7 @@ void video_rec_destroy(void *arg)
     pthread_mutex_unlock(&g_rec.lock);
     /* 兜底：异常退出未走会话收尾时也解除 rec_active（rec 先于 video 析构，环仍有效） */
     frame_ring_t *ring = video_stream_get_ring();
-    if (ring) frame_ring_set_rec_active(ring, 0);
+    if (ring) frame_ring_set_rec_active(ring, 0);   /* 无条件清零，避免残留置位卡死采集 */
     pthread_mutex_destroy(&g_rec.lock);
     /* 直播扇出：置停止标志并广播，唤醒全部推流线程收尾 */
     h264_stream_shutdown();

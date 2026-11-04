@@ -20,13 +20,16 @@
 
 #define REC_DIR PATH_RECORDINGS
 
-/* 单文件名合法性：rec_*.mp4 */
+/* 单文件名合法性：video_*.mp4 / video_*.avi */
 static int rec_file_valid(const char *name)
 {
     size_t len = name ? strlen(name) : 0;
     size_t prefix = name && !strncmp(name, "video_", 6) ? 6 : 4;
+    /* .avi 是无损录像（相机原生 MJPEG 直封 AVI），.mp4 是旧 H.264 段 */
+    int suffix_ok = len >= 4 && (!strcmp(name + len - 4, ".mp4") ||
+                                 !strcmp(name + len - 4, ".avi"));
     if (len < prefix + 5 || (strncmp(name, "rec_", 4) && strncmp(name, "video_", 6)) ||
-        strcmp(name + len - 4, ".mp4") != 0)
+        !suffix_ok)
         return 0;
     for (size_t i = prefix; i + 4 < len; i++)
         if (name[i] != '-' && name[i] != '_' &&
@@ -35,7 +38,7 @@ static int rec_file_valid(const char *name)
     return 1;
 }
 
-/* 解析录制相对路径：要求 YYYYMMDD/rec_*.mp4 形式且不含 '..'（防路径穿越） */
+/* 解析录制相对路径：要求 YYYYMMDD/video_*.mp4|avi 形式且不含 '..'（防路径穿越） */
 static int rec_resolve_rel(const char *rel, char *subdir, size_t subdir_size,
                            char *name, size_t name_size)
 {
@@ -61,7 +64,7 @@ static void serve_rec_status(int fd)
     http_ok_json(fd, json, (size_t)off);
 }
 
-/* 录制文件列表（按 mtime 倒序；两层：YYYYMMDD/rec_*.mp4） */
+/* 录制文件列表（按 mtime 倒序；两层：YYYYMMDD/video_*.mp4|avi） */
 static void serve_rec_list(int fd)
 {
     struct ent { char name[160]; time_t mtime; int64_t size; };
@@ -123,7 +126,7 @@ static void serve_rec_list(int fd)
     http_ok_json(fd, json, (size_t)off);
 }
 
-/* 下载：/recfile/<YYYYMMDD/rec_*.mp4> */
+/* 下载：/recfile/<YYYYMMDD/video_*.mp4|avi> */
 static void serve_rec_download(int fd, const char *rel)
 {
     char subdir[64], name[256];
@@ -139,10 +142,12 @@ static void serve_rec_download(int fd, const char *rel)
     char disp[320];
     snprintf(disp, sizeof(disp),
              "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
-    http_serve_stream(fd, "video/mp4", disp, fp, size, NULL);
+    size_t nlen = strlen(name);
+    http_serve_stream(fd, (nlen > 4 && !strcmp(name + nlen - 4, ".avi"))
+                              ? "video/x-msvideo" : "video/mp4", disp, fp, size, NULL);
 }
 
-/* 删除：body = YYYYMMDD/rec_*.mp4 */
+/* 删除：body = YYYYMMDD/video_*.mp4|avi */
 static void serve_rec_delete(int fd, const char *req)
 {
     char name[160];

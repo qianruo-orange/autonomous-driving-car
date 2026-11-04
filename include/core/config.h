@@ -70,6 +70,8 @@ struct app_config_t {
     int           mjpeg_max_kbps;  /* MJPEG 透传每客户端码率预算(kbps)；0=不限。
                                       链路带宽低于原始帧率所需时，超过预算就跳帧，
                                       宁可少几帧也不要塞满链路把延迟拖长 */
+    char          rec_format[8];   /* 录像封装："mjpeg"（默认）= 相机原生 JPEG 直写
+                                      AVI(MJPG)，零重编码、无损；"h264" = 原 MP4 路径 */
 
     /* ---- RKNN YOLO 检测（YOLO26，必要流程）---- */
     char          yolo_model[256];    /* .rknn 模型文件路径 */
