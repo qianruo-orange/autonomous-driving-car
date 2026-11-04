@@ -278,7 +278,7 @@ IndexError: list index out of range
 
 | 指标 | 单输出混合 | 双输出全 INT8 |
 |---|---:|---:|
-| `run` | 22.2 ms | 19–21 ms |
+| `run` | 22.2 ms（Runtime 2.3.0） | 19–21 ms（2.3.0）→ **12–13 ms（2.5.0）** |
 | `outputs` | 2 ms | 0 ms（原生 INT8） |
 | `post` | 含 NMS | 2 ms，含 NMS（候选池 128） |
 | 采集帧率 | 30 fps | 30 fps |
@@ -311,3 +311,93 @@ sudo cp /home/qianruo/kbuild/fix-20261105/b-migration/yolo26.rknn.live-before-b 
         /opt/autonomous-driving-car/config/yolo26.rknn
 sudo systemctl restart autonomous-driving-car
 ```
+
+## 15. 按官方 2.5 流程重做与实测偏差（2026-11-05）
+
+### 15.1 官方流程原文
+
+`rknn_model_zoo/examples/yolo26` 给出的步骤只有两步：
+
+```shell
+# 1. YOLO 导出 ONNX
+pip install ultralytics
+yolo export model=yolo26n.pt format=onnx
+
+# 2. RKNN 官方工具转换
+cd python
+python convert.py <onnx_model> rk3576 i8 <output_rknn_path>
+```
+
+`convert.py` 内部只做三件事：`load_onnx(outputs=['/model.23/Sigmoid_output_0', '/model.23/Mul_2_output_0'])` 截断成两路，`build(do_quantization=True, dataset=...)` 量化，`export_rknn()` 导出。本次按原文执行（仅把 `DATASET_PATH` 指向本项目校准集），转换成功。
+
+### 15.2 产物与线上模型等价性
+
+| 项 | 官方 convert.py 产物 | 线上部署模型 |
+|---|---|---|
+| 输入 | INT8, zp=-128, scale=0.003922 | 相同 |
+| 输出 0（类别） | INT8, zp=-128, scale=0.003711 | 相同 |
+| 输出 1（框） | INT8, zp=-128, scale=2.726881 | 相同 |
+| 字节数 | 8,238,952 | 8,238,952 |
+
+两者哈希不同仅因元数据，网络与量化参数逐项一致，线上模型即官方流程产物。
+
+### 15.3 偏差一：框格式是 cx,cy,w,h，不是 x1,y1,x2,y2
+
+官方 README 与 C 示例均按 `x1,y1,x2,y2` 解释 `Mul_2`，照此实现会得到负宽高、mAP 归零。实测对齐同一目标的数值可确认：
+
+```
+Mul_2 原始值 : (490.85, 321.8, 239.95, 270)
+旧模型同目标 :  cx=482.8  cy=322.2  w=239.5  h=282.5
+                ↑ 第 0 列≈cx        ↑ 第 2 列≈w
+```
+
+本项目按 `cx,cy,w,h` 解码，再 `x1=cx-w/2` 还原。
+
+### 15.4 偏差二：文档说免 NMS，实测仍必需
+
+官方称 one2one 头无需 NMS。本项目在 64 图留出集、应用阈值 conf≥0.60 下统计：**956 个框，85.7% 在同类 IoU>0.45 下互为重复，单图最多 105 个**。关闭 NMS 后 mAP50 由 0.5238 降至 0.3491（旧模型由 0.5005 降至 0.2973）。
+
+NPU 内也没有 NMS 算子，模型图在检测头结束；`TopK`/排序抑制属主机侧逻辑。因此 C 后处理保留候选池 128 + 类内贪心 NMS + top32，耗时 2 ms。
+
+### 15.5 偏差三：量化精度边界
+
+| 张量 | scale | 含义 |
+|---|---|---|
+| 输入 | 0.003922 | 1/255，UINT8 像素 |
+| 类别输出 | 0.003711 | 约 1/270 的分数分辨率 |
+| 框输出 | 2.726881 | 每级约 2.73 像素，即 ±1.4 px 量化误差 |
+
+框的量化步长是 mAP50–95 相对旧模型下降约 3 个点的主要原因；对 640 输入的定位精度影响可见但可接受。
+
+### 15.6 运行时升级到 2.5.0
+
+`librknnrt` 2.3.0 → 2.5.0 后，**同一模型**的 `run` 由 19–21 ms 降至 12–13 ms（约 25%，官方 release notes 的"优化多输入输出模型的 CPU 负载、修复内部内存复用"应验）。应用与现有模型无需改动，向后兼容。
+
+### 15.7 工具链约束：2.5.0 无法转换本模型
+
+升级到 toolkit 2.5.0 后，无论 `hybrid_quantization_step1` 还是官方 `build()` 路径、无论是否截断，均在同一处失败：
+
+```
+File "rknn/api/rules/matmul.py", line 1539,
+  in _p_fuse_exmatmul_add_mul_exsoftmax13_exmatmul_to_sdpa
+IndexError: list index out of range
+```
+
+640/512 输入、`optimization_level` 0/1/3 均可复现，属该模型注意力结构与 2.5.0 融合规则的冲突。因此**模型仍用 2.3.2 编译，运行时用 2.5.0**；升级工具链前需确认该规则已修复。
+
+### 15.8 e2e（end2end）尝试与结论
+
+YOLO26 的 `end2end=True` 分支在 checkpoint 中存在（`one2one_cv2/cv3`），导出 ONNX 可得 `(1,300,6)` 的免 NMS 输出。实测：
+
+| 环节 | 结果 |
+|---|---|
+| ONNX 推理 | 正确，框 `[369.4, 182.0, 603.3, 464.3]`，conf 0.908，cls 23 |
+| toolkit 2.5.0 转换 | 失败（同 15.7 的 IndexError） |
+| toolkit 2.3.2 转换 | 成功，但真机推理框错误（`[167.8, -0.1, 207.0, 2.8]`），头部保 FP16 后仍错 |
+| 2.3.2 + 不量化 | 可编译，未改变上述结论 |
+
+说明 2.3.2 无法正确 lower `TopK`/`GatherElements` 这套 e2e 图，而支持这些算子的 2.5.0 又无法转换本模型。**结论：当前工具链组合拿不到可用的 e2e 模型**，需等待 2.5.x 修复融合规则，或改用官方预置 ONNX（仅提供 s 模型）。
+
+### 15.9 结论
+
+线上运行的就是官方流程产物：YOLO 导出 ONNX → RKNN 官方工具转成双输出全 INT8 模型，主机侧按 `cx,cy,w,h` 解码并做 NMS。三处与官方文档不符的地方均有实测依据，重跑时应以此为准。
