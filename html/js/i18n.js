@@ -245,8 +245,8 @@
     '-- 请选择设备 --': '-- select a device --',
     '无可用摄像头': 'No camera available',
     '扫描失败': 'Scan failed',
-    'Software (libx264)': 'Software (libx264)',
     'Hardware (RKMPP/VENC)': 'Hardware (RKMPP/VENC)',
+    '当前浏览器不支持视频播放，请使用支持 H.264 的现代浏览器。': 'This browser cannot play the video. Please use a modern browser with H.264 support.',
 
     /* ---- DBC page ---- */
     '最近解析的 CAN 信号': 'Recently decoded CAN signals',

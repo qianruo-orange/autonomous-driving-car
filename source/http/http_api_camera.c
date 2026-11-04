@@ -9,11 +9,9 @@
 #include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef HAVE_AVCODEC
-#include <libavcodec/avcodec.h>
-#endif
 #include "http/http_internal.h"
-#include "video/h264_encoder.h"
+#include "video/mpp_encoder.h"
+#include "video/video_rec.h"
 #include "video/jpeg_decoder.h"
 #include "yolo/rknn_yolo.h"
 
@@ -63,44 +61,29 @@ static camera_control_t camera_read_control(int fd, unsigned int id)
     return result;
 }
 
-/* Probing is read-only but scans nodes; cache it rather than scan on each focus poll. */
-static int camera_hardware_encoder_available(void)
-{
-    static time_t checked;
-    static int available;
-    time_t now = time(NULL);
-    if (!checked || now - checked >= 60) {
-        char device[128];
-        available = h264_encoder_probe(device, sizeof(device)) == 0;
-#ifdef HAVE_AVCODEC
-        if (!available && access("/dev/mpp_service", F_OK) == 0 &&
-            avcodec_find_encoder_by_name("h264_rkmpp")) available = 1;
-#endif
-        checked = now;
-    }
-    return available;
-}
-
 static void camera_send_status(app_ctx_t *app, int client, int device)
 {
     camera_control_t automatic = camera_read_control(device, V4L2_CID_FOCUS_AUTO);
     camera_control_t focus = camera_read_control(device, V4L2_CID_FOCUS_ABSOLUTE);
     unsigned long long decoded, errors;
     jpeg_decoder_stats(&decoded, &errors);
+    video_rec_status_t recording;
+    video_rec_status(&recording);
     char json[1024];
     int n = snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"focus_auto\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},"
         "\"focus_absolute\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},\"hardware_encoder_available\":%s,"
-        "\"software_decoder_available\":true,\"hardware_decoder_available\":%s,"
-        "\"encoder\":\"libx264\",\"decoder\":\"%s\",\"hardware_decoded_frames\":%llu,\"decode_errors\":%llu}",
+        "\"hardware_decoder_available\":%s,"
+        "\"encoder\":\"%s\",\"decoder\":\"%s\",\"hardware_decoded_frames\":%llu,\"decode_errors\":%llu}",
         app->cfg->video_device,
         automatic.supported ? "true" : "false", automatic.value, automatic.min, automatic.max, automatic.step,
         automatic.read_only ? "true" : "false", automatic.active ? "true" : "false",
         focus.supported ? "true" : "false", focus.value, focus.min, focus.max, focus.step,
         focus.read_only ? "true" : "false", focus.active ? "true" : "false",
-        camera_hardware_encoder_available() ? "true" : "false",
+        mpp_h264_available() ? "true" : "false",
         jpeg_decoder_available() ? "true" : "false",
-        rknn_yolo_hardware_decoder() ? "rockchip-jpegd" : "libjpeg-turbo", decoded, errors);
+        recording.encoder,
+        rknn_yolo_hardware_decoder() ? "rockchip-jpegd" : "none", decoded, errors);
     if (n < 0 || n >= (int)sizeof(json)) { http_err(client, 500, "Error", "Camera response failed"); return; }
     http_ok_json(client, json, (size_t)n);
 }

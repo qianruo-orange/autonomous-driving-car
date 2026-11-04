@@ -10,9 +10,9 @@
  * yolo/rknn_yolo.h — RKNN + YOLO26 检测框架（主模块：模型管理 + 多线程推理池）。
  *
  * 模块组成（见 source/yolo/ 下各文件）：
- *  - yolo_image.c      图像处理（JPEG 编解码 / YUYV→RGB / 缩放）
+ *  - yolo_image.c      图像处理（未压缩像素转换 / 缩放）
  *  - yolo_postprocess.c decoded YOLO26 detection filtering and NMS
- *  - yolo_draw.c       画框 + 标签 + JPEG 编码
+ *  - yolo_draw.cpp     RGB 画框与类别标签
  *  - rknn_yolo.c       模型加载、推理线程池（每线程独立 rknn context，并行推理）、
  *                      任务队列、结果队列（NMS 后处理结果：目标名称 + 置信度 +
  *                      标注框四点坐标）、渲染 composer、结果/画框帧快照
@@ -58,11 +58,5 @@ int rknn_yolo_reload(void);
 
 /* YOLO 工作线程（main 模块框架 task）：采集帧 → 解码 → 投递推理队列 */
 void *rknn_yolo_task(void *arg);
-
-/* 拷贝最新画框 JPEG 帧（调用方 free *data）；@return 0 成功，-1 无可用帧 */
-int rknn_yolo_get_frame(unsigned char **data, size_t *len, unsigned long long *seq);
-
-/* 轻量查询最新画框帧序号（无新帧拷贝开销）；@return 帧序号，0 表示尚无画框帧 */
-unsigned long long rknn_yolo_get_frame_seq(void);
 
 #endif /* RKNN_YOLO_H */

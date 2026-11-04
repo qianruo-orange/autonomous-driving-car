@@ -2,7 +2,7 @@
 /**
  * video_rec.c — 网络录像模块：YOLO 画框帧（必要流程，无原始帧回退）+ H.264 硬件编码。
  *
- * 编码链路：帧（JPEG/YUYV）→ NV12 → /dev/video-enc0（rkvenc）→ H.264
+ * 编码链路：YOLO 标注 RGB → NV12 → MPP / VEPU510 → H.264
  *   Annex-B → MP4(avc1) 封装（详见 video/rec_mp4.c）。
  *
  * 线程模型：main 模块表 "rec" 线程，空闲时 100ms 轮询喂狗；
@@ -61,6 +61,7 @@ static struct {
     uint64_t start_ms, frames, bytes;
     uint64_t last_frame_ts;       /* 最近一帧单调时钟，用于实时 fps */
     int split_pending, split_error;
+    char encoder[32];
 } g_rec;
 
 /* Serialize publication/finalization of file paths with file deletion. This
@@ -282,8 +283,7 @@ void *video_rec_task(void *arg)
             int bitrate = (int)((uint64_t)pw * ph * (unsigned)ppx / 100u);
             if (bitrate < 300000)  bitrate = 300000;
             if (bitrate > 16000000) bitrate = 16000000;
-            h264_encoder_t *enc = h264_encoder_create(pw, ph, fps, bitrate,
-                H264_CODEC_SOFTWARE);
+            h264_encoder_t *enc = h264_encoder_create(pw, ph, fps, bitrate);
             if (!enc) {
                 init_fail_cnt++;
                 pthread_mutex_lock(&g_rec.lock);
@@ -335,6 +335,7 @@ void *video_rec_task(void *arg)
             LOG_INFO("rec: recording started -> %s (%dx%d @%dfps)", rel, pw, ph, fps);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 1;
+            safe_strncpy(g_rec.encoder, sizeof(g_rec.encoder), h264_encoder_name(enc));
             g_rec.start_fail = 0;
             g_rec.start_ms = rec_mp4_start_ms(s);
             g_rec.frames = 0;
@@ -554,6 +555,8 @@ int video_rec_status(video_rec_status_t *out)
     out->bytes     = g_rec.bytes;
     out->split_pending = g_rec.split_pending;
     out->split_error = g_rec.split_error;
+    safe_strncpy(out->encoder, sizeof(out->encoder),
+                 g_rec.recording && g_rec.encoder[0] ? g_rec.encoder : "none");
     safe_strncpy(out->file, sizeof(out->file),
                  g_rec.file[0] ? g_rec.file : "");
     /* 实时帧率：最近一帧与前若干帧的间隔由调用方按 start_ms 粗估 */

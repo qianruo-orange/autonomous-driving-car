@@ -737,17 +737,6 @@ static void http_process_request(http_conn_t *c)
         goto finish;
     }
 
-    if (strcmp(c->uri, "/video/mjpeg_yolo") == 0) {
-        /* 画框流：YOLO 可用时推画框帧，YOLO 降级时自动回退原始帧 */
-        if (video_stream_client_start_yolo(fd, http_video_client_closed) != 0) {
-            http_send_response(fd, 500, "Error", "text/plain", "", 0);
-        } else {
-            conn_detach(c);   /* fd 移交给视频推流线程 */
-            return;
-        }
-        goto finish;
-    }
-
     if (strcmp(c->uri, "/video/mjpeg") == 0) {
         if (video_stream_client_start(fd, http_video_client_closed) != 0) {
             http_send_response(fd, 500, "Error", "text/plain", "", 0);

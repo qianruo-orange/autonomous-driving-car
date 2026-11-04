@@ -779,7 +779,22 @@
       var vid = document.getElementById('stream_video');
       var img = document.getElementById('stream_img');
       var useMse = !explicit && mseSupported();
-      if (!explicit && !useMse) streamUrl = '/video/mjpeg_yolo';   /* 无 MSE：回退画框流 */
+      var message = document.getElementById('stream_message');
+      if (!message) {
+        message = document.createElement('div');
+        message.id = 'stream_message';
+        message.setAttribute('role', 'status');
+        message.style.cssText = 'padding:1em;text-align:center;';
+        vid.parentNode.appendChild(message);
+      }
+      message.hidden = explicit || useMse;
+      if (!explicit && !useMse) {
+        mseStop();
+        streamStop();
+        vid.style.display = img.style.display = 'none';
+        message.textContent = window.t ? window.t('当前浏览器不支持视频播放，请使用支持 H.264 的现代浏览器。') : '当前浏览器不支持视频播放，请使用支持 H.264 的现代浏览器。';
+        return;
+      }
       if (useMse) {
         /* MSE 路径：录制编码扇出（无会话 503 节流重试，会话轮转断流自动重连） */
         imgEl = null;

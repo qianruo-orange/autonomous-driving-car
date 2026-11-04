@@ -16,8 +16,8 @@
  *             渲染节拍 ~30fps
  *
  * 帧数据全部走视频帧环形队列（video/frame_ring.h）：采集 raw（V4L2 mmap）、
- * 解码 rgb、画框 nv12/jpeg 四个阶段缓冲只在槽位间移动指针，零拷贝。
- * 推流/录像消费方锁内拷贝或窃取最新显示槽（rknn_yolo_get_frame*），
+ * 解码 rgb、画框 nv12 各阶段缓冲只在槽位间移动指针，零拷贝。
+ * 录像编码消费方锁内窃取最新显示槽 NV12，
  * 快照缓冲与按 seq 索引的完成槽（YOLO_SLOT_N）已随环接入删除。
  *
  * 渲染 seq 单调不回退，画面不会抖动/闪烁；被跳过的旧结果直接回池。
@@ -30,7 +30,7 @@
  *
  * 必要流程：YOLO 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
  * 启动路径整体失败退出；运行期热重载失败由 HTTP 接口报告 saved_reload_failed，
- * 画框流 /video/mjpeg_yolo 返回 503（不回退原始帧）。所有失败路径只记日志不崩溃。
+ * 标注视频仅使用硬件 H.264 编码。
  *
  * 图像处理与后处理已拆分为独立模块（yolo_image / yolo_postprocess / yolo_draw），
  * 本文件仅保留：模型生命周期、推理线程池、任务队列、结果队列、
@@ -649,8 +649,7 @@ static void *yolo_worker_task(void *arg)
    严格按 seq 顺序消费会因 worker 乱序完成而等待缺口（实测卡顿 100~700ms）。
    改为消费结果队列中最新完成结果：渲染 seq 严格递增（绝不回退，画面不抖动），
    被跳过的旧结果条目直接丢弃（纯元数据，无资源）；EMA 平滑本身即可容忍帧间小跳跃。
-   渲染节拍与推流/显示速率匹配（~30fps），同时把 OpenCV 渲染 + JPEG 编码 +
-   NV12 转换的 CPU 锁定在上限内。 */
+   画框后的 RGB 转换为 NV12，随后由硬件编码器发布视频。 */
 
 /* Move ownership out of the slot before unlocking. Camera quiesce may clear
  * every slot while rendering; it must never recycle an in-flight RGB buffer. */
@@ -739,9 +738,7 @@ static void *yolo_render_task(void *arg)
 
         unsigned long long seq = item.seq;
         int w = 0, h = 0;
-        ring_buf_t rgbb = { 0 }, nv12b = { 0 }, jpegb = { 0 };
-        /* JPEG is needed only by live MJPEG viewers. Detection logs contain metadata. */
-        int want_jpeg = video_stream_client_count() > 0;
+        ring_buf_t rgbb = { 0 }, nv12b = { 0 };
         frame_ring_lock(ring);
         /* Rendering owns RGB until it explicitly returns the buffer below.
            The slot may be cleared or reused during a camera restart. */
@@ -752,8 +749,6 @@ static void *yolo_render_task(void *arg)
         }
         /* Local output buffers are also owned independently of the slot. */
         frame_ring_buf_take_locked(ring, FRAME_RING_POOL_NV12, (size_t)w * h * 3 / 2, &nv12b);
-        if (want_jpeg)
-            frame_ring_buf_take_locked(ring, FRAME_RING_POOL_JPEG, 64 * 1024, &jpegb);
         g_yolo.next_seq = seq;
         unsigned long long tracking_capture_ms = s->capture_ms;
         frame_ring_unlock(ring);
@@ -762,26 +757,18 @@ static void *yolo_render_task(void *arg)
         disp.w = w; disp.h = h;
         disp.count = item.count < 0 ? 0 : item.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : item.count;
 
-        /* 锁外渲染：EMA 平滑（prev 仅本线程访问）+ 槽内 rgb 原地画框标签。
-           无 MJPEG 观看者时跳过 JPEG 编码（省 CPU）；观看者接入后下一帧
-           （≤33ms）恢复编码，get_frame 对 len==0 帧返回 -1 由客户端等待 */
+        /* Render labels in the owned RGB frame before hardware H.264 encoding. */
         unsigned long long object_ids[YOLO_MAX_DETS];
         int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms,
                                                   object_ids);
         /* Keep velocity estimation on raw detections;
          * EMA only changes the boxes drawn for this frame. */
         yolo_smooth(&g_yolo.prev, &disp);
-        unsigned char *jbuf = jpegb.buf;
-        size_t jcap = jpegb.cap, jlen = 0;
-        int ok = (nv12b.buf &&
-                  yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes, tracked_index, object_ids,
-                                        want_jpeg ? &jbuf : NULL,
-                                        want_jpeg ? &jcap : NULL,
-                                        want_jpeg ? &jlen : NULL) == 0);
-        jpegb.buf = jbuf; jpegb.cap = jcap;   /* realloc 可能更换指针 */
+        int ok = nv12b.buf &&
+            yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes,
+                                  tracked_index, object_ids) == 0;
         if (ok) {
             yolo_rgb_to_nv12_fast(rgbb.buf, w, h, nv12b.buf);
-            jpegb.len = jlen;
             g_yolo.prev = disp;
             snap_result(&disp);
         }
@@ -792,17 +779,13 @@ static void *yolo_render_task(void *arg)
             if (ok) {
                 s->nv12     = nv12b;
                 s->nv12.len = (size_t)w * h * 3 / 2;
-                s->jpeg     = jpegb;
             } else {
-                /* 渲染失败（编码 OOM 等）：仍推进 display（释放 rgb 防槽卡死），
-                   推流/录像客户端随 get_frame 失败回退原始帧 */
+                /* Release the failed output; no unannotated frame is published. */
                 frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12b.buf, nv12b.cap);
-                frame_ring_buf_put_locked(ring, FRAME_RING_POOL_JPEG, jpegb.buf, jpegb.cap);
             }
             frame_ring_display_commit_locked(ring, s);
         } else {
             frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12b.buf, nv12b.cap);
-            frame_ring_buf_put_locked(ring, FRAME_RING_POOL_JPEG, jpegb.buf, jpegb.cap);
         }
         frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
@@ -1197,12 +1180,16 @@ int rknn_yolo_reload(void)
 
 int rknn_yolo_init(void *arg)
 {
+    app_ctx_t *app = (app_ctx_t *)arg;
+    if (!app || !app->cfg) {
+        LOG_ERROR("yolo: init without config");
+        return -1;
+    }
     if (yolo_image_init() < 0) {
         LOG_ERROR("yolo: cannot configure OpenCV for calling-thread processing");
         return -1;
     }
     memset(&g_yolo, 0, sizeof(g_yolo));
-    app_ctx_t *app = (app_ctx_t *)arg;
     g_yolo.app = app;
     g_yolo.running = 1;
     pthread_mutex_init(&g_yolo.result_mutex, NULL);
@@ -1213,21 +1200,15 @@ int rknn_yolo_init(void *arg)
     pthread_cond_init(&g_yolo.r_not_empty, NULL);
     pthread_cond_init(&g_yolo.r_not_full, NULL);
 
-    if (!app || !app->cfg) {
-        LOG_ERROR("yolo: init without config");
-        return -1;
-    }
     g_yolo.hardware_decode = jpeg_decoder_available();
-    LOG_INFO("yolo: JPEG decoder %s", g_yolo.hardware_decode ? "rockchip-jpegd (hardware)" : "libjpeg-turbo (software)");
+    LOG_INFO("yolo: JPEG hardware decoder %s",
+             g_yolo.hardware_decode ? "rockchip-jpegd" : "unavailable (required for MJPEG capture)");
     if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable; live inference remains enabled");
     /* YOLO 为必要流程：无 YOLO（模型缺失/NPU 不可用）直接报错，服务启动失败 */
     if (yolo_start_pool() < 0) {
         LOG_ERROR("yolo: mandatory inference pool failed to start — no YOLO, aborting startup");
-        if (g_yolo.events_initialized) {
-            yolo_events_destroy();
-            g_yolo.events_initialized = 0;
-        }
+        rknn_yolo_destroy(arg);
         return -1;
     }
     return 0;
@@ -1261,43 +1242,6 @@ int rknn_yolo_enabled(void)
 int rknn_yolo_reloading(void)
 {
     return atomic_load(&g_reloading);
-}
-
-/* ---- 显示槽快照访问（供推流客户端/录像线程）---- */
-
-int rknn_yolo_get_frame(unsigned char **data, size_t *len, unsigned long long *seq)
-{
-    if (!g_yolo.enabled || !data || !len || !seq) return -1;
-    frame_ring_t *ring = yolo_ring();
-    if (!ring) return -1;
-    frame_ring_lock(ring);
-    frame_slot_t *s = yolo_slot(ring, ring->display_seq);
-    if (s->seq != ring->display_seq || !s->jpeg.buf || s->jpeg.len == 0) {
-        frame_ring_unlock(ring);
-        return -1;
-    }
-    unsigned char *c = malloc(s->jpeg.len);
-    if (!c) {
-        frame_ring_unlock(ring);
-        return -1;
-    }
-    memcpy(c, s->jpeg.buf, s->jpeg.len);
-    *len = s->jpeg.len;
-    *seq = s->seq;
-    frame_ring_unlock(ring);
-    *data = c;
-    return 0;
-}
-
-unsigned long long rknn_yolo_get_frame_seq(void)
-{
-    if (!g_yolo.enabled) return 0;
-    frame_ring_t *ring = yolo_ring();
-    if (!ring) return 0;
-    frame_ring_lock(ring);
-    unsigned long long s = ring->display_seq;
-    frame_ring_unlock(ring);
-    return s;
 }
 
 /* ---- YOLO 采集线程（main 模块框架 task）：等新帧 → claim → 解码 → 投递队列 ---- */
@@ -1372,21 +1316,20 @@ void *rknn_yolo_task(void *arg)
         frame_ring_unlock(ring);
 
         /* The claim holds the camera buffer while JPEG is submitted to DMA. */
-        int decode_ok = 0;
+        int decode_ok = 0, decoder_unavailable = 0;
         unsigned long long decode_start_us = yolo_now_us();
         if (raw && rgbb.buf && w > 0 && h > 0) {
             if (fmt == FRAME_RING_FMT_MJPEG) {
-                if (g_yolo.hardware_decode) {
-                    if (!decoder) decoder = jpeg_decoder_open();
-                    decode_ok = decoder && jpeg_decoder_rgb(decoder, raw, raw_len, rgbb.buf, w, h) == 0;
-                } else {
-                    jpeg_decoder_close(decoder);
-                    decoder = NULL;
-                    decode_ok = yolo_jpeg_to_rgb_buf(raw, raw_len, rgbb.buf, w, h) == 0;
+                if (!decoder) decoder = jpeg_decoder_open();
+                decoder_unavailable = !decoder;
+                if (decoder) {
+                    atomic_store(&g_yolo.hardware_decode, 1);
+                    decode_ok = jpeg_decoder_rgb(decoder, raw, raw_len, rgbb.buf, w, h) == 0;
                 }
+            } else if (fmt == FRAME_RING_FMT_YUYV && raw_len >= (size_t)w * h * 2) {
+                yolo_yuyv_to_rgb(raw, w, h, rgbb.buf);
+                decode_ok = 1;
             }
-            else   /* YUYV */
-                { yolo_yuyv_to_rgb(raw, w, h, rgbb.buf); decode_ok = 1; }
         }
         g_yolo.last_seq = seq;
         if (!decode_ok) {
@@ -1396,6 +1339,13 @@ void *rknn_yolo_task(void *arg)
             frame_ring_infer_unclaim_locked(ring, s, 0);   /* 解码失败：infer_dropped++ */
             frame_ring_unlock(ring);
             pthread_mutex_unlock(&g_producer_mutex);
+            if (decoder_unavailable) {
+                atomic_store(&g_yolo.hardware_decode, 0);
+                LOG_ERROR("yolo: MJPEG capture requires rockchip-jpegd hardware decoding; stopping");
+                app->fatal = 1;
+                app->running = 0;
+                break;
+            }
             usleep(1000);   /* 坏帧退避，避免忙转 */
             continue;
         }

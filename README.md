@@ -38,7 +38,7 @@ The following controller consumes detections independently of visual target sele
 ```mermaid
 flowchart LR
     subgraph Input["1. Capture and decode"]
-        Raw["V4L2 mmap<br/>raw frame"] --> RGB["Claim frame<br/>decode RGB"]
+        Raw["V4L2 mmap<br/>camera MJPEG"] --> RGB["JPEG hardware decode<br/>NV12 → RGB"]
     end
     subgraph Inference["2. Adaptive inference pool"]
         Jobs["Bounded<br/>task queue"] --> NPU["Resize / RKNN<br/>postprocess"]
@@ -49,8 +49,7 @@ flowchart LR
     RGB --> Jobs
     NPU --> Latest
     RGB -->|Shared RGB buffer| Composer
-    Composer --> JPEG["Annotated JPEG<br/>MJPEG stream"]
-    Composer --> Encoder["NV12<br/>H.264 encoder"]
+    Composer --> Encoder["NV12<br/>VEPU510 H.264"]
     Encoder --> Live["fMP4 / MSE<br/>live stream"]
     Encoder --> MP4["MP4 files<br/>recordings/YYYYMMDD"]
     Raw -->|Raw stream| MJPEG["Raw MJPEG"]
@@ -59,10 +58,10 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Raw,RGB,Jobs,NPU,Latest,Composer,Encoder,Writer process
-    class JPEG,Live,MP4,MJPEG,TXT output
+    class Live,MP4,MJPEG,TXT output
 ```
 
-Frame storage is shared through [frame_ring.h](include/video/frame_ring.h); claims and buffer ownership protect raw and RGB frames while workers use them. Bounded queues favor recent results for rendering. Each completed inference also feeds following and report generation. H.264 streaming and MP4 recording share one encoding session.
+Frame storage is shared through [frame_ring.h](include/video/frame_ring.h); claims and buffer ownership protect raw and RGB frames while workers use them. Bounded queues favor recent results for rendering. Each completed inference also feeds following and report generation. H.264 streaming and MP4 recording share one hardware encoding session. Raw MJPEG can be forwarded directly from the camera; the application does not recompress annotated frames as JPEG.
 
 ### Web management, CAN, and supervision
 
@@ -183,7 +182,7 @@ A Linux real-time kernel is the system target. `main.c` declares each thread's s
 
 ## Perception and motion control
 
-**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Codec backends are managed by the application: the RK3576 camera uses V4L2 JPEG hardware decoding when the prepared driver is available; recording uses the validated software H.264 encoder. Available camera modes depend on the attached camera and drivers.
+**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Camera MJPEG uses the `rockchip-jpegd` V4L2 hardware decoder; annotated live video and recording use the VEPU510 hardware H.264 encoder through Rockchip MPP. Hardware initialization or frame processing failures are reported as errors. Available camera modes depend on the attached camera and drivers.
 
 Capture and rendering publish frame notifications to their subscribers; inference and result queues wake the next stage as work becomes available. See [frame handoff and the verified YOLO26n artifact](docs/FRAME_PIPELINE.md) for ownership, cancellation and model details.
 
@@ -206,20 +205,20 @@ CAN and CAN FD traffic, DBC decoding, and motor commands share the same transpor
 
 ## Hardware and software requirements
 
-The board must provide Linux, a V4L2 camera, a working Rockchip NPU driver, and a compatible `librknnrt.so`. Vehicle control additionally requires SocketCAN hardware, an adapted motor profile, and actual wheel-speed feedback.
+The board must provide Linux, a V4L2 camera, a working Rockchip NPU driver and compatible `librknnrt.so`, the `rockchip-jpegd` hardware decoder, and a validated VEPU510 MPP driver with `/dev/mpp_service`. Vehicle control additionally requires SocketCAN hardware, an adapted motor profile, and actual wheel-speed feedback.
 
 Build dependencies:
 
 - C11/C++11 compiler, GNU Make, CMake **3.18+**, and Bash.
-- libsystemd, libnl-3/libnl-route-3, libjpeg, and OpenCV core/imgproc development libraries.
+- libsystemd, libnl-3/libnl-route-3, and OpenCV core/imgproc development libraries.
+- Rockchip MPP headers and shared library; the validated installation provides `/usr/local/include/rockchip/rk_mpi.h` and `/usr/local/lib/librockchip_mpp.so`.
 - Standard Linux utilities including `flock`, `sha256sum`, `strings`, `awk`, `tar`, and `zip`.
-- Recording uses FFmpeg libavcodec/libavutil, pkg-config and a runtime with `libx264`. Hardware encoding remains experimental and is excluded from the application backend selection.
 
 ## Build and deployment
 
-For the validated ROCK 4D hardware JPEG path, first follow the [JPEG driver installation](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-jpegd). See the [Chinese codec measurements](docs/CODEC_PERFORMANCE.md) for timing, quality checks and the encoder limitations. The front end exposes capture device, resolution and frame rate; codec selection is internal.
+Prepare the ROCK 4D [JPEG driver](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-jpegd) and [VEPU510 MPP port](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-vepu510-mpp) from the independent kernel repository. The corrected `7.4.0-rc1-npu-rt-vepu510-r2` kernel has passed repeated module loading and continuous H.264 encoding checks. Use that repository's [MPP userspace installer](https://github.com/qianruo-orange/rock-4d-npu-kernel/blob/main/scripts/install_mpp_userspace.sh) and [validated-kernel autoload setup](https://github.com/qianruo-orange/rock-4d-npu-kernel/blob/main/scripts/enable_vepu510.sh) before deploying this application.
 
-The [experimental VEPU510 MPP port](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-vepu510-mpp) is maintained in the independent kernel repository. Its first installed revision encoded I/P frames successfully but triggered IOMMU warnings; a correction requires another kernel build and hardware verification. The application continues to use the validated software H.264 encoder.
+See the [Chinese codec measurements](docs/CODEC_PERFORMANCE.md) for timing, quality checks and validation limits. The front end exposes capture device, resolution and frame rate; encoding and decoding use the hardware paths above. JPEG decoding and VEPU510 encoding are separate RK3576 hardware engines. The application currently produces H.264; H.265 is outside the validated application path.
 
 Prepare the model and labels before the first build:
 
@@ -299,7 +298,7 @@ Runtime paths are relative to the working directory; the installed service uses 
 
 ## Recording and observability
 
-H.264/MSE and MJPEG provide live video. H.264 streaming shares its encoding session with MP4 recording. Recording starts automatically when a session can start; manually stopping recording ends that H.264 session and disables automatic continuation.
+The browser displays annotated live video through H.264/MSE and reports an unsupported-browser error when this playback capability is unavailable. Raw camera MJPEG remains available as direct passthrough. H.264 streaming shares its VEPU510 encoding session with MP4 recording. Recording starts automatically when a session can start; manually stopping recording ends that H.264 session and disables automatic continuation.
 
 Daily TXT reports record completed inferences, including results with no detected objects. Entries contain capture time, frame sequence, image dimensions, lens position when available, target index/class/confidence, and `X1 X2 Y1 Y2` coordinates in the original image. New records contain no feature vectors or feature metadata. The existing writer batches records without doing file I/O on inference threads. Historical report content remains intact; earlier rows may contain feature fields from the previous version. Processing favors recent frames, so reports and videos need not include every captured frame.
 

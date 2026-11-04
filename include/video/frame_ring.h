@@ -8,7 +8,7 @@
 /**
  * video/frame_ring.h — 视频帧环形队列：采集/推理/显示/编码四阶段零拷贝。
  *
- * 32 个槽位描述符 + 四阶段指针（raw/rgb/nv12/jpeg）。各阶段只移动缓冲指针，
+ * 32 个槽位描述符 + 阶段指针（raw/rgb/nv12）。各阶段只移动缓冲指针，
  * 缓冲本身在阶段间传递、游标越过后回池复用：
  *   采集(video worker)  V4L2 mmap 指针直接入槽，延迟 QBUF（真正零拷贝）
  *   推理(yolo_task)       claims++ 后锁外解码槽内 raw → 池内 rgb（job 持有）；
@@ -16,17 +16,16 @@
  *   推理(worker)        resize 读 job rgb，推理结果（名称+坐标）入结果队列，
  *                       rgb 写槽置 rgb_done，unclaim
  *   显示(composer)      消费结果队列最新结果，按 seq 取最新 rgb_done 槽原地画框
- *                       → nv12/jpeg 写槽，置 display_done
+ *                       → nv12 写槽，置 display_done
  *   编码(rec)           窃取槽内 nv12（所有权转移），置 encode_done（YOLO 必要流程，
  *                       停摆直接宕机，无原始帧回退）
- *   HTTP 推流            锁内拷贝最新显示槽 jpeg / 最新 raw（多读者，不钉槽）
+ *   HTTP 推流            锁内拷贝最新 raw；标注 H.264 由编码器发布（多读者，不钉槽）
  *
- * 槽位回收（采集复用条件）：raw/rgb/nv12/jpeg 四个缓冲全部释放。
+ * 槽位回收（采集复用条件）：raw/rgb/nv12 三个缓冲全部释放。
  * 释放规则在 frame_ring_maintain_locked 统一维护（各提交点触发，遍历 32 槽开销可忽略）：
  *   raw  → QBUF(mmap)/free：非最新帧(raw 客户端钉最新) && claims==0 &&
  *          (yolo_active ? infer_done : encode_done||!rec_active)
  *   rgb  → 池：seq <= 最新已渲染 seq（含被跳过的槽）
- *   jpeg → 池：seq != 最新已渲染 seq
  *   nv12 → 池：seq != display_seq 且（encode_done || !rec_active）；
  *             当前显示槽 nv12 始终钉住供 rec 窃取（显示推进后按本规则回收）
  *
@@ -50,7 +49,6 @@
 /* 缓冲池编号（frame_ring_buf_take/put 的 which 参数） */
 #define FRAME_RING_POOL_RGB  0
 #define FRAME_RING_POOL_NV12 1
-#define FRAME_RING_POOL_JPEG 2
 
 typedef enum {
     FRAME_TOPIC_CAPTURED,
@@ -96,7 +94,6 @@ typedef struct {
 
     /* ---- 显示阶段 ---- */
     ring_buf_t nv12;          /* 画框 NV12（池内缓冲，供录像编码） */
-    ring_buf_t jpeg;          /* 画框 JPEG（池内缓冲，供 HTTP 推流） */
     int display_done;         /* composer 渲染完成 */
 
     /* ---- 编码阶段 ---- */
@@ -126,7 +123,7 @@ typedef struct frame_ring {
     unsigned long long encode_skipped;    /* 录像尺寸不符等丢弃 */
 
     /* 阶段缓冲池（spare 列表，跨帧复用免 malloc/mmap churn） */
-    pool_item_t *pool_rgb, *pool_nv12, *pool_jpeg;
+    pool_item_t *pool_rgb, *pool_nv12;
 
     pthread_mutex_t lock;
     pthread_cond_t published[FRAME_TOPIC_COUNT];
@@ -155,7 +152,7 @@ typedef struct {
     unsigned long long capture_dropped, driver_dropped, capture_stall_ms;
     unsigned long long infer_dropped, render_skipped, encode_skipped;
     int raw_pinned;            /* 当前被 raw 占用的槽数 */
-    int pool_rgb, pool_nv12, pool_jpeg;   /* 池内缓冲个数 */
+    int pool_rgb, pool_nv12;   /* 池内缓冲个数 */
 } frame_ring_stats_t;
 
 /* ---- 生命周期 ---- */
@@ -189,7 +186,7 @@ void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decod
 /* 取 seq > next_seq 的最新 rgb_done 槽（最新结果优先）；无则 NULL。
    调用方持锁拷贝 res、取出 rgb 指针并 take 池缓冲，解锁后渲染，再 commit */
 frame_slot_t *frame_ring_display_pick_locked(frame_ring_t *r, unsigned long long next_seq);
-/* 渲染完成：display_done=1，释放被跳过槽与旧槽的 rgb/jpeg/nv12 */
+/* 渲染完成：display_done=1，释放被跳过槽与旧槽的 rgb/nv12 */
 void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s); /* 发布 DISPLAYED */
 
 /* ---- 编码（rec） ---- */

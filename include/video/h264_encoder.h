@@ -6,10 +6,7 @@
 #include <stdint.h>
 
 /**
- * video/h264_encoder.h — Rockchip 硬件 H.264 编码器封装。
- *
- * 后端自动选择：优先 FFmpeg h264_rkmpp（Rockchip MPP，编译启用 HAVE_AVCODEC
- * 且运行时可用），否则 V4L2 M2M rkvenc（/dev/video-enc0 或探测到的节点）。
+ * Hardware-only H.264 encoder using the direct Rockchip MPP API.
  *
  * 输入 NV12（Y 平面 w*h + 交错 UV w*h/2），输出 H.264 Annex-B 码流
  * （含 SPS/PPS/IDR/slice，以 00 00 00 01 分隔）。编码器为同步接口：
@@ -25,25 +22,15 @@ typedef void (*h264_nal_callback_t)(void *context,const unsigned char *nal,size_
 void h264_annexb_walk(const unsigned char *data,size_t length,
                       h264_nal_callback_t callback,void *context);
 
-/* 探测可用的 V4L2 H.264 编码器节点：优先 /dev/video-enc0，其次扫描 /dev/video0..15。
-   返回 0 成功并把节点路径写入 dev（调用方提供缓冲区）。 */
-int h264_encoder_probe(char *dev, size_t dev_size);
-
-/* 创建编码器（优先 FFmpeg h264_rkmpp，回退 V4L2 rkvenc；NV12→H264，设置码率/帧率/GOP）。
+/* 创建编码器（NV12→H264，设置码率/帧率/GOP）。
    @param w/h          帧宽高（需偶数）
    @param fps          期望帧率（用于设置 GOP 与时间戳换算，不写死）
    @param bitrate_bps  目标码率（如 4000000）
    @return 非 NULL 成功；NULL 表示设备不可用（无编码器/参数不支持） */
-/* Encode backend: software (libx264, default) or hardware (RKMPP / rkVENC).
-   The hardware path is kept as a selectable option behind this interface. */
-typedef enum {
-    H264_CODEC_SOFTWARE = 0,
-    H264_CODEC_HARDWARE = 1
-} h264_codec_t;
+h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps);
+const char *h264_encoder_name(const h264_encoder_t *encoder);
 
-h264_encoder_t *h264_encoder_create(int w, int h, int fps, int bitrate_bps, h264_codec_t codec);
-
-/* 释放编码器（STREAMOFF + 关闭） */
+/* 释放编码器及 MPP 工作线程和缓冲。 */
 void h264_encoder_destroy(h264_encoder_t *e);
 
 /* 编码一帧 NV12（w*h*3/2 字节）。成功返回 0，*out 为 malloc 的 H.264

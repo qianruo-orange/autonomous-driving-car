@@ -104,27 +104,17 @@ target_link_libraries(autonomous-driving-car PRIVATE ${LIBNL3})
 find_library(LIBNLROUTE3 nl-route-3 REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBNLROUTE3})
 
-# RKNN NPU 运行时（librknnrt.so，板载 /usr/lib）与 libjpeg-turbo（帧编解码）
+# RKNN NPU 运行时（librknnrt.so，板载 /usr/lib）
 find_library(LIBRKNNRT rknnrt REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
-
-find_library(LIBJPEG jpeg REQUIRED)
-target_link_libraries(autonomous-driving-car PRIVATE ${LIBJPEG})
 
 # OpenCV（core + imgproc）：检测框画框 / 标签文字渲染（cv::rectangle / cv::putText）
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 target_link_libraries(autonomous-driving-car PRIVATE ${OpenCV_LIBS})
 
-# FFmpeg（可选）：提供 h264_rkmpp 硬件编码后端（Rockchip MPP）。
-# 系统装有带 rkmpp 的 libavcodec 时自动启用；否则编译 V4L2 后端。
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(AVCODEC QUIET IMPORTED_TARGET libavcodec libavutil)
-endif()
-if(AVCODEC_FOUND)
-    add_compile_definitions(HAVE_AVCODEC)
-    target_link_libraries(autonomous-driving-car PRIVATE PkgConfig::AVCODEC)
-    message(STATUS "FFmpeg found: h264_rkmpp backend enabled")
-else()
-    message(STATUS "FFmpeg not found: fallback to V4L2 rkvenc backend")
-endif()
+# Hardware H.264 encoding requires the Rockchip MPP public API.
+find_path(MPP_INCLUDE_DIR rockchip/rk_mpi.h REQUIRED)
+find_library(MPP_LIBRARY rockchip_mpp REQUIRED)
+target_include_directories(autonomous-driving-car PRIVATE ${MPP_INCLUDE_DIR})
+target_link_libraries(autonomous-driving-car PRIVATE ${MPP_LIBRARY})
+message(STATUS "Rockchip MPP: hardware-only H.264 encoding")

@@ -276,13 +276,13 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
     JSON_ADD(json, off, "{\"produce_seq\":%llu,\"capture_dropped\":%llu,"
         "\"driver_dropped\":%llu,\"capture_stall_ms\":%llu,\"infer_dropped\":%llu,"
         "\"render_skipped\":%llu,\"encode_skipped\":%llu,\"raw_pinned\":%d,"
-        "\"pool_rgb\":%d,\"pool_nv12\":%d,\"pool_jpeg\":%d,"
+        "\"pool_rgb\":%d,\"pool_nv12\":%d,"
         "\"capture_fps\":%.3f,\"display_seq\":%llu,\"displayed_frames\":%llu,"
         "\"encoded_frames\":%llu,\"encode_replaced\":%llu,"
         "\"processing_age_ms\":%llu,\"processing_age_max_ms\":%llu,\"capture_to_encode_ms\":%llu}",
         st.produce_seq, st.capture_dropped, st.driver_dropped, st.capture_stall_ms,
         st.infer_dropped, st.render_skipped, st.encode_skipped,
-        st.raw_pinned, st.pool_rgb, st.pool_nv12, st.pool_jpeg,
+        st.raw_pinned, st.pool_rgb, st.pool_nv12,
         st.capture_fps, st.display_seq, st.displayed_frames, st.encoded_frames,
         st.encode_replaced, st.processing_age_ms, st.processing_age_max_ms, st.capture_to_encode_ms);
     http_ok_json(fd, json, (size_t)off);
@@ -292,24 +292,24 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
 void http_video_codeccaps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf)
 {
     (void)app; (void)method; (void)req_buf;
-    const char *codec = "software";
+    const char *codec = "hardware";
     (void)uri;
 
     static const int kFps[] = { 60, 50, 30, 25, 20, 15, 10, 5 };
 #define KFPSN ((int)(sizeof(kFps)/sizeof(kFps[0])))
 
-    /* software: flexible (libx264 handles arbitrary resolutions) */
-    static const struct { int w, h; const char *label; } sw[] = {
+    /* Candidate modes are intersected with camera capabilities by the client. */
+    static const struct { int w, h; const char *label; } modes[] = {
         { 320,240,"QVGA"},{ 640,480,"VGA"},{ 800,600,"SVGA"},{1024,768,"XGA"},
         {1280,720,"HD"},{1920,1080,"FHD"},{2560,1440,"2K"},{3840,2160,"4K"}
     };
-    const int n = (int)(sizeof(sw) / sizeof(sw[0]));
+    const int n = (int)(sizeof(modes) / sizeof(modes[0]));
     char json[4096]; int off = 0;
     JSON_ADD(json, off, "{\"codec\":\"%s\",\"caps\":[", codec);
     for (int i = 0; i < n; i++) {
-        int w = sw[i].w;
-        int h = sw[i].h;
-        const char *label = sw[i].label;
+        int w = modes[i].w;
+        int h = modes[i].h;
+        const char *label = modes[i].label;
         char fps_str[128]; int foff = 0;
         for (int k = 0; k < KFPSN; k++)
             foff += snprintf(fps_str + foff, sizeof(fps_str) - (size_t)foff,

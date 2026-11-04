@@ -429,11 +429,11 @@ void *video_stream_task(void *arg)
                 LOG_INFO("video_stream: ring 60s — produce %llu, capture_dropped %llu, "
                          "driver_dropped %llu, stall %llums, infer_dropped %llu, "
                          "render_skipped %llu, encode_skipped %llu, raw_pinned %d, "
-                         "pools rgb/nv12/jpeg %d/%d/%d",
+                         "pools rgb/nv12 %d/%d",
                          st.produce_seq, st.capture_dropped, st.driver_dropped,
                          st.capture_stall_ms, st.infer_dropped, st.render_skipped,
                          st.encode_skipped, st.raw_pinned,
-                         st.pool_rgb, st.pool_nv12, st.pool_jpeg);
+                         st.pool_rgb, st.pool_nv12);
             }
             if (ret == 0) continue;
             if (!(out.events & EPOLLIN)) continue;
@@ -605,29 +605,19 @@ void video_stream_restart(void)
              vs->device, vs->width, vs->height);
 }
 
-/* ---- MJPEG 推流线程（每连接一个，detached，由 video 模块创建） ---- */
+/* Camera MJPEG passthrough: no image decoding or re-encoding. */
 /* 完整写入非阻塞推流 socket 统一走 core/common.h 的 fd_write_all_blocking（处理
    EAGAIN/EWOULDBLOCK 与部分写入，避免慢客户端导致 MJPEG 流数据错位） */
 
 typedef struct {
     int fd;
-    int yolo_mode;   /* 1: 画框流（YOLO 为必要流程：不可用时直接 503/断流，不回退原始帧） */
     video_stream_client_close_cb on_close;
 } video_client_ctx_t;
-
-/* 活动推流连接计数：渲染线程据此跳过无观看者时的 JPEG 编码（省 CPU） */
-static int g_client_count = 0;
-
-int video_stream_client_count(void)
-{
-    return __atomic_load_n(&g_client_count, __ATOMIC_RELAXED);
-}
 
 static void *video_stream_client_task(void *arg)
 {
     video_client_ctx_t *a = (video_client_ctx_t *)arg;
     int fd = a->fd;
-    int yolo_mode = a->yolo_mode;
     video_stream_client_close_cb on_close = a->on_close;
     free(a);
 
@@ -636,27 +626,11 @@ static void *video_stream_client_task(void *arg)
         if (on_close) on_close(fd);
         return NULL;
     }
-    frame_subscription_t displayed;
-    frame_ring_subscribe(&vs->ring, &displayed, FRAME_TOPIC_DISPLAYED);
-
-    /* YOLO 为必要流程：画框流在 YOLO 不可用时直接报错（503），不回退原始帧 */
-    if (yolo_mode && !rknn_yolo_enabled()) {
-        const char *err = "HTTP/1.1 503 Service Unavailable\r\n"
-                          "Content-Type: text/plain; charset=utf-8\r\n"
-                          "Connection: close\r\n\r\n"
-                          "YOLO 推理不可用（无 YOLO）\n";
-        fd_write_all_blocking(fd, err, strlen(err));
-        if (on_close) on_close(fd);
-        return NULL;
-    }
-
     const char *hdr = "HTTP/1.1 200 OK\r\n"
                       "Content-Type: multipart/x-mixed-replace; boundary=--frame\r\n"
                       "Connection: close\r\n\r\n";
     fd_write_all_blocking(fd, hdr, strlen(hdr));
-    __atomic_fetch_add(&g_client_count, 1, __ATOMIC_RELAXED);
     int last_raw = 0;   /* 原始帧 pacing：seq 单调递增，wait_next 依赖此不变量 */
-    unsigned long long last_ann = 0; /* 已消费的显示帧序号；订阅会立即返回已有的新帧 */
     time_t last_write = time(NULL);   /* 最近一次成功写帧的时间，用于空闲超时 */
     while (vs->running && vs->app->running) {
         /* 空闲超时：长时间未成功写出任何帧（客户端不读/网络黑洞），释放连接，
@@ -671,31 +645,10 @@ static void *video_stream_client_task(void *arg)
 
         /* 帧发布驱动推流；socket 写入有界等待，无需独立看门狗监督。 */
         unsigned char *frame = NULL; size_t flen = 0;
-        if (yolo_mode) {
-            /* YOLO 必要流程：运行期 YOLO 失效（热重载失败等）→ 直接断流报错，不回退原始帧 */
-            if (!rknn_yolo_enabled()) break;
-            /* 画框流：推流的每一帧都必须是推理标注后的画面。
-               新标注帧未就绪（推理进行中 / 首帧未生成）时短暂等待，绝不混入原始帧，
-               否则画面会在标注帧与原始帧之间来回闪烁（抖动）。
-               标注帧用独立的 last_ann 去重：不能与原始帧共用 last，
-               否则标注帧 seq（推理时刻，必然滞后于最新原始帧）会把 last 拉回过去，
-               wait_next 永不阻塞，同一对帧被无限重复发送（死循环刷流）。 */
-            /* 渲染发布即唤醒；200ms 仅检查退出和断连，不增加逐帧等待。 */
-            if (!frame_ring_wait(&displayed, last_ann, 200)) continue;
-            unsigned long long aseq_now = rknn_yolo_get_frame_seq(), aseq = 0;
-            if (rknn_yolo_get_frame(&frame, &flen, &aseq) == 0)
-                last_ann = aseq;
-            else {
-                /* 首个观看者可能遇到尚未生成 JPEG 的显示帧，等下次发布。 */
-                last_ann = aseq_now;
-                continue;
-            }
-        } else {
-            int seq = video_stream_wait_next(last_raw, &frame, &flen);
-            if (seq < 0) break;
-            if (seq == last_raw) { usleep(20000); continue; }
-            last_raw = seq;
-        }
+        int seq = video_stream_wait_next(last_raw, &frame, &flen);
+        if (seq < 0) break;
+        if (seq == last_raw) { usleep(20000); continue; }
+        last_raw = seq;
         if (!frame || flen == 0) { usleep(20000); continue; }   /* 分配失败等：跳过 */
         char mhdr[128];
         int hlen = snprintf(mhdr, sizeof(mhdr),
@@ -707,7 +660,6 @@ static void *video_stream_client_task(void *arg)
         free(frame);
         last_write = time(NULL);
     }
-    __atomic_fetch_sub(&g_client_count, 1, __ATOMIC_RELAXED);
     if (on_close) on_close(fd);
     return NULL;
 }
@@ -717,21 +669,6 @@ int video_stream_client_start(int fd, video_stream_client_close_cb on_close)
     video_client_ctx_t *a = malloc(sizeof(*a));
     if (!a) return -1;
     a->fd       = fd;
-    a->yolo_mode  = 0;
-    a->on_close = on_close;
-    if (http_worker_start(video_stream_client_task, a) != 0) {
-        free(a);
-        return -1;
-    }
-    return 0;
-}
-
-int video_stream_client_start_yolo(int fd, video_stream_client_close_cb on_close)
-{
-    video_client_ctx_t *a = malloc(sizeof(*a));
-    if (!a) return -1;
-    a->fd       = fd;
-    a->yolo_mode  = 1;
     a->on_close = on_close;
     if (http_worker_start(video_stream_client_task, a) != 0) {
         free(a);

@@ -28,11 +28,4 @@ struct frame_ring *video_stream_get_ring(void);
 typedef void (*video_stream_client_close_cb)(int fd);
 int video_stream_client_start(int fd, video_stream_client_close_cb on_close);
 
-/* 画框流版本：YOLO 为必要流程，推流线程直接从环形队列读标注帧；
-   YOLO 不可用时返回 503 不回退原始帧。接口与 video_stream_client_start 一致 */
-int video_stream_client_start_yolo(int fd, video_stream_client_close_cb on_close);
-
-/* 当前 MJPEG 推流连接数（原子读）：渲染线程据此跳过无观看者时的 JPEG 编码 */
-int video_stream_client_count(void);
-
 #endif /* VIDEO_STREAM_H */

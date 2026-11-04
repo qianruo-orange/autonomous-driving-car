@@ -19,7 +19,7 @@
 typedef void (*h264_stream_client_close_cb)(int fd);
 
 /* 录制线程调用（会话开始、编码器已重建）：清空环形队列、epoch++、保存新配置。
-   sps/pps 可为空（V4L2 后端首 IDR 前未知），由 push_frame 从首帧内嵌
+   sps/pps 可为空（硬件编码首 IDR 前未知），由 push_frame 从首帧内嵌
    SPS/PPS 扫描补齐，补齐前客户端无法接合 */
 void h264_stream_push_config(int w, int h, int fps,
                              const unsigned char *sps, unsigned int sps_len,
@@ -30,7 +30,7 @@ void h264_stream_push_frame(const unsigned char *annexb, size_t len,
                             int keyframe, uint64_t ts_ms);
 
 /* 录制线程调用（会话结束/录像停止）：清空环形队列、epoch 归零。
-   在流客户端断连，新客户端得到 503（与 mjpeg_yolo 依赖 YOLO 的行为对齐） */
+   现有流客户端断连，新客户端得到 503 */
 void h264_stream_push_end(void);
 
 /* HTTP 线程调用：为连接创建推流线程（detached）；失败返回 -1 */

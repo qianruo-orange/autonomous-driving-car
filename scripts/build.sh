@@ -121,7 +121,6 @@ check_deps() {
     check_pkg "libsystemd-dev" libsystemd-dev
     check_pkg "libnl-3-dev" libnl-3-dev
     check_pkg "libnl-route-3-dev" libnl-route-3-dev
-    check_pkg "libjpeg 开发库 (libjpeg62-turbo-dev)" libjpeg62-turbo-dev libjpeg-dev
     check_pkg "OpenCV 开发库 (libopencv-dev)" libopencv-dev
 
     # RKNN NPU 运行时（板载 Rockchip SDK 安装，非 apt 包）
@@ -131,20 +130,29 @@ check_deps() {
     done
     [ "$rknn_ok" = 1 ] || missing_pkgs+=("librknnrt.so (RKNN NPU 运行时)")
 
+    # MPP 是硬件 H.264 编码的必需依赖，可由独立内核仓库安装。
+    local mpp_headers_ok=0 mpp_library_ok=0 path
+    for path in /usr/local/include/rockchip/rk_mpi.h /usr/include/rockchip/rk_mpi.h; do
+        [ -f "$path" ] && { mpp_headers_ok=1; break; }
+    done
+    for path in /usr/local/lib/librockchip_mpp.so /usr/lib/librockchip_mpp.so \
+                /usr/lib/aarch64-linux-gnu/librockchip_mpp.so; do
+        [ -f "$path" ] && { mpp_library_ok=1; break; }
+    done
+    [ "$mpp_headers_ok" = 1 ] || missing_pkgs+=("Rockchip MPP 开发头文件 (rockchip/rk_mpi.h)")
+    [ "$mpp_library_ok" = 1 ] || missing_pkgs+=("Rockchip MPP 共享库 (librockchip_mpp.so)")
+
     if [ ${#missing_cmds[@]} -gt 0 ] || [ ${#missing_pkgs[@]} -gt 0 ]; then
         echo "[DEPS] 缺少以下依赖："
         for c in "${missing_cmds[@]}"; do echo "  - 命令: $c"; done
         for p in "${missing_pkgs[@]}"; do echo "  - 包: $p"; done
         echo "[DEPS] 安装命令（Debian/Ubuntu）："
         echo "  sudo apt-get install -y build-essential cmake libsystemd-dev \\"
-        echo "      libnl-3-dev libnl-route-3-dev libjpeg62-turbo-dev libopencv-dev"
+        echo "      libnl-3-dev libnl-route-3-dev libopencv-dev"
         echo "[DEPS] librknnrt.so 需从 Rockchip 官方 SDK 安装到 /lib 或 /usr/lib。"
+        echo "[DEPS] MPP 安装脚本位于独立内核仓库："
+        echo "  https://github.com/qianruo-orange/rock-4d-npu-kernel/blob/main/scripts/install_mpp_userspace.sh"
         exit 1
-    fi
-
-    # 可选依赖：FFmpeg（h264_rkmpp 硬编码后端），缺失时自动回退 V4L2 rkvenc
-    if ! dpkg -s libavcodec-dev >/dev/null 2>&1; then
-        echo "[DEPS] 提示: 未安装 libavcodec-dev，FFmpeg rkmpp 后端不可用（可选，回退 V4L2）"
     fi
     echo "[DEPS] all required dependencies satisfied"
 }

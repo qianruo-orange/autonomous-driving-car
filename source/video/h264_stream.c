@@ -642,7 +642,7 @@ static void *h264_stream_client_task(void *arg)
     int nodelay = 1;
     (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
-    /* YOLO 为必要流程（与录像同源）：无 YOLO 直接 503（与 mjpeg_yolo 行为对齐） */
+    /* YOLO 为必要流程（与录像同源）：无 YOLO 直接 503。 */
     if (!rknn_yolo_enabled()) {
         h264s_fail(c, 503, "Service Unavailable", "YOLO 推理不可用（无 YOLO）\n");
         on_close(fd);

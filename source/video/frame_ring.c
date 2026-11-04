@@ -42,10 +42,9 @@ void frame_ring_destroy(frame_ring_t *r)
         if (s->raw_present && !s->raw_is_mmap) free(s->raw.buf);
         if (s->rgb.buf)  free(s->rgb.buf);
         if (s->nv12.buf) free(s->nv12.buf);
-        if (s->jpeg.buf) free(s->jpeg.buf);
     }
-    pool_item_t *heads[3] = { r->pool_rgb, r->pool_nv12, r->pool_jpeg };
-    for (int k = 0; k < 3; k++) {
+    pool_item_t *heads[2] = { r->pool_rgb, r->pool_nv12 };
+    for (int k = 0; k < 2; k++) {
         pool_item_t *it = heads[k];
         while (it) {
             pool_item_t *next = it->next;
@@ -90,9 +89,7 @@ void frame_ring_signal(frame_ring_t *r)
 
 static pool_item_t **pool_head(frame_ring_t *r, int which)
 {
-    if (which == FRAME_RING_POOL_RGB)  return &r->pool_rgb;
-    if (which == FRAME_RING_POOL_NV12) return &r->pool_nv12;
-    return &r->pool_jpeg;
+    return which == FRAME_RING_POOL_RGB ? &r->pool_rgb : &r->pool_nv12;
 }
 
 void frame_ring_buf_take_locked(frame_ring_t *r, int which, size_t min_cap,
@@ -148,7 +145,6 @@ static void release_raw_locked(frame_ring_t *r, frame_slot_t *s)
  *   raw  非最新钉住（原始流客户端锁内拷贝最新帧） + 无锁外读引用 +
  *        消费完成（YOLO 激活时等 infer_done；YOLO 停用时等编码消费或录像未激活）
  *   rgb  worker 结果入槽后，seq 已越过最新渲染即回池（含跳帧与迟到 worker）
- *   jpeg 最新显示帧钉住（推流客户端锁内拷贝），其余回池
  *   nv12 当前显示帧钉住（rec 窃取目标），其余 encode_done 或录像未激活即回池 */
 static void frame_ring_maintain_locked(frame_ring_t *r)
 {
@@ -166,11 +162,6 @@ static void frame_ring_maintain_locked(frame_ring_t *r)
             s->rgb.buf = NULL;
             s->rgb.len = s->rgb.cap = 0;
         }
-        if (s->jpeg.buf && s->seq != r->display_seq) {
-            frame_ring_buf_put_locked(r, FRAME_RING_POOL_JPEG, s->jpeg.buf, s->jpeg.cap);
-            s->jpeg.buf = NULL;
-            s->jpeg.len = s->jpeg.cap = 0;
-        }
         if (s->nv12.buf && s->seq != r->display_seq &&
             (s->encode_done || !r->rec_active)) {
             frame_ring_buf_put_locked(r, FRAME_RING_POOL_NV12, s->nv12.buf, s->nv12.cap);
@@ -186,8 +177,8 @@ frame_slot_t *frame_ring_produce_slot_locked(frame_ring_t *r)
 {
     frame_ring_maintain_locked(r);
     frame_slot_t *s = slot_of(r, r->produce_seq + 1);
-    /* 四阶段缓冲必须全部释放（消费完成），否则本槽不可复用 → 丢帧 */
-    if (s->raw_present || s->rgb.buf || s->nv12.buf || s->jpeg.buf || s->raw_claims)
+    /* 各阶段缓冲必须全部释放（消费完成），否则本槽不可复用 → 丢帧 */
+    if (s->raw_present || s->rgb.buf || s->nv12.buf || s->raw_claims)
         return NULL;
     memset(s, 0, sizeof(*s));
     s->seq = r->produce_seq + 1;
@@ -419,7 +410,6 @@ static void quiesce_clear_all_locked(frame_ring_t *r)
         if (s->raw_present && !s->raw_is_mmap) free(s->raw.buf);
         if (s->rgb.buf)  frame_ring_buf_put_locked(r, FRAME_RING_POOL_RGB,  s->rgb.buf,  s->rgb.cap);
         if (s->nv12.buf) frame_ring_buf_put_locked(r, FRAME_RING_POOL_NV12, s->nv12.buf, s->nv12.cap);
-        if (s->jpeg.buf) frame_ring_buf_put_locked(r, FRAME_RING_POOL_JPEG, s->jpeg.buf, s->jpeg.cap);
         memset(s, 0, sizeof(*s));
     }
     r->quiescing = 0;
@@ -478,6 +468,5 @@ void frame_ring_stats(frame_ring_t *r, frame_ring_stats_t *out)
         if (r->slots[i].raw_present) out->raw_pinned++;
     for (pool_item_t *it = r->pool_rgb; it; it = it->next) out->pool_rgb++;
     for (pool_item_t *it = r->pool_nv12; it; it = it->next) out->pool_nv12++;
-    for (pool_item_t *it = r->pool_jpeg; it; it = it->next) out->pool_jpeg++;
     frame_ring_unlock(r);
 }

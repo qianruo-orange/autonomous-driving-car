@@ -22,6 +22,7 @@ typedef struct {
     double             fps;         /* 实时平均帧率（最后若干帧） */
     int                split_pending;
     int                split_error;
+    char               encoder[32]; /* actual active backend, or "none" */
 } video_rec_status_t;
 
 struct app_config_t;

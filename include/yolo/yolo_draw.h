@@ -7,7 +7,7 @@
 #include "yolo/yolo_types.h"
 
 /**
- * yolo/yolo_draw.h — 检测框渲染模块：RGB 画框 + 类别标签 + JPEG 编码。
+ * yolo/yolo_draw.h — 检测框渲染模块：RGB 画框与类别标签。
  * 纯函数，无全局状态，可被任意线程并发调用。
  */
 
@@ -15,18 +15,10 @@
    文件缺失或为空时回退内置 COCO 80 类。返回加载到的类别数 */
 int yolo_classes_load(const char *path, yolo_classes_t *out);
 
-/* 原地在 rgb 帧上按 res 画框 + 类别名/置信度标签 → 编码 JPEG。
-   rgb 缓冲会被原地修改（调用方必须独占所有权；composer 的推理帧满足此条件）。
-   classes 为类别名表（可为 NULL，此时标签显示 "obj"）。
-   JPEG 编码复用 *jpeg_buf 缓冲（容量 *jpeg_cap，不足 realloc 增长；可为 NULL），
-   成功后回写新的 *jpeg_buf/*jpeg_cap 并输出 *jpeg_len；
-   *jpeg_buf 传 NULL 时跳过 JPEG 编码（无 MJPEG 观看者，省 CPU）；
-   失败返回 -1（*jpeg_buf 可能已被 realloc，由调用方持有释放）。 */
+/* Draw boxes and labels in the caller-owned RGB frame. Returns 0 on success. */
 int yolo_render_annotated(unsigned char *rgb, int w, int h,
                           const yolo_result_t *res,
                           const yolo_classes_t *classes, int tracked_index,
-                          const unsigned long long *object_ids,
-                          unsigned char **jpeg_buf, size_t *jpeg_cap,
-                          size_t *jpeg_len);
+                          const unsigned long long *object_ids);
 
 #endif /* YOLO_DRAW_H */

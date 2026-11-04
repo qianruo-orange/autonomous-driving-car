@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
- * yolo_draw.cpp — 检测框渲染模块：RGB 画框 + 类别标签 + JPEG 编码。
+ * yolo_draw.cpp — 检测框渲染模块：RGB 画框与类别标签。
  *
  * 画框与标签直接调用 OpenCV 图像库（cv::rectangle / cv::getTextSize /
  * cv::putText），与官方 cv2 标注脚本同款方案：
@@ -199,9 +199,7 @@ static void yolo_draw_label(cv::Mat &img, int x1, int y1,
 int yolo_render_annotated(unsigned char *rgb, int w, int h,
                           const yolo_result_t *res,
                           const yolo_classes_t *classes, int tracked_index,
-                          const unsigned long long *object_ids,
-                          unsigned char **jpeg_buf, size_t *jpeg_cap,
-                          size_t *jpeg_len)
+                          const unsigned long long *object_ids)
 {
     static const unsigned int kColors[] = {
         0xFF3B30, 0x34C759, 0x007AFF, 0xFFCC00,
@@ -218,8 +216,7 @@ int yolo_render_annotated(unsigned char *rgb, int w, int h,
         unsigned int color = i == tracked_index ? 0x00FFFF : kColors[d->cls % ncolors];
         yolo_draw_box(rgb, w, h, (int)d->x1, (int)d->y1, (int)d->x2, (int)d->y2, color);
 
-        /* One numbered label is burned into the same RGB frame used by JPEG,
-         * H.264 live video and recording. The browser adds no visible boxes. */
+        /* Live H.264 and recordings use the same annotated RGB frame. */
         const char *name = "obj";
         if (classes && d->cls >= 0 && d->cls < classes->count)
             name = classes->names[d->cls];
@@ -229,13 +226,6 @@ int yolo_render_annotated(unsigned char *rgb, int w, int h,
         yolo_draw_label(mat, (int)d->x1, (int)d->y1, label, color);
     }
 
-    /* JPEG 编码可选：jpeg_buf 为 NULL 时跳过（无 MJPEG 观看者，省 CPU） */
-    if (jpeg_buf) {
-        size_t jlen = 0;
-        if (yolo_rgb_to_jpeg_reuse(rgb, w, h, jpeg_buf, jpeg_cap, &jlen) != 0)
-            return -1;
-        *jpeg_len = jlen;
-    }
     return 0;
 }
 
