@@ -189,13 +189,13 @@ A Linux real-time kernel is the system target. `main.c` declares each thread's s
 
 ## Perception and motion control
 
-**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Camera MJPEG is decoded by the `rockchip-jpegd` V4L2 hardware decoder before inference; no software JPEG decoder is used on that path. Hardware initialization or frame processing failures are reported as errors. Available camera modes depend on the attached camera and drivers.
+**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input and a fully INT8 one2one head that emits class scores and boxes as two separate INT8 tensors, so no layer of the deployed network stays FP16. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Camera MJPEG is decoded by the `rockchip-jpegd` V4L2 hardware decoder before inference; no software JPEG decoder is used on that path. Hardware initialization or frame processing failures are reported as errors. Available camera modes depend on the attached camera and drivers.
 
 Capture and rendering publish frame notifications to their subscribers; inference and result queues wake the next stage as work becomes available. See [frame handoff and the verified YOLO26n artifact](docs/FRAME_PIPELINE.md) for ownership, cancellation and model details.
 
 **Visual tracking.** Click a detection on the home page to select it. Numbered labels and the selected object's cyan box are drawn into the annotated frame used for detection reports, and overlaid in the browser. Matching uses constant-velocity prediction, predicted box overlap, displacement, size changes, and class gates, with ambiguous matches rejected. IDs remain local to the running process; associations expire after 800 ms without a match. Display smoothing follows tracking so it does not distort velocity estimates.
 
-The deployed model has one detection output. Model feature maps, per-target descriptors, appearance matching, and feature fields in the tracking API and new result records have been removed. See the [Chinese quantization report](docs/YOLO26N_QUANTIZATION.md) ([PDF](docs/pdf/YOLO26n量化报告.pdf)) for model preparation, accuracy, timing, output format and rollback. Kernel sources, patches, installation scripts and the Chinese kernel report/PDF are maintained separately in [rock-4d-npu-kernel](https://github.com/qianruo-orange/rock-4d-npu-kernel).
+The deployed model emits two INT8 tensors: class scores `[1,80,8400]` and boxes `[1,4,8400]`. The one2one head suppresses duplicates itself, so the backend no longer runs NMS. Model feature maps, per-target descriptors, appearance matching, and feature fields in the tracking API and new result records have been removed. See the [Chinese quantization report](docs/YOLO26N_QUANTIZATION.md) ([PDF](docs/pdf/YOLO26n量化报告.pdf)) for model preparation, accuracy, timing, output format and rollback. Kernel sources, patches, installation scripts and the Chinese kernel report/PDF are maintained separately in [rock-4d-npu-kernel](https://github.com/qianruo-orange/rock-4d-npu-kernel).
 
 **Intelligent Following.** The wheel controller consumes detection results independently of visual tracking. Automatic speed uses relative target size; manual mode uses the configured speed. Steering uses PD control, while the left and right wheels each use PI control with measured feedback. Wheel-speed targets and differential steering correction use **m/s**.
 
@@ -230,7 +230,7 @@ Prepare the model and labels before the first build:
 
 | File | Requirement |
 | --- | --- |
-| `config/yolo26.rknn` | Board-compatible model with one RGB input and one decoded detection output |
+| `config/yolo26.rknn` | Board-compatible model with one RGB input and two INT8 detection outputs (scores and boxes) |
 | `config/coco.names` | Class labels matching the model |
 
 The RKNN model is not included in Git. Model preparation takes place outside this repository's build process; the scripts do not train, convert, or download models. Working model initialization is required for normal service startup.

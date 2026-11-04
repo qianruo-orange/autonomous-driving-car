@@ -1,5 +1,7 @@
 # YOLO26n UINT8 输入与 W8A8 混合量化报告
 
+> **2026-11-05 更新**：交付模型已切换为 YOLO26 one2one 双输出全 INT8 方案，单输出混合量化方案转为回滚路径。迁移依据、实测数据与未完成项见第 14 节。
+
 报告日期：2026 年 11 月 2 日（Asia/Shanghai）。设备：Radxa ROCK 4D / RK3576。应用：autonomous-driving-car。
 
 本文记录本次已完成的模型转换、校准、板端精度验证与问题定位，并说明去掉模型特征输出后的交付方案。数据来自本机固定验证集和保存的转换产物；不同阶段的模型和测试结果分别标明。
@@ -227,3 +229,68 @@ sudo bash scripts/deploy.sh -i
 - [Rockchip RKNN-Toolkit2 v2.3.2](https://github.com/airockchip/rknn-toolkit2/tree/v2.3.2)：本次使用的工具版本与平台支持。
 - [Rockchip 模型转换示例](https://github.com/airockchip/rknn_model_zoo/blob/main/examples/yolov8/python/convert.py)：RK3576 使用 i8 路线及 mean/std 配置的示例。它是参考流程，不等同于本项目的完整混合方案。
 - [Ultralytics RKNN 导出源码](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/utils/export/rknn.py)：官方 INT8/浮点导出及检测解码尾部的组织方式。检索日期为 2026 年 11 月 2 日；当前主分支可能继续变化，复现本次结果应优先使用固定版本和哈希。
+
+## 14. 2026-11-05：迁移到 one2one 双输出（全 INT8）
+
+### 14.1 单输出方案的边界
+
+`output0` 同时承载框坐标（校准集最大约 695）与类别概率（0–1）。INT8 仅 256 级，一组仿射参数覆盖 695 的跨度后每级约 2.72，0–1 的置信度会被压平，因此检测头必须保留 FP16。交付模型的 INT8 权重占比为 93.4%，检测头 61 层仍是 FP16，并非整网量化。
+
+### 14.2 官方截断方案
+
+Rockchip `rknn_model_zoo` v2.5.0 的 `examples/yolo26` 为 RK3576 给出另一条路径：按张量名截断 one2one 头，输出两支。
+
+| 项目 | 取值 |
+|---|---|
+| 导出 | `yolo export model=yolo26n.pt format=onnx`（默认 one2one 头） |
+| 截断张量 | `/model.23/Sigmoid_output_0`、`/model.23/Mul_2_output_0` |
+| 转换 | `rknn.load_onnx(model=..., outputs=[...])` + `rknn.build(do_quantization=True, dataset=...)` |
+| 输入 | `(1,640,640,3)` INT8，scale=0.00392156886，zp=-128 |
+| 输出 0 | `(1,80,8400)` **INT8**，类别分数（已 sigmoid） |
+| 输出 1 | `(1,4,8400)` **INT8**，框 x1,y1,x2,y2（模型输入像素） |
+| 交付哈希 | `29cab9860993948e8636494f974ef0c4338cc4cd8030f49e2b3ada3d5875619b` |
+
+两支各自独立量化，类别分支不再与像素尺度共享 scale，检测头得以全 INT8。one2one 头自身完成去重，后处理不再需要 NMS。
+
+### 14.3 工具版本约束
+
+本次仍用 RKNN-Toolkit2 **2.3.2**（aarch64 wheel + Python 3.12）。2.5.0 在 `hybrid_quantization_step1` 的图融合阶段崩溃：
+
+```
+File "rknn/api/rules/matmul.py", line 1539, in _p_fuse_exmatmul_add_mul_exsoftmax13_exmatmul_to_sdpa
+IndexError: list index out of range
+```
+
+640 与 512 输入、`optimization_level` 0/1/3 均可复现，是该模型的注意力结构与 2.5.0 融合规则的冲突，与输入尺寸无关。升级到 2.5.0 前需确认该规则已修复。
+
+### 14.4 板端后端（纯 C）
+
+- `yolo_postprocess_two()`：按两路各自的 zp/scale 反量化，逐锚点取最大类，阈值过滤后按分数取 TopK，无 NMS。
+- 推理请求 `want_float=0`，直接消费原生 INT8 输出，省去每帧的 FP16→float 转换。
+- 单输出路径完整保留：混血 FP16 模型仍可加载运行，作为回滚路径。
+
+### 14.5 板端实测（640 输入，NPU 1188 MHz）
+
+| 指标 | 单输出混合 | 双输出全 INT8 |
+|---|---:|---:|
+| `run` | 22.2 ms | 19–21 ms |
+| `outputs` | 2 ms | 0 ms（原生 INT8） |
+| `post` | 含 NMS | 2 ms，无 NMS |
+| 采集帧率 | 30 fps | 30 fps |
+| 运行错误 | — | 0 条 |
+
+### 14.6 未完成项
+
+双输出模型尚未在 64 图留出集上与单输出模型做 mAP 对比：现有 C 评测器只认单输出，需扩展为读取两路 INT8 输出后补测。若 mAP50 相对 0.6232 下降超过 2 个点，应回滚至单输出模型。
+
+### 14.7 512 输入实验（未部署）
+
+同流程在 512×512 下实测：`run` 17.42 ms（640 为 24.04 ms）、总耗时 19.90 ms（640 为 28.74 ms），输出 `[1,84,5376]`。模型保存在 `/home/qianruo/yolo26n-512-w8a8.rknn`，未部署：精度未验证，且当时单输出方案仍在服役。
+
+### 14.8 回滚
+
+```bash
+sudo cp /home/qianruo/kbuild/fix-20261105/b-migration/yolo26.rknn.live-before-b \
+        /opt/autonomous-driving-car/config/yolo26.rknn
+sudo systemctl restart autonomous-driving-car
+```
