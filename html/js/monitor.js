@@ -189,11 +189,15 @@
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
       var label = d[6] + ' ' + Number(d[5]).toFixed(2);
       var tw = ctx.measureText(label).width;
-      var ty = (y1 - labelH - 1 < oy) ? y2 + 2 : y1 - labelH - 1;
+      /* 标签固定在标注框内部左上角：跟着框走，不会因为框贴到画面顶端就翻到框下方去。
+         框比标签还矮 / 还窄时向内收，依旧留在框内。 */
+      var chipW = tw + 8, chipX = x1 + 2, chipY = y1 + 2;
+      if (chipY + labelH > y2 - 1) chipY = Math.max(y1 + 1, y2 - labelH - 1);
+      if (chipX + chipW > x2 - 1) chipX = Math.max(x1 + 1, x2 - chipW - 1);
       ctx.fillStyle = col;
-      ctx.fillRect(x1 - 1, ty, tw + 8, labelH);
+      ctx.fillRect(chipX, chipY, chipW, labelH);
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(label, x1 + 3, ty + 1);
+      ctx.fillText(label, chipX + 4, chipY + 1);
     }
   }
 
