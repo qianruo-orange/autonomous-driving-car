@@ -229,8 +229,10 @@ rec_mjpeg_t *rec_mjpeg_create(const char *dir, const char *prefix, int w, int h,
     long strl_data = ftell(s->fp);
     write_strh(s->fp, w, h, s->fps, &s->strh_pos);
     write_strf(s->fp, w, h);
-    patch32(s->fp, strl_pos, (uint32_t)(ftell(s->fp) - strl_data));
-    patch32(s->fp, hdrl_pos, (uint32_t)(ftell(s->fp) - hdrl_data));
+    /* A LIST size covers the form-type fourcc as part of the list content, so add
+       back the 4 bytes the *_data bases skip past. */
+    patch32(s->fp, strl_pos, (uint32_t)(ftell(s->fp) - strl_data) + 4u);
+    patch32(s->fp, hdrl_pos, (uint32_t)(ftell(s->fp) - hdrl_data) + 4u);
 
     /* ---- movi ---- */
     s->movi_list_pos = ftell(s->fp);
@@ -265,7 +267,19 @@ int rec_mjpeg_write_frame(rec_mjpeg_t *s, const unsigned char *jpeg, size_t len,
 
     fourcc(s->fp, "00dc");
     le32(s->fp, (uint32_t)len);
-    if (fwrite(jpeg, 1, len, s->fp) != len) return -1;
+    if (fwrite(jpeg, 1, len, s->fp) != len) {
+        int saved = errno;
+        /* A short write leaves a chunk whose declared length exceeds the bytes on
+         * disk, which no parser can recover from and which would also corrupt the
+         * movi size written at finalize. Rewind and truncate back to the chunk
+         * header so the segment stays parseable. */
+        (void)fflush(s->fp);
+        (void)ftruncate(fileno(s->fp), pos);
+        (void)fseeko(s->fp, pos, SEEK_SET);
+        clearerr(s->fp);
+        errno = saved;
+        return -1;
+    }
     if (len & 1u) fputc(0, s->fp);     /* RIFF 块按字对齐 */
 
     s->idx[s->n_frames].flags  = 0x00000010u;   /* AVIIF_KEYFRAME：每帧都是关键帧 */
@@ -289,10 +303,10 @@ int rec_mjpeg_finalize(rec_mjpeg_t *s)
         unlink(s->path);
         result = -1;
     } else {
-        /* movi 长度：从 'movi' 之后到当前写入点 */
+        /* movi 长度：从 'LIST' 的 size 字段之后到当前写入点，含 'movi' 四字符码 */
         long movi_end = ftell(s->fp);
         patch32(s->fp, s->movi_list_pos + 4,
-                (uint32_t)(movi_end - s->movi_data_start));
+                (uint32_t)(movi_end - s->movi_data_start) + 4u);
 
         /* idx1：每帧 16 字节 */
         fourcc(s->fp, "idx1");
