@@ -4,7 +4,9 @@
 
 #include <sched.h>
 
-typedef enum { CPU_INHERIT, CPU_LITTLE, CPU_BIG } cpu_group_t;
+/* CPU_ALL is the full permitted set. SCHED_DEADLINE admission requires a task's
+ * affinity to cover the whole root domain, so deadline threads may only use it. */
+typedef enum { CPU_INHERIT, CPU_LITTLE, CPU_BIG, CPU_ALL } cpu_group_t;
 
 /* Initialize before binding main so workers can expand from inherited masks
  * into the original permitted groups. Discovery uses CPU capacity, then static
