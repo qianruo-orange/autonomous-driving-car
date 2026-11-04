@@ -9,8 +9,6 @@
 #include "core/data_slot.h"
 #define CAN_TX_SLOT_CAPACITY 64
 
-#define DEFAULT_CONFIG_PATH PATH_CONFIG
-
 #define CAN_MAX_IFACES   8
 #define CAN_MAX_FILTERS  16
 

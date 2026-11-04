@@ -7,10 +7,6 @@
 /* 一帧最多保留的检测框数 */
 #define YOLO_MAX_DETS 32
 
-/* 帧像素格式（对应 V4L2_PIX_FMT_*，供解码模块识别） */
-#define RKNN_FMT_MJPEG 0
-#define RKNN_FMT_YUYV  1
-
 /* 单条检测结果（坐标在原图坐标系，x1<x2, y1<y2） */
 typedef struct {
     float x1, y1, x2, y2;

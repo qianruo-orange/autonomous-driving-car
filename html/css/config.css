@@ -99,8 +99,6 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .car-param-group h4{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;color:var(--accent)}
 .car-param-group h4 button{margin:0;padding:6px 12px}
 .row button{margin-left:8px;flex:none}
-.btn-query{background:linear-gradient(135deg,rgba(94,194,240,.1),rgba(94,194,240,.04));color:var(--accent);border:1px solid var(--card-border2);backdrop-filter:blur(8px);padding:5px 12px;font-size:12px;margin-left:8px;flex:none;transition:all .25s}
-.btn-query:hover{background:linear-gradient(135deg,rgba(94,194,240,.2),rgba(94,194,240,.1));color:var(--accent-hover);transform:translateY(-1px)}
 #msg{padding:8px;margin:8px 0;border-radius:8px;display:none}
 #msg.ok{display:block;background:rgba(76,201,160,.08);border:1px solid rgba(76,201,160,.2);color:#4cc9a0}
 #msg.err{display:block;background:rgba(224,85,106,.08);border:1px solid rgba(224,85,106,.2);color:#e0556a}

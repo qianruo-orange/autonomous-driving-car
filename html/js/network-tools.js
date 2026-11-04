@@ -64,18 +64,6 @@
     }
   }
 
-  function ntRenderReach(el, data) {
-    if (!data || !data.result) return;
-    var r = data.result;
-    if (r.reachable) {
-      var html = '<span class="nt-ok">' + t('✓ 网站可达') + '</span>';
-      if (r.rtt_avg >= 0) html += ' &nbsp;' + t('延迟') + ' <span class="nt-val">' + r.rtt_avg.toFixed(1) + ' ms</span>';
-      el.innerHTML = html;
-    } else {
-      el.innerHTML = '<span class="nt-fail">' + t('✗ 网站不可达') + '</span>' + (data.error ? ' <span class="nt-fail">' + ntError(data.error) + '</span>' : '');
-    }
-  }
-
   function ntRender(type, data) {
     ntLatest[type] = data;
     var el = ntResultEl(type);

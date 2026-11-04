@@ -9,7 +9,6 @@
 #define YOLO_EVENT_NAME_LEN 96
 #define YOLO_EVENT_CAMERA_LEN 192
 #define YOLO_EVENT_QUEUE_SIZE 512
-#define YOLO_EVENT_JPEG_MAX (4u * 1024u * 1024u)
 
 typedef struct {
     int cls;

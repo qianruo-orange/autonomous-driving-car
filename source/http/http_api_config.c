@@ -319,7 +319,7 @@ static void apply_ip(app_ctx_t *app, const http_form_field_t *fields, int count)
     safe_strncpy(a->ip_mask,   sizeof(a->ip_mask),   mask);
     safe_strncpy(a->ip_gw,     sizeof(a->ip_gw),     gw);
 
-    LOG_INFO("config: IP set %s mode=%s%s%s%s%s", ifn, mode[0] ? mode : "off",
+    LOG_INFO("config: IP set %s mode=%s%s%s%s%s%s%s", ifn, mode[0] ? mode : "off",
              addr[0] ? " addr=" : "", addr,
              mask[0] ? " mask=" : "", mask,
              gw[0] ? " gw=" : "", gw);

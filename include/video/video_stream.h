@@ -4,10 +4,6 @@
 
 #include <stddef.h>
 
-/* 帧像素格式（对应 V4L2_PIX_FMT_*，供 rknn_yolo 等消费方识别） */
-#define VIDEO_FMT_MJPEG 0
-#define VIDEO_FMT_YUYV  1
-
 /* 初始化 video stream 模块（从 cfg 读取设备和分辨率），不创建线程 */
 struct app_config_t;
 int video_stream_init(void *arg);

@@ -192,16 +192,6 @@ static int flush_report_locked(const char day[9], const char *rows, size_t lengt
     return rc;
 }
 
-static int flush_report(const char day[9], const char *rows, size_t length)
-{
-    pthread_mutex_lock(&report_io_lock);
-    int result = flush_report_locked(day, rows, length);
-    int saved_errno = errno;
-    pthread_mutex_unlock(&report_io_lock);
-    errno = saved_errno;
-    return result;
-}
-
 static int flush_report_epoch(const char day[9], const char *rows, size_t length,
                               unsigned long long epoch)
 {
