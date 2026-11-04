@@ -536,6 +536,22 @@
       var mb = document.getElementById('mem_bar');
       mb.style.width = d.mem_pct + '%'; mb.className = d.mem_pct < 60 ? 'green' : d.mem_pct < 85 ? 'yellow' : 'red';
 
+      /* GPU：优先显示负载%；RK356x/RK3576 驱动未暴露 load 时显示当前频率(MHz) */
+      var gpuEl = document.getElementById('gpu_val');
+      var gb = document.getElementById('gpu_bar');
+      if (gpuEl && gb) {
+        if (d.gpu >= 0) {
+          gpuEl.textContent = d.gpu + '%';
+          gb.style.width = d.gpu + '%'; gb.className = 'blue';
+        } else if (d.gpu_freq >= 0) {
+          gpuEl.textContent = d.gpu_freq + ' MHz';   /* 驱动的 load 恒为 -1，只报频率 */
+          gb.style.width = '0%';
+        } else {
+          gpuEl.textContent = 'N/A';
+          gb.style.width = '0%';
+        }
+      }
+
       var dp = Math.round(100 - d.disk_avail * 100 / d.disk_total);
       document.getElementById('disk_val').textContent = dp + '%';
       document.getElementById('disk_total').textContent = (d.disk_total > 1024 ? (d.disk_total/1024).toFixed(1) + 'G' : d.disk_total + 'M');

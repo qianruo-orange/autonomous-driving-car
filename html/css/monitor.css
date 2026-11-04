@@ -52,16 +52,23 @@
 /* 检测框叠加层：位于画面之上、追踪交互层（z-index:3）之下，不拦截鼠标 */
 #stream_overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2}
 .sec{flex:1}
+/* 内存 / 磁盘并排两列：右侧栏压窄后两段叠放太占高度，各占一半刚好够
+   （每列约 150px：标题 + 百分比一行、进度条、已用 / 总量一行） */
+.status-column .duo{display:flex;gap:14px}
+.status-column .duo>.half{flex:1 1 0;min-width:0}
+.status-column .duo h4{display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin:0 0 6px}
+.status-column .duo h4 b{font-size:13px;color:var(--text);font-variant-numeric:tabular-nums}
+/* 已用 / 总量：已用更该被看见用亮色；放不下就省略，绝不换行多占一行高度 */
+.status-column .duo .used{margin-top:5px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.status-column .duo .used b{color:var(--text);font-weight:600}
 .val{font-size:32px;font-weight:bold;text-shadow:0 0 12px var(--glow)}
+#gpu_val{font-size:13px}
 .val-row{display:flex;align-items:baseline;justify-content:space-between}
 .temp{font-size:36px;font-weight:bold;color:var(--accent);text-shadow:0 0 16px var(--glow)}
-.hdr-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
 .label-left{font-size:13px;color:var(--muted)}
 .label-left b{color:var(--text);font-weight:normal}
 .bar{position:relative;overflow:visible}
 .bar div{overflow:hidden}
-.bar-pct{position:absolute;right:0;top:50%;transform:translateY(-50%);font-size:12px;font-weight:bold;color:var(--text);pointer-events:none}
-.bar-used{position:absolute;left:0;top:50%;transform:translateY(-50%);font-size:12px;color:var(--muted);pointer-events:none}
 .cpu-bar{width:calc(50% - 4px)}
 .card h4{font-size:14px;color:var(--muted);margin:0 0 4px}
 .stats{display:flex;gap:20px;flex-wrap:wrap}
@@ -76,7 +83,7 @@
 /* Distinguish the three resource cards; retain red overload warnings. */
 #cpu_bar:not(.red),#cpu_cores .core-bar div:not(.red){background:linear-gradient(90deg,#38bdf8,#60a5fa);box-shadow:0 0 8px rgba(56,189,248,.25)}
 #mem_bar:not(.red),#disk_bar:not(.red){background:linear-gradient(90deg,#f59e0b,#fbbf24);box-shadow:0 0 8px rgba(245,158,11,.25)}
-#npu_cores .core-bar div{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 8px rgba(129,140,248,.25)}
+#npu_cores .core-bar div,#gpu_bar{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 8px rgba(129,140,248,.25)}
 .core-label{font-size:10px;color:var(--muted);margin-bottom:2px;display:flex;justify-content:space-between}
 .net-iface{margin-bottom:8px}
 #net_speed{display:flex;gap:10px}

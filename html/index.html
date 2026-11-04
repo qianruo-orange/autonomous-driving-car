@@ -47,13 +47,20 @@
         <div class="label-left" id="cpu_freq" style="margin-top:6px"></div>
       </div>
       <div class="card">
-        <div class="sec"><h4 data-i18n="内存">内存</h4>
-        <div class="hdr-row"><span class="label-left"><span data-i18n="占用：">占用：</span><b id="mem_used">-</b></span><span class="label-left"><span data-i18n="总量：">总量：</span><b id="mem_total">-</b></span></div>
-        <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div><span class="bar-pct" id="mem_val">--%</span></div></div>
-        <div class="sec"><h4 data-i18n="磁盘">磁盘</h4>
-        <div class="hdr-row"><span class="label-left"><span data-i18n="占用：">占用：</span><b id="disk_used">-</b></span><span class="label-left"><span data-i18n="总量：">总量：</span><b id="disk_total">-</b></span></div>
-        <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div><span class="bar-pct" id="disk_val">--%</span></div></div>
+        <div class="sec duo">
+          <div class="half"><h4><span data-i18n="内存">内存</span><b id="mem_val">--%</b></h4>
+          <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div></div>
+          <div class="used"><b id="mem_used">-</b> / <span id="mem_total">-</span></div></div>
+          <div class="half"><h4><span data-i18n="磁盘">磁盘</span><b id="disk_val">--%</b></h4>
+          <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div></div>
+          <div class="used"><b id="disk_used">-</b> / <span id="disk_total">-</span></div></div>
+        </div>
+      </div>
+      <div class="card">
         <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
+        <div class="sec"><h4>GPU</h4>
+        <div class="val" id="gpu_val">--%</div>
+        <div class="bar gpu-bar"><div class="blue" id="gpu_bar" style="width:0%"></div></div></div>
       </div>
       <div class="card"><h3 data-i18n="网络速度">网络速度</h3><div id="net_speed"></div></div>
     </div>
