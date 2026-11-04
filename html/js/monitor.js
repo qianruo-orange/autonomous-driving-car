@@ -177,6 +177,7 @@
     /* 线宽/字号跟随显示尺寸缩放，小窗不糊、大屏不细 */
     var ui = Math.max(0.8, Math.min(2.2, sx / 0.97));
     ctx.lineWidth = Math.round(2 * ui * 10) / 10;
+    var lw = ctx.lineWidth;
     ctx.font = '500 ' + Math.round(13 * ui) + 'px system-ui,-apple-system,sans-serif';
     ctx.textBaseline = 'top';
     var labelH = Math.round(16 * ui);
@@ -184,16 +185,25 @@
       var d = rec.d[i];
       var x1 = ox + d[0] * sx, y1 = oy + d[1] * sy;
       var x2 = ox + d[2] * sx, y2 = oy + d[3] * sy;
+      /* cover 把画面超出容器的部分裁掉了：贴画面边缘的框，边框会落到可视区之外，
+         于是只剩三条边（常见于贴着左边/上边的目标）。把框裁进可视区、预留半个线宽，
+         贴边的那条边框就会画在容器边缘上，框看起来才是闭合的。 */
+      var bx1 = Math.max(x1, lw / 2), by1 = Math.max(y1, lw / 2);
+      var bx2 = Math.min(x2, cw - lw / 2), by2 = Math.min(y2, ch - lw / 2);
+      if (bx2 <= bx1 || by2 <= by1) continue;   /* 整个框都在可视区外 */
       var col = DET_COLORS[Math.abs(d[4]) % DET_COLORS.length];
       ctx.strokeStyle = col;
-      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1);
       var label = d[6] + ' ' + Number(d[5]).toFixed(2);
       var tw = ctx.measureText(label).width;
       /* 标签固定在标注框内部左上角：跟着框走，不会因为框贴到画面顶端就翻到框下方去。
          框比标签还矮 / 还窄时向内收，依旧留在框内。 */
-      var chipW = tw + 8, chipX = x1 + 2, chipY = y1 + 2;
-      if (chipY + labelH > y2 - 1) chipY = Math.max(y1 + 1, y2 - labelH - 1);
-      if (chipX + chipW > x2 - 1) chipX = Math.max(x1 + 1, x2 - chipW - 1);
+      var chipW = tw + 8, chipX = bx1 + 2, chipY = by1 + 2;
+      if (chipY + labelH > by2 - 1) chipY = Math.max(by1 + 1, by2 - labelH - 1);
+      if (chipX + chipW > bx2 - 1) chipX = Math.max(bx1 + 1, bx2 - chipW - 1);
+      /* 框本身被裁得很靠边时，标签也要整块留在可视区内，不要跟着被裁掉一半 */
+      chipX = Math.max(1, Math.min(chipX, cw - chipW - 1));
+      chipY = Math.max(1, Math.min(chipY, ch - labelH - 1));
       ctx.fillStyle = col;
       ctx.fillRect(chipX, chipY, chipW, labelH);
       ctx.fillStyle = '#ffffff';
