@@ -283,7 +283,7 @@ The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of 
 
 Boxes come from `GET /api/detections/live?after=N`, an incremental feed returning records with `seq`, image `w`/`h`, and one entry per object: `x1, y1, x2, y2, class, score, name`. Coordinates are original-image pixels. The browser keeps a small map of recent records and draws the one matching the displayed frame; when inference skipped that frame it falls back to the nearest earlier record within six frames, beyond which nothing is drawn rather than showing a stale box.
 
-`monitor.js` computes the overlay rectangle from the `<img>` element's real layout box and its computed `object-fit`, so letterboxing, fullscreen, and window resizing all keep boxes aligned. Because the picture is never recompressed, a fullscreen view shows the same pixels the sensor produced.
+`monitor.js` computes the overlay rectangle from the `<img>` element's real layout box and its computed `object-fit`. The player fills its container (`cover`), so there are no letterbox bars; because the container ratio rarely matches 16:9 exactly, a few percent of the edges is cropped. The overlay uses the same mapping, so boxes stay aligned under cropping, fullscreen, and window resizing. Because the picture is never recompressed, a fullscreen view shows the same pixels the sensor produced.
 
 Link budget is explicit. Each frame is 60–110 KB at 720p, so an uncompressed 30 fps stream needs 18–26 Mbps. `mjpeg_max_kbps` caps the per-client budget: when a client's socket backs up, the streaming module drops whole frames instead of falling behind, trading frame rate for latency. Setting it to `0` removes the cap.
 
