@@ -28,4 +28,15 @@ int yolo_postprocess(const float *const *out_buf, const rknn_tensor_attr *attrs,
                      yolo_det_t *dets, int max_dets,
                      float conf, float nms, int *nc_out);
 
+
+/* YOLO26 one2one 双输出后处理（官方 rknn_model_zoo 截断方案，无 NMS）。
+   输出 A 为类别分数 (1,80,A)（已 sigmoid），输出 B 为框 (1,4,A)，均为 INT8 量化、
+   框为模型输入像素坐标 x1,y1,x2,y2。逐锚点取最大类，阈值过滤后按分数取前 max_dets。
+   @return 检测数（已映射回原图坐标） */
+int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *scores_attr,
+                         const void *boxes_buf, const rknn_tensor_attr *boxes_attr,
+                         float lb_scale_x, float lb_scale_y, int lb_pad_x, int lb_pad_y,
+                         int frame_w, int frame_h,
+                         yolo_det_t *dets, int max_dets, float conf, int *nc_out);
+
 #endif /* YOLO_POSTPROCESS_H */

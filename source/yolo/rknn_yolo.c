@@ -92,7 +92,8 @@ static void yolo_record_result(const yolo_job_t *job, const yolo_result_t *resul
 typedef struct {
     rknn_context    ctx;
     unsigned char  *in_buf;                 /* 缩放后输入缓冲 */
-    rknn_tensor_attr out_attr;              /* Decoded detection output. */
+    rknn_tensor_attr out_attr[2];           /* 单输出解码结果，或 one2one 的类别/框两路 */
+    unsigned         out_count;
 } yolo_worker_t;
 
 typedef struct {
@@ -610,23 +611,45 @@ static void *yolo_worker_task(void *arg)
         if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
         unsigned long long inference_us = yolo_now_us();
 
-        rknn_output output = {.index = 0, .want_float = 1};
-        if (rknn_outputs_get(wk->ctx, 1, &output, NULL) != RKNN_SUCC) {
+        rknn_output outputs[2];
+        memset(outputs, 0, sizeof(outputs));
+        const unsigned nout = wk->out_count;
+        for (unsigned i = 0; i < nout; i++) {
+            outputs[i].index = i;
+            /* 单输出沿用 float 解码；one2one 双输出直接取原生 INT8，由后处理反量化 */
+            outputs[i].want_float = (nout == 1) ? 1 : 0;
+        }
+        if (rknn_outputs_get(wk->ctx, nout, outputs, NULL) != RKNN_SUCC) {
             yolo_job_abandon(&job);
             continue;
         }
         unsigned long long outputs_us = yolo_now_us();
 
-        const float *out_buf[1] = { (const float *)output.buf };
         yolo_result_t res;
         memset(&res, 0, sizeof(res));
         res.seq = job.seq;
         res.w   = job.w;
         res.h   = job.h;
-        res.count = yolo_postprocess(out_buf, &wk->out_attr, 1,
-                                     lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, job.w, job.h,
-                                     res.dets, YOLO_MAX_DETS, g_yolo.conf, g_yolo.nms, NULL);
-        rknn_outputs_release(wk->ctx, 1, &output);
+        if (nout == 2) {
+            /* YOLO26 one2one：类别 (1,80,A) + 框 (1,4,A)，无需 NMS */
+            const rknn_tensor_attr *sa = &wk->out_attr[0];
+            const rknn_tensor_attr *ba = &wk->out_attr[1];
+            const void *sbuf = outputs[0].buf, *bbuf = outputs[1].buf;
+            if (sa->dims[1] == 4 || sa->dims[2] == 4) {
+                sa = &wk->out_attr[1]; ba = &wk->out_attr[0];
+                sbuf = outputs[1].buf;  bbuf = outputs[0].buf;
+            }
+            res.count = yolo_postprocess_two(sbuf, sa, bbuf, ba,
+                                             lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y,
+                                             job.w, job.h, res.dets, YOLO_MAX_DETS,
+                                             g_yolo.conf, NULL);
+        } else {
+            const float *out_buf[1] = { (const float *)outputs[0].buf };
+            res.count = yolo_postprocess(out_buf, wk->out_attr, 1,
+                                         lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y, job.w, job.h,
+                                         res.dets, YOLO_MAX_DETS, g_yolo.conf, g_yolo.nms, NULL);
+        }
+        rknn_outputs_release(wk->ctx, nout, outputs);
         /* Persist every completed inference before the display queue can
            coalesce it. Empty detections are records too; no photo is encoded. */
         yolo_record_result(&job, &res);
@@ -832,10 +855,29 @@ static int yolo_model_io_valid(rknn_context probe)
 {
     rknn_input_output_num io_num = {0};
     if (rknn_query(probe, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num)) != RKNN_SUCC ||
-        io_num.n_input != 1 || io_num.n_output != 1) {
-        LOG_ERROR("yolo: model inputs=%u outputs=%u, expected one RGB input and one decoded detection output",
+        io_num.n_input != 1 || (io_num.n_output != 1 && io_num.n_output != 2)) {
+        LOG_ERROR("yolo: model inputs=%u outputs=%u, expected one RGB input and one or two detection outputs",
                   io_num.n_input, io_num.n_output);
         return -1;
+    }
+    if (io_num.n_output == 2) {
+        /* YOLO26 one2one：一路类别 (1,80,A)、一路框 (1,4,A)，无 NMS */
+        int have_scores = 0, have_boxes = 0;
+        for (unsigned i = 0; i < 2; i++) {
+            rknn_tensor_attr attr;
+            memset(&attr, 0, sizeof(attr));
+            attr.index = i;
+            if (rknn_query(probe, RKNN_QUERY_OUTPUT_ATTR, &attr, sizeof(attr)) != RKNN_SUCC) continue;
+            if (attr.n_dims != 3) continue;
+            unsigned d1 = attr.dims[1], d2 = attr.dims[2];
+            if (d1 == 4 || d2 == 4) have_boxes = 1;
+            else if ((d1 >= 1 && d1 <= YOLO_MAX_CLASSES) || (d2 >= 1 && d2 <= YOLO_MAX_CLASSES)) have_scores = 1;
+        }
+        if (!have_scores || !have_boxes) {
+            LOG_ERROR("yolo: two-output model is not a YOLO26 one2one head (scores=%d boxes=%d)",
+                      have_scores, have_boxes);
+            return -1;
+        }
     }
     return 0;
 }
@@ -952,11 +994,21 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
         rknn_set_core_mask(wk->ctx, RKNN_NPU_CORE_AUTO) != RKNN_SUCC)
         LOG_ERROR("yolo: worker %d set_core_mask failed", idx);
 
-    wk->out_attr.index = 0;
-    if (rknn_query(wk->ctx, RKNN_QUERY_OUTPUT_ATTR, &wk->out_attr,
-                   sizeof(wk->out_attr)) != RKNN_SUCC) {
-        LOG_ERROR("yolo: worker rknn_query OUTPUT_ATTR failed");
+    rknn_input_output_num io_num;
+    memset(&io_num, 0, sizeof(io_num));
+    if (rknn_query(wk->ctx, RKNN_QUERY_IN_OUT_NUM, &io_num, sizeof(io_num)) != RKNN_SUCC ||
+        io_num.n_output < 1 || io_num.n_output > 2) {
+        LOG_ERROR("yolo: worker unexpected output count %u", io_num.n_output);
         return -1;
+    }
+    wk->out_count = io_num.n_output;
+    for (unsigned i = 0; i < io_num.n_output; i++) {
+        wk->out_attr[i].index = i;
+        if (rknn_query(wk->ctx, RKNN_QUERY_OUTPUT_ATTR, &wk->out_attr[i],
+                       sizeof(wk->out_attr[i])) != RKNN_SUCC) {
+            LOG_ERROR("yolo: worker rknn_query OUTPUT_ATTR[%u] failed", i);
+            return -1;
+        }
     }
     wk->in_buf = malloc((size_t)g_yolo.in_w * g_yolo.in_h * 3);
     if (!wk->in_buf) {

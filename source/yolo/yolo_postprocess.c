@@ -237,3 +237,106 @@ int yolo_postprocess(const float *const *out_buf, const rknn_tensor_attr *attrs,
     }
     return yolo_nms_finish(cand, ncand, dets, max_dets, nms);
 }
+
+/* ---------------- YOLO26 one2one 双输出（无 NMS） ---------------- */
+
+static float yolo_deq_i8(int8_t q, int32_t zp, float scale)
+{
+    return ((float)q - (float)zp) * scale;
+}
+
+
+static int best_class_of(const int8_t *sp, int sc_nchw, int nc, int A, int i,
+                         int32_t zp, float scale)
+{
+    int cls = 0;
+    float top = -1.0f;
+    for (int j = 0; j < nc; ++j) {
+        float v = yolo_deq_i8(sp[sc_nchw ? (size_t)j * (size_t)A + (size_t)i
+                                        : (size_t)i * (size_t)nc + (size_t)j], zp, scale);
+        if (v > top) { top = v; cls = j; }
+    }
+    return cls;
+}
+
+int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
+                         const void *boxes_buf, const rknn_tensor_attr *ba,
+                         float lb_scale_x, float lb_scale_y, int lb_pad_x, int lb_pad_y,
+                         int frame_w, int frame_h,
+                         yolo_det_t *dets, int max_dets, float conf, int *nc_out)
+{
+    if (nc_out) *nc_out = 0;
+    if (!scores_buf || !boxes_buf || !sa || !ba || !dets || max_dets <= 0) return 0;
+    if (sa->n_dims != 3 || ba->n_dims != 3) return 0;
+    if (lb_scale_x <= 0.0f || lb_scale_y <= 0.0f || frame_w <= 0 || frame_h <= 0) return 0;
+
+    /* 类别张量 (1,80,A) 或 (1,A,80)：80 一定小于锚点数 */
+    int sc_nchw = sa->dims[1] <= sa->dims[2];
+    int nc = (int)(sc_nchw ? sa->dims[1] : sa->dims[2]);
+    int A  = (int)(sc_nchw ? sa->dims[2] : sa->dims[1]);
+    int bx_nchw = ba->dims[1] == 4;
+    if (nc <= 0 || nc > YOLO_MAX_CLASSES || A <= 0) return 0;
+    if (nc_out) *nc_out = nc;
+
+    const int8_t *sp = (const int8_t *)scores_buf;
+    const int8_t *bp = (const int8_t *)boxes_buf;
+    const int32_t s_zp = sa->zp, b_zp = ba->zp;
+    const float   s_sc = sa->scale, b_sc = ba->scale;
+
+    
+    /* 按分数降序保留前 max_dets 个候选，一次遍历完成 */
+    float best[YOLO_MAX_DETS];
+    int   idx[YOLO_MAX_DETS];
+    int   n = 0;
+
+    for (int i = 0; i < A; ++i) {
+        float top = -1.0f;
+        int cls = -1;
+        for (int j = 0; j < nc; ++j) {
+            int8_t q = sp[sc_nchw ? (size_t)j * (size_t)A + (size_t)i
+                                  : (size_t)i * (size_t)nc + (size_t)j];
+            float v = yolo_deq_i8(q, s_zp, s_sc);
+            if (v > top) { top = v; cls = j; }
+        }
+        if (cls < 0 || top < conf) continue;
+        if (n == max_dets && top <= best[n - 1]) continue;
+        int pos = (n < max_dets) ? n++ : max_dets - 1;
+        while (pos > 0 && best[pos - 1] < top) {
+            best[pos] = best[pos - 1];
+            idx[pos]  = idx[pos - 1];
+            --pos;
+        }
+        best[pos] = top;
+        idx[pos]  = i;
+    }
+
+    int out = 0;
+    for (int k = 0; k < n; ++k) {
+        int i = idx[k];
+        float bx1 = yolo_deq_i8(bp[bx_nchw ? (size_t)0 * (size_t)A + (size_t)i : (size_t)i * 4 + 0], b_zp, b_sc);
+        float by1 = yolo_deq_i8(bp[bx_nchw ? (size_t)1 * (size_t)A + (size_t)i : (size_t)i * 4 + 1], b_zp, b_sc);
+        float bx2 = yolo_deq_i8(bp[bx_nchw ? (size_t)2 * (size_t)A + (size_t)i : (size_t)i * 4 + 2], b_zp, b_sc);
+        float by2 = yolo_deq_i8(bp[bx_nchw ? (size_t)3 * (size_t)A + (size_t)i : (size_t)i * 4 + 3], b_zp, b_sc);
+
+        float x1 = (bx1 - (float)lb_pad_x) / lb_scale_x;
+        float y1 = (by1 - (float)lb_pad_y) / lb_scale_y;
+        float x2 = (bx2 - (float)lb_pad_x) / lb_scale_x;
+        float y2 = (by2 - (float)lb_pad_y) / lb_scale_y;
+
+        if (!(x2 > x1) || !(y2 > y1)) continue;
+        if (x1 < 0.0f) x1 = 0.0f;
+        if (y1 < 0.0f) y1 = 0.0f;
+        if (x2 > (float)frame_w) x2 = (float)frame_w;
+        if (y2 > (float)frame_h) y2 = (float)frame_h;
+        if (yolo_box_oversize(x1, y1, x2, y2, frame_w, frame_h)) continue;
+
+        dets[out].x1 = x1;
+        dets[out].y1 = y1;
+        dets[out].x2 = x2;
+        dets[out].y2 = y2;
+        dets[out].conf = best[k];
+        dets[out].cls  = best_class_of(sp, sc_nchw, nc, A, i, s_zp, s_sc);
+        out++;
+    }
+    return out;
+}
