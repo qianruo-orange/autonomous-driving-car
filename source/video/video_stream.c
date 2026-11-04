@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <time.h>
 #include <linux/videodev2.h>
 #include <sys/epoll.h>
 #include <poll.h>
@@ -632,6 +633,24 @@ static void *video_stream_client_task(void *arg)
     fd_write_all_blocking(fd, hdr, strlen(hdr));
     int last_raw = 0;   /* 原始帧 pacing：seq 单调递增，wait_next 依赖此不变量 */
     time_t last_write = time(NULL);   /* 最近一次成功写帧的时间，用于空闲超时 */
+
+    /* 码率预算：1280x720 的相机原生 JPEG 约 60~110 KB/帧，30 fps 合 18~26 Mbps。
+       无线链路给不到这么多时，socket 会持续阻塞、帧堆在发送缓冲里，表现为
+       帧率骤降且延迟越拖越长。这里按每秒预算主动跳帧：画质不变（发的仍是
+       相机原生帧，不重编码），只把帧率降到链路真正扛得住的水平。
+
+       预算本身自适应：写入总是瞬间返回说明链路还有余量（加），写入大量阻塞
+       说明已经饱和（减）。这样有线/5G/拥挤的 2.4G 都能收敛到各自的真实带宽，
+       不用手工调参。mjpeg_max_kbps 只作为起始值和上限（0 = 完全不限）。 */
+#define MJ_MIN_BPS  (3LL * 1000 * 1000 / 8)      /* 不低于 3 Mbps */
+#define MJ_MAX_BPS  (40LL * 1000 * 1000 / 8)     /* 不高于 40 Mbps */
+    long long budget_bytes = 0;
+    if (vs->app && vs->app->cfg && vs->app->cfg->mjpeg_max_kbps > 0)
+        budget_bytes = (long long)vs->app->cfg->mjpeg_max_kbps * 1000LL / 8LL;
+    long long win_bytes = 0, slow_ms = 0;
+    struct timespec win_t0;
+    clock_gettime(CLOCK_MONOTONIC, &win_t0);
+
     while (vs->running && vs->app->running) {
         /* 空闲超时：长时间未成功写出任何帧（客户端不读/网络黑洞），释放连接，
            避免推流线程与 fd 永久占用 */
@@ -650,6 +669,28 @@ static void *video_stream_client_task(void *arg)
         if (seq == last_raw) { usleep(20000); continue; }
         last_raw = seq;
         if (!frame || flen == 0) { usleep(20000); continue; }   /* 分配失败等：跳过 */
+
+        /* 每秒窗口：先结算上一窗口的拥塞情况并调整预算，再判断本帧是否放行 */
+        if (budget_bytes > 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long long el_ms = (long long)(now.tv_sec - win_t0.tv_sec) * 1000LL
+                            + (long long)(now.tv_nsec - win_t0.tv_nsec) / 1000000LL;
+            if (el_ms >= 1000) {
+                /* 写阻塞占比高 = 链路饱和，下调；几乎不阻塞 = 还有余量，上调。
+                   中间留 5%~20% 的死区，避免在临界点来回抖。 */
+                if (slow_ms * 5 > el_ms)       budget_bytes = budget_bytes * 8 / 10;
+                else if (slow_ms * 20 < el_ms) budget_bytes = budget_bytes * 11 / 10;
+                if (budget_bytes < MJ_MIN_BPS) budget_bytes = MJ_MIN_BPS;
+                if (budget_bytes > MJ_MAX_BPS) budget_bytes = MJ_MAX_BPS;
+                win_bytes = 0; slow_ms = 0; win_t0 = now;
+            }
+            if (win_bytes + (long long)flen > budget_bytes) {
+                free(frame);
+                usleep(4000);
+                continue;   /* last_raw 已前进，这一帧不再重发 */
+            }
+        }
         char mhdr[160];
         /* X-Seq：该帧在采集环里的序号（与 YOLO 结果 seq 同一空间）。前端据此把
            检测框叠加到对应原始帧，做到透传链路也能显示标注且不重新编码。 */
@@ -657,9 +698,17 @@ static void *video_stream_client_task(void *arg)
                             "--frame\r\nContent-Type: image/jpeg\r\n"
                             "X-Seq: %u\r\nContent-Length: %zu\r\n\r\n",
                             (unsigned)seq, flen);
+        struct timespec w0, w1;
+        clock_gettime(CLOCK_MONOTONIC, &w0);
         if (fd_write_all_blocking(fd, mhdr, (size_t)hlen) < 0) { free(frame); break; }
         if (fd_write_all_blocking(fd, frame, flen) < 0) { free(frame); break; }
         if (fd_write_all_blocking(fd, "\r\n", 2) < 0) { free(frame); break; }
+        clock_gettime(CLOCK_MONOTONIC, &w1);
+        if (budget_bytes > 0) {
+            win_bytes += (long long)flen;
+            slow_ms   += (long long)(w1.tv_sec - w0.tv_sec) * 1000LL
+                       + (long long)(w1.tv_nsec - w0.tv_nsec) / 1000000LL;
+        }
         free(frame);
         last_write = time(NULL);
     }
