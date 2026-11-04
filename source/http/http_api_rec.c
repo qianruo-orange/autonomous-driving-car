@@ -50,17 +50,21 @@ static int rec_resolve_rel(const char *rel, char *subdir, size_t subdir_size,
 static void serve_rec_status(int fd)
 {
     video_rec_status_t st;
-    char json[512];
+    char json[768];
     int off;
     video_rec_status(&st);
     off = snprintf(json, sizeof(json),
         "{\"recording\":%d,\"file\":\"%s\",\"start_ms\":%llu,"
         "\"frames\":%llu,\"bytes\":%llu,\"fps\":%.1f,"
-        "\"split_pending\":%d,\"split_error\":%d}",
+        "\"split_pending\":%d,\"split_error\":%d,"
+        "\"skipped_cadence\":%llu,\"skipped_size\":%llu,"
+        "\"io_error\":%d,\"free_mb\":%llu}",
         st.recording, st.file[0] ? st.file : "",
         (unsigned long long)st.start_ms,
         (unsigned long long)st.frames, (unsigned long long)st.bytes, st.fps,
-        st.split_pending, st.split_error);
+        st.split_pending, st.split_error,
+        st.skipped_cadence, st.skipped_size, st.io_error,
+        st.free_bytes >> 20);
     http_ok_json(fd, json, (size_t)off);
 }
 

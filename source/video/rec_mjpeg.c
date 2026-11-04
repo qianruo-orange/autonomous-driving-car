@@ -113,7 +113,7 @@ static void write_avih(FILE *fp, int w, int h, int fps, long *avih_pos)
     le32(fp, us);                              /* dwMicroSecPerFrame */
     le32(fp, 0);                               /* dwMaxBytesPerSec（finalize 回填） */
     le32(fp, 0);                               /* dwPaddingGranularity */
-    le32(fp, 0x00000010u);                     /* dwFlags: AVIF_HASINDEX */
+    le32(fp, 0);                               /* dwFlags：写 idx1 后才置 AVIF_HASINDEX */
     le32(fp, 0);                               /* dwTotalFrames（finalize 回填） */
     le32(fp, 0);                               /* dwInitialFrames */
     le32(fp, 1);                               /* dwStreams */
@@ -249,21 +249,22 @@ int rec_mjpeg_write_frame(rec_mjpeg_t *s, const unsigned char *jpeg, size_t len,
                           uint64_t ts_ms)
 {
     (void)ts_ms;
-    if (!s || !s->fp || !jpeg || len == 0) return -1;
-    if (len > 0x7FFFFFFFu) return -1;
-    if (s->data_bytes + (uint64_t)len + 8ull > REC_MJ_MAX_BYTES) return -1;
+    if (!s || !s->fp || !jpeg || len == 0) return REC_MJ_ERR_IO;
+    if (len > 0x7FFFFFFFu) return REC_MJ_ERR_IO;
+    if (s->data_bytes + (uint64_t)len + 8ull > REC_MJ_MAX_BYTES) return REC_MJ_ERR_FULL;
 
     if (s->n_frames >= s->idx_cap) {
         uint32_t cap = s->idx_cap * 2u;
         rec_mj_idx_t *grown = realloc(s->idx, (size_t)cap * sizeof(*grown));
-        if (!grown) return -1;
+        if (!grown) return REC_MJ_ERR_IO;
         s->idx = grown;
         s->idx_cap = cap;
     }
 
     long pos = ftell(s->fp);
-    if (pos < 0) return -1;
-    if ((uint64_t)(pos - s->movi_data_start) + (uint64_t)len + 8ull > 0xFFFFFFFFull) return -1;
+    if (pos < 0) return REC_MJ_ERR_IO;
+    if ((uint64_t)(pos - s->movi_data_start) + (uint64_t)len + 8ull > 0xFFFFFFFFull)
+        return REC_MJ_ERR_FULL;
 
     fourcc(s->fp, "00dc");
     le32(s->fp, (uint32_t)len);
@@ -278,9 +279,17 @@ int rec_mjpeg_write_frame(rec_mjpeg_t *s, const unsigned char *jpeg, size_t len,
         (void)fseeko(s->fp, pos, SEEK_SET);
         clearerr(s->fp);
         errno = saved;
-        return -1;
+        return REC_MJ_ERR_IO;
     }
-    if (len & 1u) fputc(0, s->fp);     /* RIFF 块按字对齐 */
+    if ((len & 1u) && fputc(0, s->fp) == EOF) {   /* RIFF 块按字对齐 */
+        int saved = errno;
+        (void)fflush(s->fp);
+        (void)ftruncate(fileno(s->fp), pos);
+        (void)fseeko(s->fp, pos, SEEK_SET);
+        clearerr(s->fp);
+        errno = saved;
+        return REC_MJ_ERR_IO;
+    }
 
     s->idx[s->n_frames].flags  = 0x00000010u;   /* AVIIF_KEYFRAME：每帧都是关键帧 */
     s->idx[s->n_frames].offset = (uint32_t)((long)(pos - s->movi_data_start));
@@ -288,7 +297,7 @@ int rec_mjpeg_write_frame(rec_mjpeg_t *s, const unsigned char *jpeg, size_t len,
     s->n_frames++;
     s->data_bytes += (uint64_t)len + 8ull + (uint64_t)(len & 1u);
     if ((uint32_t)len > s->max_frame) s->max_frame = (uint32_t)len;
-    return 0;
+    return REC_MJ_OK;
 }
 
 int rec_mjpeg_finalize(rec_mjpeg_t *s)
@@ -336,7 +345,11 @@ int rec_mjpeg_finalize(rec_mjpeg_t *s)
         patch32(s->fp, s->strh_pos + 32, s->n_frames);
         patch32(s->fp, s->strh_pos + 36, s->max_frame);
 
+        /* idx1 已落盘，此时才声明 AVIF_HASINDEX（avih dwFlags 偏移 +12） */
+        patch32(s->fp, s->avih_pos + 12, 0x00000010u);
+
         if (fflush(s->fp) != 0) result = -1;
+        else if (fdatasync(fileno(s->fp)) != 0) result = -1;
         if (fclose(s->fp) != 0) result = -1;
         if (result != 0) { /* 保留文件供排查，但不视为成功 */ }
     }
@@ -364,4 +377,156 @@ uint32_t rec_mjpeg_bytes(const rec_mjpeg_t *s)
 uint64_t rec_mjpeg_start_ms(const rec_mjpeg_t *s)
 {
     return s ? s->start_ms : 0;
+}
+
+int rec_mjpeg_refresh(rec_mjpeg_t *s)
+{
+    if (!s || !s->fp) return -1;
+    if (s->n_frames == 0) return 0;
+
+    long end = ftell(s->fp);
+    if (end < 0) return -1;
+
+    /* 让此刻落盘的内容自成一份可解析的文件：长度和帧数都按已写数据回填。
+       掉电后即使没有 idx1，播放器也能按 RIFF/movi 长度扫描出全部帧。 */
+    patch32(s->fp, 4, (uint32_t)(end - 8));
+    patch32(s->fp, s->movi_list_pos + 4, (uint32_t)(end - s->movi_data_start) + 4u);
+    patch32(s->fp, s->avih_pos + 16, s->n_frames);
+    patch32(s->fp, s->avih_pos + 28, s->max_frame);
+    patch32(s->fp, s->strh_pos + 32, s->n_frames);
+    patch32(s->fp, s->strh_pos + 36, s->max_frame);
+
+    if (fflush(s->fp) != 0) return -1;
+    if (fdatasync(fileno(s->fp)) != 0) return -1;
+    return 0;
+}
+
+/* ---- 修复未正常收尾的分段 ---- */
+
+static uint32_t rd_le32(const unsigned char *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static int rd_at(FILE *fp, long off, void *buf, size_t n)
+{
+    return fseeko(fp, off, SEEK_SET) == 0 && fread(buf, 1, n, fp) == n ? 0 : -1;
+}
+
+/* 在 [from, limit) 内找四字符码；窗口重叠 3 字节，跨块边界也能命中 */
+static long find_fourcc(FILE *fp, long from, long limit, const char *tag)
+{
+    unsigned char buf[4096];
+    long off = from;
+    while (off + 4 <= limit) {
+        long remain = limit - off;
+        size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
+        if (want < 4) return -1;
+        if (rd_at(fp, off, buf, want)) return -1;
+        for (size_t i = 0; i + 4 <= want; i++)
+            if (!memcmp(buf + i, tag, 4)) return off + (long)i;
+        off += (long)want - 3;
+    }
+    return -1;
+}
+
+int rec_mjpeg_repair_file(const char *path)
+{
+    if (!path) return -1;
+    FILE *fp = fopen(path, "r+b");
+    if (!fp) return -1;
+
+    struct stat st;
+    unsigned char hdr[12];
+    if (fstat(fileno(fp), &st) != 0 || st.st_size < 12 ||
+        rd_at(fp, 0, hdr, sizeof(hdr)) || memcmp(hdr, "RIFF", 4) || memcmp(hdr + 8, "AVI ", 4)) {
+        fclose(fp);
+        return -1;
+    }
+    long fsize = (long)st.st_size;
+
+    /* 已经完整收尾（RIFF 长度 = 文件长度 - 8）的文件不碰 */
+    uint32_t riff = rd_le32(hdr + 4);
+    if (riff != 0 && (long)riff + 8 == fsize) { fclose(fp); return 0; }
+
+    long search_end = fsize < (1L << 20) ? fsize : (1L << 20);
+    long avih = find_fourcc(fp, 12, search_end, "avih");
+    long strh = find_fourcc(fp, 12, search_end, "strh");
+    long movi = find_fourcc(fp, 12, search_end, "movi");
+    if (avih < 0 || strh < 0 || movi < 0) { fclose(fp); return -1; }
+    avih += 8;                      /* 指向 avih 数据 */
+    strh += 8;                      /* 指向 strh 数据 */
+    long movi_size_pos = movi - 4;  /* 'LIST' 之后的 size 字段 */
+    long data_start = movi + 4;     /* 第一个 '00dc' 块 */
+
+    /* 按块流重建索引，遇到不完整的尾部块就停在那里 */
+    rec_mj_idx_t *idx = NULL;
+    uint32_t frames = 0, cap = 0, max_frame = 0;
+    uint64_t data_bytes = 0;
+    long p = data_start;
+    for (;;) {
+        unsigned char ch[8];
+        if (p + 8 > fsize) break;
+        if (rd_at(fp, p, ch, sizeof(ch)) || memcmp(ch, "00dc", 4)) break;
+        uint32_t len = rd_le32(ch + 4);
+        long next = p + 8 + (long)len + (long)(len & 1u);
+        if (next > fsize) break;            /* 尾部不完整：丢弃 */
+        if (frames == cap) {
+            uint32_t ncap = cap ? cap * 2u : 1024u;
+            rec_mj_idx_t *grown = realloc(idx, (size_t)ncap * sizeof(*grown));
+            if (!grown) { free(idx); fclose(fp); return -1; }
+            idx = grown;
+            cap = ncap;
+        }
+        idx[frames].flags  = 0x00000010u;
+        idx[frames].offset = (uint32_t)(p - data_start);
+        idx[frames].length = len;
+        frames++;
+        data_bytes += (uint64_t)len + 8ull + (uint64_t)(len & 1u);
+        if (len > max_frame) max_frame = len;
+        p = next;
+    }
+    if (frames == 0) { free(idx); fclose(fp); return 0; }
+
+    /* 截掉不完整块和任何残留的半截 idx1，然后重写索引 */
+    if (ftruncate(fileno(fp), p) != 0 || fseeko(fp, p, SEEK_SET) != 0) {
+        free(idx); fclose(fp); return -1;
+    }
+    fourcc(fp, "idx1");
+    le32(fp, frames * 16u);
+    for (uint32_t i = 0; i < frames; i++) {
+        fourcc(fp, "00dc");
+        le32(fp, idx[i].flags);
+        le32(fp, idx[i].offset);
+        le32(fp, idx[i].length);
+    }
+    long end = ftell(fp);
+    if (end < 0) { free(idx); fclose(fp); return -1; }
+
+    /* 码率按 dwScale/dwRate 推算，保持 avih 自洽 */
+    unsigned char w[8];
+    uint32_t bps = 0;
+    if (!rd_at(fp, strh + 12, w, sizeof(w))) {
+        uint32_t scale = rd_le32(w);
+        uint32_t rate = rd_le32(w + 4);
+        if (scale && rate)
+            bps = (uint32_t)((data_bytes * rate) / ((uint64_t)frames * scale));
+    }
+
+    patch32(fp, 4, (uint32_t)(end - 8));
+    patch32(fp, movi_size_pos, (uint32_t)(p - data_start) + 4u);
+    patch32(fp, avih + 4, bps);
+    patch32(fp, avih + 12, 0x00000010u);   /* AVIF_HASINDEX */
+    patch32(fp, avih + 16, frames);
+    patch32(fp, avih + 28, max_frame);
+    patch32(fp, strh + 32, frames);
+    patch32(fp, strh + 36, max_frame);
+
+    int result = 0;
+    if (fflush(fp) != 0) result = -1;
+    else if (fdatasync(fileno(fp)) != 0) result = -1;
+    if (fclose(fp) != 0) result = -1;
+    free(idx);
+    return result;
 }

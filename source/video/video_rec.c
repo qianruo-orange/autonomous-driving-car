@@ -25,7 +25,10 @@
 #include <errno.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>
+#include <dirent.h>
+#include <time.h>
 
 #include "video/video_rec.h"
 #include "video/rec_mjpeg.h"
@@ -36,6 +39,13 @@
 #include "watchdog/watchdog.h"
 
 #define REC_DIR        PATH_RECORDINGS
+
+/* 低于此剩余空间就不再开新段，避免录到一半 ENOSPC 后反复建/删空文件 */
+#define REC_MIN_FREE_BYTES   (512ull * 1024ull * 1024ull)
+/* 录制中回填头部并落盘的间隔：掉电后最多丢失这段窗口的索引 */
+#define REC_REFRESH_MS       2000ull
+/* I/O 失败后的退避，避免磁盘满时空转刷日志 */
+#define REC_IO_BACKOFF_US    (5 * 1000 * 1000)
 
 /* 命令（HTTP 线程 → 录制线程） */
 #define REC_CMD_NONE   0
@@ -53,7 +63,16 @@ static struct {
     uint64_t last_frame_ts;       /* 最近一帧单调时钟，用于实时 fps */
     int split_pending, split_error;
     char encoder[32];
+    /* 本节会话累计的跳过帧与错误态（供 /api/rec/status） */
+    unsigned long long skipped_cadence, skipped_size;
+    int io_error;
 } g_rec;
+
+/* 帧时间戳旁路文件：recordings/YYYYMMDD/frames.tsv
+ * 每行 <片段名>\t<帧号>\t<单调ms>\t<墙钟ms>，用于把录像帧和日志/CAN 对时。
+ * 纯追加，丢电最多丢最后几行；不参与录像文件列表。 */
+static FILE *g_sidecar;
+static char  g_sidecar_day[16];
 
 /* Serialize publication/finalization of file paths with file deletion. This
  * lock is never held during frame writes, network writes, or idle waits.
@@ -205,6 +224,101 @@ static int rec_measure_fps(app_ctx_t *app, frame_ring_t *ring)
     return fps;
 }
 
+/* ---- 剩余空间、帧时间旁路、孤儿段修复 ---- */
+
+static int rec_free_bytes(unsigned long long *out)
+{
+    struct statvfs vfs;
+    if (statvfs(REC_DIR, &vfs) != 0) return -1;
+    *out = (unsigned long long)vfs.f_bavail * (unsigned long long)vfs.f_frsize;
+    return 0;
+}
+
+static void rec_sidecar_close(void)
+{
+    if (g_sidecar) fclose(g_sidecar);
+    g_sidecar = NULL;
+    g_sidecar_day[0] = '\0';
+}
+
+/* 按天打开（同一天复用）；首次创建写表头 */
+static void rec_sidecar_open(const char *day)
+{
+    if (g_sidecar && !strcmp(g_sidecar_day, day)) return;
+    rec_sidecar_close();
+    char dir[512], path[576];
+    snprintf(dir, sizeof(dir), "%s/%s", REC_DIR, day);
+    snprintf(path, sizeof(path), "%s/frames.tsv", dir);
+    FILE *fp = fopen(path, "a");
+    if (!fp) {
+        LOG_ERROR("rec: cannot open frame index %s: %s", path, strerror(errno));
+        return;
+    }
+    if (ftell(fp) == 0) fputs("# file\tframe\tmono_ms\twall_ms\n", fp);
+    g_sidecar = fp;
+    safe_strncpy(g_sidecar_day, sizeof(g_sidecar_day), day);
+}
+
+static void rec_sidecar_frame(const char *file, unsigned long long frame)
+{
+    if (!g_sidecar) return;
+    struct timespec rt, mono;
+    clock_gettime(CLOCK_REALTIME, &rt);
+    clock_gettime(CLOCK_MONOTONIC, &mono);
+    unsigned long long wall = (unsigned long long)rt.tv_sec * 1000ull +
+                              (unsigned long long)rt.tv_nsec / 1000000ull;
+    unsigned long long mono_ms = (unsigned long long)mono.tv_sec * 1000ull +
+                                 (unsigned long long)mono.tv_nsec / 1000000ull;
+    fprintf(g_sidecar, "%s\t%llu\t%llu\t%llu\n", file, frame, mono_ms, wall);
+}
+
+/* 修复上次异常退出（掉电、被 kill）留下的未收尾分段。只处理 RIFF 长度与文件
+ * 长度不一致的 video_*.avi；在录制线程启动时扫一次，不进入录制热路径。 */
+static void rec_repair_orphans(void)
+{
+    DIR *root = opendir(REC_DIR);
+    if (!root) return;
+    int repaired = 0;
+    struct dirent *de;
+    while ((de = readdir(root))) {
+        if (de->d_name[0] == '.') continue;
+        char daydir[512];
+        snprintf(daydir, sizeof(daydir), "%s/%s", REC_DIR, de->d_name);
+        DIR *day = opendir(daydir);
+        if (!day) continue;
+        struct dirent *f;
+        while ((f = readdir(day))) {
+            size_t n = strlen(f->d_name);
+            if (n < 10 || strncmp(f->d_name, "video_", 6) ||
+                strcmp(f->d_name + n - 4, ".avi"))
+                continue;
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/%s", daydir, f->d_name);
+            struct stat st;
+            if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 12) continue;
+            FILE *fp = fopen(path, "rb");
+            if (!fp) continue;
+            unsigned char h[12];
+            size_t got = fread(h, 1, sizeof(h), fp);
+            fclose(fp);
+            if (got != sizeof(h) || memcmp(h, "RIFF", 4) || memcmp(h + 8, "AVI ", 4))
+                continue;
+            uint32_t riff = (uint32_t)h[4] | ((uint32_t)h[5] << 8) |
+                            ((uint32_t)h[6] << 16) | ((uint32_t)h[7] << 24);
+            if (riff != 0 && (off_t)riff + 8 == st.st_size) continue;   /* 已完整收尾 */
+            if (rec_mjpeg_repair_file(path) == 0) {
+                repaired++;
+                LOG_INFO("rec: repaired unfinished segment %s", path);
+            } else {
+                LOG_ERROR("rec: cannot repair %s", path);
+            }
+        }
+        closedir(day);
+    }
+    closedir(root);
+    if (repaired) LOG_INFO("rec: repaired %d unfinished segment(s)", repaired);
+}
+
 /* ---- 录制线程 ---- */
 
 void *video_rec_task(void *arg)
@@ -217,6 +331,7 @@ void *video_rec_task(void *arg)
         return NULL;
     }
     frame_ring_t *ring = video_stream_get_ring();
+    rec_repair_orphans();          /* 收尾上次异常退出留下的分段，只做一次 */
     int auto_rec = 1;                    /* 默认自动开启录制 */
 
     while (app->running) {
@@ -276,12 +391,27 @@ void *video_rec_task(void *arg)
 
             char fname[128] = "";
             rec_mjpeg_t *mjp = NULL;
+
+            /* 空间不足时不要开段：否则写入立刻 ENOSPC，只会反复建/删空文件 */
+            unsigned long long free_bytes = 0;
+            if (rec_free_bytes(&free_bytes) != 0 || free_bytes < REC_MIN_FREE_BYTES) {
+                pthread_mutex_lock(&g_rec.lock);
+                g_rec.start_fail = 4;
+                g_rec.io_error = 3;
+                pthread_mutex_unlock(&g_rec.lock);
+                LOG_ERROR("rec: only %llu MiB free (need %llu MiB), not starting",
+                          free_bytes >> 20, (unsigned long long)REC_MIN_FREE_BYTES >> 20);
+                usleep(REC_IO_BACKOFF_US);
+                continue;
+            }
+
             pthread_mutex_lock(&g_rec_files_lock);
             mjp = rec_mjpeg_create(dir, "video", pw, ph, fps, fname, sizeof(fname));
             if (!mjp) {
                 pthread_mutex_unlock(&g_rec_files_lock);
                 pthread_mutex_lock(&g_rec.lock);
                 g_rec.start_fail = 3;
+                g_rec.io_error = 1;
                 pthread_mutex_unlock(&g_rec.lock);
                 LOG_ERROR("rec: create recording file failed");
                 usleep(100000);
@@ -307,14 +437,24 @@ void *video_rec_task(void *arg)
             g_rec.last_frame_ts = 0;
             g_rec.split_pending = 0;
             g_rec.split_error = 0;
+            g_rec.skipped_cadence = 0;
+            g_rec.skipped_size = 0;
+            g_rec.io_error = 0;
             safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
             pthread_mutex_unlock(&g_rec.lock);
             pthread_mutex_unlock(&g_rec_files_lock);
+
+            /* 帧时间旁路：本节起按天追加 */
+            rec_sidecar_open(day);
 
             /* ---- 录制内层循环 ---- */
             int done = 0;
             unsigned long long rec_raw_gap = 0;   /* 因落后于采集而跳过的帧 */
             unsigned long long rec_size_skip = 0; /* 尺寸与配置不符而跳过的帧 */
+            uint64_t last_refresh = now_ms();     /* 上次头部回填时刻 */
+            int io_backoff = 0;                   /* 本段因 I/O 失败收尾，需要退避 */
+            char cur_name[128] = "";
+            safe_strncpy(cur_name, sizeof(cur_name), fname);
             while (app->running && !done) {
                 watchdog_feed_self("rec");
                 pthread_mutex_lock(&g_rec.lock);
@@ -333,7 +473,19 @@ void *video_rec_task(void *arg)
                     continue;
                 }
                 rec_raw_gap += gap;
-                if (jw != pw || jh != ph) { free(jpg); rec_size_skip++; continue; }
+                if (gap) {
+                    pthread_mutex_lock(&g_rec.lock);
+                    g_rec.skipped_cadence = rec_raw_gap;
+                    pthread_mutex_unlock(&g_rec.lock);
+                }
+                if (jw != pw || jh != ph) {
+                    free(jpg);
+                    rec_size_skip++;
+                    pthread_mutex_lock(&g_rec.lock);
+                    g_rec.skipped_size = rec_size_skip;
+                    pthread_mutex_unlock(&g_rec.lock);
+                    continue;
+                }
 
                 pthread_mutex_lock(&g_rec.lock);
                 int split = g_rec.split_pending && g_rec.recording;
@@ -352,6 +504,9 @@ void *video_rec_task(void *arg)
                     if (next) {
                         int finalized = rec_mjpeg_finalize(mjp);
                         mjp = next;
+                        safe_strncpy(cur_name, sizeof(cur_name), next_name);
+                        rec_sidecar_open(next_day);   /* 跨天切分时换旁路文件 */
+                        last_refresh = now_ms();
                         snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
                         pthread_mutex_lock(&g_rec.lock);
                         safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
@@ -373,17 +528,42 @@ void *video_rec_task(void *arg)
                 }
 
                 uint64_t wts = now_ms();
-                if (rec_mjpeg_write_frame(mjp, jpg, jlen, wts) != 0) {
-                    free(jpg);
-                    done = 1;   /* 达 ~2GB 上限或写失败：收尾后续录下一段 */
+                int wr = rec_mjpeg_write_frame(mjp, jpg, jlen, wts);
+                free(jpg);
+                if (wr != REC_MJ_OK) {
+                    if (wr == REC_MJ_ERR_IO) {
+                        pthread_mutex_lock(&g_rec.lock);
+                        g_rec.io_error = 2;
+                        pthread_mutex_unlock(&g_rec.lock);
+                        LOG_ERROR("rec: write failed on %s: %s", cur_name, strerror(errno));
+                        io_backoff = 1;
+                    }
+                    done = 1;   /* 到段上限或写失败：收尾后再决定是否续录 */
                     break;
                 }
-                free(jpg);
                 pthread_mutex_lock(&g_rec.lock);
                 g_rec.frames = rec_mjpeg_frames(mjp);
                 g_rec.bytes  = rec_mjpeg_bytes(mjp);
                 g_rec.last_frame_ts = wts;
                 pthread_mutex_unlock(&g_rec.lock);
+
+                rec_sidecar_frame(cur_name, rec_mjpeg_frames(mjp));
+
+                /* 定期回填头部并落盘：掉电后文件仍可按最后刷新点播放 */
+                if (wts - last_refresh >= REC_REFRESH_MS) {
+                    if (rec_mjpeg_refresh(mjp) != 0) {
+                        pthread_mutex_lock(&g_rec.lock);
+                        g_rec.io_error = 2;
+                        pthread_mutex_unlock(&g_rec.lock);
+                        LOG_ERROR("rec: header refresh failed on %s: %s", cur_name,
+                                  strerror(errno));
+                        io_backoff = 1;
+                        done = 1;
+                        break;
+                    }
+                    if (g_sidecar) fflush(g_sidecar);
+                    last_refresh = wts;
+                }
             }
 
             /* ---- 结束会话（finalize 内部释放对象） ---- */
@@ -407,6 +587,7 @@ void *video_rec_task(void *arg)
             else
                 LOG_INFO("rec: recording aborted (no frames): %s", rel);
 
+            if (io_backoff) usleep(REC_IO_BACKOFF_US);   /* 磁盘满/IO 错误：退避，勿空转 */
             if (n_frames > 0 && auto_rec) continue;  /* 达上限：立即续录下一段 */
         }
 
@@ -487,12 +668,16 @@ int video_rec_status(video_rec_status_t *out)
     out->bytes     = g_rec.bytes;
     out->split_pending = g_rec.split_pending;
     out->split_error = g_rec.split_error;
+    out->skipped_cadence = g_rec.skipped_cadence;
+    out->skipped_size = g_rec.skipped_size;
+    out->io_error = g_rec.io_error;
     safe_strncpy(out->encoder, sizeof(out->encoder),
                  g_rec.recording && g_rec.encoder[0] ? g_rec.encoder : "none");
     safe_strncpy(out->file, sizeof(out->file),
                  g_rec.file[0] ? g_rec.file : "");
     /* 实时帧率：最近一帧与前若干帧的间隔由调用方按 start_ms 粗估 */
     pthread_mutex_unlock(&g_rec.lock);
+    if (rec_free_bytes(&out->free_bytes) != 0) out->free_bytes = 0;
     if (out->recording && out->frames > 1) {
         uint64_t el = now_ms() - out->start_ms;
         if (el > 0) out->fps = (double)out->frames * 1000.0 / (double)el;
@@ -518,5 +703,6 @@ void video_rec_destroy(void *arg)
     g_rec.recording = 0;
     g_rec.cmd = REC_CMD_NONE;
     pthread_mutex_unlock(&g_rec.lock);
+    rec_sidecar_close();
     pthread_mutex_destroy(&g_rec.lock);
 }

@@ -24,6 +24,12 @@ typedef struct {
     int                split_pending;
     int                split_error;
     char               encoder[32]; /* "mjpeg-native" while recording, else "none" */
+    /* 本段会话累计的跳过帧：录制跟不上采集 / 尺寸与配置不符 */
+    unsigned long long skipped_cadence;
+    unsigned long long skipped_size;
+    /* 0=正常；1=建文件失败；2=写/定位失败；3=空间不足 */
+    int                io_error;
+    unsigned long long free_bytes;  /* 录像目录可用空间，取状态时读取 */
 } video_rec_status_t;
 
 struct app_config_t;
