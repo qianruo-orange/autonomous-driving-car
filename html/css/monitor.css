@@ -44,7 +44,7 @@
    参与行高计算，卡片永远不低于「16:9 画面 + 状态行」 */
 .video-card{flex:1 1 auto;display:flex;flex-direction:column;justify-content:space-between;padding:10px;position:relative;overflow:hidden;background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
 .video-card h3{position:absolute;top:18px;left:18px;z-index:10;color:var(--text-strong);font-size:14px;margin:0;text-shadow:0 0 8px rgba(0,0,0,.7);pointer-events:none}
-/* position:relative —— 叠框层/追踪层/全屏按钮都相对视频容器定位，
+/* position:relative —— 叠框层/追踪层都相对视频容器定位，
    否则会相对带 10px padding 的卡片，框整体偏移 */
 /* 视频区域固定 16:9：高度由宽度算出（不随右侧状态栏拉伸），16:9 的相机画面
    正好 1:1 铺满，既不裁切也不留黑边。

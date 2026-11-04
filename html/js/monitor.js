@@ -121,7 +121,7 @@
 
   /* 按显示中的帧序号取检测结果并绘制。
      坐标换算不再靠「假设 object-fit 是 contain 且内容居中」：直接读 <img> 的实际布局
-     矩形和计算后的 object-fit，按内容真实位置换算。改样式、全屏、窗口拉伸都不会让框跑偏。 */
+     矩形和计算后的 object-fit，按内容真实位置换算。改样式、窗口拉伸都不会让框跑偏。 */
   function overlayDraw(seq) {
     var c = overlayCanvas;
     if (!c || !overlayCtx || !imgEl) return;
@@ -653,10 +653,3 @@
   window.reboot = function() { if (!confirm(t('确定要重启设备吗？'))) return; authFetch('/api/reboot').catch(function(){}); };
   window.shutdown = function() { if (!confirm(t('确定要关闭设备吗？'))) return; authFetch('/api/shutdown').catch(function(){}); };
 })();
-
-window.toggleCarFullscreen = async function () {
-  try {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else { var view = document.querySelector(".video-wrapper"); if (view && view.requestFullscreen) await view.requestFullscreen(); }
-  } catch (error) {}
-};

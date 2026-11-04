@@ -95,7 +95,6 @@
     '无法播放此录像，请检查文件': 'Unable to play this recording. Check the file.',
     '相机': 'Camera',
     '相机调焦': 'Camera focus',
-    '全屏': 'Fullscreen',
     '自动对焦': 'Autofocus',
     '手动焦距': 'Manual lens position',
     '应用焦距': 'Apply focus',
