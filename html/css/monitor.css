@@ -22,10 +22,13 @@
 
 /* 新的主界面布局：视频在左，状态框在右。
    margin-top 12px：卡片上缘距顶栏按钮约 12px（原 6px 视觉上过近） */
-.monitor-grid{display:flex;gap:16px;align-items:flex-start;margin-top:12px}
+.monitor-grid{display:flex;gap:16px;align-items:stretch;margin-top:12px}
 .video-column{flex:1;display:flex;flex-direction:column;min-width:0}
 .status-column{width:420px;display:flex;flex-direction:column;gap:12px}
-.video-card{flex:0 0 auto;min-height:0;display:flex;flex-direction:column;padding:10px;position:relative;overflow:hidden;background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
+/* 与右侧状态栏等高：卡片撑满整行高度，多出来的高度由 space-between 放到视频与
+   状态行之间（视频本身仍是 16:9、不裁切）。视频卡的自然高度不会超过行高，
+   因为行高取两列的最大值，视频列就是其中一列 */
+.video-card{flex:1 1 0;min-height:0;display:flex;flex-direction:column;justify-content:space-between;padding:10px;position:relative;overflow:hidden;background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
 .video-card h3{position:absolute;top:18px;left:18px;z-index:10;color:var(--text-strong);font-size:14px;margin:0;text-shadow:0 0 8px rgba(0,0,0,.7);pointer-events:none}
 /* position:relative —— 叠框层/追踪层/全屏按钮都相对视频容器定位，
    否则会相对带 10px padding 的卡片，框整体偏移 */
