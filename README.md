@@ -2,7 +2,9 @@
 
 Autonomous Driving Car is a Linux-based vehicle platform being developed around a unified architecture for **perception, inference, and control**. Its hardware and system target is a shared computing platform running a Linux real-time kernel, bringing conventional motion-control algorithms, YOLO object detection, and large language model (LLM) inference into the same system.
 
-The current implementation provides camera perception, RKNN YOLO26 inference, visual tracking, differential wheel control, and shared CAN communication. Web management, video recording, logs, and telemetry support operation and development. **LLM inference is a planned capability.**
+The current implementation provides camera perception, RKNN YOLO26 inference, visual tracking, differential wheel control, and shared CAN communication. Web management, lossless video recording, logs, and telemetry support operation and development. **LLM inference is a planned capability.**
+
+Video is **lossless end to end**. Live view forwards the camera's own MJPEG frames byte for byte, and recording writes those same frames straight into AVI without decoding, re-encoding, or scaling. Detection boxes are not burned into the picture; the browser overlays them on a canvas, aligned to each frame by sequence number.
 
 The hardware validation platform is **Radxa ROCK 4D / RK3576**. The application uses C11/C++11, the browser interface uses HTML/CSS/JavaScript, and the build and deployment tools use Bash.
 
@@ -18,9 +20,11 @@ The diagrams below follow the implemented runtime from left to right. Each view 
 flowchart LR
     Camera["V4L2<br/>camera"] --> Frames["Capture<br/>frame ring"]
     Frames --> YOLO["RKNN<br/>YOLO26"]
+    Frames -->|Native JPEG| Video["Live MJPEG<br/>AVI recording"]
     YOLO --> Results["Completed<br/>detections"]
     Results --> Visual["Visual tracking<br/>annotation"]
-    Visual --> Media["Live video<br/>MP4 recording"]
+    Results --> Overlay["Browser canvas<br/>box overlay"]
+    Video --> Overlay
     Results --> Follow["Following<br/>PD + wheel PI"]
     Follow <-->|Commands / feedback| CAN["SocketCAN<br/>motor drives"]
     Results --> Reports["Daily TXT<br/>reports"]
@@ -28,7 +32,7 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Camera,Frames,YOLO,Results,Visual,Follow process
-    class Media,CAN,Reports,ANO output
+    class Video,Overlay,CAN,Reports,ANO output
 ```
 
 The following controller consumes detections independently of visual target selection. LLM inference is planned and is not part of the current runtime paths.
@@ -49,19 +53,22 @@ flowchart LR
     RGB --> Jobs
     NPU --> Latest
     RGB -->|Shared RGB buffer| Composer
-    Composer --> Encoder["NV12<br/>VEPU510 H.264"]
-    Encoder --> Live["fMP4 / MSE<br/>live stream"]
-    Encoder --> MP4["MP4 files<br/>recordings/YYYYMMDD"]
-    Raw -->|Raw stream| MJPEG["Raw MJPEG"]
-    NPU --> Writer["Background<br/>report writer"]
+    Raw -->|Byte-identical copy| Live["Live MJPEG<br/>X-Seq per frame"]
+    Raw -->|Byte-identical copy| AVI["AVI(MJPG) files<br/>recordings/YYYYMMDD"]
+    Latest --> API["/api/detections/live<br/>seq + boxes"]
+    API --> Browser["Browser canvas<br/>overlay"]
+    Live --> Browser
+    Composer --> Writer["Background<br/>report writer"]
     Writer --> TXT["Daily TXT<br/>recordings/detections"]
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
-    class Raw,RGB,Jobs,NPU,Latest,Composer,Encoder,Writer process
-    class Live,MP4,MJPEG,TXT output
+    class Raw,RGB,Jobs,NPU,Latest,Composer,API,Writer process
+    class Live,AVI,Browser,TXT output
 ```
 
-Frame storage is shared through [frame_ring.h](include/video/frame_ring.h); claims and buffer ownership protect raw and RGB frames while workers use them. Bounded queues favor recent results for rendering. Each completed inference also feeds following and report generation. H.264 streaming and MP4 recording share one hardware encoding session. Raw MJPEG can be forwarded directly from the camera; the application does not recompress annotated frames as JPEG.
+Frame storage is shared through [frame_ring.h](include/video/frame_ring.h); claims and buffer ownership protect raw and RGB frames while workers use them. Bounded queues favor recent results for rendering. Each completed inference also feeds following and report generation.
+
+Two consumers read the camera's raw JPEG. The streaming module copies the newest frame under the ring lock for each connected browser; the recording module copies every frame in sequence into an AVI index. Neither path decodes or recompresses, so the delivered picture is the sensor's own output. Annotated RGB frames produced by the composer are used for saved detection reports only.
 
 ### Web management, CAN, and supervision
 
@@ -73,7 +80,7 @@ flowchart LR
     HTTP -.-> Select["Visual target<br/>selection"]
     Select -.-> Overlay["Tracking overlay"]
     HTTP --> Files["File workers<br/>archive / download / cleanup"]
-    Storage["Logs / MP4<br/>TXT reports"] --> Files
+    Storage["Logs / AVI<br/>TXT reports"] --> Files
     Files --> Browser
     CAN["Shared SocketCAN<br/>CAN / CAN FD"] --> DBC["DBC decoding<br/>RX / TX snapshots"]
     DBC --> HTTP
@@ -143,7 +150,7 @@ flowchart LR
     class Fault,Startup,Failed,Forced failure
 ```
 
-The five-second wait covers module-table task threads. Destructors stop and join their owned workers where implemented. If a module task remains active, cleanup is skipped to avoid releasing resources it may still use. The kernel reclaims process resources; recording finalization is not guaranteed on this failure path.
+The five-second wait covers module-table task threads. Destructors stop and join their owned workers where implemented. If a module task remains active, cleanup is skipped to avoid releasing resources it may still use. The kernel reclaims process resources; AVI finalization (header backfill) is not guaranteed on this failure path.
 
 ### Following and wheel-feedback loop
 
@@ -182,11 +189,11 @@ A Linux real-time kernel is the system target. `main.c` declares each thread's s
 
 ## Perception and motion control
 
-**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Camera MJPEG uses the `rockchip-jpegd` V4L2 hardware decoder; annotated live video and recording use the VEPU510 hardware H.264 encoder through Rockchip MPP. Hardware initialization or frame processing failures are reported as errors. Available camera modes depend on the attached camera and drivers.
+**Perception.** V4L2 capture feeds YOLO26 detection through RKNN. The verified RK3576 YOLO26n artifact uses UINT8 RGB input, a W8A8 backbone, and FP16 detection heads and final output concatenation. Camera modes, confidence threshold, NMS IoU, model files, and labels are configurable in the browser. Camera MJPEG is decoded by the `rockchip-jpegd` V4L2 hardware decoder before inference; no software JPEG decoder is used on that path. Hardware initialization or frame processing failures are reported as errors. Available camera modes depend on the attached camera and drivers.
 
 Capture and rendering publish frame notifications to their subscribers; inference and result queues wake the next stage as work becomes available. See [frame handoff and the verified YOLO26n artifact](docs/FRAME_PIPELINE.md) for ownership, cancellation and model details.
 
-**Visual tracking.** Click a detection on the home page to select it. Numbered labels and the selected object's cyan box are drawn into the video and included in recordings. Matching uses constant-velocity prediction, predicted box overlap, displacement, size changes, and class gates, with ambiguous matches rejected. IDs remain local to the running process; associations expire after 800 ms without a match. Display smoothing follows tracking so it does not distort velocity estimates.
+**Visual tracking.** Click a detection on the home page to select it. Numbered labels and the selected object's cyan box are drawn into the annotated frame used for detection reports, and overlaid in the browser. Matching uses constant-velocity prediction, predicted box overlap, displacement, size changes, and class gates, with ambiguous matches rejected. IDs remain local to the running process; associations expire after 800 ms without a match. Display smoothing follows tracking so it does not distort velocity estimates.
 
 The deployed model has one detection output. Model feature maps, per-target descriptors, appearance matching, and feature fields in the tracking API and new result records have been removed. See the [Chinese quantization report](docs/YOLO26N_QUANTIZATION.md) ([PDF](docs/pdf/YOLO26n量化报告.pdf)) for model preparation, accuracy, timing, output format and rollback. Kernel sources, patches, installation scripts and the Chinese kernel report/PDF are maintained separately in [rock-4d-npu-kernel](https://github.com/qianruo-orange/rock-4d-npu-kernel).
 
@@ -205,20 +212,19 @@ CAN and CAN FD traffic, DBC decoding, and motor commands share the same transpor
 
 ## Hardware and software requirements
 
-The board must provide Linux, a V4L2 camera, a working Rockchip NPU driver and compatible `librknnrt.so`, the `rockchip-jpegd` hardware decoder, and a validated VEPU510 MPP driver with `/dev/mpp_service`. Vehicle control additionally requires SocketCAN hardware, an adapted motor profile, and actual wheel-speed feedback.
+The board must provide Linux, a V4L2 camera that can produce MJPEG, a working Rockchip NPU driver and compatible `librknnrt.so`, and the `rockchip-jpegd` hardware decoder. Vehicle control additionally requires SocketCAN hardware, an adapted motor profile, and actual wheel-speed feedback.
+
+A Rockchip MPP installation and VEPU510 encoder driver are **not** required: the application no longer encodes video.
 
 Build dependencies:
 
 - C11/C++11 compiler, GNU Make, CMake **3.18+**, and Bash.
 - libsystemd, libnl-3/libnl-route-3, and OpenCV core/imgproc development libraries.
-- Rockchip MPP headers and shared library; the validated installation provides `/usr/local/include/rockchip/rk_mpi.h` and `/usr/local/lib/librockchip_mpp.so`.
 - Standard Linux utilities including `flock`, `sha256sum`, `strings`, `awk`, `tar`, and `zip`.
 
 ## Build and deployment
 
-Prepare the ROCK 4D [JPEG driver](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-jpegd) and [VEPU510 MPP port](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-vepu510-mpp) from the independent kernel repository. The corrected `7.4.0-rc1-npu-rt-vepu510-r2` kernel has passed repeated module loading and continuous H.264 encoding checks. Use that repository's [MPP userspace installer](https://github.com/qianruo-orange/rock-4d-npu-kernel/blob/main/scripts/install_mpp_userspace.sh) and [validated-kernel autoload setup](https://github.com/qianruo-orange/rock-4d-npu-kernel/blob/main/scripts/enable_vepu510.sh) before deploying this application.
-
-See the [Chinese codec measurements](docs/CODEC_PERFORMANCE.md) for timing, quality checks and validation limits. The front end exposes capture device, resolution and frame rate; encoding and decoding use the hardware paths above. JPEG decoding and VEPU510 encoding are separate RK3576 hardware engines. The application currently produces H.264; H.265 is outside the validated application path.
+Prepare the ROCK 4D [JPEG driver](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-jpegd) from the independent kernel repository. A kernel with the working NPU and JPEG engines is sufficient for this application; the VEPU510 MPP port is only needed if you build older revisions that encode H.264.
 
 Prepare the model and labels before the first build:
 
@@ -260,7 +266,7 @@ Open **`http://<board-ip>/`**. The Web interface uses fixed HTTP port **80**.
 
 | Page | Address | Available operations |
 | --- | --- | --- |
-| Home | `/` | Live video, visual target selection, resource monitoring |
+| Home | `/` | Live video, box overlay, visual target selection, resource monitoring |
 | System Configuration | `/config` | Camera, YOLO, CAN, CPU, following, Web IP, and telemetry settings |
 | Driving Logs | `/logs` | Log/report browsing, video playback, file downloads, cleanup |
 | DBC viewer | `/dbc` | CAN definitions and decoded signals |
@@ -270,6 +276,16 @@ Home and DBC pages accept a local Linux account through HTTP Basic authenticatio
 **Web & ANO Settings** combines interface IP configuration and telemetry settings with one Save button. IP configuration manages the selected system interface; HTTP listens on the board's IPv4 interfaces. Reconnect at the new address after changing the board's IP.
 
 Web access supports **two source IPv4 addresses**. One address can open multiple tabs, streams, or downloads while sharing a slot. The slot expires 30 seconds after its last connection closes; an additional address receives HTTP 503.
+
+## Live view and box overlay
+
+The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of the camera's own JPEG frames. Every part carries an `X-Seq` header holding the capture sequence number, so the browser knows exactly which frame is on screen.
+
+Boxes come from `GET /api/detections/live?after=N`, an incremental feed returning records with `seq`, image `w`/`h`, and one entry per object: `x1, y1, x2, y2, class, score, name`. Coordinates are original-image pixels. The browser keeps a small map of recent records and draws the one matching the displayed frame; when inference skipped that frame it falls back to the nearest earlier record within six frames, beyond which nothing is drawn rather than showing a stale box.
+
+`monitor.js` computes the overlay rectangle from the `<img>` element's real layout box and its computed `object-fit`, so letterboxing, fullscreen, and window resizing all keep boxes aligned. Because the picture is never recompressed, a fullscreen view shows the same pixels the sensor produced.
+
+Link budget is explicit. Each frame is 60–110 KB at 720p, so an uncompressed 30 fps stream needs 18–26 Mbps. `mjpeg_max_kbps` caps the per-client budget: when a client's socket backs up, the streaming module drops whole frames instead of falling behind, trading frame rate for latency. Setting it to `0` removes the cap.
 
 ## Model and configuration management
 
@@ -291,16 +307,29 @@ Runtime paths are relative to the working directory; the installed service uses 
 | `config/yolo26.rknn`, `config/coco.names` | Model and class labels |
 | `config/*.dbc` | CAN databases |
 | `logs/YYYYMMDD/` | Application information and error logs |
-| `recordings/YYYYMMDD/` | Annotated MP4 recordings |
+| `recordings/YYYYMMDD/` | Lossless AVI(MJPG) recordings |
 | `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | Daily inference results: frame timestamps, class, confidence and box; existing historical rows are preserved |
+
+Key video settings in `config/config.txt`:
+
+| Setting | Meaning |
+| --- | --- |
+| `video_device` | V4L2 capture node |
+| `video_width`, `video_height` | Capture resolution; recording uses the same size |
+| `video_fps` | Requested frame rate; `0` keeps the driver default |
+| `mjpeg_max_kbps` | Per-client live-stream bitrate budget in kbit/s; `0` = uncapped |
 
 **Export config** downloads actual configuration files and the model as `.tar.gz`. Empty directories and internal synchronization metadata are omitted; the total uncompressed file size is limited to **64 MiB**.
 
 ## Recording and observability
 
-The browser displays annotated live video through H.264/MSE and reports an unsupported-browser error when this playback capability is unavailable. Raw camera MJPEG remains available as direct passthrough. H.264 streaming shares its VEPU510 encoding session with MP4 recording. Recording starts automatically when a session can start; manually stopping recording ends that H.264 session and disables automatic continuation.
+Recording is lossless and starts automatically. Each session measures the real capture cadence, opens `recordings/YYYYMMDD/video_<date>_<time>.avi`, and writes incoming camera JPEG frames verbatim into an AVI(MJPG) container with a proper `idx1` index and header backfill. Forty-five sampled frames from a live session were verified byte-identical to the corresponding camera output.
 
-Daily TXT reports record completed inferences, including results with no detected objects. Entries contain capture time, frame sequence, image dimensions, lens position when available, target index/class/confidence, and `X1 X2 Y1 Y2` coordinates in the original image. New records contain no feature vectors or feature metadata. The existing writer batches records without doing file I/O on inference threads. Historical report content remains intact; earlier rows may contain feature fields from the previous version. Processing favors recent frames, so reports and videos need not include every captured frame.
+There is no encoder, no bitrate target, and no quality setting. File size therefore equals the camera's own data rate: roughly **1.9 MB/s**, or about **6.8 GB per hour** at 720p/30 fps. Files split automatically at about **1.9 GB** (roughly every 16 minutes) and recording continues in a new segment. Manually stopping recording ends the current segment and disables automatic continuation; restarting the service resumes it.
+
+Because recording never waits on inference, a stalled or reloading YOLO model does not interrupt it. Conversely, recorded frames contain no boxes — the boxes live only in the browser overlay. Use the live view for annotated inspection.
+
+Daily TXT reports record completed inferences, including results with no detected objects. Entries contain capture time, frame sequence, image dimensions, lens position when available, target index/class/confidence, and `X1 X2 Y1 Y2` coordinates in the original image. The existing writer batches records without doing file I/O on inference threads. Historical report content remains intact. Processing favors recent frames, so reports need not include every captured frame.
 
 The Driving Logs page provides individual downloads and a whole-page ZIP. Bulk deletion protects recordings that are active or being finalized. ZIP downloads omit active or incomplete videos.
 
@@ -308,11 +337,12 @@ The Driving Logs page provides individual downloads and a whole-page ZIP. Bulk d
 systemctl status autonomous-driving-car --no-pager
 journalctl -u autonomous-driving-car -f
 curl -s http://127.0.0.1/api/video/stats
+curl -s http://127.0.0.1/api/rec/status
 curl -s http://127.0.0.1/api/follow
 curl -s http://127.0.0.1/api/ano
 ```
 
-For startup problems, check the RKNN model, NPU driver/runtime, and camera. Use video counters for capture/encoding issues and controller readiness for missing motor output. HTTP routes are defined in [http.c](source/http/http.c).
+For startup problems, check the RKNN model, NPU driver/runtime, and camera. `GET /api/video/stats` reports `capture_fps`, `capture_dropped`, `driver_dropped`, `capture_stall_ms`, `render_skipped` and `processing_age_ms`; use them to separate camera problems from inference lag. HTTP routes are defined in [http.c](source/http/http.c).
 
 The service permits core dumps, and Release builds retain debug information. With a configured system `systemd-coredump` collector, use `sudo coredumpctl info /opt/autonomous-driving-car/bin/autonomous-driving-car` and retain the matching executable for analysis.
 
@@ -329,7 +359,8 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | Location | Responsibility |
 | --- | --- |
 | `source/core/` | Module lifecycle, shared context, configuration, logging, CPU affinity |
-| `source/video/`, `source/yolo/` | Capture, inference, annotations, streaming, recording, reports |
+| `source/video/` | Capture, frame ring, lossless AVI recording, MJPEG live streaming |
+| `source/yolo/` | Inference pool, preprocessing, postprocessing, annotation, reports |
 | `source/control/` | Visual tracking, motion control |
 | `source/can/` | SocketCAN, CAN port/ID registration, shared data slots, DBC decoding, motor protocol |
 | `source/tcp/` | Protocol-independent connections, registered ports, handle routing, data slots |
@@ -339,6 +370,8 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | `include/` | Module interfaces and shared types |
 | `config/` | Device settings, model, labels, CAN databases |
 | `scripts/` | Application build, deployment and model synchronization |
+
+Video modules: `video_stream.c` owns capture and the MJPEG fan-out, `frame_ring.c` owns buffer handoff, `video_rec.c` owns recording sessions and file lifecycle, and `rec_mjpeg.c` owns the AVI container itself.
 
 ## Communication registration and data slots
 
@@ -358,7 +391,7 @@ flowchart LR
     CAN --> TX
 ```
 
-TCP owns sockets and connection lifetimes; `ano.c` owns ANO slot consumption, stream assembly, and telemetry framing. CAN owns registration, interface validation, slot dispatch, and frame transmission; `can_motor.c` owns command encoding and measured wheel feedback. The former connection-forwarding, CAN service/observer/feature, internal-header, and separate CAN queue files have been consolidated.
+TCP owns sockets and connection lifetimes; `ano.c` owns ANO slot consumption, stream assembly, and telemetry framing. CAN owns registration, interface validation, slot dispatch, and frame transmission; `can_motor.c` owns command encoding and measured wheel feedback.
 
 The queue **implementation** is shared, while buffers, locks, cursors, and counters remain independent per **instance**. TCP registration rejects an uninitialized or already-bound receive slot. CAN validates that the configured interface is a real kernel CAN interface and routes by interface plus ID. A business may explicitly bind multiple CAN IDs to its own slot; incoming handles identify each binding.
 
@@ -375,6 +408,8 @@ The complete registration, receive, send, failure, and shutdown paths are docume
 ## Browser components
 
 `html/js/app.js` provides shared JSON requests, timeouts, non-overlapping polling, card status messages, and named component lookup. Each feature owns its DOM and state: `cpu-frequency.js` manages the CPU card, `network-tools.js` manages diagnostics, and `ano.js` manages ANO settings. The network Save action uses the registered `network-ano` component. Authentication, translation, and theme behavior stay in their existing scripts.
+
+`monitor.js` owns the video path: the MJPEG parser, blob playback, `X-Seq` bookkeeping, detection polling, and the overlay canvas. Frame rate and end-to-end delay are derived from sequence numbers rather than playback APIs, so they remain meaningful without a decoder in the loop.
 
 New components should guard their root element, bind local events, use `App.json()` / `App.poll()` / `App.status()`, and expose only required methods through `App.components`. Polling pauses while hidden and resumes after returning to the page. Existing page-level inline handlers remain compatible; no bundler or frontend framework is required.
 
