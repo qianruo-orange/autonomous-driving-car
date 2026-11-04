@@ -33,9 +33,12 @@
 .status-column>.card>h3{margin-bottom:8px}
 .status-column .sec{flex:0 0 auto}
 /* 与右侧状态栏等高：卡片撑满整行高度，多出来的高度由 space-between 放到视频与
-   状态行之间（视频本身仍是 16:9、不裁切）。视频卡的自然高度不会超过行高，
-   因为行高取两列的最大值，视频列就是其中一列 */
-.video-card{flex:1 1 0;min-height:0;display:flex;flex-direction:column;justify-content:space-between;padding:10px;position:relative;overflow:hidden;background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
+   状态行之间（视频本身仍是 16:9、不裁切）。
+   关键是 flex-basis 必须是 auto（不是 0）：basis:0 会让视频列在算行高时贡献 0，
+   行高就只由右侧状态栏决定；视频比状态栏高时，卡片被压得比内容还矮，
+   overflow:hidden 就把画面下半截和状态行整条裁掉。basis:auto 让视频列按内容
+   参与行高计算，卡片永远不低于「16:9 画面 + 状态行」 */
+.video-card{flex:1 1 auto;display:flex;flex-direction:column;justify-content:space-between;padding:10px;position:relative;overflow:hidden;background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
 .video-card h3{position:absolute;top:18px;left:18px;z-index:10;color:var(--text-strong);font-size:14px;margin:0;text-shadow:0 0 8px rgba(0,0,0,.7);pointer-events:none}
 /* position:relative —— 叠框层/追踪层/全屏按钮都相对视频容器定位，
    否则会相对带 10px padding 的卡片，框整体偏移 */
