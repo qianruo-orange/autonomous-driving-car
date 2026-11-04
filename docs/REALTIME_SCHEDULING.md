@@ -2,24 +2,26 @@
 
 应用的调度设置与生命周期统一声明在 `source/core/main.c` 的模块表中，包括线程策略、优先级和 CPU 分组。普通模块任务由 main 创建和回收；HTTP 管理自身线程，推理管理内部工作线程，创建属性均取自同一张表。各模块通过 register/unregister 管理看门狗。
 
-| 线程角色 | FIFO 优先级 | CPU 分组 |
-| --- | ---: | --- |
-| main、TCP、HTTP reactor | 5 | LITTLE |
-| HTTP worker、推理日报 | 1 | LITTLE |
-| 图像解码、渲染、录像与编码器辅助线程 | 10 | BIG |
-| NPU 推理 worker | 12 | BIG |
-| 相机采集 | 15 | BIG |
-| CAN 收发 | 15 | LITTLE |
-| 跟随控制 | 20 | LITTLE |
-| 看门狗 | 30 | LITTLE |
+| 线程角色 | 策略与优先级 | CPU 分组 |
+| --- | --- | --- |
+| main、TCP、HTTP reactor | FIFO 5 | LITTLE |
+| HTTP worker、推理日报 | FIFO 1 | LITTLE |
+| 图像渲染、录像 | FIFO 10 | BIG |
+| NPU 推理 worker | FIFO 12 | BIG |
+| 相机采集 | **DEADLINE** runtime 2000 µs / deadline 34000 µs / period 34000 µs | ALL |
+| CAN 收发 | FIFO 15 | LITTLE |
+| 跟随控制 | FIFO 20 | LITTLE |
+| 看门狗 | FIFO 30 | LITTLE |
+
+相机采集线程使用 `SCHED_DEADLINE`，按 30 fps 的 33.3 ms 周期给出 34 ms 的周期与相对截止期，预算 2 ms（带宽约 5.9%）。内核的 `__check_sched_dl_overflow()` 要求 deadline 任务的亲和性**覆盖整个 root domain**，任何绑核都会让申请返回 `EPERM`；因此该行使用 `CPU_ALL` 而不是 `BIG`。作为代价，采集线程不再固定在大核上，实测最坏单次运行从绑核 FIFO 时的 0.48 ms 上升到 0.867 ms，仍为预算的 43%。申请被拒绝（内核不支持、准入控制拒绝、亲和性不符）时回退到表中的 FIFO 15，绝不阻断线程创建。2026-11-05 的 60 秒实测为 1971 次激活、单次最长 0.867 ms、零次超预算限流。`SCHED_DEADLINE` 无法通过 `pthread_attr_setschedpolicy()` 设置，实现使用线程创建后的 `sched_setattr()`。
 
 CPU 分组按设备能力自动发现。线程在进入任务函数前获得调度与亲和性属性；申请失败返回错误。`/api/follow` 分别报告控制线程的实际策略、优先级和内核 RT 状态。跟随控制在每次启动后默认关闭。
 
 ## 系统条件
 
-部署目标需要 PREEMPT_RT 内核，以及允许服务申请实时调度的权限和运行时预算。2026-11-04 的开机检查确认本机运行 `7.4.0-rc1-npu-rt-vepu510`、PREEMPT_RT、1000 Hz；26 个常驻应用线程均为 FIFO，JPEG 硬解、推理、显示与录像计数持续增长。验证记录位于本机 `/var/lib/rock4d-rt/boot-check.json`。
+部署目标需要 PREEMPT_RT 内核，以及允许服务申请实时调度的权限和运行时预算。2026-11-04 的开机检查确认本机运行 `7.4.0-rc1-npu-rt-vepu510`、PREEMPT_RT、1000 Hz；2026-11-05 复验时 18 个常驻应用线程中 17 个为 FIFO、相机采集为 `SCHED_DEADLINE`，JPEG 硬解、推理、显示与录像计数持续增长。验证记录位于本机 `/var/lib/rock4d-rt/boot-check.json`。
 
-当前内核启用 `CONFIG_RT_GROUP_SCHED`。cgroup v2 的 CPU 控制器可能使服务子组缺少实时预算，导致申请 FIFO 返回 `EPERM`。`scripts/deploy.sh` 根据运行配置和启动参数判断，并在停止已有服务前处理和验证兼容设置：根 slice 使用 `DisableControllers=cpu`。该主机设置影响整个层级的 CPU 配额与权重；内存和进程数控制器继续工作。它不取消全局实时预算，卸载应用时也不会自动移除。
+当前内核启用 `CONFIG_RT_GROUP_SCHED`。cgroup v2 的 CPU 控制器可能使服务子组缺少实时预算，导致申请 FIFO 或 deadline 返回 `EPERM`。`scripts/deploy.sh` 根据运行配置和启动参数判断，并在停止已有服务前处理和验证兼容设置：根 slice 使用 `DisableControllers=cpu`。该主机设置影响整个层级的 CPU 配额与权重；内存和进程数控制器继续工作。它不取消全局实时预算，卸载应用时也不会自动移除。
 
 ## 验证范围
 
