@@ -24,6 +24,8 @@ extern "C" {
 
 int yolo_image_init(void)
 {
+    /* 单线程缩放：实测 2/4 线程反而更差（工作线程 RT 优先级下与解码/NMS 争用），
+       保留 1 线程；缩放约 4 ms，瓶颈不在线程数而在内存带宽 */
     try { cv::setNumThreads(1); }
     catch (const cv::Exception &) { return -1; }
     return 0;

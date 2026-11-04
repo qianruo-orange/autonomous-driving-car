@@ -292,6 +292,9 @@ static int adaptive_controller_observe(adaptive_controller_t *control,
 
 static void yolo_adapt_workers(unsigned long long worker_us)
 {
+    /* 固定双线程：不做自适应扩缩，避免运行时线程数抖动影响 RT 调度 */
+    (void)worker_us;
+    return;
     frame_ring_t *ring = video_stream_get_ring();
     if (!ring) return;
     /* Serialize the snapshot and controller together so out-of-order workers
@@ -987,12 +990,14 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
      * 固定绑到核 (i % npu_cores)。单核掩码 1<<k 必然 <= 合法掩码上限 2^npu_cores-1，
      * 从根上不再请求非法掩码，消除运行时的 "unavailable core mask found for current
      * platform" 报错；未知平台默认核 0，全系兼容。 */
-    int cores = npu_core_count();
-    rknn_core_mask mask = (rknn_core_mask)(1u << (idx % cores)); /* CORE_0/1/2... */
-    if (rknn_set_core_mask(wk->ctx, mask) != RKNN_SUCC &&
-        rknn_set_core_mask(wk->ctx, RKNN_NPU_CORE_0) != RKNN_SUCC &&
-        rknn_set_core_mask(wk->ctx, RKNN_NPU_CORE_AUTO) != RKNN_SUCC)
-        LOG_ERROR("yolo: worker %d set_core_mask failed", idx);
+    /* 固定绑定：worker0 -> NPU Core0，worker1 -> NPU Core1（RK3576 就这两个核）。 */
+    int core = idx & 1;
+    rknn_core_mask mask = (rknn_core_mask)(1u << core);
+    if (rknn_set_core_mask(wk->ctx, mask) != RKNN_SUCC) {
+        LOG_ERROR("yolo: worker %d set_core_mask(core %d) failed", idx, core);
+        mask = RKNN_NPU_CORE_0;
+    }
+    LOG_INFO("yolo: worker %d bound to NPU core %d (mask 0x%x)", idx, core, (unsigned)mask);
 
     rknn_input_output_num io_num;
     memset(&io_num, 0, sizeof(io_num));
@@ -1105,16 +1110,13 @@ static int yolo_start_pool(void)
     /* 重读运行时配置（支持热重载） */
     g_yolo.conf = cfg->yolo_conf > 0 ? cfg->yolo_conf : 0.25f;
     g_yolo.nms  = cfg->yolo_nms  > 0 ? cfg->yolo_nms  : 0.45f;
+    /* 固定两个推理线程，一核一个，由启动流程统一创建；不再做自适应扩缩。 */
     int cores = npu_core_count();
     if (cores < 1) cores = 1;
-    int capacity = cores * 3;
-    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    if (cpus > 0 && capacity > cpus) capacity = (int)cpus;
-    if (capacity > YOLO_MAX_WORKERS) capacity = YOLO_MAX_WORKERS;
-    capacity = (capacity / cores) * cores;
-    if (capacity < cores) capacity = cores;
+    (void)cores;
+    int capacity = 2;
     g_yolo.nthreads = capacity;
-    __atomic_store_n(&g_yolo.active_workers, adaptive_controller_init(&g_yolo.adaptive, cores, capacity), __ATOMIC_RELAXED);
+    __atomic_store_n(&g_yolo.active_workers, capacity, __ATOMIC_RELAXED);
     memset(&g_yolo.adaptive_window, 0, sizeof(g_yolo.adaptive_window));
 
     safe_strncpy(g_yolo.names_path, sizeof(g_yolo.names_path),
