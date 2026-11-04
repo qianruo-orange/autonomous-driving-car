@@ -14,8 +14,7 @@
      旧方案是 <img src> 显示 + 独立 fetch 计数双路下载同一流（流量×2），
      浏览器/无线吃紧时会间歇掉速；单路方案显示与计数天然一致 */
   var fpsCnt = 0, fpsWin = Date.now(), fpsVal = 0, shownCnt = 0;
-  var lastPresented = null, receivedFps = 0;
-  var lastDropped = null, droppedPerSecond = 0;
+  var receivedFps = 0;
   var cameraFps = 0, processingAgeMs = 0, sourceDrops = 0, videoStatsBusy = false;
   var streamUrl = '', streamAbort = null, streamRunning = false;
   var imgEl = null, lastBlobUrl = null;
@@ -24,8 +23,7 @@
   var pendingBlobSeq = 0;   /* 与该帧对应的采集序号（X-Seq） */
 
   /* ---- MJPEG 透传链路的延迟/丢帧统计 ----
-     H.264 走 MSE 时可以问 <video> 要 droppedVideoFrames、用 buffered 算延迟；
-     透传链路没有 MSE，改用每帧自带的 X-Seq：
+     透传链路没有 MSE buffered/playbackQuality，改用每帧自带的 X-Seq：
        · 丢帧 = 相邻两帧序号跳号（seq 由采集环单调递增，跳号只可能是没发出来/没收到）
        · 延迟 = 屏上这帧落后服务端最新采集帧多少帧 × 帧间隔，即端到端（采集→屏幕） */
   var mjShownSeq = 0;         /* 屏上那一帧的采集序号 */
@@ -48,8 +46,7 @@
 
   function resetFps() {
     fpsCnt = 0; shownCnt = 0; fpsWin = Date.now(); fpsVal = 0;
-    lastPresented = null; receivedFps = 0;
-    lastDropped = null; droppedPerSecond = 0;
+    receivedFps = 0;
     mjShownSeq = 0; mjLastSeq = 0; mjDropTotal = 0;
     mjDropPerSec = 0; mjDropMark = null; mjLagFrames = 0;
   }
@@ -298,434 +295,37 @@
     });
   }
 
-  /* ---- H.264 fMP4 / MSE 播放器（默认 /video/stream） ----
-     单条 fetch 喂 MediaSource：init 段(ftyp/moov) + 逐片段(moof/mdat) append；
-     'moof' 签名计数喂 FPS 徽标（近似，仅显示用）。失败 1s 节流重连，
-     服务端断流（会话轮转）立即重连；1s 看门狗防缓冲堆积与假死 */
-  var mseMs = null, mseSb = null, mseAbort = null, mseReader = null;
-  var mseRunning = false, mseUrl = '', mseLastData = 0, mseLastFail = 0;
-  var mseTail = new Uint8Array(3);   /* 跨块 'moof' 签名续接尾巴 */
-  var mseGeneration = 0, mseCancelUpdate = null, mseLastTrim = 0;
-  var msePrimed = false, mseClockAgeMs = null, mseClockAt = 0;
-  var chromePlayback = typeof navigator !== 'undefined' && /(?:Chrome|Chromium)\//.test(navigator.userAgent || '');
-  var mseTargetLead = chromePlayback ? 0.08 : 0.2;
-  var mseMaxLead = chromePlayback ? 0.25 : 0.7;
-  var mseOverLeadSince = null;
-  var mseStableSince = 0, mseRateLastAt = 0, mseRateLastMedia = 0;
-  var mseWaitingAt = null, mseStartedAt = 0;
-  var mseFrameCallback = null, msePresentedMediaTime = null, msePresentedAt = 0, mseDecodeMs = null;
-  var mseDiag = { starts: 0, reconnects: 0, catchups: 0, appendErrors: 0,
-    bufferReductions: 0, bufferRecoveries: 0, queuedBytes: 0, peakQueuedBytes: 0,
-    appendBatches: 0, lastError: '' };
-
-  function mseProfileReset() {
-    mseTargetLead = chromePlayback ? 0.08 : 0.2;
-    mseStableSince = mseRateLastAt = mseRateLastMedia = 0;
-    mseWaitingAt = null;
-  }
-
-  function mseObservePlayback(vid, ahead) {
-    if (!chromePlayback || !msePrimed) return;
-    var now = Date.now();
-    if (vid.readyState < 3) {
-      mseStableSince = mseRateLastAt = 0;
-      if (mseWaitingAt === null && now - mseStartedAt >= 3000) mseWaitingAt = now;
-      return;
-    }
-    if (mseWaitingAt !== null) {
-      if (now - mseWaitingAt >= 120) {
-        mseTargetLead = Math.min(0.12, Math.max(0.08, mseTargetLead + 0.02));
-        mseDiag.bufferRecoveries++;
-      }
-      mseWaitingAt = null;
-      mseStableSince = mseRateLastAt = 0;
-    }
-    /* Only lower after sustained playback progress and recent delivery.
-       Elapsed wall time alone (pause, hidden tab, stale fetch) is insufficient. */
-    if (now - mseLastData > 350 || ahead < 0.025 || ahead > mseMaxLead) {
-      mseStableSince = mseRateLastAt = 0;
-      return;
-    }
-    if (!mseStableSince) {
-      mseStableSince = mseRateLastAt = now;
-      mseRateLastMedia = vid.currentTime;
-      return;
-    }
-    if (now - mseRateLastAt >= 1000) {
-      var seconds = (now - mseRateLastAt) / 1000;
-      var advance = vid.currentTime - mseRateLastMedia;
-      if (advance < seconds * 0.7 || advance > seconds * 1.4) mseStableSince = now;
-      mseRateLastAt = now;
-      mseRateLastMedia = vid.currentTime;
-    }
-    if (now - mseStableSince >= 20000 && mseTargetLead > 0.05) {
-      mseTargetLead = Math.max(0.05, Math.round((mseTargetLead - 0.01) * 100) / 100);
-      mseStableSince = now;
-      mseDiag.bufferReductions++;
-    }
-  }
-
-  function mseSupported() {
-    if (!window.MediaSource || !MediaSource.isTypeSupported) return false;
-    var codes = ['avc1.64001f', 'avc1.4d401f', 'avc1.42e01f'];
-    for (var i = 0; i < codes.length; i++)
-      if (MediaSource.isTypeSupported('video/mp4; codecs="' + codes[i] + '"')) return true;
-    return false;
-  }
-
-  function mseStop() {
-    var hadMse = mseRunning || mseMs || mseUrl;
-    var vid = document.getElementById('stream_video');
-    if (mseFrameCallback !== null && vid && vid.cancelVideoFrameCallback)
-      vid.cancelVideoFrameCallback(mseFrameCallback);
-    mseFrameCallback = null;
-    msePresentedMediaTime = null; msePresentedAt = 0;
-    mseOverLeadSince = null;
-    mseStableSince = mseRateLastAt = 0;
-    mseWaitingAt = null;
-    /* Invalidate callbacks before aborting the old session. Its rejected read
-       must never stop the replacement stream. */
-    mseGeneration++;
-    mseRunning = false;
-    if (mseCancelUpdate) mseCancelUpdate();
-    if (mseReader) {
-      try { var cancelled = mseReader.cancel(); if (cancelled) cancelled.catch(function() {}); } catch(e) {}
-      mseReader = null;
-    }
-    if (mseAbort) { mseAbort.abort(); mseAbort = null; }
-    if (mseMs) {
-      try {
-        if (mseSb && mseMs.readyState === 'open') mseMs.removeSourceBuffer(mseSb);
-      } catch(e) {}
-      mseMs = null;
-    }
-    mseSb = null;
-    mseDiag.queuedBytes = 0;
-    mseUrl = '';
-    mseTail[0] = mseTail[1] = mseTail[2] = 0;
-    if (vid && hadMse) {
-      vid.playbackRate = 1;
-      if (vid.src && vid.src.indexOf('blob:') === 0) URL.revokeObjectURL(vid.src);
-      vid.removeAttribute('src');
-      vid.load();                          /* 清空播放器（readyState 归零） */
-    }
-  }
-
-  function mseFail(generation, error) {
-    if (generation !== mseGeneration || !mseRunning) return;
-    mseDiag.lastError = error && error.message ? error.message : String(error);
-    mseDiag.reconnects++;
-    mseLastFail = Date.now();
-    mseStop();
-  }
-
-  /* Serialize SourceBuffer mutations; the reader coalesces pending chunks
-     independently, preserving every byte and every H.264 dependency in order. */
-  function mseUpdate(sb, action, generation) {
-    return new Promise(function(resolve, reject) {
-      if (!mseRunning || mseSb !== sb || generation !== mseGeneration) {
-        reject(new Error('Video session ended')); return;
-      }
-      function finish(error) {
-        clearTimeout(timer);
-        sb.removeEventListener('updateend', complete);
-        sb.removeEventListener('error', failed);
-        sb.removeEventListener('abort', aborted);
-        if (mseCancelUpdate === cancel) mseCancelUpdate = null;
-        if (error) reject(error); else resolve();
-      }
-      function complete() { finish(); }
-      function failed() { mseDiag.appendErrors++; finish(new Error('Media buffer error')); }
-      function aborted() { finish(new Error('Media buffer aborted')); }
-      function cancel() { finish(new Error('Video session ended')); }
-      var timer = setTimeout(function() { finish(new Error('Media buffer update timed out')); }, 5000);
-      mseCancelUpdate = cancel;
-      sb.addEventListener('updateend', complete);
-      sb.addEventListener('error', failed);
-      sb.addEventListener('abort', aborted);
-      try { action(); } catch(e) { mseDiag.appendErrors++; finish(e); }
-    });
-  }
-
-  async function mseAppend(sb, chunk, generation) {
-    var vid = document.getElementById('stream_video');
-    /* Evict already played media on the same serial pipeline, preventing an
-       ever-growing buffer and eventual QuotaExceeded reconnects. */
-    if (Date.now() - mseLastTrim > 5000 && sb.buffered.length &&
-        vid.currentTime - sb.buffered.start(0) > 20) {
-      var removeEnd = vid.currentTime - 10;
-      await mseUpdate(sb, function() { sb.remove(0, removeEnd); }, generation);
-      mseLastTrim = Date.now();
-    }
-    await mseUpdate(sb, function() { sb.appendBuffer(chunk); }, generation);
-    if (generation === mseGeneration) mseCatchUp();
-  }
-
-  function mseCatchUp() {
-    if (!mseRunning || !mseSb) return;
-    var vid = document.getElementById('stream_video');
-    if (!vid || document.hidden || vid.paused || vid.seeking) {
-      mseOverLeadSince = null;
-      mseStableSince = mseRateLastAt = 0;
-      mseWaitingAt = null;
-      if (vid) vid.playbackRate = 1;
-      return;
-    }
-    try {
-      var b = mseSb.buffered;
-      if (!b.length) { mseOverLeadSince = null; mseStableSince = mseRateLastAt = 0; return; }
-      var end = b.end(b.length - 1), start = b.start(b.length - 1);
-      var ahead = end - vid.currentTime;
-      mseObservePlayback(vid, ahead);
-      var now = Date.now();
-      if (chromePlayback && ahead > mseMaxLead) {
-        if (mseOverLeadSince === null) mseOverLeadSince = now;
-      } else mseOverLeadSince = null;
-      /* Prime close to the live edge after enough media arrives. A small,
-         bounded buffer absorbs frame jitter without retaining a historical GOP.
-         Chrome receives frame batches on Wi-Fi: seeking on each 120 ms burst
-         discarded valid frames. Drain brief bursts at a gentle rate; seek only
-         after sustained backlog, or immediately for a large stale buffer. */
-      var primeSpan = chromePlayback ? 0.12 : 0.2;
-      var overdue = chromePlayback ? ahead > 0.75 ||
-        (mseOverLeadSince !== null && now - mseOverLeadSince >= 400) : ahead > mseMaxLead;
-      if ((!msePrimed && end - start >= primeSpan && ahead > mseTargetLead + 0.03) ||
-          overdue || vid.currentTime < start) {
-        vid.currentTime = Math.max(start, end - mseTargetLead);
-        mseDiag.catchups++;
-        msePrimed = true;
-        mseOverLeadSince = null;
-        vid.playbackRate = 1;
-      } else if (ahead > mseTargetLead + (chromePlayback ? 0.025 : 0.1)) {
-        vid.playbackRate = chromePlayback && ahead <= mseMaxLead ? 1.03 : 1.05;
-      } else if (chromePlayback && vid.readyState >= 3 &&
-                 (ahead < mseTargetLead - 0.02 || (vid.playbackRate < 1 && ahead < mseTargetLead))) {
-        vid.playbackRate = 0.97;
-      } else if (ahead <= mseTargetLead + (chromePlayback ? 0.01 : 0.02) + 0.000001) {
-        vid.playbackRate = 1;
-      }
-      if (!msePrimed && end - start >= primeSpan) msePrimed = true;
-    } catch(e) {}
-  }
-
-  function mseScanMoof(chunk) {
-    var buf = new Uint8Array(mseTail.length + chunk.length);
-    buf.set(mseTail, 0);
-    buf.set(chunk, mseTail.length);
-    for (var i = 0; i + 3 < buf.length; i++) {
-      if (buf[i] === 0x6d && buf[i+1] === 0x6f && buf[i+2] === 0x6f && buf[i+3] === 0x66) {
-        fpsCnt++;
-        i += 3;
-      }
-    }
-    mseTail.set(buf.subarray(buf.length - 3));
-  }
-
-  function mseStart(url) {
-    if (document.hidden || playerSuspended) return;
-    if (mseUrl === url && mseRunning) return;        /* 同一流已在播放 */
-    if (Date.now() - mseLastFail < 1000) return;     /* 失败 1s 节流（update 200ms 轮询） */
-    mseStop();
-    mseUrl = url;
-    mseRunning = true;
-    mseLastData = Date.now();
-    mseStartedAt = mseLastData;
-    mseProfileReset();
-    mseLastTrim = Date.now();
-    msePrimed = false;
-    mseOverLeadSince = null;
-    mseClockAgeMs = null;
-    mseClockAt = 0;
-    msePresentedMediaTime = null; msePresentedAt = 0;
-    mseDecodeMs = null;
-    mseDiag.starts++;
-    var generation = mseGeneration;
-    resetFps();
-    var ac = new AbortController();
-    mseAbort = ac;
-
-    fetch(url, {signal: ac.signal}).then(function(r) {
-      if (generation !== mseGeneration) return;
-      if (!r.ok || !r.body) {                        /* 503（无编码会话）：节流重试 */
-        mseFail(generation, new Error('Video HTTP ' + r.status));
-        return;
-      }
-      var codec = r.headers.get('X-Codec') || 'avc1.4d401f';
-      var ageHeader = r.headers.get('X-Stream-Age-Ms');
-      var age = ageHeader == null ? NaN : Number(ageHeader);
-      if (isFinite(age) && age >= 0 && age <= 30000) {
-        mseClockAgeMs = age;
-        mseClockAt = Date.now();
-      }
-      var ms = new MediaSource();
-      mseMs = ms;
-      var vid = document.getElementById('stream_video');
-      vid.src = URL.createObjectURL(ms);
-      var rd = r.body.getReader();
-      mseReader = rd;
-
-      ms.addEventListener('sourceopen', function() {
-        if (mseMs !== ms || generation !== mseGeneration) return;
-        var sb;
-        try {
-          sb = ms.addSourceBuffer('video/mp4; codecs="' + codec + '"');
-        } catch(e) {
-          mseFail(generation, e);
-          return;
-        }
-        mseSb = sb;
-        mseTrackPresentedFrames(vid, generation);
-        sb.addEventListener('error', function() { mseFail(generation, new Error('Media decoding failed')); });
-        var p = vid.play();
-        if (p && p.catch) p.catch(function(){});     /* muted+autoplay 正常应成功 */
-
-        var chunks = [], queued = 0, appending = false, ended = false;
-        function appendPending() {
-          if (appending || !queued || generation !== mseGeneration || !mseRunning) return;
-          var batch = chunks[0];
-          if (chunks.length > 1) {
-            batch = new Uint8Array(queued);
-            var offset = 0;
-            chunks.forEach(function(chunk) { batch.set(chunk, offset); offset += chunk.length; });
-          }
-          chunks = []; queued = 0; mseDiag.queuedBytes = 0;
-          appending = true;
-          mseDiag.appendBatches++;
-          mseAppend(sb, batch, generation).then(function() {
-            appending = false;
-            if (generation !== mseGeneration || !mseRunning) return;
-            if (queued) appendPending();
-            else if (ended) mseStop();
-          }).catch(function(e) { mseFail(generation, e); });
-        }
-        (async function pump() {
-          try {
-            while (generation === mseGeneration && mseRunning) {
-              var c = await rd.read();
-              if (generation !== mseGeneration) return;
-              if (c.done) {
-                ended = true;
-                if (!appending && !queued) mseStop();
-                return;
-              }
-              mseLastData = Date.now();
-              mseScanMoof(c.value);
-              if (!c.value.length) continue;
-              queued += c.value.length;
-              if (queued > 8 * 1024 * 1024) throw new Error('Video append queue exceeds 8 MiB');
-              chunks.push(c.value);
-              mseDiag.queuedBytes = queued;
-              mseDiag.peakQueuedBytes = Math.max(mseDiag.peakQueuedBytes, queued);
-              appendPending();
-            }
-          } catch(e) { mseFail(generation, e); }
-        })();
-      });
-    }).catch(function(e) { mseFail(generation, e); });
-  }
-
-  function mseTrackPresentedFrames(vid, generation) {
-    if (!vid.requestVideoFrameCallback) return;
-    function presented(now, metadata) {
-      if (!mseRunning || generation !== mseGeneration) return;
-      msePresentedMediaTime = metadata.mediaTime;
-      msePresentedAt = Date.now();
-      if (typeof metadata.processingDuration === 'number') mseDecodeMs = metadata.processingDuration * 1000;
-      mseFrameCallback = vid.requestVideoFrameCallback(presented);
-    }
-    mseFrameCallback = vid.requestVideoFrameCallback(presented);
-  }
-
-  /* Read-only diagnostics for distinguishing network delivery from rendering. */
+  /* Read-only diagnostics for distinguishing network delivery from rendering.
+     MJPEG 透传链路没有 MSE buffered/playbackQuality，延迟按 X-Seq 落后帧数换算，
+     丢帧用序号跳号统计（比 <video> 的 droppedVideoFrames 更贴近真实链路损失）。 */
   window.getCarVideoDiagnostics = function() {
     var vid = document.getElementById('stream_video');
-    var result = Object.assign({}, mseDiag, {
-      transport: mseRunning ? 'H.264/MSE' : streamRunning ? 'MJPEG' : 'idle',
-      receivedFps: receivedFps, displayedFps: fpsVal, bufferAheadSeconds: 0,
-      droppedFramesPerSecond: droppedPerSecond, cameraFps: cameraFps,
+    var lagMs = mjCaptureFps > 0 ? (mjLagFrames / mjCaptureFps) * 1000 : null;
+    var result = {
+      transport: streamRunning ? 'MJPEG' : 'idle',
+      receivedFps: receivedFps, displayedFps: fpsVal, cameraFps: cameraFps,
       processingAgeMs: processingAgeMs, sourceDroppedFrames: sourceDrops,
-      estimatedStreamDelayMs: null, buffered: [],
+      droppedFramesPerSecond: streamRunning ? mjDropPerSec : 0,
+      lagFrames: streamRunning ? mjLagFrames : 0,
+      bufferAheadSeconds: lagMs === null ? 0 : lagMs / 1000,
+      estimatedStreamDelayMs: lagMs,
+      estimatedTotalDelayMs: lagMs,
+      buffered: [],
       readyState: vid ? vid.readyState : 0, currentTime: vid ? vid.currentTime : 0,
       paused: vid ? vid.paused : true, seeking: vid ? vid.seeking : false,
-      playbackRate: vid ? vid.playbackRate : 1,
-      playbackProfile: chromePlayback ? 'Chrome adaptive low latency' : 'Compatible',
-      targetBufferMs: mseTargetLead * 1000, browserDecodeMs: mseDecodeMs,
       decoderError: vid && vid.error ? vid.error.code : null
-    });
-    if (vid && vid.getVideoPlaybackQuality) {
-      var q = vid.getVideoPlaybackQuality();
-      result.totalVideoFrames = q.totalVideoFrames;
-      result.droppedVideoFrames = q.droppedVideoFrames;
-    }
-    if (vid && mseSb && mseSb.buffered.length) {
-      result.bufferAheadSeconds = Math.max(0, mseSb.buffered.end(mseSb.buffered.length - 1) - vid.currentTime);
-      for (var i = 0; i < mseSb.buffered.length; i++)
-        result.buffered.push([mseSb.buffered.start(i), mseSb.buffered.end(i)]);
-    }
-    if (mseRunning && vid && mseClockAgeMs !== null) {
-      /* Occluded video can suspend presentation callbacks while media keeps
-         advancing. A stale callback must not make the delay estimate grow. */
-      var recent = msePresentedMediaTime !== null && Date.now() - msePresentedAt < 250;
-      var mediaTime = recent ? msePresentedMediaTime : vid.currentTime;
-      result.delayClock = recent ? 'presented' : 'playhead';
-      result.estimatedStreamDelayMs = Math.max(0, mseClockAgeMs + Date.now() - mseClockAt - mediaTime * 1000);
-    }
-    result.estimatedTotalDelayMs = result.estimatedStreamDelayMs === null ? null : result.estimatedStreamDelayMs + processingAgeMs;
-    /* 透传链路没有 MSE buffered/playbackQuality，按 X-Seq 落后帧数换算端到端延迟，
-       丢帧用序号跳号统计（比 <video> 的 droppedVideoFrames 更贴近真实链路损失） */
-    if (!mseRunning && streamRunning) {
-      var lagMs = mjCaptureFps > 0 ? (mjLagFrames / mjCaptureFps) * 1000 : null;
-      result.lagFrames = mjLagFrames;
-      result.droppedFramesPerSecond = mjDropPerSec;
-      result.bufferAheadSeconds = lagMs === null ? 0 : lagMs / 1000;
-      result.estimatedStreamDelayMs = lagMs;
-      result.estimatedTotalDelayMs = lagMs;
-    }
+    };
     return result;
   };
 
-  function mseWatchdog() {
-    if (!mseRunning) return;
-    if (document.hidden) { mseCatchUp(); return; }
-    /* Include connection setup: a stalled fetch/sourceopen has no buffer yet. */
-    if (Date.now() - mseLastData > 5000) {
-      mseFail(mseGeneration, new Error('No video data for 5 seconds'));
-      return;
-    }
-    if (mseSb && mseMs) mseCatchUp();
-  }
-
-  var playerVideo = document.getElementById('stream_video');
-  if (playerVideo && playerVideo.addEventListener) {
-    playerVideo.addEventListener('waiting', function() {
-      if (chromePlayback && mseRunning && msePrimed && !playerVideo.paused &&
-          !playerVideo.seeking && !document.hidden && Date.now() - mseStartedAt >= 3000) {
-        if (mseWaitingAt === null) mseWaitingAt = Date.now();
-        mseStableSince = mseRateLastAt = 0;
-      }
+  if (document.addEventListener)
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) streamStop();
+      else updatePlayer();
     });
-    playerVideo.addEventListener('error', function() {
-      if (mseRunning && playerVideo.error)
-        mseFail(mseGeneration, new Error('Video decoder error ' + playerVideo.error.code));
-    });
-    playerVideo.addEventListener('seeked', function() { mseCatchUp(); });
-    function resetCatchUp() {
-      mseOverLeadSince = null;
-      mseStableSince = mseRateLastAt = 0;
-      mseWaitingAt = null;
-      if (mseRunning) playerVideo.playbackRate = 1;
-    }
-    playerVideo.addEventListener('pause', resetCatchUp);
-    playerVideo.addEventListener('seeking', resetCatchUp);
-    if (document.addEventListener)
-      document.addEventListener('visibilitychange', function() {
-        if (document.hidden) { resetCatchUp(); mseStop(); streamStop(); }
-        else updatePlayer();
-      });
-  }
 
   window.addEventListener('pagehide', function() {
-    playerSuspended = true; mseStop(); streamStop();
+    playerSuspended = true; streamStop();
   });
   window.addEventListener('pageshow', function() {
     playerSuspended = false; updatePlayer();
@@ -943,9 +543,8 @@
   }
 
   var playerConfig = {}, playerBusy = false, playerSuspended = false;
-  /* 直播默认走相机 MJPEG 原始透传：不解码、不重编码，画面就是相机原生 JPEG。
-     检测框不再烧进画面，改由 canvas 按帧序号叠加（见 overlayDraw）。
-     若要回到 H.264 烧框版本，把下面改成 '/video/stream' 即可。 */
+  /* 直播走相机 MJPEG 原始透传：不解码、不重编码，画面就是相机原生 JPEG。
+     检测框不烧进画面，改由 canvas 按帧序号叠加（见 overlayDraw）。 */
   var LIVE_STREAM_URL = '/video/mjpeg';
   async function updatePlayer() {
     if (playerBusy || document.hidden || playerSuspended) return;
@@ -960,52 +559,24 @@
       if (document.hidden || playerSuspended) return;
       var streamUrl = window.STREAM_URL || playerConfig.stream_url || playerConfig.video_url
                       || LIVE_STREAM_URL;
-      var explicit = !!streamUrl;
       var vid = document.getElementById('stream_video');
       var img = document.getElementById('stream_img');
-      var useMse = !explicit && mseSupported();
-      var message = document.getElementById('stream_message');
-      if (!message) {
-        message = document.createElement('div');
-        message.id = 'stream_message';
-        message.setAttribute('role', 'status');
-        message.style.cssText = 'padding:1em;text-align:center;';
-        vid.parentNode.appendChild(message);
-      }
-      message.hidden = explicit || useMse;
-      if (!explicit && !useMse) {
-        mseStop();
-        streamStop();
-        vid.style.display = img.style.display = 'none';
-        message.textContent = window.t ? window.t('当前浏览器不支持视频播放，请使用支持 H.264 的现代浏览器。') : '当前浏览器不支持视频播放，请使用支持 H.264 的现代浏览器。';
-        return;
-      }
-      if (useMse) {
-        /* MSE 路径：录制编码扇出（无会话 503 节流重试，会话轮转断流自动重连） */
+      var useImg = streamUrl.indexOf('/video/mjpeg') === 0
+                 || /\.mjpeg$|\.jpg$|\.jpeg$/i.test(streamUrl);
+      if (useImg) {
+        imgEl = img;                    /* 播放器逐帧喂 blob URL，显示与计数同一条连接 */
+        img.style.display = '';
+        vid.style.display = 'none';
+        streamStart(streamUrl);         /* 每次轮询都调用：内部幂等，流中断时自动重连 */
+      } else {
         imgEl = null;
         streamStop();
-        img.style.display = 'none';
-        vid.style.display = '';
-        mseStart('/video/stream');        /* 每次轮询都调用：内部幂等 + 失败节流重连 */
-      } else if (streamUrl) {
-        mseStop();
-        var useImg = streamUrl.indexOf('/video/mjpeg') === 0
-                   || streamUrl.match(/\.mjpeg$|\.jpg$|\.jpeg$/i);
-        if (useImg) {
-          imgEl = img;                    /* 播放器逐帧喂 blob URL，显示与计数同一条连接 */
-          img.style.display = '';
-          vid.style.display = 'none';
-          streamStart(streamUrl);         /* 每次轮询都调用：内部幂等，流中断时自动重连 */
-        } else {
-          imgEl = null;
-          streamStop();
-          if (!vid.src || vid.getAttribute('data-src') !== streamUrl) {
-            vid.setAttribute('data-src', streamUrl);
-            vid.src = streamUrl;
-            vid.style.display = '';
-            img.style.display = 'none';
-            resetFps();
-          }
+        if (!vid.src || vid.getAttribute('data-src') !== streamUrl) {
+          vid.setAttribute('data-src', streamUrl);
+          vid.src = streamUrl;
+          vid.style.display = '';
+          img.style.display = 'none';
+          resetFps();
         }
       }
     } finally { playerBusy = false; }
@@ -1027,27 +598,17 @@
     if (now > fpsWin) {
       var elapsed = now - fpsWin;
       receivedFps = fpsCnt * 1000 / elapsed;
-      var vid = document.getElementById('stream_video');
-      if (mseRunning && vid && vid.getVideoPlaybackQuality) {
-        var quality = vid.getVideoPlaybackQuality();
-        var presented = quality.totalVideoFrames - quality.droppedVideoFrames;
-        fpsVal = lastPresented === null ? 0 : Math.max(0, presented - lastPresented) * 1000 / elapsed;
-        lastPresented = presented;
-        droppedPerSecond = lastDropped === null ? 0 : Math.max(0, quality.droppedVideoFrames - lastDropped) * 1000 / elapsed;
-        lastDropped = quality.droppedVideoFrames;
-      } else {
-        fpsVal = streamRunning ? shownCnt * 1000 / elapsed : receivedFps;
-        /* 延迟 = 落后服务端最新采集帧多少帧 × 帧间隔（含网络与解码排队） */
-        if (streamRunning && mjLatestSeq && mjShownSeq) {
-          var lag = mjLatestSeq - mjShownSeq;
-          if (lag < 0) lag = 0;
-          if (lag > 150) lag = 150;         /* 钳位，避免重启/暂停后的异常值拖拽平均 */
-          mjLagFrames = mjLagFrames ? mjLagFrames * 0.6 + lag * 0.4 : lag;
-        }
-        mjDropPerSec = mjDropMark === null ? 0
-                       : Math.max(0, mjDropTotal - mjDropMark) * 1000 / elapsed;
-        mjDropMark = mjDropTotal;
+      fpsVal = streamRunning ? shownCnt * 1000 / elapsed : receivedFps;
+      /* 延迟 = 落后服务端最新采集帧多少帧 × 帧间隔（含网络与解码排队） */
+      if (streamRunning && mjLatestSeq && mjShownSeq) {
+        var lag = mjLatestSeq - mjShownSeq;
+        if (lag < 0) lag = 0;
+        if (lag > 150) lag = 150;         /* 钳位，避免重启/暂停后的异常值拖拽平均 */
+        mjLagFrames = mjLagFrames ? mjLagFrames * 0.6 + lag * 0.4 : lag;
       }
+      mjDropPerSec = mjDropMark === null ? 0
+                     : Math.max(0, mjDropTotal - mjDropMark) * 1000 / elapsed;
+      mjDropMark = mjDropTotal;
       fpsCnt = 0; shownCnt = 0; fpsWin = now;
     }
     el.textContent = fpsVal > 0 ? Math.round(fpsVal) + ' FPS' : '-- FPS';
@@ -1066,7 +627,6 @@
 
   /* Catch up inside the current buffer. Reopen the stream only when transport
      stops; reconnecting to another GOP for ordinary playback lag adds stalls. */
-  setInterval(mseWatchdog, 1000);
 
   window.reboot = function() { if (!confirm(t('确定要重启设备吗？'))) return; authFetch('/api/reboot').catch(function(){}); };
   window.shutdown = function() { if (!confirm(t('确定要关闭设备吗？'))) return; authFetch('/api/shutdown').catch(function(){}); };

@@ -10,7 +10,6 @@
 #include <time.h>
 #include <unistd.h>
 #include "http/http_internal.h"
-#include "video/mpp_encoder.h"
 #include "video/video_rec.h"
 #include "video/jpeg_decoder.h"
 #include "yolo/rknn_yolo.h"
@@ -72,7 +71,7 @@ static void camera_send_status(app_ctx_t *app, int client, int device)
     char json[1024];
     int n = snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"focus_auto\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},"
-        "\"focus_absolute\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},\"hardware_encoder_available\":%s,"
+        "\"focus_absolute\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},"
         "\"hardware_decoder_available\":%s,"
         "\"encoder\":\"%s\",\"decoder\":\"%s\",\"hardware_decoded_frames\":%llu,\"decode_errors\":%llu}",
         app->cfg->video_device,
@@ -80,7 +79,6 @@ static void camera_send_status(app_ctx_t *app, int client, int device)
         automatic.read_only ? "true" : "false", automatic.active ? "true" : "false",
         focus.supported ? "true" : "false", focus.value, focus.min, focus.max, focus.step,
         focus.read_only ? "true" : "false", focus.active ? "true" : "false",
-        mpp_h264_available() ? "true" : "false",
         jpeg_decoder_available() ? "true" : "false",
         recording.encoder,
         rknn_yolo_hardware_decoder() ? "rockchip-jpegd" : "none", decoded, errors);

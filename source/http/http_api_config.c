@@ -377,13 +377,6 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
         return;
     }
 
-    if (http_form_find(fields, count, "video_codec") ||
-        http_form_find(fields, count, "video_decoder")) {
-        pthread_mutex_unlock(&app->can_mutex);
-        http_err(fd, 400, "Bad Request", "Video codecs are managed by the application");
-        return;
-    }
-
     /* Retired transport settings must never reopen a second management port. */
     if (http_form_find(fields, count, "tcp_port") ||
         http_form_find(fields, count, "tcp_bind") ||

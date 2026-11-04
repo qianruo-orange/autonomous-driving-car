@@ -111,10 +111,3 @@ target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 # OpenCV（core + imgproc）：检测框画框 / 标签文字渲染（cv::rectangle / cv::putText）
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 target_link_libraries(autonomous-driving-car PRIVATE ${OpenCV_LIBS})
-
-# Hardware H.264 encoding requires the Rockchip MPP public API.
-find_path(MPP_INCLUDE_DIR rockchip/rk_mpi.h REQUIRED)
-find_library(MPP_LIBRARY rockchip_mpp REQUIRED)
-target_include_directories(autonomous-driving-car PRIVATE ${MPP_INCLUDE_DIR})
-target_link_libraries(autonomous-driving-car PRIVATE ${MPP_LIBRARY})
-message(STATUS "Rockchip MPP: hardware-only H.264 encoding")

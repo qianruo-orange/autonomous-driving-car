@@ -337,37 +337,3 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
         st.encode_replaced, st.processing_age_ms, st.processing_age_max_ms, st.capture_to_encode_ms);
     http_ok_json(fd, json, (size_t)off);
 }
-
-/* Read-only limits of the application-managed recording encoder. */
-void http_video_codeccaps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf)
-{
-    (void)app; (void)method; (void)req_buf;
-    const char *codec = "hardware";
-    (void)uri;
-
-    static const int kFps[] = { 60, 50, 30, 25, 20, 15, 10, 5 };
-#define KFPSN ((int)(sizeof(kFps)/sizeof(kFps[0])))
-
-    /* Candidate modes are intersected with camera capabilities by the client. */
-    static const struct { int w, h; const char *label; } modes[] = {
-        { 320,240,"QVGA"},{ 640,480,"VGA"},{ 800,600,"SVGA"},{1024,768,"XGA"},
-        {1280,720,"HD"},{1920,1080,"FHD"},{2560,1440,"2K"},{3840,2160,"4K"}
-    };
-    const int n = (int)(sizeof(modes) / sizeof(modes[0]));
-    char json[4096]; int off = 0;
-    JSON_ADD(json, off, "{\"codec\":\"%s\",\"caps\":[", codec);
-    for (int i = 0; i < n; i++) {
-        int w = modes[i].w;
-        int h = modes[i].h;
-        const char *label = modes[i].label;
-        char fps_str[128]; int foff = 0;
-        for (int k = 0; k < KFPSN; k++)
-            foff += snprintf(fps_str + foff, sizeof(fps_str) - (size_t)foff,
-                             "%s%d", k > 0 ? "," : "", kFps[k]);
-        JSON_ADD(json, off, "%s{\"w\":%d,\"h\":%d,\"label\":\"%s\",\"fps\":[%s]}",
-                 i > 0 ? "," : "", w, h, label, fps_str);
-    }
-    JSON_ADD(json, off, "]}");
-    http_ok_json(fd, json, (size_t)off);
-#undef KFPSN
-}

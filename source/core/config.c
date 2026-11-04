@@ -63,7 +63,6 @@ static void config_defaults(struct app_config_t *cfg)
     cfg->video_height = 480;
     cfg->video_fps    = 0;    /* 0 = driver default frame rate */
     cfg->mjpeg_max_kbps = 0;  /* 0 = 不限；MJPEG 透传每客户端码率预算 */
-    safe_strncpy(cfg->rec_format, sizeof(cfg->rec_format), "mjpeg");
 
     rknn_yolo_default_model_path(cfg->yolo_model, sizeof(cfg->yolo_model));
     safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), "config/coco.names");
@@ -164,13 +163,6 @@ int config_load(struct app_config_t *cfg)
         else if (strcmp(key, "video_height") == 0) cfg->video_height = parse_int_clamped(val, 1, 4096, 480);
         else if (strcmp(key, "video_fps") == 0) cfg->video_fps = parse_int_clamped(val, 0, 120, 0);
         else if (strcmp(key, "mjpeg_max_kbps") == 0) cfg->mjpeg_max_kbps = parse_int_clamped(val, 0, 200000, 0);
-        else if (strcmp(key, "rec_format") == 0) {
-            /* 只接受两个已知值：写错的配置不要静默变成有损或无损 */
-            if (strcmp(val, "mjpeg") == 0 || strcmp(val, "h264") == 0)
-                safe_strncpy(cfg->rec_format, sizeof(cfg->rec_format), val);
-            else
-                LOG_ERROR("config: rec_format '%s' ignored (use mjpeg or h264)", val);
-        }
         else if (strcmp(key, "yolo_model") == 0) safe_strncpy(cfg->yolo_model, sizeof(cfg->yolo_model), val);
         else if (strcmp(key, "yolo_names") == 0) safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), val);
         else if (strcmp(key, "yolo_input_size") == 0) cfg->yolo_input_size = parse_int_clamped(val, 32, 2048, 640);
@@ -251,7 +243,6 @@ void config_save(app_ctx_t *app)
     fprintf(fp, "video_height %d\n", cfg->video_height);
     fprintf(fp, "video_fps %d\n", cfg->video_fps);
     fprintf(fp, "mjpeg_max_kbps %d\n", cfg->mjpeg_max_kbps);
-    fprintf(fp, "rec_format %s\n", cfg->rec_format);
     fprintf(fp, "\n# --- YOLO 检测 (YOLO26, RKNN) ---\n");
     fprintf(fp, "yolo_model %s\n", cfg->yolo_model);
     fprintf(fp, "yolo_names %s\n", cfg->yolo_names[0] ? cfg->yolo_names : "config/coco.names");

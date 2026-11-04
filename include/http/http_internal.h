@@ -77,7 +77,6 @@ void http_detection_reports_clear(app_ctx_t *app, int fd, const char *method, co
 void http_detection_report_delete(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detection_file(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_video_caps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
-void http_video_codeccaps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_detections_live(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);

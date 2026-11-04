@@ -35,7 +35,6 @@
 #include "http/http_internal.h"
 #include "http/http_client_limit.h"
 #include "yolo/yolo_events.h"
-#include "video/h264_stream.h"
 #include "video/video_stream.h"
 #include "watchdog/watchdog.h"
 #include "core/common.h"
@@ -726,17 +725,6 @@ static void http_process_request(http_conn_t *c)
         goto finish;
     }
 
-    if (strcmp(c->uri, "/video/stream") == 0) {
-        /* H.264 fMP4 推流（浏览器 MSE）：录制编码扇出，无会话/无 YOLO 时 503 */
-        if (h264_stream_client_start(fd, http_video_client_closed) != 0) {
-            http_send_response(fd, 500, "Error", "text/plain", "", 0);
-        } else {
-            conn_detach(c);   /* fd 移交给推流线程 */
-            return;
-        }
-        goto finish;
-    }
-
     if (strcmp(c->uri, "/video/mjpeg") == 0) {
         if (video_stream_client_start(fd, http_video_client_closed) != 0) {
             http_send_response(fd, 500, "Error", "text/plain", "", 0);
@@ -800,7 +788,6 @@ static void http_process_request(http_conn_t *c)
         { "/api/cpu_freq",0,"POST",http_cpufreq_post, http_check_auth_root },
         { "/api/cpu_freq",0,NULL,http_cpufreq_get,   NULL },
         { "/api/video/caps",1, NULL,  http_video_caps,   NULL },
-        { "/api/video/codeccaps",1, NULL, http_video_codeccaps, NULL },
         { "/api/video/stats",0,NULL,  http_video_stats,  NULL },
         { "/api/video/devices",0,NULL, http_video_devices,NULL },
         { "/api/camera",0,"GET",http_camera_get,NULL },

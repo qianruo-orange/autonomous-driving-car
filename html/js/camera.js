@@ -28,21 +28,17 @@
     save.disabled = busy || !mode.value;
   }
   function setBusy(value) { busy = value; updateDisabled(); }
-  /* Capture always prefers MJPEG; use that format's rates when it is available.
+  /* Capture always prefers MJPEG: recording stores the sensor's JPEG frames
+     verbatim, so the camera's own rates are the only limit worth showing.
      A YUYV-only rate must not appear as an MJPEG capture option. */
-  function intersectCaps(camera, encoder) {
+  function captureModes(camera) {
     var formats = camera.formats || [];
     var format = formats.find(function (item) { return item.fmt === 'MJPG'; }) ||
       formats.find(function (item) { return item.fmt === 'YUYV'; });
     var result = [];
     ((format && format.sizes) || []).forEach(function (capture) {
-      var encoded = (encoder.caps || []).find(function (item) {
-        return Number(item.w) === Number(capture.w) && Number(item.h) === Number(capture.h);
-      });
-      if (!encoded) return;
       var rates = (capture.fps || []).map(Number).filter(function (rate, index, all) {
-        return Number.isFinite(rate) && rate > 0 && all.indexOf(rate) === index &&
-          (encoded.fps || []).map(Number).indexOf(rate) >= 0;
+        return Number.isFinite(rate) && rate > 0 && all.indexOf(rate) === index;
       }).sort(function (a, b) { return b - a; });
       if (rates.length) result.push({w: Number(capture.w), h: Number(capture.h), fps: rates});
     });
@@ -54,12 +50,9 @@
     mode.replaceChildren();
     try {
       if (!/^\/dev\/video\d+$/.test(device.value)) throw new Error('No capture device');
-      var responses = await Promise.all([
-        App.json('/api/video/caps?device=' + device.value),
-        App.json('/api/video/codeccaps')
-      ]);
+      var camera = await App.json('/api/video/caps?device=' + device.value);
       if (version !== generation) return;
-      sizes = intersectCaps(responses[0], responses[1]);
+      sizes = captureModes(camera);
       sizes.forEach(function (item) {
         item.fps.forEach(function (rate) {
           option(mode, item.w + 'x' + item.h + '@' + rate, item.w + ' × ' + item.h + ' · ' + rate);
@@ -70,7 +63,7 @@
       mode.value = choices.indexOf(preferred) >= 0 ? preferred :
         choices.find(function (item) { return item.indexOf(preferredSize + '@') === 0; }) ||
         choices.find(function (item) { return item.indexOf('1280x720@') === 0; }) || choices[0] || '';
-      message(sizes.length ? '' : '相机与编码器没有共同支持的采集模式', !sizes.length);
+      message(sizes.length ? '' : '相机没有可用的采集模式', !sizes.length);
     } catch (error) {
       if (version === generation) { sizes = []; message('无法读取相机能力，请重试', true); }
     } finally {

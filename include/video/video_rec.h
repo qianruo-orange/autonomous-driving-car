@@ -5,11 +5,12 @@
 #include <stddef.h>
 
 /**
- * Recording and live H.264 output share the encoder owned by video_rec_task.
- * The task consumes frame-matched annotated NV12 buffers from the frame ring,
- * writes MP4 segments, and publishes H.264 to the streaming module. HTTP APIs
- * queue start/stop/split commands; file deletion is synchronized with segment
- * creation, publication and finalization.
+ * Lossless recording: camera-native MJPEG frames are written verbatim into
+ * AVI(MJPG) segments. No decode, no re-encode, no scaling — every frame in the
+ * file is byte-identical to the sensor output. The recording thread consumes
+ * raw JPEG buffers from the frame ring; HTTP APIs queue start/stop/split
+ * commands; file deletion is synchronized with segment creation, publication
+ * and finalization.
  */
 
 /* 录制状态快照（供 HTTP status 接口 / 前端轮询） */
@@ -22,7 +23,7 @@ typedef struct {
     double             fps;         /* 实时平均帧率（最后若干帧） */
     int                split_pending;
     int                split_error;
-    char               encoder[32]; /* actual active backend, or "none" */
+    char               encoder[32]; /* "mjpeg-native" while recording, else "none" */
 } video_rec_status_t;
 
 struct app_config_t;
@@ -37,13 +38,12 @@ void *video_rec_task(void *arg);
 int video_rec_start(void);
 int video_rec_stop(void);
 
-/* Queue a keyframe-aligned file split while keeping the encoder/live stream.
-   expected_file prevents a stale page from splitting a different recording.
+/* Queue a frame-aligned file split. expected_file prevents a stale page from
+   splitting a different recording.
    Returns 0 when queued, -1 when inactive/busy, -2 for a stale filename. */
 int video_rec_split(const char *expected_file);
 
 /* 结束当前录制段，让线程按最新配置续录下一段（不改变自动续录开关）。
-   编码器随会话创建，码率系数等编码参数变更后须调用本函数才会生效；
    已手动停录时为空操作 */
 void video_rec_cycle_session(void);
 
