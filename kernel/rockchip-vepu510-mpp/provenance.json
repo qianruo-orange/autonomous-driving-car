@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "vendor_kernel": {
+    "repository": "https://github.com/rockchip-linux/kernel",
+    "branch": "develop-6.1",
+    "commit": "77168c8d5ab82399f65a80e9f807b50ba37cf483"
+  },
+  "mpp_userspace": {
+    "repository": "https://github.com/rockchip-linux/mpp",
+    "branch": "develop",
+    "commit": "7916c3cc000fefc0bdf96636b7d54fe174724f44",
+    "included": false
+  },
+  "module_files": [
+    {
+      "path": "module/Makefile",
+      "sha256": "01815b7e83d0e766607dc2da0ae0fe15f5351cad116e60d399a867cfe85da618",
+      "origin": {
+        "kind": "project-linux74-port",
+        "description": "External single-core MPP module build integration"
+      }
+    },
+    {
+      "path": "module/mpp_service.c",
+      "sha256": "9e0217ea9658242d6b5882137029bce2c3409bf0ac3208c8001fcdf1e964d974",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "drivers/video/rockchip/mpp/mpp_service.c",
+        "upstream_sha256": "1387724dbde346bceef6cfb69d193b30a18d6da1e9c5d6ed2c4769b9697c2c7a",
+        "modified_for_linux74": true
+      }
+    },
+    {
+      "path": "module/mpp_common.c",
+      "sha256": "38a3edadf2f60322bab2667438d379cbe5b8dcc43a5f81be47e7ea06f783925b",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "drivers/video/rockchip/mpp/mpp_common.c",
+        "upstream_sha256": "1376186f1984f9d296744bf8528b3bce3d9a15e9f11fe8b9bbf65b1bbe5312b8",
+        "modified_for_linux74": true
+      }
+    },
+    {
+      "path": "module/mpp_common.h",
+      "sha256": "2d57dfc006a97f7b0fe276139a6182513a183cf1e07c5dde451540ceec84939b",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "drivers/video/rockchip/mpp/mpp_common.h",
+        "upstream_sha256": "31e86670883d0a0f524ffc1faca9d0c10de697e3d2c4c0696cdef9a2cf2bd834",
+        "modified_for_linux74": true
+      }
+    },
+    {
+      "path": "module/mpp_iommu.c",
+      "sha256": "15ddeaf481a932ae08f329bf7f870167dfaca7648ff0a26d3457f6db4c237dec",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "drivers/video/rockchip/mpp/mpp_iommu.c",
+        "upstream_sha256": "fba98d7a15758dac995494581a7d41c496ded08d9881e1554fdba2e169abace9",
+        "modified_for_linux74": true
+      }
+    },
+    {
+      "path": "module/mpp_iommu.h",
+      "sha256": "12d9c6966f07239082e03b84363c22f40f1d42c4a3a0fd102ea8187d642360b1",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "drivers/video/rockchip/mpp/mpp_iommu.h",
+        "upstream_sha256": "536e27c8130fe646acc371ec3dfd3029354fa53e0c05cfe1cb62a4db16f372f3",
+        "modified_for_linux74": true
+      }
+    },
+    {
+      "path": "module/mpp_rkvenc2.c",
+      "sha256": "49188ee37d6a9eea71a078fe2962d37f05d4b8de400f1727f54c12841035d4f8",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "drivers/video/rockchip/mpp/mpp_rkvenc2.c",
+        "upstream_sha256": "50f08741fcc01511ec8b541520514a1b2997fb602b6a884ef3c72e44f59d5601",
+        "modified_for_linux74": true
+      }
+    },
+    {
+      "path": "module/mpp_debug.h",
+      "sha256": "32f17b2b6fe9492fb097708021a15098c27696e5831a319fb61fc1672a8512b2",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "drivers/video/rockchip/mpp/mpp_debug.h",
+        "upstream_sha256": "32f17b2b6fe9492fb097708021a15098c27696e5831a319fb61fc1672a8512b2",
+        "modified_for_linux74": false
+      }
+    },
+    {
+      "path": "module/linux74-compat.h",
+      "sha256": "5af5bc633dab41b32906af3a1408ae77680059a44c23ccd28587709f0631f8b0",
+      "origin": {
+        "kind": "project-linux74-port",
+        "description": "Declaration of the real kernel PM-domain idle helper"
+      }
+    },
+    {
+      "path": "module/include/uapi/linux/rk-mpp.h",
+      "sha256": "8d01bbf754c60d15660009a35bb55b191b36dd49d438431dc0f56570ccce5860",
+      "origin": {
+        "kind": "rockchip-linux/kernel",
+        "path": "include/uapi/linux/rk-mpp.h",
+        "upstream_sha256": "8d01bbf754c60d15660009a35bb55b191b36dd49d438431dc0f56570ccce5860",
+        "modified_for_linux74": false
+      }
+    },
+    {
+      "path": "module/include/soc/rockchip/rockchip_iommu.h",
+      "sha256": "9594afc6450dccf35af84c57697b1bb54ca3b6e57ec1fbe68eb09784bd35d64d",
+      "origin": {
+        "kind": "project-linux74-port",
+        "description": "Declarations of the real kernel IOMMU recovery helpers"
+      }
+    }
+  ],
+  "integration_files": [
+    {
+      "path": "0001-linux74-vepu510-integration.patch",
+      "sha256": "13c466163fbea75f3eeb68e5d95f857f44e146a112e8422ca84cfda4b6391819",
+      "origin": "Project Linux 7.4 PM-domain/IOMMU helper and ROCK 4D device-tree integration"
+    },
+    {
+      "path": "rk3576-vepu510-mpp.dtsi",
+      "sha256": "4f63f9567c07ff7a8707a7e2eb6efb6c0a7aba8849b43c46f087784d0a86a179",
+      "origin": "Adapted from rockchip-linux/kernel arch/arm64/boot/dts/rockchip/rk3576.dtsi",
+      "vendor_source_sha256": "bc2f246c59101704182f6f9303ca6aa03e3ff7a85bbdf17e83927561f9045457"
+    }
+  ],
+  "licenses": [
+    {
+      "path": "LICENSES/GPL-2.0",
+      "sha256": "8780e78a1a737e127f25a65f6d95269bffd36158dc261114de7859b490bfc5aa",
+      "origin": "Linux LICENSES/preferred/GPL-2.0"
+    },
+    {
+      "path": "LICENSES/MIT",
+      "sha256": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f",
+      "origin": "Linux LICENSES/preferred/MIT"
+    }
+  ]
+}

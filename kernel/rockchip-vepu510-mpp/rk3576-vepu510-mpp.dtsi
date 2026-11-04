@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/* Experimental single-core MPP encoder integration for mainline RK3576. */
+
+#include <dt-bindings/clock/rockchip,rk3576-cru.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/power/rockchip,rk3576-power.h>
+#include <dt-bindings/reset/rockchip,rk3576-cru.h>
+
+/ {
+	mpp_srv: mpp-srv {
+		compatible = "rockchip,mpp-service";
+		rockchip,taskqueue-count = <1>;
+		rockchip,resetgroup-count = <1>;
+	};
+
+	rkvenc0: video-codec@27a00000 {
+		compatible = "rockchip,rkv-encoder-rk3576";
+		reg = <0x0 0x27a00000 0x0 0x6000>;
+		interrupts = <GIC_SPI 310 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "irq_vepu0";
+		clocks = <&cru ACLK_VEPU0>, <&cru HCLK_VEPU0>,
+			 <&cru CLK_VEPU0_CORE>;
+		clock-names = "aclk_vcodec", "hclk_vcodec", "clk_core";
+		/* Fixed bring-up clocks; vendor OPP/DVFS is not enabled. */
+		assigned-clocks = <&cru ACLK_VEPU0_ROOT>,
+				  <&cru HCLK_VEPU0_ROOT>, <&cru CLK_VEPU0_CORE>;
+		assigned-clock-rates = <200000000>, <100000000>, <200000000>;
+		resets = <&cru SRST_A_VEPU0>, <&cru SRST_H_VEPU0>,
+			 <&cru SRST_VEPU0_CORE>;
+		reset-names = "video_a", "video_h", "video_core";
+		iommus = <&rkvenc0_mmu>;
+		power-domains = <&power RK3576_PD_VEPU0>;
+		rockchip,srv = <&mpp_srv>;
+		rockchip,taskqueue-node = <0>;
+		rockchip,resetgroup-node = <0>;
+		rockchip,task-capacity = <8>;
+	};
+
+	rkvenc0_mmu: iommu@27a0f000 {
+		compatible = "rockchip,rk3576-iommu", "rockchip,rk3568-iommu";
+		reg = <0x0 0x27a0f000 0x0 0x40>;
+		interrupts = <GIC_SPI 311 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&cru ACLK_VEPU0>, <&cru HCLK_VEPU0>;
+		clock-names = "aclk", "iface";
+		#iommu-cells = <0>;
+		rockchip,disable-mmu-reset;
+		power-domains = <&power RK3576_PD_VEPU0>;
+	};
+};

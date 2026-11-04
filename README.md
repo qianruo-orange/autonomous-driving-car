@@ -219,6 +219,8 @@ Build dependencies:
 
 For the validated ROCK 4D hardware JPEG path, first follow the [JPEG driver installation](kernel/rockchip-jpegd/README.md). See the [Chinese codec measurements](docs/CODEC_PERFORMANCE.md) for timing, quality checks and the encoder limitations. The front end exposes capture device, resolution and frame rate; codec selection is internal.
 
+The [experimental VEPU510 MPP port](kernel/rockchip-vepu510-mpp/README.md) includes the RK3576 encoder sources and Linux 7.4 integration patch. Full kernel and module compilation has passed; installation and hardware encoding validation remain pending. The application continues to use the validated software H.264 encoder.
+
 Prepare the model and labels before the first build:
 
 | File | Requirement |
@@ -338,7 +340,7 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | `include/` | Module interfaces and shared types |
 | `config/` | Device settings, model, labels, CAN databases |
 | `scripts/` | Bash build, deployment, model synchronization and JPEG driver installation |
-| `kernel/` | JPEG driver sources, provenance and RK3576 activation overlay |
+| `kernel/` | ROCK 4D kernel adaptation, JPEG driver and experimental VEPU510 MPP port |
 
 ## Communication registration and data slots
 
