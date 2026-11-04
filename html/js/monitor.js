@@ -484,10 +484,22 @@
           var c = d.cpu_cores[i], l = lastCores[i];
           var du2 = c.u + c.s - l.u - l.s, di = c.i - l.i, dt2 = du2 + di;
           var p = dt2 > 0 ? Math.round(du2 * 100 / dt2) : 0;
-          var freqText = (d.cpu_freqs && d.cpu_freqs[i]) ? ' <small>' + (d.cpu_freqs[i] / 1000).toFixed(2) + 'GHz</small>' : '';
-          document.getElementById('cpu_cores_pct' + i).innerHTML = p + '%' + freqText;
+          document.getElementById('cpu_cores_pct' + i).textContent = p + '%';
           var b = document.getElementById('cpu_cores_bar' + i);
           b.style.width = p + '%'; b.className = barColor(p);
+        }
+        /* 频率只在下方汇总一次：每核都写一遍会把窄栏挤爆，而多数情况下各核同频。
+           核间不同频时给出区间（如 1.80–2.20 GHz），不谎报单一值 */
+        var freqEl = document.getElementById('cpu_freq');
+        if (freqEl && d.cpu_freqs && d.cpu_freqs.length) {
+          var fmin = d.cpu_freqs[0], fmax = d.cpu_freqs[0];
+          for (var fi = 1; fi < d.cpu_freqs.length; fi++) {
+            if (d.cpu_freqs[fi] < fmin) fmin = d.cpu_freqs[fi];
+            if (d.cpu_freqs[fi] > fmax) fmax = d.cpu_freqs[fi];
+          }
+          freqEl.textContent = fmin === fmax
+            ? (fmin / 1000).toFixed(2) + ' GHz'
+            : (fmin / 1000).toFixed(2) + '–' + (fmax / 1000).toFixed(2) + ' GHz';
         }
         lastCores = d.cpu_cores.map(function(c) { return {u:c.u,s:c.s,i:c.i}; });
       }
@@ -523,24 +535,6 @@
       document.getElementById('mem_used').textContent = ((d.mem_total - d.mem_avail)/1024/1024).toFixed(1) + 'G';
       var mb = document.getElementById('mem_bar');
       mb.style.width = d.mem_pct + '%'; mb.className = d.mem_pct < 60 ? 'green' : d.mem_pct < 85 ? 'yellow' : 'red';
-
-      /* GPU：优先显示负载%；RK356x/RK3576 驱动未暴露 load 时显示当前频率(MHz) */
-      var gpuEl = document.getElementById('gpu_val');
-      var gb = document.getElementById('gpu_bar');
-      var gf = document.getElementById('gpu_freq');
-      if (d.gpu >= 0) {
-        gpuEl.textContent = d.gpu + '%';
-        gb.style.width = d.gpu + '%'; gb.className = 'blue';
-        if (gf) gf.textContent = '';
-      } else if (d.gpu_freq >= 0) {
-        gpuEl.textContent = d.gpu_freq + ' MHz';
-        gb.style.width = '0%';
-        if (gf) gf.textContent = '';
-      } else {
-        gpuEl.textContent = 'N/A';
-        gb.style.width = '0%';
-        if (gf) gf.textContent = '';
-      }
 
       var dp = Math.round(100 - d.disk_avail * 100 / d.disk_total);
       document.getElementById('disk_val').textContent = dp + '%';

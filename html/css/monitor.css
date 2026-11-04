@@ -24,7 +24,14 @@
    margin-top 12px：卡片上缘距顶栏按钮约 12px（原 6px 视觉上过近） */
 .monitor-grid{display:flex;gap:16px;align-items:stretch;margin-top:12px}
 .video-column{flex:1;display:flex;flex-direction:column;min-width:0}
-.status-column{width:420px;display:flex;flex-direction:column;gap:12px}
+/* 右侧状态栏压到 340px：栏内全是数字和进度条，宽度过剩只是浪费横向空间。
+   省下的宽度全给视频（16:9，宽度 +1px 高度就 +0.5625px） */
+.status-column{width:340px;flex:none;display:flex;flex-direction:column;gap:10px}
+/* 卡片均分右侧剩余高度：视频卡高度由 16:9 的宽度决定，一般高于状态栏内容的自然高度，
+   让卡片各自长高、内容在卡内垂直居中，两列底边才对得齐；内容本身不拉伸变形 */
+.status-column>.card{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;justify-content:center;padding:14px}
+.status-column>.card>h3{margin-bottom:8px}
+.status-column .sec{flex:0 0 auto}
 /* 与右侧状态栏等高：卡片撑满整行高度，多出来的高度由 space-between 放到视频与
    状态行之间（视频本身仍是 16:9、不裁切）。视频卡的自然高度不会超过行高，
    因为行高取两列的最大值，视频列就是其中一列 */
@@ -46,7 +53,6 @@
 #stream_overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2}
 .sec{flex:1}
 .val{font-size:32px;font-weight:bold;text-shadow:0 0 12px var(--glow)}
-#gpu_val{font-size:13px}
 .val-row{display:flex;align-items:baseline;justify-content:space-between}
 .temp{font-size:36px;font-weight:bold;color:var(--accent);text-shadow:0 0 16px var(--glow)}
 .hdr-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
@@ -70,18 +76,18 @@
 /* Distinguish the three resource cards; retain red overload warnings. */
 #cpu_bar:not(.red),#cpu_cores .core-bar div:not(.red){background:linear-gradient(90deg,#38bdf8,#60a5fa);box-shadow:0 0 8px rgba(56,189,248,.25)}
 #mem_bar:not(.red),#disk_bar:not(.red){background:linear-gradient(90deg,#f59e0b,#fbbf24);box-shadow:0 0 8px rgba(245,158,11,.25)}
-#npu_cores .core-bar div,#gpu_bar{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 8px rgba(129,140,248,.25)}
+#npu_cores .core-bar div{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 8px rgba(129,140,248,.25)}
 .core-label{font-size:10px;color:var(--muted);margin-bottom:2px;display:flex;justify-content:space-between}
 .net-iface{margin-bottom:8px}
-#net_speed{display:flex;gap:16px}
-#net_speed .net-iface{flex:1;margin-bottom:0}
+#net_speed{display:flex;gap:10px}
+#net_speed .net-iface{flex:1;min-width:0;margin-bottom:0}
 .net-iface h4{font-size:12px;color:var(--accent);margin-bottom:4px;display:flex;align-items:center;gap:6px}
 .net-iface h4 .if-status{font-size:10px;padding:1px 5px;border-radius:3px}
 .net-iface h4 .if-up{background:rgba(76,201,160,.15);color:#4cc9a0}
 .net-iface h4 .if-down{background:rgba(224,85,106,.15);color:#e0556a}
-.net-row{display:flex;gap:12px;align-items:center;font-size:13px;margin:2px 0}
-.net-dir{width:24px;color:var(--muted);font-size:11px;text-align:right}
-.net-val{font-family:monospace;min-width:80px}
+.net-row{display:flex;gap:8px;align-items:center;font-size:13px;margin:2px 0}
+.net-dir{width:14px;color:var(--muted);font-size:11px;text-align:right}
+.net-val{font-family:monospace;min-width:58px;text-align:right}
 .net-unit{color:var(--muted);font-size:10px}
 @media(max-width:900px){.pair{grid-template-columns:repeat(2,1fr)} .monitor-grid{flex-direction:column} .status-column{width:100%} .top-bar{display:flex;flex-wrap:wrap} .tb-left{flex:1 1 100%;margin-bottom:6px} .tb-gap{display:none} .tb-right{display:flex;align-items:center;margin-left:auto}}
 @media(max-width:540px){
