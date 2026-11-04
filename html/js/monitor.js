@@ -83,8 +83,9 @@
      用 srvOffsets（stats 轮询估出的钟差，取最小值）扣掉后即为端到端延迟 */
   function recordLatency(captureTs) {
     if (srvOffsets.length < 3) return;         /* 钟差样本不够，先显示 -- */
-    var off = Math.min.apply(null, srvOffsets);
-    var ms = performance.now() - (captureTs + off);
+    var off = Math.max.apply(null, srvOffsets);   /* 板端毫秒 = 本机时间 + off（略偏小的下界） */
+    /* 先把采集时刻折算到本机时间线（板端时刻 - off），再和现在相减 */
+    var ms = performance.now() - (captureTs - off);
     if (!(ms >= 0)) ms = 0;                    /* 钟差抖动导致的微小负值 */
     if (ms > 3000) return;                     /* 暂停/切后台后的异常值，丢弃不参与平均 */
     mjLatencyMs = mjLatencyMs === null ? ms : mjLatencyMs * 0.7 + ms * 0.3;
@@ -358,20 +359,40 @@
 
   function barColor(p) { return p < 60 ? 'green' : p < 85 ? 'yellow' : 'red'; }
 
+  /* 取某次请求在本机时间线上的「收到首字节」时刻。用 Resource Timing 而不是
+     performance.now()：后者要等主线程排到才执行，解 1080p JPEG 时能被推迟几十毫秒，
+     会把钟差算小、延迟压到 0；网络栈打点不受渲染线程负载影响。
+     必须按 startTime 认出「本次」那条记录：新条目是异步写入的，直接取最后一条可能
+     拿到上一次的（差整 1 秒，钟差直接崩）。取不到返回 0，本次样本作废。 */
+  function resourceResponseStart(needle, afterMs) {
+    if (!performance.getEntriesByType) return performance.now();
+    var list = performance.getEntriesByType('resource');
+    for (var i = list.length - 1; i >= 0; i--) {
+      var e = list[i];
+      if (e.name.indexOf(needle) >= 0 && e.startTime >= afterMs - 50 && e.responseStart > 0)
+        return e.responseStart;
+    }
+    return 0;
+  }
+
   async function updateVideoStats() {
     if (videoStatsBusy) return;
     videoStatsBusy = true;
     try {
+      var tReq = performance.now();
       var response = await fetch('/api/video/stats');
       if (!response.ok) return;
       var stats = await response.json();
       cameraFps = stats.capture_fps || 0;
       processingAgeMs = stats.processing_age_ms || 0;
       sourceDrops = (stats.capture_dropped || 0) + (stats.driver_dropped || 0) + (stats.infer_dropped || 0);
-      /* 钟差 = 板端单调时钟 - 本机 performance.now()。取最近 8 次的最小值：
-         网络回程抖动只会让差值偏大，最小值最接近真实钟差 */
+      /* 钟差 = 板端单调时钟 - 本机时间。板端在写响应前打 now_ms，本机用「响应首字节」
+         打点，两者之间只剩服务端写出+网络这一小段，误差 1~3ms 且恒为正（即估计值
+         永远略小于真实钟差）。取窗口内最大值，就是最紧的那个下界 */
+      var base = stats.now_ms ? resourceResponseStart('/api/video/stats', tReq) : 0;
+      if (!base) base = performance.now();   /* 没有 Resource Timing 时退化；两者都是钟差下界，可混用 */
       if (stats.now_ms) {
-        srvOffsets.push(stats.now_ms - performance.now());
+        srvOffsets.push(stats.now_ms - base);
         if (srvOffsets.length > 8) srvOffsets.shift();
       }
     } catch(e) {} finally { videoStatsBusy = false; }
