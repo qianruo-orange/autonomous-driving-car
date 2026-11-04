@@ -30,7 +30,8 @@
 /* position:relative —— 叠框层/追踪层/全屏按钮都相对视频容器定位，
    否则会相对带 10px padding 的卡片，框整体偏移 */
 .video-wrapper{position:relative;flex:1;min-height:0;background:#000;border-radius:12px;overflow:hidden}
-.video-stats{flex:none;padding:7px 4px 0;color:var(--muted);font-size:12px;line-height:1.5;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+/* 与追踪状态同一行：靠右紧邻停止按钮，单行显示，宽度不够时省略而不换行 */
+.video-stats{flex:0 1 auto;min-width:0;margin-left:auto;color:var(--muted);font-size:12px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .video-fps{position:absolute;top:18px;right:18px;z-index:10;padding:3px 10px;border-radius:10px;background:rgba(0,0,0,.45);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--card-border);color:var(--text-strong);font-size:12px;font-weight:600;text-shadow:0 0 8px rgba(0,0,0,.7);pointer-events:none}
 /* cover：画面填满容器，不产生上下/左右黑边；容器比例与 16:9 不同时裁掉少量边缘。
    叠框按实际的 object-fit 换算内容矩形（见 monitor.js overlayDraw），裁切后仍对齐 */
