@@ -250,7 +250,9 @@ Rockchip `rknn_model_zoo` v2.5.0 的 `examples/yolo26` 为 RK3576 给出另一�
 | 输出 1 | `(1,4,8400)` **INT8**，框 cx,cy,w,h（模型输入像素，实测确认） |
 | 交付哈希 | `29cab9860993948e8636494f974ef0c4338cc4cd8030f49e2b3ada3d5875619b` |
 
-两支各自独立量化，类别分支不再与像素尺度共享 scale，检测头得以全 INT8。one2one 头自身完成去重，后处理不再需要 NMS。
+两支各自独立量化，类别分支不再与像素尺度共享 scale，检测头得以全 INT8。
+
+**关于 NMS**：NPU 内没有 NMS 算子，模型图在检测头结束。Rockchip 文档所说的"无需 NMS"指 one2one 头的设计意图；本项目实测该头在 conf≥0.60 时仍有 **85.7%** 的框在同类 IoU>0.45 下互为重复（64 图、956 框、单图最多 105 框），因此板端后处理**保留类内贪心 NMS**。去掉 NMS 会使 mAP50 从 0.5238 降到 0.3491。
 
 **框格式注意**：`Mul_2` 输出是像素单位 `cx,cy,w,h`，不是 `x1,y1,x2,y2`。官方 C 示例按 xyxy 解释，若直接照搬会得到负宽高——本项目按 cxcywh 解码，偏差实测 0.5 个百分点内。
 
@@ -268,7 +270,7 @@ IndexError: list index out of range
 
 ### 14.4 板端后端（纯 C）
 
-- `yolo_postprocess_two()`：按两路各自的 zp/scale 反量化，逐锚点取最大类，阈值过滤后按分数取 TopK，无 NMS。
+- `yolo_postprocess_two()`：按两路各自的 zp/scale 反量化，逐锚点取最大类，阈值过滤后维护 128 个候选池，再做类内贪心 NMS（复用单输出路径的 `yolo_nms_finish`），最后取前 32。
 - 推理请求 `want_float=0`，直接消费原生 INT8 输出，省去每帧的 FP16→float 转换。
 - 单输出路径完整保留：混血 FP16 模型仍可加载运行，作为回滚路径。
 
@@ -278,7 +280,7 @@ IndexError: list index out of range
 |---|---:|---:|
 | `run` | 22.2 ms | 19–21 ms |
 | `outputs` | 2 ms | 0 ms（原生 INT8） |
-| `post` | 含 NMS | 2 ms，无 NMS |
+| `post` | 含 NMS | 2 ms，含 NMS（候选池 128） |
 | 采集帧率 | 30 fps | 30 fps |
 | 运行错误 | — | 0 条 |
 
@@ -293,6 +295,8 @@ IndexError: list index out of range
 | 差值 | **+0.0233** | −0.0315 |
 
 mAP50 提升 2.3 个点，mAP50–95 下降 3.15 个点：one2one 头在高 IoU 下的定位精度略弱，召回更好。按既定门限（mAP50 降幅超过 2 点回滚）不触发回滚。
+
+同一批数据在**关闭 NMS** 的口径下复测：旧模型 mAP50 降至 0.2973、新模型降至 0.3491，即 NMS 对本次交付模型价值约 **17.5 个点**。这也否定了"one2one 头可免 NMS"的说法。
 
 评测方法：C 侧把两路 INT8 输出反量化后按 `[84,A]` 落盘（0–3 行为 cx,cy,w,h），复用既有评分脚本，与历史结果同口径；不含 Python 推理环节。
 

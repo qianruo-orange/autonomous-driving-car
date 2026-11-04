@@ -642,7 +642,7 @@ static void *yolo_worker_task(void *arg)
             res.count = yolo_postprocess_two(sbuf, sa, bbuf, ba,
                                              lb_scale_x, lb_scale_y, lb_pad_x, lb_pad_y,
                                              job.w, job.h, res.dets, YOLO_MAX_DETS,
-                                             g_yolo.conf, NULL);
+                                             g_yolo.conf, g_yolo.nms, NULL);
         } else {
             const float *out_buf[1] = { (const float *)outputs[0].buf };
             res.count = yolo_postprocess(out_buf, wk->out_attr, 1,

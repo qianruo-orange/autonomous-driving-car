@@ -37,6 +37,6 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *scores_
                          const void *boxes_buf, const rknn_tensor_attr *boxes_attr,
                          float lb_scale_x, float lb_scale_y, int lb_pad_x, int lb_pad_y,
                          int frame_w, int frame_h,
-                         yolo_det_t *dets, int max_dets, float conf, int *nc_out);
+                         yolo_det_t *dets, int max_dets, float conf, float nms, int *nc_out);
 
 #endif /* YOLO_POSTPROCESS_H */

@@ -263,7 +263,7 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
                          const void *boxes_buf, const rknn_tensor_attr *ba,
                          float lb_scale_x, float lb_scale_y, int lb_pad_x, int lb_pad_y,
                          int frame_w, int frame_h,
-                         yolo_det_t *dets, int max_dets, float conf, int *nc_out)
+                         yolo_det_t *dets, int max_dets, float conf, float nms, int *nc_out)
 {
     if (nc_out) *nc_out = 0;
     if (!scores_buf || !boxes_buf || !sa || !ba || !dets || max_dets <= 0) return 0;
@@ -283,11 +283,11 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
     const int32_t s_zp = sa->zp, b_zp = ba->zp;
     const float   s_sc = sa->scale, b_sc = ba->scale;
 
-    
-    /* 按分数降序保留前 max_dets 个候选，一次遍历完成 */
-    float best[YOLO_MAX_DETS];
-    int   idx[YOLO_MAX_DETS];
-    int   n = 0;
+    /* one2one 头仍会在目标周围留下大量近邻高分锚点（实测 conf>=0.6 时约 85%
+       的框互为重复），所以这里照旧做类内贪心 NMS。候选池按分数降序维护。 */
+    enum { YOLO2_CAND_MAX = 128 };
+    float cand[YOLO2_CAND_MAX * 6];
+    int   ncand = 0;
 
     for (int i = 0; i < A; ++i) {
         float top = -1.0f;
@@ -299,49 +299,38 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
             if (v > top) { top = v; cls = j; }
         }
         if (cls < 0 || top < conf) continue;
-        if (n == max_dets && top <= best[n - 1]) continue;
-        int pos = (n < max_dets) ? n++ : max_dets - 1;
-        while (pos > 0 && best[pos - 1] < top) {
-            best[pos] = best[pos - 1];
-            idx[pos]  = idx[pos - 1];
-            --pos;
-        }
-        best[pos] = top;
-        idx[pos]  = i;
-    }
+        if (ncand == YOLO2_CAND_MAX && top <= cand[(YOLO2_CAND_MAX - 1) * 6 + 4]) continue;
 
-    int out = 0;
-    for (int k = 0; k < n; ++k) {
-        int i = idx[k];
-        /* Mul_2 输出为像素单位 cx,cy,w,h（实测：第 0 列≈cx、第 2 列≈w），
-           先换回 xyxy 再做 letterbox 逆映射 */
+        /* Mul_2 输出为像素单位 cx,cy,w,h（实测：第 0 列≈cx、第 2 列≈w） */
         float bcx = yolo_deq_i8(bp[bx_nchw ? (size_t)0 * (size_t)A + (size_t)i : (size_t)i * 4 + 0], b_zp, b_sc);
         float bcy = yolo_deq_i8(bp[bx_nchw ? (size_t)1 * (size_t)A + (size_t)i : (size_t)i * 4 + 1], b_zp, b_sc);
         float bw  = yolo_deq_i8(bp[bx_nchw ? (size_t)2 * (size_t)A + (size_t)i : (size_t)i * 4 + 2], b_zp, b_sc);
         float bh  = yolo_deq_i8(bp[bx_nchw ? (size_t)3 * (size_t)A + (size_t)i : (size_t)i * 4 + 3], b_zp, b_sc);
+        if (!(bw > 0.0f) || !(bh > 0.0f)) continue;
 
-        float bx1 = bcx - bw * 0.5f, by1 = bcy - bh * 0.5f;
-        float bx2 = bcx + bw * 0.5f, by2 = bcy + bh * 0.5f;
-
-        float x1 = (bx1 - (float)lb_pad_x) / lb_scale_x;
-        float y1 = (by1 - (float)lb_pad_y) / lb_scale_y;
-        float x2 = (bx2 - (float)lb_pad_x) / lb_scale_x;
-        float y2 = (by2 - (float)lb_pad_y) / lb_scale_y;
-
+        float x1 = (bcx - bw * 0.5f - (float)lb_pad_x) / lb_scale_x;
+        float y1 = (bcy - bh * 0.5f - (float)lb_pad_y) / lb_scale_y;
+        float x2 = (bcx + bw * 0.5f - (float)lb_pad_x) / lb_scale_x;
+        float y2 = (bcy + bh * 0.5f - (float)lb_pad_y) / lb_scale_y;
         if (!(x2 > x1) || !(y2 > y1)) continue;
         if (x1 < 0.0f) x1 = 0.0f;
         if (y1 < 0.0f) y1 = 0.0f;
         if (x2 > (float)frame_w) x2 = (float)frame_w;
         if (y2 > (float)frame_h) y2 = (float)frame_h;
+        if (!(x2 > x1) || !(y2 > y1)) continue;
         if (yolo_box_oversize(x1, y1, x2, y2, frame_w, frame_h)) continue;
 
-        dets[out].x1 = x1;
-        dets[out].y1 = y1;
-        dets[out].x2 = x2;
-        dets[out].y2 = y2;
-        dets[out].conf = best[k];
-        dets[out].cls  = best_class_of(sp, sc_nchw, nc, A, i, s_zp, s_sc);
-        out++;
+        int pos = (ncand < YOLO2_CAND_MAX) ? ncand++ : YOLO2_CAND_MAX - 1;
+        while (pos > 0 && cand[(pos - 1) * 6 + 4] < top) {
+            memcpy(&cand[pos * 6], &cand[(pos - 1) * 6], 6 * sizeof(float));
+            --pos;
+        }
+        cand[pos * 6 + 0] = x1;
+        cand[pos * 6 + 1] = y1;
+        cand[pos * 6 + 2] = x2;
+        cand[pos * 6 + 3] = y2;
+        cand[pos * 6 + 4] = top;
+        cand[pos * 6 + 5] = (float)cls;
     }
-    return out;
+    return yolo_nms_finish(cand, ncand, dets, max_dets, nms);
 }
