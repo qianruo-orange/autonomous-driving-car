@@ -1,6 +1,6 @@
 # Frame publication and model verification
 
-Update on 2026-11-03: RK3576 camera MJPEG now uses the prepared V4L2 JPEG driver, cached DMA-BUF and full-range BT.601 NEON conversion to RGB. The image thread owns this context; frame topics and ownership below remain unchanged. See [codec validation and measurements](CODEC_PERFORMANCE.md) for the current backend and experimental encoder limits.
+Update on 2026-11-04: annotated frames are no longer encoded. Live view and recording both consume the camera's raw MJPEG directly, so the ring now has a single publication topic and no encoder stage. Earlier revisions used a prepared V4L2 JPEG driver, cached DMA-BUF and full-range BT.601 NEON conversion to RGB; that path still feeds inference and is unchanged.
 
 ## Frame handoff
 
@@ -8,12 +8,13 @@ The frame ring publishes two topics under its mutex:
 
 | Publication | Subscribers | Payload ownership |
 | --- | --- | --- |
-| `FRAME_TOPIC_CAPTURED` after V4L2 dequeue | RGB decode producer, raw-frame readers | mmap buffer stays pinned by claims; delayed QBUF |
-| `FRAME_TOPIC_DISPLAYED` after rendering | H.264 recorder, annotated MJPEG viewers | Recorder takes pooled NV12; viewers copy the JPEG under the ring lock |
+| `FRAME_TOPIC_CAPTURED` after V4L2 dequeue | RGB decode producer, raw-frame readers, recorder | mmap buffer stays pinned by claims; delayed QBUF |
+
+`FRAME_TOPIC_DISPLAYED` was removed with the encoder stage. Rendering still advances `display_seq`, which is what lets the maintain pass return the RGB buffer of skipped and superseded slots to the pool.
 
 Decode hands each RGB job to the bounded inference queue and wakes eligible workers. Workers publish results to the result queue, which wakes the renderer. These queues preserve backpressure and the renderer's latest-result policy. No broker thread or additional image copy is needed for notification.
 
-Each subscriber tracks a frame sequence and cancellation generation. Checking availability and waiting use the same mutex as publication, so a frame published before a wait is still observed. Capture only wakes capture subscribers; rendering only wakes display subscribers. Annotated MJPEG viewers now wait for display publication instead of sleeping for 10 ms between checks.
+Each subscriber tracks a frame sequence and cancellation generation. Checking availability and waiting use the same mutex as publication, so a frame published before a wait is still observed. Capture wakes capture subscribers; the recording thread waits on the same topic and copies each frame in sequence. Live viewers take the newest frame by copying it under the ring lock, so a slow client never pins a slot.
 
 Stopping, reloading and camera quiescence cancel outstanding subscriptions, including a cancellation that occurs just before entering the wait. Wait deadlines use `CLOCK_MONOTONIC`. Timeouts only allow periodic exit and disconnect checks; they do not impose a frame-processing interval. Notification makes a consumer runnable immediately; CPU availability, processing time and queue backpressure still determine when it executes.
 
@@ -34,4 +35,4 @@ The model takes 640×640 RGB and produces one decoded `[1,84,8400]` tensor, comp
 
 ## Validation
 
-The ring was checked with ASan and UBSan for publication before and during waits, multiple subscribers, topic isolation, cancellation races, monotonic timeouts, NV12 availability, claim protection, delayed QBUF and quiescence. Temporary verification programs and model-inspection dependencies remain outside the repository.
+The ring was checked with ASan and UBSan for publication before and during waits, multiple subscribers, topic isolation, cancellation races, monotonic timeouts, RGB pool availability, claim protection, delayed QBUF and quiescence. Temporary verification programs and model-inspection dependencies remain outside the repository.
