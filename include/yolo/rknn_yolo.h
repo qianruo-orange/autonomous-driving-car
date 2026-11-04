@@ -11,11 +11,12 @@
  *
  * 模块组成（见 source/yolo/ 下各文件）：
  *  - yolo_image.c      图像处理（未压缩像素转换 / 缩放）
+ *  - yolo_cv.cpp       依赖 OpenCV 的预处理（letterbox 缩放、线程数收敛）
+ *  - yolo_classes.c    类别名表加载（config/coco.names，回退内置 COCO 80 类）
  *  - yolo_postprocess.c decoded YOLO26 detection filtering and NMS
- *  - yolo_draw.cpp     RGB 画框与类别标签
  *  - rknn_yolo.c       模型加载、推理线程池（每线程独立 rknn context，并行推理）、
  *                      任务队列、结果队列（NMS 后处理结果：目标名称 + 置信度 +
- *                      标注框四点坐标）、渲染 composer、结果/画框帧快照
+ *                      标注框四点坐标）、结果快照
  *
  * 多线程推理：按实际编码/渲染帧率和帧龄试探比较活跃 worker 数，
  * 按实际 NPU 核数均匀分配，独立 rknn context 并行推理。

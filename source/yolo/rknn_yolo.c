@@ -27,10 +27,9 @@
  * → 重建池。由前端上传模型/标签文件与 YOLO 参数保存触发。
  *
  * 必要流程：YOLO 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
- * 启动路径整体失败退出；运行期热重载失败由 HTTP 接口报告 saved_reload_failed，
- * 标注视频仅使用硬件 H.264 编码。
+ * 启动路径整体失败退出；运行期热重载失败由 HTTP 接口报告 saved_reload_failed。
  *
- * 图像处理与后处理已拆分为独立模块（yolo_image / yolo_postprocess / yolo_draw），
+ * 图像处理与后处理已拆分为独立模块（yolo_image / yolo_postprocess），
  * 本文件仅保留：模型生命周期、推理线程池、任务队列、结果队列、
  * 环形队列槽消费、快照与对外 API。
  */
@@ -55,7 +54,7 @@
 #include "control/car_sport_ctrl.h"
 #include "yolo/yolo_image.h"
 #include "yolo/yolo_postprocess.h"
-#include "yolo/yolo_draw.h"
+#include "yolo/yolo_classes.h"
 #include "control/image_tracking.h"
 #include "yolo/yolo_events.h"
 #include "core/common.h"
@@ -787,18 +786,15 @@ static void *yolo_render_task(void *arg)
         disp.w = w; disp.h = h;
         disp.count = item.count < 0 ? 0 : item.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : item.count;
 
-        /* Render labels into the owned RGB frame (saved detection reports). */
+        /* 检测框只画一次：浏览器端 canvas 叠加（monitor.js overlayDraw）。
+           服务端不再把框烧进 RGB —— 这一帧没有消费者（录像走相机原始 JPEG、
+           直播走原始 JPEG 透传），每帧画一遍纯属浪费 CPU。 */
         unsigned long long object_ids[YOLO_MAX_DETS];
-        int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms,
-                                                  object_ids);
-        /* Keep velocity estimation on raw detections;
-         * EMA only changes the boxes drawn for this frame. */
+        (void)image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms, object_ids);
+        /* Keep velocity estimation on raw detections. */
         yolo_smooth(&g_yolo.prev, &disp);
-        if (yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes,
-                                  tracked_index, object_ids) == 0) {
-            g_yolo.prev = disp;
-            snap_result(&disp);
-        }
+        g_yolo.prev = disp;
+        snap_result(&disp);
 
         frame_ring_lock(ring);
         /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，否则缓冲回池 */

@@ -108,6 +108,7 @@ target_link_libraries(autonomous-driving-car PRIVATE ${LIBNLROUTE3})
 find_library(LIBRKNNRT rknnrt REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 
-# OpenCV（core + imgproc）：检测框画框 / 标签文字渲染（cv::rectangle / cv::putText）
+# OpenCV（core + imgproc，仅 imgproc 的 resize）：推理前的 RGB letterbox 缩放
+# 此前还负责检测框/标签渲染，那套渲染已删除（框只在浏览器 canvas 上画一次）
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 target_link_libraries(autonomous-driving-car PRIVATE ${OpenCV_LIBS})
