@@ -540,9 +540,13 @@ out:
     return NULL;
 }
 
-static int video_stream_wait_next(int last_seq, unsigned char **out, size_t *out_len)
+/* out_capture_ms：该帧的采集时刻（CLOCK_MONOTONIC 毫秒，来自 V4L2 buf.timestamp），
+   随帧发出 X-Ts 供前端算端到端延迟；无有效时间戳时为 0 */
+static int video_stream_wait_next(int last_seq, unsigned char **out, size_t *out_len,
+                                  unsigned long long *out_capture_ms)
 {
     video_ctx_t *vs = g_ctx;
+    *out_capture_ms = 0;
     if (!vs) return -1;
     unsigned long long last = (unsigned long long)(unsigned int)last_seq;
 
@@ -557,6 +561,7 @@ static int video_stream_wait_next(int last_seq, unsigned char **out, size_t *out
     frame_slot_t *s = frame_ring_raw_newest_locked(&vs->ring);
     unsigned long long seq = s ? s->seq : last;
     if (s) {
+        *out_capture_ms = s->capture_ms;
         unsigned char *copy = malloc(s->raw.len);
         if (!copy) {
             LOG_ERROR("video_stream: frame alloc failed (%zu bytes)", s->raw.len);
@@ -662,7 +667,8 @@ static void *video_stream_client_task(void *arg)
 
         /* 帧发布驱动推流；socket 写入有界等待，无需独立看门狗监督。 */
         unsigned char *frame = NULL; size_t flen = 0;
-        int seq = video_stream_wait_next(last_raw, &frame, &flen);
+        unsigned long long capture_ms = 0;
+        int seq = video_stream_wait_next(last_raw, &frame, &flen, &capture_ms);
         if (seq < 0) break;
         if (seq == last_raw) { usleep(20000); continue; }
         last_raw = seq;
@@ -689,13 +695,15 @@ static void *video_stream_client_task(void *arg)
                 continue;   /* last_raw 已前进，这一帧不再重发 */
             }
         }
-        char mhdr[160];
+        char mhdr[200];
         /* X-Seq：该帧在采集环里的序号（与 YOLO 结果 seq 同一空间）。前端据此把
-           检测框叠加到对应原始帧，做到透传链路也能显示标注且不重新编码。 */
+           检测框叠加到对应原始帧，做到透传链路也能显示标注且不重新编码。
+           X-Ts：该帧的采集时刻（板端单调时钟毫秒），前端配合 /api/video/stats 的
+           now_ms 折算钟差后得到真实的采集→显示端到端延迟。 */
         int hlen = snprintf(mhdr, sizeof(mhdr),
                             "--frame\r\nContent-Type: image/jpeg\r\n"
-                            "X-Seq: %u\r\nContent-Length: %zu\r\n\r\n",
-                            (unsigned)seq, flen);
+                            "X-Seq: %u\r\nX-Ts: %llu\r\nContent-Length: %zu\r\n\r\n",
+                            (unsigned)seq, capture_ms, flen);
         struct timespec w0, w1;
         clock_gettime(CLOCK_MONOTONIC, &w0);
         if (fd_write_all_blocking(fd, mhdr, (size_t)hlen) < 0) { free(frame); break; }

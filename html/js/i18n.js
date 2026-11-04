@@ -140,7 +140,7 @@
     '无线': 'Wireless',
     '已连接': 'Connected',
     '未连接': 'Disconnected',
-    '摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 总延迟约 {delay} ms · 当前丢帧 {dropped}/s': 'Camera {camera} FPS · Processing {processing} ms · Received {received} FPS · Buffer {buffer} ms · Total delay ~{delay} ms · Dropped {dropped}/s',
+    '摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 端到端延迟 {delay} ms · 当前丢帧 {dropped}/s': 'Camera {camera} FPS · Processing {processing} ms · Received {received} FPS · End-to-end latency {delay} ms · Dropped {dropped}/s',
     '星期日': 'Sunday', '星期一': 'Monday', '星期二': 'Tuesday',
     '星期三': 'Wednesday', '星期四': 'Thursday', '星期五': 'Friday', '星期六': 'Saturday',
     '确定要重启设备吗？': 'Are you sure you want to reboot the device?',

@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <linux/videodev2.h>
 #include "http/http_internal.h"
@@ -321,6 +322,12 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
     }
     frame_ring_stats_t st;
     frame_ring_stats(ring, &st);
+    /* now_ms：板端 CLOCK_MONOTONIC 毫秒，与每帧 X-Ts 同一时钟。前端用它与浏览器
+       performance.now() 的差值折算钟差，从而把 X-Ts 换算成端到端延迟 */
+    struct timespec tnow;
+    clock_gettime(CLOCK_MONOTONIC, &tnow);
+    unsigned long long now_ms = (unsigned long long)tnow.tv_sec * 1000u
+                              + (unsigned long long)tnow.tv_nsec / 1000000u;
     char json[1024];
     int off = 0;
     JSON_ADD(json, off, "{\"produce_seq\":%llu,\"capture_dropped\":%llu,"
@@ -328,11 +335,11 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
         "\"render_skipped\":%llu,\"raw_pinned\":%d,"
         "\"pool_rgb\":%d,"
         "\"capture_fps\":%.3f,\"display_seq\":%llu,\"displayed_frames\":%llu,"
-        "\"processing_age_ms\":%llu,\"processing_age_max_ms\":%llu}",
+        "\"processing_age_ms\":%llu,\"processing_age_max_ms\":%llu,\"now_ms\":%llu}",
         st.produce_seq, st.capture_dropped, st.driver_dropped, st.capture_stall_ms,
         st.infer_dropped, st.render_skipped,
         st.raw_pinned, st.pool_rgb,
         st.capture_fps, st.display_seq, st.displayed_frames,
-        st.processing_age_ms, st.processing_age_max_ms);
+        st.processing_age_ms, st.processing_age_max_ms, now_ms);
     http_ok_json(fd, json, (size_t)off);
 }

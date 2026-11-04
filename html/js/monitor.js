@@ -21,19 +21,20 @@
   var imgBusy = false;      /* 上一帧还在解码：不覆盖 src（覆盖会取消其加载） */
   var pendingBlob = null;   /* 解码期间收到的最新帧，仅保留最后一张，解码完立即补显 */
   var pendingBlobSeq = 0;   /* 与该帧对应的采集序号（X-Seq） */
+  var pendingBlobTs = 0;    /* 与该帧对应的采集时刻（X-Ts，板端单调毫秒） */
 
   /* ---- MJPEG 透传链路的延迟/丢帧统计 ----
-     透传链路没有 MSE buffered/playbackQuality，改用每帧自带的 X-Seq：
+     透传链路没有 MSE buffered/playbackQuality，改用每帧自带的 X-Seq / X-Ts：
        · 丢帧 = 相邻两帧序号跳号（seq 由采集环单调递增，跳号只可能是没发出来/没收到）
-       · 延迟 = 屏上这帧落后服务端最新采集帧多少帧 × 帧间隔，即端到端（采集→屏幕） */
-  var mjShownSeq = 0;         /* 屏上那一帧的采集序号 */
-  var mjLastSeq = 0;          /* 上一帧收到的序号 */
-  var mjDropTotal = 0;        /* 收到的帧里累计跳过的帧数 */
-  var mjDropPerSec = 0;       /* 每秒丢帧（1s 窗口差值） */
-  var mjDropMark = null;      /* 上一窗口的累计值 */
-  var mjLagFrames = 0;        /* 落后最新采集帧的帧数（指数平滑） */
-  var mjLatestSeq = 0;        /* 服务端最新采集序号 */
-  var mjCaptureFps = 30;      /* 采集帧率（用于帧数换算毫秒） */
+       · 延迟 = 屏上这帧的采集时刻到它真正上屏的间隔。板端时间戳是单调时钟毫秒，
+         与浏览器 performance.now() 不同源，故用 /api/video/stats 的 now_ms 折算钟差
+         （一次往返估一次，取窗口内最小值抑制回程抖动）。 */
+  var mjLastSeq = 0;         /* 上一帧收到的序号 */
+  var mjDropTotal = 0;       /* 收到的帧里累计跳过的帧数 */
+  var mjDropPerSec = 0;      /* 每秒丢帧（1s 窗口差值） */
+  var mjDropMark = null;     /* 上一窗口的累计值 */
+  var mjLatencyMs = null;    /* 采集→上屏端到端延迟（指数平滑） */
+  var srvOffsets = [];       /* 最近的钟差样本（板端时钟 - 本机 perf.now） */
 
   /* ---- 检测框叠加：MJPEG 透传链路下画面是相机原始帧，服务端不再烧框，
      前端用每帧的 X-Seq 与 /api/detections/live 返回的 seq 对齐后画在 canvas 上 ---- */
@@ -47,13 +48,14 @@
   function resetFps() {
     fpsCnt = 0; shownCnt = 0; fpsWin = Date.now(); fpsVal = 0;
     receivedFps = 0;
-    mjShownSeq = 0; mjLastSeq = 0; mjDropTotal = 0;
-    mjDropPerSec = 0; mjDropMark = null; mjLagFrames = 0;
+    mjLatencyMs = null;
+    mjLastSeq = 0; mjDropTotal = 0;
+    mjDropPerSec = 0; mjDropMark = null;
   }
 
   /* 显示一帧：仅在上一次 onload/onerror 之后调用，上一帧 URL 此时已被完整消费，
      可安全回收；onload 前就 revoke 会中断在途解码，弱设备上永远看不到画面 */
-  function showFrame(blob, seq) {
+  function showFrame(blob, seq, ts) {
     var target = imgEl, session = streamAbort;
     if (!target || !session) return;
     var u = URL.createObjectURL(blob);
@@ -62,19 +64,30 @@
       if (streamAbort !== session || imgEl !== target) return;
       if (event.type === 'load') {
         shownCnt++;
-        if (seq) mjShownSeq = seq;   /* 延迟统计：屏上这帧的采集序号 */
-        overlayDraw(seq);          /* 该帧已经在屏幕上，按同一 seq 叠框 */
+        if (ts) recordLatency(ts);   /* 这一帧真正上屏了，才结算端到端延迟 */
+        overlayDraw(seq);            /* 该帧已经在屏幕上，按同一 seq 叠框 */
       }
       imgBusy = false;
       if (pendingBlob) {          /* 解码慢于码流时丢弃中间帧，只补最新一帧 */
-        var pb = pendingBlob, ps = pendingBlobSeq;
+        var pb = pendingBlob, ps = pendingBlobSeq, pt = pendingBlobTs;
         pendingBlob = null;
-        showFrame(pb, ps);
+        showFrame(pb, ps, pt);
       }
     };
     target.src = u;
     if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
     lastBlobUrl = u;
+  }
+
+  /* 采集时刻 → 上屏时刻的真实间隔。板端时钟与本机 performance.now() 差一个常量，
+     用 srvOffsets（stats 轮询估出的钟差，取最小值）扣掉后即为端到端延迟 */
+  function recordLatency(captureTs) {
+    if (!srvOffsets.length) return;            /* 还没拿到板端时钟基准 */
+    var off = Math.min.apply(null, srvOffsets);
+    var ms = performance.now() - (captureTs + off);
+    if (!(ms >= 0)) ms = 0;                    /* 钟差抖动导致的微小负值 */
+    if (ms > 3000) return;                     /* 暂停/切后台后的异常值，丢弃不参与平均 */
+    mjLatencyMs = mjLatencyMs === null ? ms : mjLatencyMs * 0.7 + ms * 0.3;
   }
 
   function streamStop() {
@@ -213,12 +226,12 @@
 
   /* Retain only JPEG data and scan each incoming byte once. Blob copies the
      completed view before this reusable buffer receives the next frame.
-     帧间是 multipart 头，先从里面取出 X-Seq（该帧的采集序号），再交给回调，
-     这样上层能把检测结果精确对齐到正在显示的这一帧。 */
+     帧间是 multipart 头，先从里面取出 X-Seq（采集序号）和 X-Ts（采集时刻），
+     再交给回调：前者把检测结果精确对齐到正在显示的这一帧，后者用来算端到端延迟。 */
   function createJpegParser(onFrame) {
     var limit = 16 * 1024 * 1024, frame = new Uint8Array(64 * 1024);
     var used = 0, previous = 0, inside = false;
-    var hdrText = '', pendingSeq = 0;
+    var hdrText = '', pendingSeq = 0, pendingTs = 0;
     function append(bytes) {
       var needed = used + bytes.length;
       if (needed > limit) throw new Error('MJPEG frame exceeds 16 MiB');
@@ -230,11 +243,14 @@
       frame.set(bytes, used);
       used = needed;
     }
-    function takeSeq() {
-      var re = /X-Seq:\s*(\d+)/g, m, last = null;
-      while ((m = re.exec(hdrText)) !== null) last = m[1];
+    /* 头里两个字段一起取：每帧头只过一次，避免重复扫描同一段文本 */
+    function takeHdr() {
+      var ms = /X-Seq:\s*(\d+)/g, mt = /X-Ts:\s*(\d+)/g, m, last = null, lastTs = null;
+      while ((m = ms.exec(hdrText)) !== null) last = m[1];
+      while ((m = mt.exec(hdrText)) !== null) lastTs = m[1];
       hdrText = '';
-      if (last !== null) pendingSeq = parseInt(last, 10) >>> 0;
+      pendingSeq = last !== null ? parseInt(last, 10) >>> 0 : 0;
+      pendingTs = lastTs !== null ? parseInt(lastTs, 10) : 0;
     }
     return function(chunk) {
       var start = 0;
@@ -245,14 +261,14 @@
           hdrText += String.fromCharCode(byte);
           if (hdrText.length > 512) hdrText = hdrText.slice(-512);
           if (previous === 0xff && byte === 0xd8) {
-            takeSeq();
+            takeHdr();
             inside = true; used = 2;
             frame[0] = 0xff; frame[1] = 0xd8;
             start = i + 1;
           }
         } else if (previous === 0xff && byte === 0xd9) {
           append(chunk.subarray(start, i + 1));
-          onFrame(frame.subarray(0, used), pendingSeq);
+          onFrame(frame.subarray(0, used), pendingSeq, pendingTs);
           inside = false; used = 0; start = i + 1;
         }
         previous = byte;
@@ -275,7 +291,7 @@
     }
     var ac = new AbortController();
     streamAbort = ac;
-    var parse = createJpegParser(function(frame, seq) {
+    var parse = createJpegParser(function(frame, seq, ts) {
       if (!imgEl) return;
       fpsCnt++;
       /* 序号跳号 = 中间有帧没送到（服务端跳帧或链路丢弃），据此统计丢帧 */
@@ -284,8 +300,8 @@
         if (seq > mjLastSeq) mjLastSeq = seq;
       }
       var blob = new Blob([frame], {type: 'image/jpeg'});
-      if (imgBusy) { pendingBlob = blob; pendingBlobSeq = seq; }
-      else showFrame(blob, seq);
+      if (imgBusy) { pendingBlob = blob; pendingBlobSeq = seq; pendingBlobTs = ts; }
+      else showFrame(blob, seq, ts);
     });
     /* 检测结果与画面同一条时间线：每 60ms 增量拉一次，覆盖 30fps 的全部 seq */
     detTimer = setInterval(detPoll, 60);
@@ -310,21 +326,16 @@
   }
 
   /* Read-only diagnostics for distinguishing network delivery from rendering.
-     MJPEG 透传链路没有 MSE buffered/playbackQuality，延迟按 X-Seq 落后帧数换算，
+     MJPEG 透传链路没有 MSE buffered/playbackQuality，延迟取每帧 X-Ts 到上屏的真实间隔，
      丢帧用序号跳号统计（比 <video> 的 droppedVideoFrames 更贴近真实链路损失）。 */
   window.getCarVideoDiagnostics = function() {
     var vid = document.getElementById('stream_video');
-    var lagMs = mjCaptureFps > 0 ? (mjLagFrames / mjCaptureFps) * 1000 : null;
     var result = {
       transport: streamRunning ? 'MJPEG' : 'idle',
       receivedFps: receivedFps, displayedFps: fpsVal, cameraFps: cameraFps,
       processingAgeMs: processingAgeMs, sourceDroppedFrames: sourceDrops,
       droppedFramesPerSecond: streamRunning ? mjDropPerSec : 0,
-      lagFrames: streamRunning ? mjLagFrames : 0,
-      bufferAheadSeconds: lagMs === null ? 0 : lagMs / 1000,
-      estimatedStreamDelayMs: lagMs,
-      estimatedTotalDelayMs: lagMs,
-      buffered: [],
+      latencyMs: streamRunning ? mjLatencyMs : null,
       readyState: vid ? vid.readyState : 0, currentTime: vid ? vid.currentTime : 0,
       paused: vid ? vid.paused : true, seeking: vid ? vid.seeking : false,
       decoderError: vid && vid.error ? vid.error.code : null
@@ -357,9 +368,12 @@
       cameraFps = stats.capture_fps || 0;
       processingAgeMs = stats.processing_age_ms || 0;
       sourceDrops = (stats.capture_dropped || 0) + (stats.driver_dropped || 0) + (stats.infer_dropped || 0);
-      /* 透传链路延迟基准：服务端最新采集序号 + 采集帧率 */
-      if (stats.produce_seq) mjLatestSeq = stats.produce_seq;
-      if (cameraFps > 1) mjCaptureFps = cameraFps;
+      /* 钟差 = 板端单调时钟 - 本机 performance.now()。取最近 8 次的最小值：
+         网络回程抖动只会让差值偏大，最小值最接近真实钟差 */
+      if (stats.now_ms) {
+        srvOffsets.push(stats.now_ms - performance.now());
+        if (srvOffsets.length > 8) srvOffsets.shift();
+      }
     } catch(e) {} finally { videoStatsBusy = false; }
   }
 
@@ -621,13 +635,6 @@
       var elapsed = now - fpsWin;
       receivedFps = fpsCnt * 1000 / elapsed;
       fpsVal = streamRunning ? shownCnt * 1000 / elapsed : receivedFps;
-      /* 延迟 = 落后服务端最新采集帧多少帧 × 帧间隔（含网络与解码排队） */
-      if (streamRunning && mjLatestSeq && mjShownSeq) {
-        var lag = mjLatestSeq - mjShownSeq;
-        if (lag < 0) lag = 0;
-        if (lag > 150) lag = 150;         /* 钳位，避免重启/暂停后的异常值拖拽平均 */
-        mjLagFrames = mjLagFrames ? mjLagFrames * 0.6 + lag * 0.4 : lag;
-      }
       mjDropPerSec = mjDropMark === null ? 0
                      : Math.max(0, mjDropTotal - mjDropMark) * 1000 / elapsed;
       mjDropMark = mjDropTotal;
@@ -638,10 +645,10 @@
     var stats = document.getElementById('video_stats');
     if (stats) {
       var d = window.getCarVideoDiagnostics();
-      stats.textContent = t('摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 缓冲 {buffer} ms · 总延迟约 {delay} ms · 当前丢帧 {dropped}/s', {
+      stats.textContent = t('摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 端到端延迟 {delay} ms · 当前丢帧 {dropped}/s', {
         camera: d.cameraFps ? Math.round(d.cameraFps) : '--', processing: Math.round(d.processingAgeMs),
-        received: Math.round(d.receivedFps), buffer: Math.round(d.bufferAheadSeconds * 1000),
-        delay: d.estimatedTotalDelayMs === null ? '--' : Math.round(d.estimatedTotalDelayMs),
+        received: Math.round(d.receivedFps),
+        delay: d.latencyMs === null ? '--' : Math.round(d.latencyMs),
         dropped: Math.round(d.droppedFramesPerSecond)
       });
     }
