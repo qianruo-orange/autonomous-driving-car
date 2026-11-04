@@ -32,6 +32,10 @@
 .status-column>.card{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;justify-content:center;padding:14px}
 .status-column>.card>h3{margin-bottom:8px}
 .status-column .sec{flex:0 0 auto}
+/* 右栏统一节奏：标题到内容一律 8px（h4 的 4px + 内容自带的 4px），
+   卡片里的两个分区（NPU / GPU）之间留 14px，不再紧贴在一起 */
+.status-column .card h4{margin:0 0 4px}
+.status-column .card .sec+.sec{margin-top:14px}
 /* 与右侧状态栏等高：卡片撑满整行高度，多出来的高度由 space-between 放到视频与
    状态行之间（视频本身仍是 16:9、不裁切）。
    关键是 flex-basis 必须是 auto（不是 0）：basis:0 会让视频列在算行高时贡献 0，
@@ -61,7 +65,7 @@
    （每列约 150px：标题 + 百分比一行、进度条、已用 / 总量一行） */
 .status-column .duo{display:flex;gap:14px}
 .status-column .duo>.half{flex:1 1 0;min-width:0}
-.status-column .duo h4{display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin:0 0 6px}
+.status-column .duo h4{display:flex;align-items:baseline;justify-content:space-between;gap:6px;margin:0 0 4px}
 .status-column .duo h4 b{font-size:13px;color:var(--text);font-variant-numeric:tabular-nums}
 /* 已用 / 总量：已用更该被看见用亮色；放不下就省略，绝不换行多占一行高度 */
 .status-column .duo .used{margin-top:5px;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
@@ -70,8 +74,6 @@
 #gpu_val{font-size:13px}
 .val-row{display:flex;align-items:baseline;justify-content:space-between}
 .temp{font-size:36px;font-weight:bold;color:var(--accent);text-shadow:0 0 16px var(--glow)}
-.label-left{font-size:13px;color:var(--muted)}
-.label-left b{color:var(--text);font-weight:normal}
 .bar{position:relative;overflow:visible}
 .bar div{overflow:hidden}
 .cpu-bar{width:calc(50% - 4px)}
@@ -81,7 +83,7 @@
 .nav{display:flex;gap:12px;margin:16px 0}
 .nav a{padding:6px 14px;background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));border:1px solid var(--card-border);border-radius:10px;font-size:13px;backdrop-filter:blur(8px);transition:all .25s;box-shadow:0 2px 6px rgba(0,0,0,.08)}
 .nav a:hover{background:linear-gradient(135deg,rgba(94,194,240,.16),rgba(94,194,240,.08));border-color:var(--accent);box-shadow:0 4px 12px rgba(94,194,240,.15);transform:translateY(-1px)}
-.core-bars{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:2px 8px;margin-top:8px}
+.core-bars{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:7px 8px;margin-top:4px}
 /* NPU 核数与尺寸由 monitor.js 按平台动态设置 */
 .core-bar{height:6px;background:var(--track);border-radius:3px;overflow:hidden;box-shadow:inset 0 1px 2px var(--inset-shadow)}
 .core-bar div{height:100%;border-radius:3px;transition:width .5s}
@@ -89,7 +91,9 @@
 #cpu_bar:not(.red),#cpu_cores .core-bar div:not(.red){background:linear-gradient(90deg,#38bdf8,#60a5fa);box-shadow:0 0 8px rgba(56,189,248,.25)}
 #mem_bar:not(.red),#disk_bar:not(.red){background:linear-gradient(90deg,#f59e0b,#fbbf24);box-shadow:0 0 8px rgba(245,158,11,.25)}
 #npu_cores .core-bar div,#gpu_bar{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 8px rgba(129,140,248,.25)}
-.core-label{font-size:10px;color:var(--muted);margin-bottom:2px;display:flex;justify-content:space-between}
+.core-label{font-size:10px;color:var(--muted);margin-bottom:3px;display:flex;justify-content:space-between}
+/* 逐核实时频率：核名与百分比下面的第三行，10px 灰字，8 核排成 4 列也放得下 */
+.core-freq{font-size:10px;line-height:1.2;color:var(--muted-2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .net-iface{margin-bottom:8px}
 #net_speed{display:flex;gap:10px}
 #net_speed .net-iface{flex:1;min-width:0;margin-bottom:0}

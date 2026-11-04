@@ -431,14 +431,22 @@
     } catch(e) {}
   }
 
-  function initCoreBars(id, names) {
+  /* withFreq：CPU 卡在每个核下面单独显示该核的实时频率；NPU 没有逐核频率，不显示 */
+  function initCoreBars(id, names, withFreq) {
     var h = '';
     for (var i = 0; i < names.length; i++)
-      h += '<div><div class="core-label"><span>' + names[i] + '</span><span id="' + id + '_pct' + i + '">0%</span></div><div class="core-bar"><div id="' + id + '_bar' + i + '" style="width:0%"></div></div></div>';
+      h += '<div><div class="core-label"><span>' + names[i] + '</span><span id="' + id + '_pct' + i + '">0%</span></div>' +
+           '<div class="core-bar"><div id="' + id + '_bar' + i + '" style="width:0%"></div></div>' +
+           (withFreq ? '<div class="core-freq" id="' + id + '_freq' + i + '">-</div>' : '') + '</div>';
     var el = document.getElementById(id);
     el.innerHTML = h;
     /* 列数随核数自适应：核少则单排大格，核多则自动换行（尺寸随数量变化） */
     el.style.gridTemplateColumns = 'repeat(' + Math.min(names.length, 4) + ', minmax(0, 1fr))';
+  }
+
+  /* 逐核频率：后端 cpu_freqs 单位 MHz，-1/缺失表示读不到 */
+  function fmtGHz(mhz) {
+    return (typeof mhz === 'number' && mhz > 0) ? (mhz / 1000).toFixed(2) + ' GHz' : '-';
   }
 
   function fmtTime() {
@@ -476,7 +484,7 @@
           cpuCount = nCpu;
           var cpuNames = [];
           for (var ci = 0; ci < nCpu; ci++) cpuNames.push('Core' + ci);
-          initCoreBars('cpu_cores', cpuNames);
+          initCoreBars('cpu_cores', cpuNames, true);
           lastCores = [];   /* 核数变化后重置差值基准 */
         }
         if (!lastCores.length) lastCores = d.cpu_cores.map(function(c) { return {u:c.u,s:c.s,i:c.i}; });
@@ -487,19 +495,9 @@
           document.getElementById('cpu_cores_pct' + i).textContent = p + '%';
           var b = document.getElementById('cpu_cores_bar' + i);
           b.style.width = p + '%'; b.className = barColor(p);
-        }
-        /* 频率只在下方汇总一次：每核都写一遍会把窄栏挤爆，而多数情况下各核同频。
-           核间不同频时给出区间（如 1.80–2.20 GHz），不谎报单一值 */
-        var freqEl = document.getElementById('cpu_freq');
-        if (freqEl && d.cpu_freqs && d.cpu_freqs.length) {
-          var fmin = d.cpu_freqs[0], fmax = d.cpu_freqs[0];
-          for (var fi = 1; fi < d.cpu_freqs.length; fi++) {
-            if (d.cpu_freqs[fi] < fmin) fmin = d.cpu_freqs[fi];
-            if (d.cpu_freqs[fi] > fmax) fmax = d.cpu_freqs[fi];
-          }
-          freqEl.textContent = fmin === fmax
-            ? (fmin / 1000).toFixed(2) + ' GHz'
-            : (fmin / 1000).toFixed(2) + '–' + (fmax / 1000).toFixed(2) + ' GHz';
+          /* 每个核各自的实时频率（RK3576 各核能跑在不同频点，汇总成区间会掩盖真实状态） */
+          var fe = document.getElementById('cpu_cores_freq' + i);
+          if (fe && d.cpu_freqs) fe.textContent = fmtGHz(d.cpu_freqs[i]);
         }
         lastCores = d.cpu_cores.map(function(c) { return {u:c.u,s:c.s,i:c.i}; });
       }
