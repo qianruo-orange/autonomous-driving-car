@@ -179,7 +179,7 @@ Safety prerequisites are checked on timed wakes even without a new inference; PI
 
 The CPU handles capture processing, tracking, control, communication, and management; the NPU runs YOLO detection. On the RK3576, the JPEG block decodes camera MJPEG into cached DMA-BUF surfaces, then a full-range BT.601 NEON conversion supplies RGB to inference. Worker affinity, adaptive inference allocation, frame ownership, and watchdog supervision support execution on the shared platform.
 
-A Linux real-time kernel is the system target. `main.c` declares each thread's scheduling policy, priority, and CPU group alongside lifecycle callbacks in one module table, including internally owned HTTP and inference workers. Current thread rows select `SCHED_FIFO`; explicit creation attributes apply the selected CPU group before each thread starts. The controller runs at priority **20** and reports its actual scheduler separately from PREEMPT_RT kernel support through `/api/follow`. See [kernel and scheduling verification](docs/KERNEL_VERIFICATION.md) for deployed measurements and limits.
+A Linux real-time kernel is the system target. `main.c` declares each thread's scheduling policy, priority, and CPU group alongside lifecycle callbacks in one module table, including internally owned HTTP and inference workers. Current thread rows select `SCHED_FIFO`; explicit creation attributes apply the selected CPU group before each thread starts. The controller runs at priority **20** and reports its actual scheduler separately from PREEMPT_RT kernel support through `/api/follow`. See [application scheduling verification](docs/REALTIME_SCHEDULING.md) for deployed measurements and limits.
 
 ## Perception and motion control
 
@@ -189,7 +189,7 @@ Capture and rendering publish frame notifications to their subscribers; inferenc
 
 **Visual tracking.** Click a detection on the home page to select it. Numbered labels and the selected object's cyan box are drawn into the video and included in recordings. Matching uses constant-velocity prediction, predicted box overlap, displacement, size changes, and class gates, with ambiguous matches rejected. IDs remain local to the running process; associations expire after 800 ms without a match. Display smoothing follows tracking so it does not distort velocity estimates.
 
-The deployed model has one detection output. Model feature maps, per-target descriptors, appearance matching, and feature fields in the tracking API and new result records have been removed. See the [Chinese quantization report](docs/YOLO26N_QUANTIZATION.md) ([PDF](docs/pdf/YOLO26n量化报告.pdf)) for model preparation, accuracy, timing, output format and rollback. The [Chinese kernel build report](docs/KERNEL_BUILD_REPORT.md) ([PDF](docs/pdf/KERNEL_BUILD_REPORT_ZH.pdf)) records the kernel build, Kiln patches, installation and real-time verification.
+The deployed model has one detection output. Model feature maps, per-target descriptors, appearance matching, and feature fields in the tracking API and new result records have been removed. See the [Chinese quantization report](docs/YOLO26N_QUANTIZATION.md) ([PDF](docs/pdf/YOLO26n量化报告.pdf)) for model preparation, accuracy, timing, output format and rollback. Kernel sources, patches, installation scripts and the Chinese kernel report/PDF are maintained separately in [rock-4d-npu-kernel](https://github.com/qianruo-orange/rock-4d-npu-kernel).
 
 **Intelligent Following.** The wheel controller consumes detection results independently of visual tracking. Automatic speed uses relative target size; manual mode uses the configured speed. Steering uses PD control, while the left and right wheels each use PI control with measured feedback. Wheel-speed targets and differential steering correction use **m/s**.
 
@@ -217,9 +217,9 @@ Build dependencies:
 
 ## Build and deployment
 
-For the validated ROCK 4D hardware JPEG path, first follow the [JPEG driver installation](kernel/rockchip-jpegd/README.md). See the [Chinese codec measurements](docs/CODEC_PERFORMANCE.md) for timing, quality checks and the encoder limitations. The front end exposes capture device, resolution and frame rate; codec selection is internal.
+For the validated ROCK 4D hardware JPEG path, first follow the [JPEG driver installation](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-jpegd). See the [Chinese codec measurements](docs/CODEC_PERFORMANCE.md) for timing, quality checks and the encoder limitations. The front end exposes capture device, resolution and frame rate; codec selection is internal.
 
-The [experimental VEPU510 MPP port](kernel/rockchip-vepu510-mpp/README.md) includes the RK3576 encoder sources and Linux 7.4 integration patch. Full kernel and module compilation has passed; installation and hardware encoding validation remain pending. The application continues to use the validated software H.264 encoder.
+The [experimental VEPU510 MPP port](https://github.com/qianruo-orange/rock-4d-npu-kernel/tree/main/rockchip-vepu510-mpp) is maintained in the independent kernel repository. Its first installed revision encoded I/P frames successfully but triggered IOMMU warnings; a correction requires another kernel build and hardware verification. The application continues to use the validated software H.264 encoder.
 
 Prepare the model and labels before the first build:
 
@@ -339,8 +339,7 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | `source/watchdog/` | Worker heartbeat supervision |
 | `include/` | Module interfaces and shared types |
 | `config/` | Device settings, model, labels, CAN databases |
-| `scripts/` | Bash build, deployment, model synchronization and JPEG driver installation |
-| `kernel/` | ROCK 4D kernel adaptation, JPEG driver and experimental VEPU510 MPP port |
+| `scripts/` | Application build, deployment and model synchronization |
 
 ## Communication registration and data slots
 

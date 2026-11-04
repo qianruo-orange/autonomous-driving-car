@@ -6,7 +6,6 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
-!kernel/**/Makefile
 *.cmake
 compile_commands.json
 
@@ -36,7 +35,6 @@ recordings/
 *.orig
 *.rej
 *.patch
-!kernel/**/*.patch
 
 # 本地调试 / 覆盖率 / 缓存
 *.gcda
