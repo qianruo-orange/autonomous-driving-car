@@ -302,15 +302,19 @@ mAP50 提升 2.3 个点，mAP50–95 下降 3.15 个点：one2one 头在高 IoU 
 
 ### 14.7 512 输入实验（未部署）
 
-同流程在 512×512 下实测：`run` 17.42 ms（640 为 24.04 ms）、总耗时 19.90 ms（640 为 28.74 ms），输出 `[1,84,5376]`。模型保存在 `/home/qianruo/yolo26n-512-w8a8.rknn`，未部署：精度未验证，且当时单输出方案仍在服役。
+同流程在 512×512 下实测：`run` 17.42 ms（640 为 24.04 ms）、总耗时 19.90 ms（640 为 28.74 ms），输出 `[1,84,5376]`。该模型是一次性实验产物，未部署（精度未验证，且当时单输出方案仍在服役），已于 2026-11-05 清理删除；如需复现，按 15.1 的流程把导出与校准集尺寸换成 512 重跑即可。
 
 ### 14.8 回滚
 
+迁移时的单输出模型备份已于 2026-11-05 随旧文件清理一并删除。当前二进制同时支持单输出与双输出两种模型，
+回滚只需重新产出一份单输出模型（流程见第 11 节）并替换 `config/yolo26.rknn`：
+
 ```bash
-sudo cp /home/qianruo/kbuild/fix-20261105/b-migration/yolo26.rknn.live-before-b \
-        /opt/autonomous-driving-car/config/yolo26.rknn
+sudo cp <single-output>.rknn /opt/autonomous-driving-car/config/yolo26.rknn
 sudo systemctl restart autonomous-driving-car
 ```
+
+运行时无需降级：`librknnrt` 2.5.0 向前兼容 2.3.2 编译的模型。
 
 ## 15. 按官方 2.5 流程重做与实测偏差（2026-11-05）
 
