@@ -82,7 +82,7 @@
   /* 采集时刻 → 上屏时刻的真实间隔。板端时钟与本机 performance.now() 差一个常量，
      用 srvOffsets（stats 轮询估出的钟差，取最小值）扣掉后即为端到端延迟 */
   function recordLatency(captureTs) {
-    if (!srvOffsets.length) return;            /* 还没拿到板端时钟基准 */
+    if (srvOffsets.length < 3) return;         /* 钟差样本不够，先显示 -- */
     var off = Math.min.apply(null, srvOffsets);
     var ms = performance.now() - (captureTs + off);
     if (!(ms >= 0)) ms = 0;                    /* 钟差抖动导致的微小负值 */
