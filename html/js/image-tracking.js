@@ -27,11 +27,25 @@
             overlay.replaceChildren();
             return;
         }
-        // Match object-fit:contain, including fullscreen letterboxing.
+        // 与画面上实际的 object-fit 保持一致：读计算样式而不是假设 contain。
+        // cover 时内容比容器大、偏移为负，热区跟着画面裁切走（越界部分被 overflow:hidden 裁掉）。
         const w = overlay.clientWidth, h = overlay.clientHeight;
-        const scale = Math.min(w / latest.width, h / latest.height);
-        if (!Number.isFinite(scale) || scale <= 0) return;
-        const iw = latest.width * scale, ih = latest.height * scale;
+        const media = overlay.parentNode && overlay.parentNode.querySelector('img,video');
+        let fit = '';
+        try { fit = (getComputedStyle(media || overlay).objectFit || '').trim(); } catch (e) {}
+        let sx, sy;
+        if (fit === 'fill') {
+            sx = w / latest.width; sy = h / latest.height;   // 非等比拉伸：两轴各自换算
+        } else {
+            let s;
+            if (fit === 'cover')       s = Math.max(w / latest.width, h / latest.height);
+            else if (fit === 'none')   s = 1;
+            else                       s = Math.min(w / latest.width, h / latest.height);
+            if (fit === 'scale-down')  s = Math.min(1, s);
+            sx = sy = s;
+        }
+        if (!Number.isFinite(sx) || !Number.isFinite(sy) || sx <= 0 || sy <= 0) return;
+        const iw = latest.width * sx, ih = latest.height * sy;
         const x = (w - iw) / 2, y = (h - ih) / 2;
         const existing = new Map(Array.from(overlay.children, el => [el.dataset.index, el]));
         const retained = new Set();
