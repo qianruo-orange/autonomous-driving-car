@@ -72,6 +72,7 @@
 #define YOLO_MAX_WORKERS 15    /* Actual count is a multiple of detected NPU cores. */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
 #define YOLO_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，composer 消费渲染 */
+#define YOLO_HIST_N      16    /* 最近结果环形缓冲深度（供前端按 seq 对齐叠框） */
 
 /* 推理任务：解码后的 RGB 帧（池内缓冲，由消费它的 worker 写槽/回池）。
    槽 claim 随任务移交：yolo_task claim 后不摘除，worker 写槽时一并 unclaim */
@@ -169,6 +170,12 @@ static struct {
     /* 快照：composer 按序写入，仅当新 seq 大于当前时更新 */
     pthread_mutex_t result_mutex;
     yolo_result_t   result;
+
+    /* 最近结果环形缓冲：供 HTTP 增量拉取，前端按 seq 把框对齐到 MJPEG 原始帧。
+       YOLO_HIST_N 帧 @30fps ≈ 530ms 历史，足够覆盖推流与轮询的抖动差。 */
+    yolo_result_t   hist[YOLO_HIST_N];
+    int             hist_count;
+    int             hist_next;               /* 下一次写入位置（环形） */
 } g_yolo;
 
 static pthread_mutex_t g_reload_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -505,8 +512,38 @@ static int yolo_result_pop_latest(yolo_result_t *item, int timeout_ms)
 static void snap_result(const yolo_result_t *res)
 {
     pthread_mutex_lock(&g_yolo.result_mutex);
-    if (res->seq > g_yolo.result.seq) g_yolo.result = *res;
+    if (res->seq > g_yolo.result.seq) {
+        g_yolo.result = *res;
+        /* 环形追加：只有更新的 seq 才入历史，保证 hist 内 seq 单调递增 */
+        g_yolo.hist[g_yolo.hist_next] = *res;
+        g_yolo.hist_next = (g_yolo.hist_next + 1) % YOLO_HIST_N;
+        if (g_yolo.hist_count < YOLO_HIST_N) g_yolo.hist_count++;
+    }
     pthread_mutex_unlock(&g_yolo.result_mutex);
+}
+
+int rknn_yolo_results_since(unsigned long long after, yolo_result_t *out, int max)
+{
+    if (!out || max <= 0) return 0;
+    int n = 0;
+    pthread_mutex_lock(&g_yolo.result_mutex);
+    int count = g_yolo.hist_count;
+    /* 最旧一条的位置：环形里有效数据从 (hist_next - count) 开始 */
+    int start = (g_yolo.hist_next - count + YOLO_HIST_N * 2) % YOLO_HIST_N;
+    for (int i = 0; i < count && n < max; i++) {
+        const yolo_result_t *r = &g_yolo.hist[(start + i) % YOLO_HIST_N];
+        if (r->seq <= after) continue;
+        out[n++] = *r;
+    }
+    pthread_mutex_unlock(&g_yolo.result_mutex);
+    return n;
+}
+
+/* 类别名（只读）：供前端叠加标注框时显示与烧框一致的标签；越界返回 "object"。 */
+const char *rknn_yolo_class_name(int cls)
+{
+    if (cls < 0 || cls >= g_yolo.classes.count) return "object";
+    return g_yolo.classes.names[cls];
 }
 
 /* 时间平滑：cur 中与 prev 同类且 IoU 足够大的框，位置/置信度做 EMA

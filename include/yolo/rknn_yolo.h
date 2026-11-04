@@ -53,6 +53,15 @@ int rknn_yolo_active_workers(void);
 /* Read-only backend selection; the image thread owns the decoder. */
 int rknn_yolo_hardware_decoder(void);
 
+/* 读取最近若干帧的检测结果快照（按 seq 严格递增返回，最旧在前）。
+   after 为客户端已持有的最大 seq，只有 seq > after 的结果才会返回，便于增量拉取。
+   返回写入 out 的条数（0 表示暂无新结果或 YOLO 未运行）。
+   前端 MJPEG 透传链路用它把检测坐标与原始画面按 seq 精确对齐。 */
+int rknn_yolo_results_since(unsigned long long after, yolo_result_t *out, int max);
+
+/* 类别名（只读，进程生命周期内有效）；越界返回 "object"。 */
+const char *rknn_yolo_class_name(int cls);
+
 /* 热重载推理池（停止 → 重读配置 → 重建）；返回 0 = 新池可用，-1 = 未运行/降级 */
 int rknn_yolo_reload(void);
 

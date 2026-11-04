@@ -650,10 +650,13 @@ static void *video_stream_client_task(void *arg)
         if (seq == last_raw) { usleep(20000); continue; }
         last_raw = seq;
         if (!frame || flen == 0) { usleep(20000); continue; }   /* 分配失败等：跳过 */
-        char mhdr[128];
+        char mhdr[160];
+        /* X-Seq：该帧在采集环里的序号（与 YOLO 结果 seq 同一空间）。前端据此把
+           检测框叠加到对应原始帧，做到透传链路也能显示标注且不重新编码。 */
         int hlen = snprintf(mhdr, sizeof(mhdr),
                             "--frame\r\nContent-Type: image/jpeg\r\n"
-                            "Content-Length: %zu\r\n\r\n", flen);
+                            "X-Seq: %u\r\nContent-Length: %zu\r\n\r\n",
+                            (unsigned)seq, flen);
         if (fd_write_all_blocking(fd, mhdr, (size_t)hlen) < 0) { free(frame); break; }
         if (fd_write_all_blocking(fd, frame, flen) < 0) { free(frame); break; }
         if (fd_write_all_blocking(fd, "\r\n", 2) < 0) { free(frame); break; }

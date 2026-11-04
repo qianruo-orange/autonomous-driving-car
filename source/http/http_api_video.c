@@ -14,6 +14,7 @@
 #include "http/http_internal.h"
 #include "video/frame_ring.h"
 #include "video/video_stream.h"
+#include "yolo/rknn_yolo.h"
 
 /* ---- /api/video/devices —— 枚举可用的摄像头 ---- */
 void http_video_devices(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf)
@@ -186,7 +187,56 @@ static int video_caps_fill(int dev_fd, char *json, int json_size,
     return off < 0 ? 0 : 1;
 }
 
+/* ---- /api/detections/live —— 最近若干帧的检测结果（供前端按 seq 叠框） ----
+   透传链路下画面是相机原始 JPEG，服务端不再烧框；前端用 X-Seq 与本接口返回的
+   seq 对齐，把框画在自己的 canvas 上，从而既保持原生画质又保留标注显示。
+   ?after=N 增量拉取（只返回 seq > N 的记录）。 */
+#define LIVE_MAX_RECORDS 8
+#define LIVE_MAX_DETS    16   /* 单帧最多下发的框数，限制响应体积 */
+
+void http_detections_live(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf)
+{
+    (void)app; (void)method; (void)req_buf;
+    unsigned long long after = 0;
+    const char *q = strchr(uri, '?');
+    if (q) {
+        const char *a = strstr(q + 1, "after=");
+        if (a) after = strtoull(a + 6, NULL, 10);
+    }
+    static yolo_result_t recs[LIVE_MAX_RECORDS];
+    int n = rknn_yolo_results_since(after, recs, LIVE_MAX_RECORDS);
+    char json[16384];
+    int off = 0;
+    JSON_ADD(json, off, "{\"n\":%d,\"items\":[", n);
+    for (int i = 0; i < n; i++) {
+        const yolo_result_t *r = &recs[i];
+        int cnt = r->count > LIVE_MAX_DETS ? LIVE_MAX_DETS : r->count;
+        JSON_ADD(json, off, "%s{\"seq\":%u,\"w\":%d,\"h\":%d,\"d\":[",
+                 i ? "," : "", (unsigned)r->seq, r->w, r->h);
+        for (int k = 0; k < cnt; k++) {
+            const yolo_det_t *d = &r->dets[k];
+            /* 类别名来自可上传的 yolo_names 文件，落地前转义，避免破坏 JSON */
+            char nm[40];
+            const char *src = rknn_yolo_class_name(d->cls);
+            size_t j = 0;
+            for (; src && *src && j + 1 < sizeof(nm); src++) {
+                unsigned char ch = (unsigned char)*src;
+                if (ch == '"' || ch == '\\' || ch < 0x20) continue;
+                nm[j++] = (char)ch;
+            }
+            nm[j] = '\0';
+            JSON_ADD(json, off, "%s[%d,%d,%d,%d,%d,%.2f,\"%s\"]",
+                     k ? "," : "", (int)d->x1, (int)d->y1, (int)d->x2, (int)d->y2,
+                     d->cls, (double)d->conf, nm);
+        }
+        JSON_ADD(json, off, "]}");
+    }
+    JSON_ADD(json, off, "]}");
+    http_ok_json(fd, json, (size_t)off);
+}
+
 void http_video_caps(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf)
+
 {
     (void)app; (void)method; (void)req_buf;
 

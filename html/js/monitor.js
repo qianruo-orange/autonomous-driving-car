@@ -21,6 +21,16 @@
   var imgEl = null, lastBlobUrl = null;
   var imgBusy = false;      /* 上一帧还在解码：不覆盖 src（覆盖会取消其加载） */
   var pendingBlob = null;   /* 解码期间收到的最新帧，仅保留最后一张，解码完立即补显 */
+  var pendingBlobSeq = 0;   /* 与该帧对应的采集序号（X-Seq） */
+
+  /* ---- 检测框叠加：MJPEG 透传链路下画面是相机原始帧，服务端不再烧框，
+     前端用每帧的 X-Seq 与 /api/detections/live 返回的 seq 对齐后画在 canvas 上 ---- */
+  var detMap = new Map(), detLastSeq = 0, detPollBusy = false;
+  var overlayCanvas = null, overlayCtx = null;
+  var detTimer = null;
+  /* 与烧框一致的类别配色，按类别号取模 */
+  var DET_COLORS = ['#ff3b30', '#34c759', '#0a84ff', '#ff9f0a', '#bf5af2',
+                    '#ffd60a', '#64d2ff', '#ff453a', '#30d158', '#5e5ce6'];
 
   function resetFps() {
     fpsCnt = 0; shownCnt = 0; fpsWin = Date.now(); fpsVal = 0;
@@ -30,19 +40,22 @@
 
   /* 显示一帧：仅在上一次 onload/onerror 之后调用，上一帧 URL 此时已被完整消费，
      可安全回收；onload 前就 revoke 会中断在途解码，弱设备上永远看不到画面 */
-  function showFrame(blob) {
+  function showFrame(blob, seq) {
     var target = imgEl, session = streamAbort;
     if (!target || !session) return;
     var u = URL.createObjectURL(blob);
     imgBusy = true;
     target.onload = target.onerror = function(event) {
       if (streamAbort !== session || imgEl !== target) return;
-      if (event.type === 'load') shownCnt++;
+      if (event.type === 'load') {
+        shownCnt++;
+        overlayDraw(seq);          /* 该帧已经在屏幕上，按同一 seq 叠框 */
+      }
       imgBusy = false;
       if (pendingBlob) {          /* 解码慢于码流时丢弃中间帧，只补最新一帧 */
-        var pb = pendingBlob;
+        var pb = pendingBlob, ps = pendingBlobSeq;
         pendingBlob = null;
-        showFrame(pb);
+        showFrame(pb, ps);
       }
     };
     target.src = u;
@@ -56,13 +69,104 @@
     imgBusy = false;
     pendingBlob = null;
     if (lastBlobUrl) { URL.revokeObjectURL(lastBlobUrl); lastBlobUrl = null; }
+    if (detTimer) { clearInterval(detTimer); detTimer = null; }
+    detReset();
+  }
+
+  /* ---- 检测框叠加（透传链路专用） ---------------------------------------- */
+
+  function detReset() {
+    detMap.clear();
+    detLastSeq = 0;
+    overlayClear();
+  }
+
+  function overlayClear() {
+    if (overlayCtx && overlayCanvas)
+      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  }
+
+  /* 增量拉取：只取 seq 大于已持有最大值的记录，避免重复传输 */
+  function detPoll() {
+    if (detPollBusy || document.hidden || !streamRunning) return;
+    detPollBusy = true;
+    fetch('/api/detections/live?after=' + detLastSeq, {signal: AbortSignal.timeout(2000)})
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(j) {
+        if (!j || !j.items) return;
+        for (var i = 0; i < j.items.length; i++) {
+          var it = j.items[i];
+          detMap.set(it.seq, it);
+          if (it.seq > detLastSeq) detLastSeq = it.seq;
+        }
+        while (detMap.size > 24) detMap.delete(detMap.keys().next().value);
+      })
+      .catch(function() {})
+      .then(function() { detPollBusy = false; });
+  }
+
+  /* 按显示中的帧序号取检测结果并绘制：object-fit:contain 的留边也要对齐 */
+  function overlayDraw(seq) {
+    var c = overlayCanvas;
+    if (!c || !overlayCtx || !imgEl) return;
+    var wrap = c.parentNode;
+    var cw = wrap.clientWidth, ch = wrap.clientHeight;
+    if (!cw || !ch) return;
+    var dpr = window.devicePixelRatio || 1;
+    var pw = Math.round(cw * dpr), ph = Math.round(ch * dpr);
+    if (c.width !== pw || c.height !== ph) {
+      c.width = pw; c.height = ph;
+      c.style.width = cw + 'px'; c.style.height = ch + 'px';
+    }
+    var ctx = overlayCtx;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
+
+    var rec = detMap.get(seq);
+    if (!rec) {
+      /* 该 seq 没有结果（推理跳帧或结果尚未到达）：退到最近的更早一帧，
+         落后超过 6 帧就不画，避免框明显脱离画面 */
+      var best = null;
+      detMap.forEach(function(v) {
+        if (v.seq <= seq && (!best || v.seq > best.seq)) best = v;
+      });
+      if (!best || (seq - best.seq) > 6) return;
+      rec = best;
+    }
+    var iw = rec.w || imgEl.naturalWidth || 1280;
+    var ih = rec.h || imgEl.naturalHeight || 720;
+    var scale = Math.min(cw / iw, ch / ih);
+    var ox = (cw - iw * scale) / 2, oy = (ch - ih * scale) / 2;
+    if (!rec.d || !rec.d.length) return;
+
+    ctx.lineWidth = 2;
+    ctx.font = '500 13px system-ui,-apple-system,sans-serif';
+    ctx.textBaseline = 'top';
+    for (var i = 0; i < rec.d.length; i++) {
+      var d = rec.d[i];
+      var x1 = ox + d[0] * scale, y1 = oy + d[1] * scale;
+      var x2 = ox + d[2] * scale, y2 = oy + d[3] * scale;
+      var col = DET_COLORS[Math.abs(d[4]) % DET_COLORS.length];
+      ctx.strokeStyle = col;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      var label = d[6] + ' ' + Number(d[5]).toFixed(2);
+      var tw = ctx.measureText(label).width;
+      var ty = (y1 - 17 < oy) ? y2 + 2 : y1 - 17;
+      ctx.fillStyle = col;
+      ctx.fillRect(x1 - 1, ty, tw + 8, 16);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, x1 + 3, ty + 1);
+    }
   }
 
   /* Retain only JPEG data and scan each incoming byte once. Blob copies the
-     completed view before this reusable buffer receives the next frame. */
+     completed view before this reusable buffer receives the next frame.
+     帧间是 multipart 头，先从里面取出 X-Seq（该帧的采集序号），再交给回调，
+     这样上层能把检测结果精确对齐到正在显示的这一帧。 */
   function createJpegParser(onFrame) {
     var limit = 16 * 1024 * 1024, frame = new Uint8Array(64 * 1024);
     var used = 0, previous = 0, inside = false;
+    var hdrText = '', pendingSeq = 0;
     function append(bytes) {
       var needed = used + bytes.length;
       if (needed > limit) throw new Error('MJPEG frame exceeds 16 MiB');
@@ -74,19 +178,29 @@
       frame.set(bytes, used);
       used = needed;
     }
+    function takeSeq() {
+      var re = /X-Seq:\s*(\d+)/g, m, last = null;
+      while ((m = re.exec(hdrText)) !== null) last = m[1];
+      hdrText = '';
+      if (last !== null) pendingSeq = parseInt(last, 10) >>> 0;
+    }
     return function(chunk) {
       var start = 0;
       for (var i = 0; i < chunk.length; i++) {
         var byte = chunk[i];
         if (!inside) {
+          /* 只累积帧外字节（每帧约百来字节的头），超过上限截断 */
+          hdrText += String.fromCharCode(byte);
+          if (hdrText.length > 512) hdrText = hdrText.slice(-512);
           if (previous === 0xff && byte === 0xd8) {
+            takeSeq();
             inside = true; used = 2;
             frame[0] = 0xff; frame[1] = 0xd8;
             start = i + 1;
           }
         } else if (previous === 0xff && byte === 0xd9) {
           append(chunk.subarray(start, i + 1));
-          onFrame(frame.subarray(0, used));
+          onFrame(frame.subarray(0, used), pendingSeq);
           inside = false; used = 0; start = i + 1;
         }
         previous = byte;
@@ -102,15 +216,22 @@
     streamUrl = url;
     streamRunning = true;
     resetFps();
+    detReset();
+    if (!overlayCanvas) {
+      overlayCanvas = document.getElementById('stream_overlay');
+      overlayCtx = overlayCanvas ? overlayCanvas.getContext('2d') : null;
+    }
     var ac = new AbortController();
     streamAbort = ac;
-    var parse = createJpegParser(function(frame) {
+    var parse = createJpegParser(function(frame, seq) {
       if (!imgEl) return;
       fpsCnt++;
       var blob = new Blob([frame], {type: 'image/jpeg'});
-      if (imgBusy) pendingBlob = blob;
-      else showFrame(blob);
+      if (imgBusy) { pendingBlob = blob; pendingBlobSeq = seq; }
+      else showFrame(blob, seq);
     });
+    /* 检测结果与画面同一条时间线：每 60ms 增量拉一次，覆盖 30fps 的全部 seq */
+    detTimer = setInterval(detPoll, 60);
 
     fetch(url, {signal: ac.signal}).then(function(r) {
       if (streamAbort !== ac) return;
@@ -763,6 +884,10 @@
   }
 
   var playerConfig = {}, playerBusy = false, playerSuspended = false;
+  /* 直播默认走相机 MJPEG 原始透传：不解码、不重编码，画面就是相机原生 JPEG。
+     检测框不再烧进画面，改由 canvas 按帧序号叠加（见 overlayDraw）。
+     若要回到 H.264 烧框版本，把下面改成 '/video/stream' 即可。 */
+  var LIVE_STREAM_URL = '/video/mjpeg';
   async function updatePlayer() {
     if (playerBusy || document.hidden || playerSuspended) return;
     playerBusy = true;
@@ -774,7 +899,8 @@
         } catch(e) {}
       }
       if (document.hidden || playerSuspended) return;
-      var streamUrl = window.STREAM_URL || playerConfig.stream_url || playerConfig.video_url || '';
+      var streamUrl = window.STREAM_URL || playerConfig.stream_url || playerConfig.video_url
+                      || LIVE_STREAM_URL;
       var explicit = !!streamUrl;
       var vid = document.getElementById('stream_video');
       var img = document.getElementById('stream_img');
