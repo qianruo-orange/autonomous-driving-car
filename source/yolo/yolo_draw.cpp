@@ -121,40 +121,6 @@ void yolo_rgb_letterbox(const unsigned char *src, int sw, int sh,
     cv::resize(s_, roi, cv::Size(nw, nh), 0, 0, cv::INTER_LINEAR);
 }
 
-/* ---- OpenCV SIMD NV12 转换：录像编码链路热路径 ---- */
-
-void yolo_rgb_to_nv12_fast(const unsigned char *rgb, int w, int h, unsigned char *nv12)
-{
-    /* RGB → I420（NEON 加速）到临时缓冲，再交错成 NV12。
-       曾经的"原地交错"（I420 直接写进 NV12 输出再自后向前合并）有别名破坏：
-       奇数 UV 行的写入区覆盖后续偶数 V 行的数据源，V 平面被搅成噪声，
-       低饱和场景平均后呈灰度（直播/录像画面灰化的根因）。
-       OpenCV COLOR_RGB2YUV_I420 输出为标准平面 I420：U 平面（hw×hh，
-       行宽 hw 连续）从偏移 w*h 起，V 平面紧随其后（偏移 w*h+hw*hh）。
-       曾按"色度 Mat 行 h+k = [U 行 k | V 行 k] 并排"交错——探针结论有误：
-       该布局下上半场 Cb/Cr 全取自 U 平面、下半场全取自 V 平面，
-       画面上半泛绿、下半泛品红且色度纵向压扁（2026-08-30 直播实锤）。 */
-    /* Reuse per-thread scratch storage instead of mmap/free of a full I420
-       image every frame. Keep the planes separate from the NV12 destination. */
-    static thread_local cv::Mat scratch;
-    try { scratch.create(h * 3 / 2, w, CV_8UC1); }
-    catch (const cv::Exception &) { yolo_rgb_to_nv12(rgb, w, h, nv12); return; }
-    unsigned char *tmp = scratch.data;
-    cv::Mat src(h, w, CV_8UC3, (void *)rgb);
-    cv::Mat i420(h * 3 / 2, w, CV_8UC1, tmp);
-    cv::cvtColor(src, i420, cv::COLOR_RGB2YUV_I420);
-
-    memcpy(nv12, tmp, (size_t)w * h);   /* Y 平面直接拷贝 */
-    const int hw = w / 2, hh = h / 2;
-    const unsigned char *uplane = tmp + (size_t)w * h;             /* U 平面：hh 行 × hw */
-    const unsigned char *vplane = uplane + (size_t)hw * hh;        /* V 平面紧随其后 */
-    for (int r = 0; r < hh; r++) {
-        const unsigned char *up = uplane + (size_t)hw * r;
-        const unsigned char *vp = vplane + (size_t)hw * r;
-        unsigned char *o = nv12 + (size_t)w * h + (size_t)w * r;
-        for (int c = 0; c < hw; c++) { o[2 * c] = up[c]; o[2 * c + 1] = vp[c]; }
-    }
-}
 
 /* ---- OpenCV cv2.putText 风格标签 ---- */
 

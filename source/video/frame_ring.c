@@ -41,17 +41,13 @@ void frame_ring_destroy(frame_ring_t *r)
         frame_slot_t *s = &r->slots[i];
         if (s->raw_present && !s->raw_is_mmap) free(s->raw.buf);
         if (s->rgb.buf)  free(s->rgb.buf);
-        if (s->nv12.buf) free(s->nv12.buf);
     }
-    pool_item_t *heads[2] = { r->pool_rgb, r->pool_nv12 };
-    for (int k = 0; k < 2; k++) {
-        pool_item_t *it = heads[k];
-        while (it) {
-            pool_item_t *next = it->next;
-            free(it->buf);
-            free(it);
-            it = next;
-        }
+    pool_item_t *it = r->pool_rgb;
+    while (it) {
+        pool_item_t *next = it->next;
+        free(it->buf);
+        free(it);
+        it = next;
     }
     pthread_mutex_destroy(&r->lock);
     for (int i = 0; i < FRAME_TOPIC_COUNT; i++)
@@ -89,7 +85,8 @@ void frame_ring_signal(frame_ring_t *r)
 
 static pool_item_t **pool_head(frame_ring_t *r, int which)
 {
-    return which == FRAME_RING_POOL_RGB ? &r->pool_rgb : &r->pool_nv12;
+    (void)which;   /* 仅剩 RGB 一个阶段缓冲池 */
+    return &r->pool_rgb;
 }
 
 void frame_ring_buf_take_locked(frame_ring_t *r, int which, size_t min_cap,
@@ -143,9 +140,8 @@ static void release_raw_locked(frame_ring_t *r, frame_slot_t *s)
 
 /* 统一维护各阶段缓冲释放（遍历 32 槽，每帧若干次，开销可忽略）：
  *   raw  非最新钉住（原始流客户端锁内拷贝最新帧） + 无锁外读引用 +
- *        消费完成（YOLO 激活时等 infer_done；YOLO 停用时等编码消费或录像未激活）
- *   rgb  worker 结果入槽后，seq 已越过最新渲染即回池（含跳帧与迟到 worker）
- *   nv12 当前显示帧钉住（rec 窃取目标），其余 encode_done 或录像未激活即回池 */
+ *        消费完成（YOLO 激活时等 infer_done）
+ *   rgb  worker 结果入槽后，seq 已越过最新渲染即回池（含跳帧与迟到 worker） */
 static void frame_ring_maintain_locked(frame_ring_t *r)
 {
     for (int i = 0; i < FRAME_RING_N; i++) {
@@ -153,20 +149,13 @@ static void frame_ring_maintain_locked(frame_ring_t *r)
         if (!s->seq) continue;
 
         if (s->raw_present && s->seq != r->produce_seq && s->raw_claims == 0) {
-            int consumed = r->yolo_active ? s->infer_done
-                                        : (s->encode_done || !r->rec_active);
+            int consumed = r->yolo_active ? s->infer_done : 1;
             if (consumed) release_raw_locked(r, s);
         }
         if (s->rgb.buf && s->rgb_done && s->seq <= r->display_seq) {
             frame_ring_buf_put_locked(r, FRAME_RING_POOL_RGB, s->rgb.buf, s->rgb.cap);
             s->rgb.buf = NULL;
             s->rgb.len = s->rgb.cap = 0;
-        }
-        if (s->nv12.buf && s->seq != r->display_seq &&
-            (s->encode_done || !r->rec_active)) {
-            frame_ring_buf_put_locked(r, FRAME_RING_POOL_NV12, s->nv12.buf, s->nv12.cap);
-            s->nv12.buf = NULL;
-            s->nv12.len = s->nv12.cap = 0;
         }
     }
 }
@@ -178,7 +167,7 @@ frame_slot_t *frame_ring_produce_slot_locked(frame_ring_t *r)
     frame_ring_maintain_locked(r);
     frame_slot_t *s = slot_of(r, r->produce_seq + 1);
     /* 各阶段缓冲必须全部释放（消费完成），否则本槽不可复用 → 丢帧 */
-    if (s->raw_present || s->rgb.buf || s->nv12.buf || s->raw_claims)
+    if (s->raw_present || s->rgb.buf || s->raw_claims)
         return NULL;
     memset(s, 0, sizeof(*s));
     s->seq = r->produce_seq + 1;
@@ -254,48 +243,10 @@ void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
     if (s->seq > r->display_seq + 1 && s->seq > r->display_seq)
         r->render_skipped += s->seq - r->display_seq - 1;
     r->display_seq = s->seq;
-    frame_ring_maintain_locked(r);     /* 释放被跳过槽的 rgb、旧 jpeg 与可回收 nv12 */
-    pthread_cond_broadcast(&r->published[FRAME_TOPIC_DISPLAYED]);
+    frame_ring_maintain_locked(r);     /* 释放被跳过槽的 rgb 与旧 jpeg */
 }
 
-/* ---- 编码 ---- */
-
-frame_slot_t *frame_ring_encode_pick_locked(frame_ring_t *r,
-                                            unsigned long long next_seq)
-{
-    frame_slot_t *best = NULL;
-    for (int i = 0; i < FRAME_RING_N; i++) {
-        frame_slot_t *s = &r->slots[i];
-        if (s->seq <= next_seq || !s->display_done || !s->nv12.buf) continue;
-        if (!best || s->seq > best->seq) best = s;
-    }
-    return best;
-}
-
-/* rec 消费到 s：被跳过（seq ≤ s->seq 未消费）的槽一并标记，
-   其 nv12/raw 由 maintain 回池/释放 */
-static void encode_mark_consumed_locked(frame_ring_t *r, frame_slot_t *s)
-{
-    for (int i = 0; i < FRAME_RING_N; i++) {
-        frame_slot_t *t = &r->slots[i];
-        if (t->seq && t->seq < s->seq && t->display_done && !t->encode_done)
-            r->encode_replaced++;
-        if (t->seq && t->seq <= s->seq && !t->encode_done) t->encode_done = 1;
-    }
-    frame_ring_maintain_locked(r);
-}
-
-void frame_ring_encode_advance_locked(frame_ring_t *r, frame_slot_t *s)
-{
-    r->encoded_frames++;
-    encode_mark_consumed_locked(r, s);
-}
-
-void frame_ring_encode_skip_locked(frame_ring_t *r, frame_slot_t *s)
-{
-    encode_mark_consumed_locked(r, s);
-    r->encode_skipped++;
-}
+/* ---- 原始帧探测（录像会话开始前） ---- */
 
 frame_slot_t *frame_ring_raw_newest_locked(frame_ring_t *r)
 {
@@ -313,16 +264,6 @@ void frame_ring_set_yolo_active(frame_ring_t *r, int on)
     if (r->yolo_active != on) {
         r->yolo_active = on;
         frame_ring_maintain_locked(r);   /* 停用即放开 raw 释放条件 */
-    }
-    frame_ring_unlock(r);
-}
-
-void frame_ring_set_rec_active(frame_ring_t *r, int on)
-{
-    frame_ring_lock(r);
-    if (r->rec_active != on) {
-        r->rec_active = on;
-        frame_ring_maintain_locked(r);   /* 停录即回池 nv12 */
     }
     frame_ring_unlock(r);
 }
@@ -347,7 +288,7 @@ void frame_ring_subscribe(frame_ring_t *r, frame_subscription_t *sub, frame_topi
 }
 
 static int wait_for_frame(frame_subscription_t *sub, unsigned long long last_seq,
-                          int timeout_ms, int require_nv12)
+                          int timeout_ms)
 {
     frame_ring_t *r = sub->ring;
     struct timespec ts;
@@ -356,8 +297,7 @@ static int wait_for_frame(frame_subscription_t *sub, unsigned long long last_seq
     frame_ring_lock(r);
     while (sub->generation == r->cancel_generation) {
         int ready = sub->topic == FRAME_TOPIC_CAPTURED ? r->produce_seq > last_seq :
-                    require_nv12 ? frame_ring_encode_pick_locked(r, last_seq) != NULL :
-                                   r->display_seq > last_seq;
+                                                         r->display_seq > last_seq;
         if (ready) {
             frame_ring_unlock(r);
             return 1;
@@ -374,7 +314,7 @@ static int wait_for_frame(frame_subscription_t *sub, unsigned long long last_seq
 
 int frame_ring_wait(frame_subscription_t *sub, unsigned long long last_seq, int timeout_ms)
 {
-    return wait_for_frame(sub, last_seq, timeout_ms, 0);
+    return wait_for_frame(sub, last_seq, timeout_ms);
 }
 
 int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeout_ms)
@@ -382,13 +322,6 @@ int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeou
     frame_subscription_t sub;
     frame_ring_subscribe(r, &sub, FRAME_TOPIC_CAPTURED);
     return frame_ring_wait(&sub, last_seq, timeout_ms);
-}
-
-int frame_ring_wait_encode(frame_ring_t *r, unsigned long long next_seq, int timeout_ms)
-{
-    frame_subscription_t sub;
-    frame_ring_subscribe(r, &sub, FRAME_TOPIC_DISPLAYED);
-    return wait_for_frame(&sub, next_seq, timeout_ms, 1);
 }
 
 /* ---- 相机重启退让 ---- */
@@ -409,7 +342,6 @@ static void quiesce_clear_all_locked(frame_ring_t *r)
         frame_slot_t *s = &r->slots[i];
         if (s->raw_present && !s->raw_is_mmap) free(s->raw.buf);
         if (s->rgb.buf)  frame_ring_buf_put_locked(r, FRAME_RING_POOL_RGB,  s->rgb.buf,  s->rgb.cap);
-        if (s->nv12.buf) frame_ring_buf_put_locked(r, FRAME_RING_POOL_NV12, s->nv12.buf, s->nv12.cap);
         memset(s, 0, sizeof(*s));
     }
     r->quiescing = 0;
@@ -452,21 +384,16 @@ void frame_ring_stats(frame_ring_t *r, frame_ring_stats_t *out)
     out->produce_seq      = r->produce_seq;
     out->display_seq      = r->display_seq;
     out->displayed_frames = r->displayed_frames;
-    out->encoded_frames  = r->encoded_frames;
-    out->encode_replaced = r->encode_replaced;
     out->processing_age_ms = r->processing_age_ms;
     out->processing_age_max_ms = r->processing_age_max_ms;
-    out->capture_to_encode_ms = r->capture_to_encode_ms;
     out->capture_fps = r->capture_fps_den ? (double)r->capture_fps_num / r->capture_fps_den : 0;
     out->capture_dropped  = r->capture_dropped;
     out->driver_dropped   = r->driver_dropped;
     out->capture_stall_ms = r->capture_stall_ms;
     out->infer_dropped    = r->infer_dropped;
     out->render_skipped   = r->render_skipped;
-    out->encode_skipped   = r->encode_skipped;
     for (int i = 0; i < FRAME_RING_N; i++)
         if (r->slots[i].raw_present) out->raw_pinned++;
     for (pool_item_t *it = r->pool_rgb; it; it = it->next) out->pool_rgb++;
-    for (pool_item_t *it = r->pool_nv12; it; it = it->next) out->pool_nv12++;
     frame_ring_unlock(r);
 }

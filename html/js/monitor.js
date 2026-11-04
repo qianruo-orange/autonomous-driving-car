@@ -341,7 +341,7 @@
       if (!response.ok) return;
       var stats = await response.json();
       cameraFps = stats.capture_fps || 0;
-      processingAgeMs = stats.capture_to_encode_ms || stats.processing_age_ms || 0;
+      processingAgeMs = stats.processing_age_ms || 0;
       sourceDrops = (stats.capture_dropped || 0) + (stats.driver_dropped || 0) + (stats.infer_dropped || 0);
       /* 透传链路延迟基准：服务端最新采集序号 + 采集帧率 */
       if (stats.produce_seq) mjLatestSeq = stats.produce_seq;

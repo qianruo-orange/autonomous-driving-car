@@ -83,25 +83,3 @@ void yolo_nv12_to_rgb_full(const unsigned char *y, const unsigned char *uv,
     }
 }
 
-void yolo_rgb_to_nv12(const unsigned char *rgb, int w, int h, unsigned char *nv12)
-{
-    unsigned char *Y = nv12;
-    unsigned char *UV = nv12 + (size_t)w * h;
-    for (int y = 0; y < h; y++) {
-        const unsigned char *row = rgb + (size_t)y * w * 3;
-        unsigned char *Yrow = Y + (size_t)y * w;
-        for (int x = 0; x < w; x++) {
-            const unsigned char *p = row + x * 3;
-            int r = p[0], g = p[1], b = p[2];
-            /* BT.601 limited-range 整数系数：与快路径 OpenCV RGB2YUV_I420
-               及编码器 VUI 声明（BT.601）一致——本函数是快路径的兜底，
-               两者系数必须相同，否则兜底帧会突变色 */
-            Yrow[x] = (unsigned char)((66 * r + 129 * g + 25 * b + 128) / 256 + 16);
-            if ((y & 1) == 0 && (x & 1) == 0) {
-                unsigned char *uv = UV + (size_t)(y / 2) * w + x;
-                uv[0] = (unsigned char)((-38 * r - 74 * g + 112 * b + 128) / 256 + 128);
-                uv[1] = (unsigned char)((112 * r - 94 * g - 18 * b + 128) / 256 + 128);
-            }
-        }
-    }
-}

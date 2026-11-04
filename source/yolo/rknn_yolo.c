@@ -12,16 +12,14 @@
  *             框、类别和置信度按值入结果队列
  *   composer: 事件驱动消费结果队列，排空只留最新（seq 严格递增，绝不回退；
  *             旧结果条目直接丢弃）→ 运动学跟踪 → 显示 EMA → rgb 原地画框 →
- *             JPEG（含标签）+ NV12 写槽（display_done=1，display_seq 推进）；
+ *             标注帧只用于检测报告，不再重编码（display_done=1，display_seq 推进）；
  *             渲染节拍 ~30fps
  *
  * 帧数据全部走视频帧环形队列（video/frame_ring.h）：采集 raw（V4L2 mmap）、
- * 解码 rgb、画框 nv12 各阶段缓冲只在槽位间移动指针，零拷贝。
- * 录像编码消费方锁内窃取最新显示槽 NV12，
- * 快照缓冲与按 seq 索引的完成槽（YOLO_SLOT_N）已随环接入删除。
+ * 解码 rgb 等阶段缓冲只在槽位间移动指针，零拷贝。
+ * 直播与录像直接取相机原始 JPEG，不经过本模块的标注帧。
  *
  * 渲染 seq 单调不回退，画面不会抖动/闪烁；被跳过的旧结果直接回池。
- * 推流客户端在 YOLO 可用时只推标注帧，画面不再在标注帧/原始帧之间闪烁。
  *
  * 热重载：rknn_yolo_reload() 停止推理池（pool_running=0 → 线程退出/join，
  * 在途任务 rgb 回池 + 摘除槽 claim）→ 释放模型与 context → 重读配置
@@ -113,7 +111,7 @@ typedef struct {
 
 typedef struct {
     unsigned long long started_us, collect_after_us, last_sample_seq;
-    unsigned long long captured, rendered, encoded, samples, latency_sum_ms;
+    unsigned long long captured, rendered, samples, latency_sum_ms;
     unsigned long long worker_samples, worker_sum_us;
 } adaptive_window_t;
 
@@ -301,10 +299,9 @@ static void yolo_adapt_workers(unsigned long long worker_us)
     pthread_mutex_lock(&g_yolo.q_lock);
     frame_ring_lock(ring);
     unsigned long long captured = ring->produce_seq, rendered = ring->displayed_frames;
-    unsigned long long encoded = ring->encoded_frames;
-    int encoding = ring->rec_active;
-    unsigned long long sample_seq = encoding ? encoded : rendered;
-    unsigned long long age = encoding ? ring->capture_to_encode_ms : ring->processing_age_ms;
+    /* 标注帧是唯一出口（录像取的是原始 JPEG）：吞吐与延迟都以渲染为准 */
+    unsigned long long sample_seq = rendered;
+    unsigned long long age = ring->processing_age_ms;
     frame_ring_unlock(ring);
     unsigned long long now = yolo_now_us();
     int changed = 0, selected = 0;
@@ -315,11 +312,10 @@ static void yolo_adapt_workers(unsigned long long worker_us)
         pthread_mutex_unlock(&g_yolo.q_lock);
         return;
     }
-    if (!window->started_us || captured < window->captured || rendered < window->rendered || encoded < window->encoded) {
+    if (!window->started_us || captured < window->captured || rendered < window->rendered) {
         window->started_us = now;
         window->captured = captured;
         window->rendered = rendered;
-        window->encoded = encoded;
         window->last_sample_seq = sample_seq;
         window->samples = window->latency_sum_ms = 0;
         window->worker_samples = window->worker_sum_us = 0;
@@ -334,7 +330,6 @@ static void yolo_adapt_workers(unsigned long long worker_us)
     if (now - window->started_us >= 1000000u && window->samples) {
         double seconds = (double)(now - window->started_us) / 1000000.0;
         double delivered = (double)(rendered - window->rendered) / seconds;
-        if (encoding) delivered = fmin(delivered, (double)(encoded - window->encoded) / seconds);
         adaptive_observation_t observation = {
             .fps = delivered,
             .camera_fps = (double)(captured - window->captured) / seconds,
@@ -775,7 +770,7 @@ static void *yolo_render_task(void *arg)
 
         unsigned long long seq = item.seq;
         int w = 0, h = 0;
-        ring_buf_t rgbb = { 0 }, nv12b = { 0 };
+        ring_buf_t rgbb = { 0 };
         frame_ring_lock(ring);
         /* Rendering owns RGB until it explicitly returns the buffer below.
            The slot may be cleared or reused during a camera restart. */
@@ -784,8 +779,6 @@ static void *yolo_render_task(void *arg)
             frame_ring_unlock(ring);
             continue;
         }
-        /* Local output buffers are also owned independently of the slot. */
-        frame_ring_buf_take_locked(ring, FRAME_RING_POOL_NV12, (size_t)w * h * 3 / 2, &nv12b);
         g_yolo.next_seq = seq;
         unsigned long long tracking_capture_ms = s->capture_ms;
         frame_ring_unlock(ring);
@@ -794,36 +787,23 @@ static void *yolo_render_task(void *arg)
         disp.w = w; disp.h = h;
         disp.count = item.count < 0 ? 0 : item.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : item.count;
 
-        /* Render labels in the owned RGB frame before hardware H.264 encoding. */
+        /* Render labels into the owned RGB frame (saved detection reports). */
         unsigned long long object_ids[YOLO_MAX_DETS];
         int tracked_index = image_tracking_update(&disp, &g_yolo.classes, tracking_capture_ms,
                                                   object_ids);
         /* Keep velocity estimation on raw detections;
          * EMA only changes the boxes drawn for this frame. */
         yolo_smooth(&g_yolo.prev, &disp);
-        int ok = nv12b.buf &&
-            yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes,
-                                  tracked_index, object_ids) == 0;
-        if (ok) {
-            yolo_rgb_to_nv12_fast(rgbb.buf, w, h, nv12b.buf);
+        if (yolo_render_annotated(rgbb.buf, w, h, &disp, &g_yolo.classes,
+                                  tracked_index, object_ids) == 0) {
             g_yolo.prev = disp;
             snap_result(&disp);
         }
 
         frame_ring_lock(ring);
         /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，否则缓冲回池 */
-        if (!ring->quiescing && s->seq == seq && s->rgb_done) {
-            if (ok) {
-                s->nv12     = nv12b;
-                s->nv12.len = (size_t)w * h * 3 / 2;
-            } else {
-                /* Release the failed output; no unannotated frame is published. */
-                frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12b.buf, nv12b.cap);
-            }
+        if (!ring->quiescing && s->seq == seq && s->rgb_done)
             frame_ring_display_commit_locked(ring, s);
-        } else {
-            frame_ring_buf_put_locked(ring, FRAME_RING_POOL_NV12, nv12b.buf, nv12b.cap);
-        }
         frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
 

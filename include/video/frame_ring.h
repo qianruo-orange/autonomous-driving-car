@@ -6,33 +6,29 @@
 #include <pthread.h>
 
 /**
- * video/frame_ring.h — 视频帧环形队列：采集/推理/显示/编码四阶段零拷贝。
+ * video/frame_ring.h — 视频帧环形队列：采集/推理/显示三阶段零拷贝。
  *
- * 32 个槽位描述符 + 阶段指针（raw/rgb/nv12）。各阶段只移动缓冲指针，
+ * 32 个槽位描述符 + 阶段指针（raw/rgb）。各阶段只移动缓冲指针，
  * 缓冲本身在阶段间传递、游标越过后回池复用：
  *   采集(video worker)  V4L2 mmap 指针直接入槽，延迟 QBUF（真正零拷贝）
  *   推理(yolo_task)       claims++ 后锁外解码槽内 raw → 池内 rgb（job 持有）；
  *                       claim 随任务移交 worker（任务在途期间槽位被钉住不可复用）
  *   推理(worker)        resize 读 job rgb，推理结果（名称+坐标）入结果队列，
  *                       rgb 写槽置 rgb_done，unclaim
- *   显示(composer)      消费结果队列最新结果，按 seq 取最新 rgb_done 槽原地画框
- *                       → nv12 写槽，置 display_done
- *   编码(rec)           窃取槽内 nv12（所有权转移），置 encode_done（YOLO 必要流程，
- *                       停摆直接宕机，无原始帧回退）
- *   HTTP 推流            锁内拷贝最新 raw；标注 H.264 由编码器发布（多读者，不钉槽）
+ *   显示(composer)      消费结果队列最新结果，按 seq 取最新 rgb_done 槽原地画框，
+ *                       置 display_done（标注帧仅用于检测报告，不再进编码器）
+ *   HTTP 推流            锁内拷贝最新 raw（相机原生 JPEG，逐字节透传）
  *
- * 槽位回收（采集复用条件）：raw/rgb/nv12 三个缓冲全部释放。
+ * 槽位回收（采集复用条件）：raw/rgb 两个缓冲全部释放。
  * 释放规则在 frame_ring_maintain_locked 统一维护（各提交点触发，遍历 32 槽开销可忽略）：
  *   raw  → QBUF(mmap)/free：非最新帧(raw 客户端钉最新) && claims==0 &&
- *          (yolo_active ? infer_done : encode_done||!rec_active)
+ *          (yolo_active ? infer_done : 1)
  *   rgb  → 池：seq <= 最新已渲染 seq（含被跳过的槽）
- *   nv12 → 池：seq != display_seq 且（encode_done || !rec_active）；
- *             当前显示槽 nv12 始终钉住供 rec 窃取（显示推进后按本规则回收）
  *
- * 并发：单一互斥锁 + 按采集/显示主题发布的条件变量；订阅者用帧序号判断新消息。
+ * 并发：单一互斥锁 + 按采集主题发布的条件变量；订阅者用帧序号判断新消息。
  * 发布时立即唤醒该主题的所有订阅者，无轮询间隔，也不复制帧数据。
  * 锁内：标志/指针交接/池/客户端拷贝（~百 µs）、
- * QBUF 回调（ioctl ~µs）；锁外：JPEG 解码、NPU 推理、渲染、H.264 编码。
+ * QBUF 回调（ioctl ~µs）；锁外：JPEG 解码、NPU 推理、渲染。
  * 锁序约束：不得在持有本锁时获取其他模块锁（q_lock/slot_mutex 等）。
  *
  * 相机重启：quiesce_begin → quiesce_wait（等 claims 归零，上限 1s）→
@@ -48,11 +44,9 @@
 
 /* 缓冲池编号（frame_ring_buf_take/put 的 which 参数） */
 #define FRAME_RING_POOL_RGB  0
-#define FRAME_RING_POOL_NV12 1
 
 typedef enum {
     FRAME_TOPIC_CAPTURED,
-    FRAME_TOPIC_DISPLAYED,
     FRAME_TOPIC_COUNT
 } frame_topic_t;
 
@@ -93,37 +87,30 @@ typedef struct {
     int rgb_done;             /* worker 解码 rgb 写入完成（可渲染）；检测结果经结果队列传递 */
 
     /* ---- 显示阶段 ---- */
-    ring_buf_t nv12;          /* 画框 NV12（池内缓冲，供录像编码） */
-    int display_done;         /* composer 渲染完成 */
-
-    /* ---- 编码阶段 ---- */
-    int encode_done;          /* rec 已消费（窃取/尺寸不符跳过） */
+    int display_done;         /* composer 渲染完成（标注帧仅供检测报告） */
 } frame_slot_t;
 
 typedef struct frame_ring {
     frame_slot_t slots[FRAME_RING_N];
     unsigned long long produce_seq;   /* 最新已发布 seq（0 = 尚无帧） */
-    unsigned long long display_seq;   /* 最新已渲染 seq（钉住最新显示帧，维护规则用） */
-    unsigned long long displayed_frames, encoded_frames, encode_replaced;
+    unsigned long long display_seq;   /* 最新已渲染 seq（maintain 释放 rgb 用） */
+    unsigned long long displayed_frames;
     unsigned long long processing_age_ms, processing_age_max_ms;
-    unsigned long long capture_to_encode_ms;
     unsigned capture_fps_num, capture_fps_den;
 
     /* 运行模式（消费者侧在锁内更新，维护释放规则用） */
     int yolo_active;            /* YOLO 池运行中（停用时 infer_done 不再推进） */
-    int rec_active;           /* 录像进行中 */
     int quiescing;            /* 相机重启退让：禁止新 claim，等待 claims 归零 */
 
-    /* 丢帧/停摆计数器（暴露 /api/video/caps 与定期日志） */
+    /* 丢帧/停摆计数器（暴露 /api/video/stats 与定期日志） */
     unsigned long long capture_dropped;   /* 环无空闲槽丢弃 */
     unsigned long long driver_dropped;    /* V4L2 buf.sequence 缺口（驱动侧丢失） */
     unsigned long long capture_stall_ms;  /* 驱动缓冲全被占用时的等待累计 */
     unsigned long long infer_dropped;     /* 解码失败/槽已释放跳过 */
     unsigned long long render_skipped;    /* 最新结果优先被跳过的帧 */
-    unsigned long long encode_skipped;    /* 录像尺寸不符等丢弃 */
 
-    /* 阶段缓冲池（spare 列表，跨帧复用免 malloc/mmap churn） */
-    pool_item_t *pool_rgb, *pool_nv12;
+    /* 阶段缓冲池（spare 列表，跨帧复用免 malloc churn） */
+    pool_item_t *pool_rgb;
 
     pthread_mutex_t lock;
     pthread_cond_t published[FRAME_TOPIC_COUNT];
@@ -145,14 +132,13 @@ typedef struct {
 
 typedef struct {
     unsigned long long produce_seq;
-    unsigned long long display_seq, displayed_frames, encoded_frames, encode_replaced;
+    unsigned long long display_seq, displayed_frames;
     unsigned long long processing_age_ms, processing_age_max_ms;
-    unsigned long long capture_to_encode_ms;
     double capture_fps;
     unsigned long long capture_dropped, driver_dropped, capture_stall_ms;
-    unsigned long long infer_dropped, render_skipped, encode_skipped;
+    unsigned long long infer_dropped, render_skipped;
     int raw_pinned;            /* 当前被 raw 占用的槽数 */
-    int pool_rgb, pool_nv12;   /* 池内缓冲个数 */
+    int pool_rgb;              /* 池内缓冲个数 */
 } frame_ring_stats_t;
 
 /* ---- 生命周期 ---- */
@@ -186,25 +172,14 @@ void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decod
 /* 取 seq > next_seq 的最新 rgb_done 槽（最新结果优先）；无则 NULL。
    调用方持锁拷贝 res、取出 rgb 指针并 take 池缓冲，解锁后渲染，再 commit */
 frame_slot_t *frame_ring_display_pick_locked(frame_ring_t *r, unsigned long long next_seq);
-/* 渲染完成：display_done=1，释放被跳过槽与旧槽的 rgb/nv12 */
-void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s); /* 发布 DISPLAYED */
+/* 渲染完成：display_done=1，释放被跳过槽与旧槽的 rgb */
+void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s);
 
-/* ---- 编码（rec） ---- */
-/* 取 seq > next_seq 的最新 display_done 槽（YOLO 录像）；无则 NULL。
-   调用方锁内窃取 nv12（s->nv12.buf 置 NULL，所有权转移给 rec，
-   用毕 frame_ring_buf_put_locked 回池），再 encode_advance */
-frame_slot_t *frame_ring_encode_pick_locked(frame_ring_t *r, unsigned long long next_seq);
-/* rec 已消费（窃取或尺寸不符跳过）：encode_done=1 */
-void frame_ring_encode_advance_locked(frame_ring_t *r, frame_slot_t *s);
-/* 尺寸不符等丢弃：与 advance 相同的消费标记，另计 encode_skipped++
-   （槽内 nv12 留待显示推进后按维护规则回池） */
-void frame_ring_encode_skip_locked(frame_ring_t *r, frame_slot_t *s);
 /* 最新 raw 槽（仅供录像会话开始前的分辨率探测/帧率实测锁内拷贝读取） */
 frame_slot_t *frame_ring_raw_newest_locked(frame_ring_t *r);
 
 /* ---- 模式标志 ---- */
 void frame_ring_set_yolo_active(frame_ring_t *r, int on);
-void frame_ring_set_rec_active(frame_ring_t *r, int on);
 
 /* ---- 发布订阅（内部加锁；帧序号是消息游标，缓冲仍由 claim/所有权保护） ---- */
 /* 在检查退出/启用状态前建立订阅，以覆盖检查状态到进入等待之间的取消窗口。 */
@@ -212,9 +187,8 @@ void frame_ring_subscribe(frame_ring_t *r, frame_subscription_t *sub, frame_topi
 /* topic 最新帧 seq > last_seq 返回 1；超时/取消返回 0。
    取消后自动更新代次，订阅可继续使用；超时仅供调用方检查退出状态。 */
 int frame_ring_wait(frame_subscription_t *sub, unsigned long long last_seq, int timeout_ms);
-/* 临时订阅的兼容接口；编码等待同时确认对应 NV12 缓冲仍可消费。 */
+/* 临时订阅的兼容接口（按 CAPTURED 主题等待新采集帧） */
 int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeout_ms);
-int frame_ring_wait_encode(frame_ring_t *r, unsigned long long next_seq, int timeout_ms);
 
 /* ---- 缓冲池（须持锁） ---- */
 /* 取容量 >= min_cap 的池内缓冲（不足时 malloc），回写 ring_buf_t（cap 为实际容量） */
