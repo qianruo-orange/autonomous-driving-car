@@ -22,20 +22,23 @@
 
 /* 新的主界面布局：视频在左，状态框在右。
    margin-top 12px：卡片上缘距顶栏按钮约 12px（原 6px 视觉上过近） */
-.monitor-grid{display:flex;gap:16px;align-items:stretch;margin-top:12px}
+.monitor-grid{display:flex;gap:16px;align-items:flex-start;margin-top:12px}
 .video-column{flex:1;display:flex;flex-direction:column;min-width:0}
 .status-column{width:420px;display:flex;flex-direction:column;gap:12px}
-.video-card{flex:1 1 0%;min-height:0;display:flex;flex-direction:column;padding:10px;position:relative;overflow:hidden;background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
+.video-card{flex:0 0 auto;min-height:0;display:flex;flex-direction:column;padding:10px;position:relative;overflow:hidden;background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight)}
 .video-card h3{position:absolute;top:18px;left:18px;z-index:10;color:var(--text-strong);font-size:14px;margin:0;text-shadow:0 0 8px rgba(0,0,0,.7);pointer-events:none}
 /* position:relative —— 叠框层/追踪层/全屏按钮都相对视频容器定位，
    否则会相对带 10px padding 的卡片，框整体偏移 */
-.video-wrapper{position:relative;flex:1;min-height:0;background:#000;border-radius:12px;overflow:hidden}
-/* 与追踪状态同一行：靠右紧邻停止按钮，单行显示，宽度不够时省略而不换行 */
+/* 视频区域固定 16:9：高度由宽度算出（不再随右侧状态栏拉伸），16:9 的相机画面
+   正好 1:1 铺满，既不裁切也不留黑边。若把相机改成 4:3 等其它比例，画面会按
+   contain 居中留边（宁可留边也不裁掉画面内容） */
+.video-wrapper{position:relative;flex:none;width:100%;aspect-ratio:16/9;min-height:0;background:#000;border-radius:12px;overflow:hidden}
+/* 与追踪状态同一行：靠右，单行显示，宽度不够时省略而不换行 */
 .video-stats{flex:0 1 auto;min-width:0;margin-left:auto;color:var(--muted);font-size:12px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
 .video-fps{position:absolute;top:18px;right:18px;z-index:10;padding:3px 10px;border-radius:10px;background:rgba(0,0,0,.45);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--card-border);color:var(--text-strong);font-size:12px;font-weight:600;text-shadow:0 0 8px rgba(0,0,0,.7);pointer-events:none}
-/* cover：画面填满容器，不产生上下/左右黑边；容器比例与 16:9 不同时裁掉少量边缘。
-   叠框按实际的 object-fit 换算内容矩形（见 monitor.js overlayDraw），裁切后仍对齐 */
-.video-wrapper video,.video-wrapper img{display:block;width:100%;height:100%;object-fit:cover;background:#000}
+/* contain：容器比例已与画面一致，画面 1:1 铺满且不裁切；比例还没同步过来的瞬间
+   最多留一条细边，不会切掉画面内容。叠框按实际 object-fit 换算内容矩形（monitor.js overlayDraw） */
+.video-wrapper video,.video-wrapper img{display:block;width:100%;height:100%;object-fit:contain;background:#000}
 /* 检测框叠加层：位于画面之上、追踪交互层（z-index:3）之下，不拦截鼠标 */
 #stream_overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2}
 .sec{flex:1}
