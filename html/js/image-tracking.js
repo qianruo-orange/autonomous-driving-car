@@ -2,22 +2,20 @@
 (function() {
     const overlay = document.getElementById('tracking_overlay');
     const status = document.getElementById('tracking_status');
-    const stop = document.getElementById('tracking_stop');
-    if (!overlay || !status || !stop) return;
+    if (!overlay || !status) return;
     let latest = null, busy = false, pressing = false, closed = false, timer;
     let message = '', failed = false;
 
     function updateStatus() {
         const states = {
             idle: '点击画面中的识别框开始追踪',
-            tracking: '正在追踪所选目标',
+            tracking: '正在追踪所选目标，再次点击取消',
             lost: '目标丢失，请重新选择',
             stale: '等待实时识别画面'
         };
         const text = message || (latest ? states[latest.state] : states.stale);
         status.textContent = t(text) + (!message && latest && latest.state === 'tracking' ?
             ' #' + latest.track_id : '');
-        stop.disabled = busy || !latest || !latest.active;
     }
 
     function render() {
@@ -102,9 +100,13 @@
     overlay.addEventListener('click', event => {
         const button = event.target.closest('.tracking-target');
         if (!button || busy) return;
+        // 一次点击选中；再次点击同一个目标即取消追踪（等同于原来的停止按钮）。
+        if (latest && latest.active && String(latest.selected) === button.dataset.index) {
+            command(new URLSearchParams({action: 'stop'}));
+            return;
+        }
         command(new URLSearchParams({action: 'select', seq: button.dataset.seq, index: button.dataset.index}));
     });
-    stop.addEventListener('click', () => command(new URLSearchParams({action: 'stop'})));
 
     async function poll() {
         try {
