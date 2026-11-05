@@ -154,7 +154,7 @@ flowchart LR
 
 **后处理。** C 实现：在 NHWC 分数张量上逐锚点扫类别、收集候选、按类贪心 NMS（IoU 0.45）、取前 32，约 1 ms。
 
-**结果。** 结果队列偏向最新帧；消费者较慢时跳过中间结果，而不是越拖越旧。
+**结果。** 结果队列偏向最新帧；消费者较慢时跳过中间结果，保持低延迟。
 
 #### 模型接口
 
@@ -169,9 +169,9 @@ worker 只对框张量向运行时请求 float，类别分数自己反量化。�
 
 ### RGA 预处理
 
-预处理全部在 RGA 上完成，它是必需组件。启动时应用检查 `/dev/rga` 并用 `dlopen` 加载 `librga.so`；缺任何一项，推理池拒绝启动并明确报错退出。`librga` 刻意不写进 `DT_NEEDED`，这样缺库时得到的是这条错误信息，而不是 `main` 之前的动态加载失败。
+预处理全部在 RGA 上完成：NV12 → RGB、等比缩放、居中放进 512×512 画布，一次调用约 1 ms。
 
-每块板子安装一次：
+应用通过 librga 的 im2d C 接口提交作业，每块板子安装一次：
 
 ```sh
 git clone https://github.com/airockchip/librga
@@ -180,13 +180,13 @@ sudo mkdir -p /usr/local/include/rga && sudo cp librga/include/*.h /usr/local/in
 sudo /sbin/ldconfig
 ```
 
-`scripts/deploy.sh` 会检查库和 `/dev/rga`，缺库时可用 `LIBRGA_SOURCE` 指定源文件安装。
+`scripts/deploy.sh` 会检查库和 `/dev/rga`，也支持用 `LIBRGA_SOURCE` 指定源文件安装。
 
-RK3576 的 RGA2E 在内核里以 **RGA2** 设备注册，因此按核调度要用 `IM_SCHEDULER_RGA2_CORE0/1`（0x4/0x8）。RGA3 的 0x1/0x2 会被驱动拒绝并报 `job assign failed`。
+RK3576 的 RGA2E 在内核里以 **RGA2** 设备注册，按核调度使用 `IM_SCHEDULER_RGA2_CORE0/1`（0x4/0x8）。
 
 ### 视觉跟踪与跟随
 
-**跟踪。** 在主页点击检测框即可选中目标。匹配使用匀速预测、预测框重叠、位移、尺寸变化和类别门限，模糊匹配会被拒绝。ID 仅在本进程内有效，800 ms 无匹配即过期。编号标签和选中目标的青色框由**浏览器 canvas** 绘制，不写进画面。
+**跟踪。** 在主页点击检测框即可选中目标。匹配使用匀速预测、预测框重叠、位移、尺寸变化和类别门限，模糊匹配会被拒绝。ID 仅在本进程内有效，800 ms 无匹配即过期。编号标签和选中目标的青色框由**浏览器 canvas** 叠加显示。
 
 **跟随。** 轮速控制器独立消费检测结果，与视觉跟踪解耦。自动速度按目标相对大小计算，手动模式用配置速度。转向用 PD，左右轮各自用 PI 并带实测反馈。轮速目标与差速修正的单位都是 **m/s**。
 
@@ -215,9 +215,9 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq` 头，浏览器据此知道当前画面是哪一帧。
 
-框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h`，以及每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）。浏览器把记录与显示帧对齐；如果该帧没有推理结果，就回退到六帧内最近的记录，再远则干脆不画，而不是显示过期框。
+框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h`，以及每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）。浏览器把记录与显示帧对齐；如果该帧没有推理结果，就回退到六帧内最近的记录，再远则跳过该帧。
 
-720p 下单帧 60–110 KB，30 fps 不限额需要 18–26 Mbps。`mjpeg_max_kbps` 限制单客户端预算：socket 积压时丢整帧而不是越拖越慢。
+720p 下单帧 60–110 KB，30 fps 不限额需要 18–26 Mbps。`mjpeg_max_kbps` 限制单客户端预算：socket 积压时丢弃整帧，避免延迟累积。
 
 ### 录像与可观测性
 
@@ -275,7 +275,7 @@ curl -s http://127.0.0.1/api/system
 - 发送用 `tcp_send(handle, data, length)` / `can_send(handle, data, length)`。
 - 接收用业务自持槽上的 `data_slot_pop()`。
 
-TCP 保留部分写，并在接收槽满时重置客户端而不是静默丢字节。CAN 按接口加 ID 路由，保留原始单调接收时间戳，并强制保留电机 ID、显式停止、FIFO 准入、反馈新鲜度和输出限幅。完整路径、容量和锁规则见[通信流程](docs/COMMUNICATION_FLOW.md)。
+TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID 路由，保留原始单调接收时间戳，并强制保留电机 ID、显式停止、FIFO 准入、反馈新鲜度和输出限幅。完整路径、容量和锁规则见[通信流程](docs/COMMUNICATION_FLOW.md)。
 
 ### 仓库结构
 
@@ -337,7 +337,7 @@ sudo bash scripts/deploy.sh -i    # 安装并启动
 | `sudo bash scripts/deploy.sh -u` | 卸载，含配置、日志与录像 |
 | `sudo bash scripts/deploy.sh -r` | 先卸载再安装 |
 
-构建产物是 `bin/autonomous-driving-car`；部署会把可执行文件、前端、模型和配置装到 `/opt/autonomous-driving-car`，安装 systemd 单元并启动服务。不再有平台参数，目标固定为 RK3576。
+构建产物是 `bin/autonomous-driving-car`；部署会把可执行文件、前端、模型和配置装到 `/opt/autonomous-driving-car`，安装 systemd 单元并启动服务。平台固定为 RK3576。
 
 在 cgroup v2 系统上，部署会写入
 `/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf`，使服务组内允许 FIFO 与 deadline 线程。该配置生效期间 CPU 配额与权重在整个层级不可用；卸载时保留，全局 RT 预算不变。
@@ -527,7 +527,7 @@ up; RGA only writes the centre rectangle each frame.
 tensor, candidate collection, class-wise greedy NMS (IoU 0.45), top-32. ~1 ms.
 
 **Results.** The result queue favours the newest frame; a slower consumer skips
-intermediate results rather than falling behind.
+intermediate results and keeps latency low.
 
 #### Model interface
 
@@ -547,13 +547,11 @@ AP): **mAP50 0.5909, mAP50–95 0.4336**.
 
 ### Preprocessing on the RGA
 
-RGA performs all preprocessing and is a required component. At start up the
-application checks `/dev/rga` and loads `librga.so` with `dlopen`; if either is
-missing the inference pool refuses to start and the process aborts with an
-explicit message. `librga` is deliberately not in `DT_NEEDED` so a missing
-library produces that message instead of a dynamic-loader failure before `main`.
+All preprocessing happens on RGA: NV12 → RGB, proportional scaling and centring
+into the 512×512 canvas, in one call of about 1 ms.
 
-Install the library once per board:
+The application submits work through librga's im2d C API. Install it once per
+board:
 
 ```sh
 git clone https://github.com/airockchip/librga
@@ -563,11 +561,10 @@ sudo /sbin/ldconfig
 ```
 
 `scripts/deploy.sh` verifies the library and `/dev/rga`, and can install the
-library from `LIBRGA_SOURCE` if it is missing.
+library from `LIBRGA_SOURCE`.
 
 RK3576 reports its RGA2E cores as **RGA2** devices, so per-core scheduling uses
-`IM_SCHEDULER_RGA2_CORE0/1` (0x4/0x8). The RGA3 encodings (0x1/0x2) are rejected
-by the driver with `job assign failed`.
+`IM_SCHEDULER_RGA2_CORE0/1` (0x4/0x8).
 
 ### Visual tracking and following
 
@@ -575,7 +572,7 @@ by the driver with `job assign failed`.
 constant-velocity prediction, predicted box overlap, displacement, size change
 and class gates; ambiguous matches are rejected. IDs are local to the process
 and expire after 800 ms without a match. The numbered labels and the selected
-object's cyan box are drawn by the **browser canvas**, not into the frame.
+object's cyan box are overlaid by the **browser canvas**.
 
 **Following.** The wheel controller consumes detections independently of visual
 tracking. Automatic speed uses relative target size, manual mode uses the
@@ -626,11 +623,11 @@ Boxes come from `GET /api/detections/live?after=N`, returning records with
 `seq`, image `w`/`h` and per object `x1, y1, x2, y2, class, score, name` in
 original-image pixels. The browser matches the record to the displayed frame; if
 inference skipped that frame it falls back to the nearest earlier record within
-six frames, then draws nothing rather than a stale box.
+six frames, and beyond that it skips the frame.
 
 Each frame is 60–110 KB at 720p, so an uncapped 30 fps stream needs
 18–26 Mbps. `mjpeg_max_kbps` caps the per-client budget; when a socket backs up,
-whole frames are dropped rather than falling behind.
+whole frames are dropped so latency does not accumulate.
 
 ### Recording and observability
 
@@ -711,8 +708,7 @@ CAN IDs and frame formats.
 - Send: `tcp_send(handle, data, length)` / `can_send(handle, data, length)`.
 - Receive: `data_slot_pop()` on the business-owned slot.
 
-TCP preserves partial writes and resets a client instead of dropping stream
-bytes when its slot fills. CAN routes by interface plus ID, keeps original
+TCP preserves partial writes and resets a client when its slot fills. CAN routes by interface plus ID, keeps original
 monotonic receive timestamps, and enforces reserved motor IDs, explicit stop,
 FIFO admission, feedback freshness and output limits. Full paths, capacities and
 locking rules are in [communication flow](docs/COMMUNICATION_FLOW.md).
