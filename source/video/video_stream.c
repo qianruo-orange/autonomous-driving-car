@@ -495,10 +495,11 @@ void *video_stream_task(void *arg)
             s->autofocus = focus.autofocus;
             s->focus_sample_ms = focus.sample_ms;
             snprintf(s->camera, sizeof(s->camera), "%s", vs->camera_label);
+            struct timespec captured_now;
+            clock_gettime(CLOCK_MONOTONIC, &captured_now);
+            unsigned long long now_ms = (unsigned long long)captured_now.tv_sec * 1000u + captured_now.tv_nsec / 1000000u;
+            s->deliver_ms = now_ms;   /* DQBUF 返回时刻 */
             if ((buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK) == V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC) {
-                struct timespec captured_now;
-                clock_gettime(CLOCK_MONOTONIC, &captured_now);
-                unsigned long long now_ms = (unsigned long long)captured_now.tv_sec * 1000u + captured_now.tv_nsec / 1000000u;
                 unsigned long long capture_ms = (unsigned long long)buf.timestamp.tv_sec * 1000u + buf.timestamp.tv_usec / 1000u;
                 if (capture_ms && capture_ms <= now_ms && now_ms - capture_ms < 5000)
                     s->capture_ms = capture_ms;

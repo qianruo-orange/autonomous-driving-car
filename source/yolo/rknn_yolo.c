@@ -78,7 +78,7 @@ typedef struct {
     size_t            rgb_cap;
     int               w, h;
     unsigned long long seq;
-    unsigned long long capture_ms, decode_start_us, decode_end_us;
+    unsigned long long capture_ms, deliver_ms, decode_start_us, decode_end_us;
     yolo_event_meta_t metadata;
 } yolo_job_t;
 
@@ -662,8 +662,9 @@ static void *yolo_worker_task(void *arg)
             unsigned long long finished_us = yolo_now_us();
             if (finished_us - last_timing_us >= 10000000u) {
                 last_timing_us = finished_us;
-                LOG_INFO("yolo timing ms: capture_to_decode=%llu decode=%llu queue=%llu resize=%llu inputs=%llu run=%llu outputs=%llu post=%llu",
+                LOG_INFO("yolo timing ms: capture_to_decode=%llu deliver_to_decode=%llu decode=%llu queue=%llu resize=%llu inputs=%llu run=%llu outputs=%llu post=%llu",
                          job.decode_start_us / 1000u - job.capture_ms,
+                         job.deliver_ms ? job.decode_start_us / 1000u - job.deliver_ms : 0,
                          (job.decode_end_us - job.decode_start_us) / 1000u,
                          (worker_us - job.decode_end_us) / 1000u,
                          (prepared_us - worker_us) / 1000u,
@@ -1372,6 +1373,7 @@ void *rknn_yolo_task(void *arg)
         }
         unsigned long long seq = s->seq;
         unsigned long long capture_ms = s->capture_ms;
+        unsigned long long deliver_ms = s->deliver_ms;
         yolo_event_meta_t metadata;
         yolo_event_capture_meta_locked(s, &metadata);
         int fmt = s->fmt, w = s->w, h = s->h;
@@ -1418,7 +1420,7 @@ void *rknn_yolo_task(void *arg)
         }
 
         yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap,
-                           .w = w, .h = h, .seq = seq, .capture_ms = capture_ms,
+                           .w = w, .h = h, .seq = seq, .capture_ms = capture_ms, .deliver_ms = deliver_ms,
                            .decode_start_us = decode_start_us, .decode_end_us = yolo_now_us(),
                            .metadata = metadata };
         if (yolo_queue_push(&job) != 0)

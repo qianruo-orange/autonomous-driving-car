@@ -65,6 +65,9 @@ typedef struct pool_item {
 typedef struct {
     unsigned long long seq;   /* 帧绝对序号（u64 单调递增，永不回绕） */
     unsigned long long capture_ms;
+    /* DQBUF 返回时刻（本机 CLOCK_MONOTONIC）。capture_ms 来自驱动时间戳，
+       两者之差即"驱动交付到我们拿到"的延迟，用于区分相机侧与流水线侧开销。 */
+    unsigned long long deliver_ms;
     /* Lens telemetry sampled after DQBUF, not synchronized with exposure.
        Position is the device's raw V4L2 unit; no millimetre calibration exists. */
     int focus_valid;
