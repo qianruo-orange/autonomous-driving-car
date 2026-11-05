@@ -467,7 +467,7 @@
   }
 
   /* withFreq：CPU 卡在每个核下面单独显示该核的实时频率；NPU 没有逐核频率，不显示 */
-  var rgaInited = false;
+  var rgaCount = -1;
 
   function initCoreBars(id, names, withFreq) {
     var h = '';
@@ -571,19 +571,29 @@
       var mb = document.getElementById('mem_bar');
       mb.style.width = d.mem_pct + '%'; mb.className = d.mem_pct < 60 ? 'green' : d.mem_pct < 85 ? 'yellow' : 'red';
 
-      /* RGA 双核负载：后端按核统计硬件作业占用率（1 秒窗口） */
-      if (!rgaInited) {
-        rgaInited = true;
-        initCoreBars('rga_cores', ['Core0', 'Core1']);
+      /* RGA 逐核（与 NPU 同一套模式：按后端 rga_count 动态渲染，
+         无法获取时保留占位显示 N/A） */
+      if (d.rga_count !== undefined && d.rga_count !== rgaCount) {
+        rgaCount = d.rga_count;
+        var rgaNames = [];
+        for (var rn = 0; rn < rgaCount; rn++) rgaNames.push('RGA' + rn);
+        if (!rgaNames.length) {
+          rgaNames.push('RGA');
+          initCoreBars('rga_cores', rgaNames);
+          document.getElementById('rga_cores_pct0').textContent = 'N/A';
+        } else {
+          initCoreBars('rga_cores', rgaNames);
+        }
       }
-      var rgaPct = [d.rga_core0, d.rga_core1];
-      for (var ri = 0; ri < 2; ri++) {
-        var rp = rgaPct[ri];
-        var rpEl = document.getElementById('rga_cores_pct' + ri);
-        if (!rpEl) continue;
-        rpEl.textContent = (typeof rp === 'number' && rp >= 0) ? rp + '%' : 'N/A';
-        var rb = document.getElementById('rga_cores_bar' + ri);
-        if (rb) { rb.style.width = (typeof rp === 'number' && rp >= 0 ? rp : 0) + '%'; rb.className = 'blue'; }
+      if (d.rga_cores) {
+        for (var ri = 0; ri < d.rga_cores.length; ri++) {
+          var rp = d.rga_cores[ri];
+          var rpEl = document.getElementById('rga_cores_pct' + ri);
+          if (!rpEl) continue;
+          rpEl.textContent = (rp >= 0 ? rp + '%' : 'N/A');
+          var rb = document.getElementById('rga_cores_bar' + ri);
+          if (rb) { rb.style.width = (rp >= 0 ? rp : 0) + '%'; rb.className = 'cyan'; }
+        }
       }
 
       var dp = Math.round(100 - d.disk_avail * 100 / d.disk_total);

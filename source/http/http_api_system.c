@@ -121,11 +121,15 @@ void http_system_api(app_ctx_t *app, int fd)
         fclose(fp);
     }
 
-    /* RGA（RGA2E 双核）负载：由预处理模块按核计时统计（1 秒窗口）。
-       没有 devfreq/load 文件可读，只有驱动时钟，因此占用率来自应用侧实测。 */
-    int rga_pct[2] = { -1, -1 };
+    /* RGA（RGA2E 双核）负载：没有 devfreq/load 文件可读，占用率由预处理模块
+       按核计时统计（1 秒窗口）。字段结构与 NPU 一致：rga_count + rga_cores[]，
+       前端据此动态渲染；RGA 未启用时 count=0，前端显示 N/A。 */
+    int rga_cores[2] = { -1, -1 };
+    int rga_count = 0;
     unsigned long long rga_jobs = 0;
-    rga_preprocess_load(rga_pct, &rga_jobs);
+    rga_preprocess_load(rga_cores, &rga_jobs);
+    if (rga_cores[0] >= 0) rga_count = 1;
+    if (rga_cores[1] >= 0) rga_count = 2;
 
     /* 组装 JSON（使用边界检查宏） */
     JSON_ADD(json, off, "{"
@@ -153,13 +157,13 @@ void http_system_api(app_ctx_t *app, int fd)
         "\"mem_pct\":%d,\"mem_total\":%ld,\"mem_avail\":%ld,"
         "\"disk_total\":%ld,\"disk_avail\":%ld,"
         "\"temp\":%d,"
-        "\"rga_core0\":%d,\"rga_core1\":%d,\"rga_jobs\":%llu,"
+        "\"rga_count\":%d,\"rga_cores\":[%d,%d],\"rga_jobs\":%llu,"
         "\"app_version\":\"%s\",\"git_commit\":\"%s\",\"build_date\":\"%s\""
         "}",
         mem_pct, mem_total, mem_avail,
         disk_total, disk_avail,
         temp,
-        rga_pct[0], rga_pct[1], rga_jobs,
+        rga_count, rga_cores[0], rga_cores[1], rga_jobs,
         APP_VERSION, APP_GIT_COMMIT, APP_BUILD_DATE);
 
     http_ok_json(fd, json, (size_t)off);
