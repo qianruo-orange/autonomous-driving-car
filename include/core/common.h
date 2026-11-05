@@ -23,11 +23,15 @@
 #include "can/dbc_parser.h"
 
 
-/* 公共路径 */
-#define PATH_CONFIG   "config/config.txt"
-#define PATH_LOGS     "logs"
-#define PATH_WEBROOT  "html"
+/* 公共路径：所有产物统一收在 recordings/ 下，按用途分三个子目录。
+   不再按日期分层——日期只体现在文件名里（annot_YYYYMMDD_HHMMSS.mp4、
+   result_YYYYMMDD.txt、log_info_YYYYMMDD_HHMMSS_mmm.log）。 */
 #define PATH_RECORDINGS "recordings"
+#define PATH_LOGS       "recordings/logs"
+#define PATH_VIDEOS     "recordings/videos"
+#define PATH_RESULTS    "recordings/results"
+#define PATH_CONFIG   "config/config.txt"
+#define PATH_WEBROOT  "html"
 
 /* 网络监控接口 */
 #define NET_IFACE_ETH  "eth0"

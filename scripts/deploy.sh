@@ -182,11 +182,8 @@ do_install() {
         find "$DEPLOY_DIR/scripts" -depth -type d -empty -delete
     fi
 
-    echo "[INSTALL] logs/"
-    mkdir -p "$DEPLOY_DIR/logs"
-
-    echo "[INSTALL] recordings/"
-    mkdir -p "$DEPLOY_DIR/recordings"
+    echo "[INSTALL] recordings/{logs,videos,results}/"
+    mkdir -p "$DEPLOY_DIR/recordings/logs" "$DEPLOY_DIR/recordings/videos" "$DEPLOY_DIR/recordings/results"
 
     echo "[INSTALL] systemd service"
     cp "$SERVICE_SRC" /etc/systemd/system/"$SERVICE_NAME".service

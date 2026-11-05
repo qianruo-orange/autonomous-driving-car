@@ -224,7 +224,7 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 ### 录像与可观测性
 
-录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/YYYYMMDD/` 下写 `annot_<日期>_<时间>.mp4`：推理路径解出的 NV12 在 Y 平面画上检测框，再交给 VEPU510 硬件编成 H.264。720p 约 **12 Mbps**，即 **5.4 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。
+录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/videos/` 下写 `annot_<日期>_<时间>.mp4`：推理路径解出的 NV12 在 Y 平面画上检测框，再交给 VEPU510 硬件编成 H.264。720p 约 **12 Mbps**，即 **5.4 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。
 
 分段只按**日期变化**触发：跨天时结束当前文件、在新日期目录下开始下一段，录像不中断。另有手动分段接口供前端调用。MP4 的样本偏移是 64 位的，单文件不受 4 GiB 限制。
 
@@ -257,9 +257,9 @@ curl -s http://127.0.0.1/api/system
 | `config/ano.conf` | 匿名助手设置 |
 | `config/yolo26.rknn`、`config/coco.names` | 模型与类别标签 |
 | `config/*.dbc` | CAN 数据库 |
-| `logs/YYYYMMDD/` | 应用日志 |
-| `recordings/YYYYMMDD/` | 标注 MP4 录像 |
-| `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | 每日推理结果 |
+| `recordings/logs/` | 应用日志 |
+| `recordings/videos/` | 标注 MP4 录像 |
+| `recordings/results/result_YYYYMMDD.txt` | 每日推理结果 |
 
 关键视频设置：
 
@@ -641,7 +641,7 @@ whole frames are dropped so latency does not accumulate.
 
 Recording starts automatically and produces a **single MP4 with the detection
 boxes burned in**. Each session writes `annot_<date>_<time>.mp4` under
-`recordings/YYYYMMDD/`: the NV12 the inference path already decoded gets the
+`recordings/videos/`: the NV12 the inference path already decoded gets the
 boxes drawn into its luma plane, then the VEPU510 encodes it to H.264. That is
 about **12 Mbps**, or **5.4 GB/hour** at 720p, and the file plays in VLC, ffplay
 and the browser. No frame is decoded twice - the annotated file reuses the NV12
@@ -695,9 +695,9 @@ Updates retain `config.txt`, `follow.conf`, `car_motor_can.conf`,
 | `config/ano.conf` | Anonymous Assistant settings |
 | `config/yolo26.rknn`, `config/coco.names` | Model and class labels |
 | `config/*.dbc` | CAN databases |
-| `logs/YYYYMMDD/` | Application logs |
-| `recordings/YYYYMMDD/` | Annotated MP4 recordings |
-| `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | Daily inference results |
+| `recordings/logs/` | Application logs |
+| `recordings/videos/` | Annotated MP4 recordings |
+| `recordings/results/result_YYYYMMDD.txt` | Daily inference results |
 
 Key video settings:
 

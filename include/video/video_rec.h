@@ -17,7 +17,7 @@
 /* 录制状态快照（供 HTTP status 接口 / 前端轮询） */
 typedef struct {
     int               recording;    /* 1 = 录制中 */
-    char              file[128];    /* YYYYMMDD/filename, retained until finalization ends */
+    char              file[128];    /* plain filename in recordings/videos/ */
     unsigned long long start_ms;    /* 开始时刻（CLOCK_MONOTONIC ms） */
     unsigned long long frames;      /* 已写入帧数 */
     unsigned long long bytes;       /* 已写入数据字节数 */
@@ -54,11 +54,12 @@ int video_rec_split(const char *expected_file);
    已手动停录时为空操作 */
 void video_rec_cycle_session(void);
 
-/* Delete a regular video relative to an already opened recordings day folder.
- * Serializes with creation/split/finalization and preserves the open file even
- * after recording has been disabled. Caller owns day_fd; no symlinks followed.
+/* Delete a regular video by plain filename inside an already opened
+ * recordings/videos directory. Serializes with creation/split/finalization and
+ * preserves the open file even after recording has been disabled. Caller owns
+ * directory_fd; no symlinks followed.
  * Returns 0 deleted, 1 active, 2 already absent, -1 error (errno is set). */
-int video_rec_delete_file(int day_fd, const char *relative);
+int video_rec_delete_file(int directory_fd, const char *name);
 
 /* 拷贝当前录制状态 */
 int video_rec_status(video_rec_status_t *out);

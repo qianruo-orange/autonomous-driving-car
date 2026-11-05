@@ -5,7 +5,8 @@
 #include <stddef.h>
 #include "yolo/yolo_types.h"
 
-#define YOLO_EVENTS_DIR "recordings/detections"
+/* 检测结果统一放在 recordings/results/，一级平铺，日期只在文件名里 */
+#define YOLO_EVENTS_DIR "recordings/results"
 #define YOLO_EVENT_NAME_LEN 96
 #define YOLO_EVENT_CAMERA_LEN 192
 #define YOLO_EVENT_QUEUE_SIZE 512
@@ -51,7 +52,7 @@ void yolo_events_prepare_stop(void);
 /* Stop after producers have exited; drains accepted events before returning. */
 void yolo_events_destroy(void);
 
-/* Strict YYYYMMDD/det_HHMMSS_mmm_SEQ.jpg|json validation for downloads. */
+/* Strict det_HHMMSS_mmm_SEQ.jpg|json validation (legacy downloads only). */
 int yolo_event_rel_valid(const char *relative);
 int yolo_report_rel_valid(const char *relative);
 /* Delete the strict daily TXT report and any legacy journal/workbook. Active-day

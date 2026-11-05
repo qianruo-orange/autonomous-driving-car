@@ -88,13 +88,25 @@ int yolo_event_rel_valid(const char *relative)
     return p != seq && p - seq <= 20 && (!strcmp(p, ".jpg") || !strcmp(p, ".json"));
 }
 
+/* 报告文件名一级平铺，日期编码在名字里：
+   result_YYYYMMDD.txt（当天追加）与 detections_YYYYMMDD.txt（导出副本）。 */
+static int report_day(const char *name, char day[9])
+{
+    if (!name) return -1;
+    size_t n = strlen(name);
+    const char *stamp;
+    if (n == 19 && !strncmp(name, "result_", 7) && !strcmp(name + 15, ".txt")) stamp = name + 7;
+    else if (n == 23 && !strncmp(name, "detections_", 11) && !strcmp(name + 19, ".txt")) stamp = name + 11;
+    else return -1;
+    if (!digits(stamp, 8)) return -1;
+    memcpy(day, stamp, 8); day[8] = '\0';
+    return 0;
+}
+
 int yolo_report_rel_valid(const char *relative)
 {
-    if (!relative || strlen(relative) < 28 || !digits(relative, 8) || relative[8] != '/') return 0;
-    return (strlen(relative) == 28 && !strncmp(relative + 9, "result_", 7) &&
-        !memcmp(relative, relative + 16, 8) && !strcmp(relative + 24, ".txt")) ||
-        (strlen(relative) == 32 && !strncmp(relative + 9, "detections_", 11) &&
-        !memcmp(relative, relative + 20, 8) && !strcmp(relative + 28, ".txt"));
+    char day[9];
+    return relative && report_day(relative, day) == 0;
 }
 
 static int append(char *out, size_t cap, size_t *length, const char *format, ...)
@@ -172,12 +184,8 @@ static int write_all(int fd, const void *bytes, size_t length)
 static int flush_report_locked(const char day[9], const char *rows, size_t length)
 {
     if (!length) return 0;
-    if (mkdirat(events.root_fd, day, 0755) && errno != EEXIST) return -1;
-    int directory = openat(events.root_fd, day, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (directory < 0) return -1;
     char name[64]; snprintf(name, sizeof(name), "result_%s.txt", day);
-    int fd = openat(directory, name, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0644);
-    close(directory);
+    int fd = openat(events.root_fd, name, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0644);
     if (fd < 0) return -1;
     struct stat st;
     if (fstat(fd, &st) || !S_ISREG(st.st_mode)) { close(fd); errno = EINVAL; return -1; }
@@ -203,17 +211,17 @@ static int flush_report_epoch(const char day[9], const char *rows, size_t length
     return result;
 }
 
+static int report_root_open(void);
+
 int yolo_events_delete_report(const char *relative)
 {
     if (!yolo_report_rel_valid(relative)) { errno = EINVAL; return -1; }
     pthread_mutex_lock(&report_io_lock);
-    int root = events.root_fd >= 0 ? dup(events.root_fd) :
-        open(YOLO_EVENTS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    int directory = -1, result = -1;
+    int root = report_root_open();
+    int result = -1;
     if (root < 0) goto done;
-    char day[9]; memcpy(day, relative, 8); day[8] = '\0';
-    directory = openat(root, day, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (directory < 0) goto done;
+    char day[9];
+    if (report_day(relative, day)) { errno = EINVAL; goto done; }
     char rows[64], workbook[64], current[64], legacy[64];
     snprintf(rows, sizeof(rows), ".detections_%s.rows", day);
     snprintf(workbook, sizeof(workbook), "detections_%s.xlsx", day);
@@ -223,7 +231,7 @@ int yolo_events_delete_report(const char *relative)
     int found[4] = {0};
     for (size_t i = 0; i < 4; i++) {
         struct stat st;
-        if (!fstatat(directory, names[i], &st, AT_SYMLINK_NOFOLLOW)) {
+        if (!fstatat(root, names[i], &st, AT_SYMLINK_NOFOLLOW)) {
             if (!S_ISREG(st.st_mode)) { errno = EINVAL; goto done; }
             found[i] = 1;
         } else if (errno != ENOENT) goto done;
@@ -232,10 +240,9 @@ int yolo_events_delete_report(const char *relative)
     if (invalidate_report_locked(day)) goto done;
     result = 0;
     for (size_t i = 0; i < 4; i++)
-        if (found[i] && unlinkat(directory, names[i], 0)) { result = -1; break; }
+        if (found[i] && unlinkat(root, names[i], 0)) { result = -1; break; }
 done:;
     int saved_errno = errno;
-    if (directory >= 0) close(directory);
     if (root >= 0) close(root);
     pthread_mutex_unlock(&report_io_lock);
     errno = saved_errno;
@@ -255,12 +262,8 @@ static void remove_report_snapshot(const char *path)
     if (!root) return;
     struct dirent *entry;
     while ((entry = readdir(root))) {
-        if (strlen(entry->d_name) != 8 || !digits(entry->d_name, 8)) continue;
-        int day = openat(dirfd(root), entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-        if (day < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "result_%.8s.txt", entry->d_name);
-        (void)unlinkat(day, name, 0); close(day);
-        (void)unlinkat(dirfd(root), entry->d_name, AT_REMOVEDIR);
+        if (entry->d_name[0] == '.') continue;
+        (void)unlinkat(dirfd(root), entry->d_name, 0);
     }
     closedir(root); (void)rmdir(path);
 }
@@ -283,24 +286,19 @@ static int snapshot_reports(const char *snapshot, unsigned *count, const char *s
     for (;;) {
         errno = 0; struct dirent *entry = readdir(root);
         if (!entry) { if (errno) result = -1; break; }
-        if (strlen(entry->d_name) != 8 || !digits(entry->d_name, 8)) continue;
-        if (selected && strncmp(selected, entry->d_name, 8)) continue;
-        int day = openat(root_fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-        if (day < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "result_%.8s.txt", entry->d_name);
-        const char *source_name = name;
-        int source = openat(day, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        close(day);
+        char entry_day[9];
+        if (report_day(entry->d_name, entry_day)) continue;
+        if (strncmp(entry->d_name, "result_", 7)) continue;
+        if (selected && strcmp(selected, entry->d_name)) continue;
+        const char *source_name = entry->d_name;
+        int source = openat(root_fd, source_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
         if (source < 0) continue;
         struct stat st;
         if (fstat(source, &st) || !S_ISREG(st.st_mode) || st.st_size <= 0) { close(source); continue; }
         if ((unsigned long long)st.st_size > 2ull * 1024u * 1024u * 1024u - total) {
             close(source); errno = EFBIG; result = -1; break;
         }
-        if (mkdirat(stage, entry->d_name, 0700)) { close(source); result = -1; break; }
-        int target_day = openat(stage, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-        int target = target_day < 0 ? -1 : openat(target_day, source_name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-        if (target_day >= 0) close(target_day);
+        int target = openat(stage, source_name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
         if (target < 0) { close(source); result = -1; break; }
         pthread_mutex_unlock(&report_io_lock);
         off_t remaining = st.st_size;
@@ -408,7 +406,7 @@ int yolo_events_export_report(const char *relative)
     int output = -1;
     if (!result) {
         phase = "snapshot open";
-        char path[PATH_MAX]; snprintf(path, sizeof(path), "%s/%.8s/result_%.8s.txt", snapshot, relative, relative);
+        char path[PATH_MAX]; snprintf(path, sizeof(path), "%s/%s", snapshot, relative);
         output = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
         if (output < 0) saved_errno = errno;
     }
@@ -470,25 +468,23 @@ int yolo_events_clear_reports(unsigned *deleted)
     for (;;) {
         errno = 0; struct dirent *entry = readdir(root);
         if (!entry) { if (errno) result = -1; break; }
-        if (strlen(entry->d_name) != 8 || !digits(entry->d_name, 8)) continue;
-        int day = openat(root_fd, entry->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-        if (day < 0) continue;
+        char day[9];
+        if (report_day(entry->d_name, day)) continue;
         char name[64], rows[64], workbook[64], legacy[64];
-        snprintf(name, sizeof(name), "result_%.8s.txt", entry->d_name);
-        snprintf(rows, sizeof(rows), ".detections_%.8s.rows", entry->d_name);
-        snprintf(workbook, sizeof(workbook), "detections_%.8s.xlsx", entry->d_name);
-        snprintf(legacy, sizeof(legacy), "detections_%.8s.txt", entry->d_name);
+        snprintf(name, sizeof(name), "result_%.8s.txt", day);
+        snprintf(rows, sizeof(rows), ".detections_%.8s.rows", day);
+        snprintf(workbook, sizeof(workbook), "detections_%.8s.xlsx", day);
+        snprintf(legacy, sizeof(legacy), "detections_%.8s.txt", day);
         const char *names[] = {name, rows, workbook, legacy};
-        int found = 0;
+        int found = 0, failed = 0;
         for (size_t i = 0; i < 4; i++) {
             struct stat st;
-            if (!fstatat(day, names[i], &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode)) {
-                if (unlinkat(day, names[i], 0)) { result = -1; break; }
+            if (!fstatat(root_fd, names[i], &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode)) {
+                if (unlinkat(root_fd, names[i], 0)) { failed = 1; break; }
                 found = 1;
             }
         }
-        close(day);
-        if (result) break;
+        if (failed) { result = -1; break; }
         if (found) count++;
     }
     int saved_errno = errno;

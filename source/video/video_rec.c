@@ -7,8 +7,8 @@
  *   全在 rec_annot 线程里完成。
  *
  * 线程模型：main 模块表 "rec" 线程，空闲时 100ms 轮询喂狗；
- *   默认自动录制：任务启动即开始，按天分目录（recordings/YYYYMMDD），
- *   跨天或单段超过 REC_SEGMENT_BYTES 时自动续录下一段；HTTP 线程可下发
+ *   默认自动录制：任务启动即开始，文件平铺在 recordings/videos/，
+ *   单段超过 REC_SEGMENT_BYTES 时自动续录下一段；HTTP 线程可下发
  *   video_rec_start/stop 手动控制，手动停止后不再自动续录。
  *
  * 录像不依赖 YOLO：没有检测框的帧同样入队（recordings 里只有一份 MP4，
@@ -38,7 +38,7 @@
 #include "core/log.h"
 #include "watchdog/watchdog.h"
 
-#define REC_DIR        PATH_RECORDINGS
+#define REC_DIR        PATH_VIDEOS
 
 /* 低于此剩余空间就不再开新段，避免录到一半 ENOSPC 后反复建/删空文件 */
 #define REC_MIN_FREE_BYTES   (512ull * 1024ull * 1024ull)
@@ -75,20 +75,18 @@ static struct {
  * If both locks are needed, acquire files_lock before g_rec.lock. */
 static pthread_mutex_t g_rec_files_lock = PTHREAD_MUTEX_INITIALIZER;
 
-int video_rec_delete_file(int day_fd, const char *relative)
+int video_rec_delete_file(int directory_fd, const char *name)
 {
-    size_t length = relative ? strlen(relative) : 0;
-    if (length < 14 || length >= 256 || relative[8] != '/' ||
-        strstr(relative, "..") ||
-        (strncmp(relative + 9, "rec_", 4) && strncmp(relative + 9, "annot_", 6)) ||
-        (strcmp(relative + length - 4, ".mp4"))) {
+    size_t length = name ? strlen(name) : 0;
+    if (length < 10 || length >= 256 || strchr(name, '/') || strstr(name, "..") ||
+        (strncmp(name, "rec_", 4) && strncmp(name, "annot_", 6)) ||
+        (strcmp(name + length - 4, ".mp4"))) {
         errno = EINVAL;
         return -1;
     }
     for (size_t i = 0; i < length; i++) {
-        unsigned char ch = (unsigned char)relative[i];
-        if (i < 8 ? ch < '0' || ch > '9'
-                  : i != 8 && !isalnum(ch) && ch != '_' && ch != '-' && ch != '.') {
+        unsigned char ch = (unsigned char)name[i];
+        if (!isalnum(ch) && ch != '_' && ch != '-' && ch != '.') {
             errno = EINVAL;
             return -1;
         }
@@ -96,17 +94,17 @@ int video_rec_delete_file(int day_fd, const char *relative)
     pthread_mutex_lock(&g_rec_files_lock);
     pthread_mutex_lock(&g_rec.lock);
     /* recording may already be zero while the file is still being finalized. */
-    int active = g_rec.file[0] && !strcmp(g_rec.file, relative);
+    int active = g_rec.file[0] && !strcmp(g_rec.file, name);
     pthread_mutex_unlock(&g_rec.lock);
     int result = 1;
     if (!active) {
         struct stat st;
-        if (fstatat(day_fd, relative + 9, &st, AT_SYMLINK_NOFOLLOW))
+        if (fstatat(directory_fd, name, &st, AT_SYMLINK_NOFOLLOW))
             result = errno == ENOENT ? 2 : -1;
         else if (!S_ISREG(st.st_mode)) {
             errno = EINVAL;
             result = -1;
-        } else if (unlinkat(day_fd, relative + 9, 0))
+        } else if (unlinkat(directory_fd, name, 0))
             result = errno == ENOENT ? 2 : -1;
         else
             result = 0;
@@ -289,15 +287,9 @@ void *video_rec_task(void *arg)
                 continue;
             }
 
-            /* 按天分目录：recordings/YYYYMMDD */
-            time_t t = time(NULL);
-            struct tm tm;
-            localtime_r(&t, &tm);
-            char day[16];
-            snprintf(day, sizeof(day), "%04d%02d%02d",
-                     tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+            /* 所有录像平铺在 recordings/videos/，日期只在文件名里 */
             char dir[512];
-            snprintf(dir, sizeof(dir), "%s/%s", REC_DIR, day);
+            snprintf(dir, sizeof(dir), "%s", REC_DIR);
 
             char fname[128] = "";
 
@@ -336,7 +328,7 @@ void *video_rec_task(void *arg)
                 frame_ring_unlock(ring);
             }
             char rel[192];
-            snprintf(rel, sizeof(rel), "%s/%s", day, fname);
+            snprintf(rel, sizeof(rel), "%s", fname);
             LOG_INFO("rec: recording started -> %s (%dx%d @%dfps, H.264/MP4, FIXQP)",
                      rel, pw, ph, fps);
             pthread_mutex_lock(&g_rec.lock);
@@ -393,19 +385,11 @@ void *video_rec_task(void *arg)
                     continue;
                 }
 
-                /* 分段条件：跨天，或单段写到体积上限（固定 QP 后码率浮动，
+                /* 分段条件：单段写到体积上限（固定 QP 后码率浮动，
                    用字节数切段才能保证每段大小可预期） */
-                {
-                    char today[16];
-                    time_t nowt = time(NULL);
-                    struct tm nowtm;
-                    localtime_r(&nowt, &nowtm);
-                    strftime(today, sizeof(today), "%Y%m%d", &nowtm);
-                    pthread_mutex_lock(&g_rec.lock);
-                    if (strcmp(today, day) != 0 || g_rec.bytes >= REC_SEGMENT_BYTES)
-                        g_rec.split_pending = 1;
-                    pthread_mutex_unlock(&g_rec.lock);
-                }
+                pthread_mutex_lock(&g_rec.lock);
+                if (g_rec.bytes >= REC_SEGMENT_BYTES) g_rec.split_pending = 1;
+                pthread_mutex_unlock(&g_rec.lock);
 
                 pthread_mutex_lock(&g_rec.lock);
                 int split = g_rec.split_pending && g_rec.recording;
@@ -413,20 +397,15 @@ void *video_rec_task(void *arg)
                 if (split) {
                     /* 收尾当前段（写入 moov）后立刻开新段：新编码器第一帧就是 IDR，
                        两段之间只有一次编码器重建的间隔 */
-                    char next_name[128] = "", next_day[16], next_dir[512];
-                    time_t split_time = time(NULL);
-                    struct tm split_tm;
-                    localtime_r(&split_time, &split_tm);
-                    strftime(next_day, sizeof(next_day), "%Y%m%d", &split_tm);
-                    snprintf(next_dir, sizeof(next_dir), "%s/%s", REC_DIR, next_day);
+                    char next_name[128] = "", next_dir[512];
+                    snprintf(next_dir, sizeof(next_dir), "%s", REC_DIR);
                     pthread_mutex_lock(&g_rec_files_lock);
                     rec_annot_stop(g_rec.annot);
                     g_rec.annot = rec_annot_start(next_dir, "annot", pw, ph, fps, 0,
                                                   next_name, sizeof(next_name));
                     if (g_rec.annot) {
                         int finalized = 0;
-                        safe_strncpy(day, sizeof(day), next_day);
-                        snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
+                        snprintf(rel, sizeof(rel), "%s", next_name);
                         pthread_mutex_lock(&g_rec.lock);
                         safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
                         g_rec.start_ms = now_ms();
@@ -576,13 +555,28 @@ int video_rec_status(video_rec_status_t *out)
     return 0;
 }
 
+/* 逐级建目录：recordings/videos 的父目录可能还不存在 */
+static void rec_mkdirs(const char *dir)
+{
+    char path[512];
+    int length = snprintf(path, sizeof(path), "%s", dir);
+    if (length <= 0 || (size_t)length >= sizeof(path)) return;
+    for (char *p = path + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        (void)mkdir(path, 0755);
+        *p = '/';
+    }
+    (void)mkdir(path, 0755);
+}
+
 int video_rec_init(void *arg)
 {
     (void)arg;
     memset(&g_rec, 0, sizeof(g_rec));
     pthread_mutex_init(&g_rec.lock, NULL);
-    mkdir(REC_DIR, 0755);
-    LOG_INFO("rec: recordings dir: %s", REC_DIR);
+    rec_mkdirs(REC_DIR);
+    LOG_INFO("rec: videos dir: %s", REC_DIR);
     return 0;
 }
 

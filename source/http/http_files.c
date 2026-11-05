@@ -72,16 +72,13 @@ static int file_query(const char *uri, const char *key, char *out, size_t cap)
     return 0;
 }
 
-static int file_day(const char *s)
-{ if (strlen(s)!=8) return 0; for(int i=0;i<8;i++) if(s[i]<'0'||s[i]>'9') return 0; return 1; }
-
-static int file_relative(const char *name)
+/* 产物目录都是一级平铺：名字里不允许任何路径分隔符，'..' 自然也被挡住 */
+static int file_name_ok(const char *name)
 {
-    size_t n=name?strlen(name):0; if(n<10 || n>=256 || name[8]!='/' || strstr(name,"..")) return 0;
-    for(size_t i=0;i<8;i++) if(name[i]<'0'||name[i]>'9') return 0;
-    for(size_t i=9;i<n;i++) if(!((name[i]>='a'&&name[i]<='z') || (name[i]>='A'&&name[i]<='Z') ||
+    size_t n=name?strlen(name):0; if(n<5 || n>=256) return 0;
+    for(size_t i=0;i<n;i++) if(!((name[i]>='a'&&name[i]<='z') || (name[i]>='A'&&name[i]<='Z') ||
         (name[i]>='0'&&name[i]<='9') || name[i]=='_' || name[i]=='-' || name[i]=='.')) return 0;
-    return name[9]!='.';
+    return name[0]!='.';
 }
 
 static int file_kind(const char *name, int kind)
@@ -94,13 +91,11 @@ static int file_kind(const char *name, int kind)
     return n>4 && (strstr(name,".log")!=NULL) && name[0]!='.';
 }
 
-static int file_open_relative(const char *root,const char *name)
+static int file_open_in(const char *root,const char *name)
 {
-    if(!file_relative(name)){errno=EINVAL;return -1;}
+    if(!file_name_ok(name)){errno=EINVAL;return -1;}
     int r=open(root,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW); if(r<0)return -1;
-    char day[9];memcpy(day,name,8);day[8]=0;
-    int d=openat(r,day,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);close(r);if(d<0)return -1;
-    int fd=openat(d,name+9,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);close(d);
+    int fd=openat(r,name,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);close(r);
     struct stat info;
     if(fd>=0 && (fstat(fd,&info)||!S_ISREG(info.st_mode))){close(fd);errno=EINVAL;return -1;}
     return fd;
@@ -194,7 +189,7 @@ int http_files_download_authorized(const char *request)
 
 int http_files_video_authorized(const char *uri,const char *request)
 {
-    char name[256],token[65];if(!file_query(uri,"name",name,sizeof(name))||!file_relative(name))return 0;
+    char name[256],token[65];if(!file_query(uri,"name",name,sizeof(name))||!file_name_ok(name))return 0;
     file_cookie_token(request,token);if(!token[0])return 0;
     int valid=0;uint64_t now=file_now();pthread_mutex_lock(&file_session_lock);
     for(unsigned i=0;i<FILE_SESSION_COUNT;i++)if(file_sessions[i].expires>now &&
@@ -217,8 +212,8 @@ static void file_session(file_job_t *job)
     if(strcmp(job->method,"POST")){file_response(job,405,"text/plain",NULL,NULL,0);return;}
     const char *name=archive?"__archive__":http_body_start(job->request);
     if(!archive){
-        if(!file_relative(name)||!file_kind(name+9,1)){file_error(job,EINVAL);return;}
-        int fd=file_open_relative(PATH_RECORDINGS,name);if(fd<0){file_error(job,errno);return;}
+        if(!file_name_ok(name)||!file_kind(name,1)){file_error(job,EINVAL);return;}
+        int fd=file_open_in(PATH_VIDEOS,name);if(fd<0){file_error(job,errno);return;}
         int closed=file_mp4_closed(fd,name);close(fd);if(!closed){file_error(job,EAGAIN);return;}
     }
     unsigned char bytes[32];size_t got=0;
@@ -258,12 +253,12 @@ static void file_preview(file_job_t *job)
 {
     if(strcmp(job->method,"GET")){file_response(job,405,"text/plain",NULL,NULL,0);return;}
     char name[256],type[32];if(!file_query(job->uri,"name",name,sizeof(name))||
-        !file_query(job->uri,"type",type,sizeof(type))||!file_relative(name)){file_error(job,EINVAL);return;}
+        !file_query(job->uri,"type",type,sizeof(type))||!file_name_ok(name)){file_error(job,EINVAL);return;}
     int kind=!strcmp(type,"log")?0:!strcmp(type,"result")?2:-1;
-    if(kind<0||!file_kind(name+9,kind)){file_error(job,EINVAL);return;}
+    if(kind<0||!file_kind(name,kind)){file_error(job,EINVAL);return;}
     /* Preview only a bounded prefix. Daily reports are append-only, so pinning
        the original regular inode avoids copying an entire day for 64 KiB. */
-    int fd=file_open_relative(kind==2?YOLO_EVENTS_DIR:job->log_root,name);
+    int fd=file_open_in(kind==2?YOLO_EVENTS_DIR:job->log_root,name);
     if(fd<0){file_error(job,errno);return;}struct stat st;
     if(fstat(fd,&st)){close(fd);file_error(job,EIO);return;}
     unsigned char *text=malloc(FILE_TEXT_LIMIT);char *json=malloc(FILE_TEXT_LIMIT*6+256);
@@ -295,9 +290,9 @@ static int file_range(const char *range,uint64_t size,uint64_t *first,uint64_t *
 static void file_video(file_job_t *job)
 {
     if(strcmp(job->method,"GET")&&strcmp(job->method,"HEAD")){file_response(job,405,"text/plain",NULL,NULL,0);return;}
-    char name[256];if(!file_query(job->uri,"name",name,sizeof(name))||!file_relative(name)||!file_kind(name+9,1)){
+    char name[256];if(!file_query(job->uri,"name",name,sizeof(name))||!file_name_ok(name)||!file_kind(name,1)){
         file_error(job,EINVAL);return;}
-    int fd=file_open_relative(PATH_RECORDINGS,name);if(fd<0){file_error(job,errno);return;}
+    int fd=file_open_in(PATH_VIDEOS,name);if(fd<0){file_error(job,errno);return;}
     if(!file_mp4_closed(fd,name)){close(fd);file_error(job,EAGAIN);return;}
     struct stat st;if(fstat(fd,&st)){close(fd);file_error(job,EIO);return;}
     char range[256]="",extra[512];file_header(job->request,"Range",range,sizeof(range));
@@ -364,60 +359,53 @@ static int file_archive_command(const char *stage,int output,int gzip)
     if(rc<0||!WIFEXITED(status)||WEXITSTATUS(status)){errno=EIO;return -1;}return 0;
 }
 
-/* Clear only regular entries in the managed day folders. Archive immutable
+/* Clear only regular entries in a managed product folder. Archive immutable
  * videos by hard link on the same filesystem; live text is a fixed-size copy. */
 static int file_walk(const char *root,const char *stage,const char *category,int kind,int clear,
                      uint64_t limit,unsigned *count,uint64_t *total)
 {
     int rootfd=open(root,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
     if(rootfd<0)return errno==ENOENT?0:-1;
-    DIR *dir=fdopendir(rootfd);if(!dir){close(rootfd);return -1;}int result=0;struct dirent *day;
-    while(!result && (day=readdir(dir))){if(!file_day(day->d_name))continue;
-        int d=openat(rootfd,day->d_name,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);if(d<0)continue;
-        DIR *files=fdopendir(d);if(!files){close(d);continue;}struct dirent *entry;
-        while(!result && (entry=readdir(files))){if(!file_kind(entry->d_name,kind)||entry->d_name[0]=='.')continue;
-            char relative[256];if(snprintf(relative,sizeof(relative),"%s/%s",day->d_name,entry->d_name)>=(int)sizeof(relative)||!file_relative(relative))continue;
-            int source=openat(d,entry->d_name,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);if(source<0)continue;
-            struct stat info;if(fstat(source,&info)||!S_ISREG(info.st_mode)){close(source);continue;}
-            if(clear){
-                close(source);
-                /* Incomplete orphan MP4s are deletable too. Only the recorder
-                   knows whether a path is open, being published or finalized. */
-                int removed = kind==1 ? video_rec_delete_file(d,relative) : unlinkat(d,entry->d_name,0);
-                if(removed<0){if(errno==ENOENT)continue;result=-1;break;}
-                if(!removed)(*count)++;
-                continue;
-            }
-            if(kind==1&&!file_mp4_closed(source,relative)){close(source);continue;}
-            if(kind==2){close(source);source=yolo_events_export_report(relative);if(source<0){result=-1;break;}
-                if(fstat(source,&info)){close(source);result=-1;break;}}
-            if(*total>limit||(uint64_t)info.st_size>limit-*total){close(source);errno=EFBIG;result=-1;break;}
-            char folder[PATH_MAX],target[PATH_MAX];
-            if(snprintf(folder,sizeof(folder),"%s/%s",stage,category)>=(int)sizeof(folder)){close(source);errno=ENAMETOOLONG;result=-1;break;}
-            if(mkdir(folder,0700)&&errno!=EEXIST){close(source);result=-1;break;}
-            if(snprintf(folder,sizeof(folder),"%s/%s/%s",stage,category,day->d_name)>=(int)sizeof(folder)){
-                close(source);errno=ENAMETOOLONG;result=-1;break;}
-            if(mkdir(folder,0700)&&errno!=EEXIST){close(source);result=-1;break;}
-            if(snprintf(target,sizeof(target),"%s/%s",folder,entry->d_name)>=(int)sizeof(target)){
-                close(source);errno=ENAMETOOLONG;result=-1;break;}
-            int linked=0;
-            if(kind==1){
-                if(!linkat(d,entry->d_name,AT_FDCWD,target,0)){
-                    struct stat linked_info;if(!lstat(target,&linked_info)&&S_ISREG(linked_info.st_mode)&&
-                        linked_info.st_dev==info.st_dev&&linked_info.st_ino==info.st_ino)linked=1;
-                    else(void)unlink(target);
-                }
-            }
-            if(!linked){int targetfd=open(target,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
-                if(targetfd<0){close(source);result=-1;break;}
-                off_t size=info.st_size;
-                if(kind==0&&size){char tail[4096];size_t n=size>(off_t)sizeof(tail)?sizeof(tail):(size_t)size;
-                    ssize_t got=pread(source,tail,n,size-(off_t)n);if(got>0){ssize_t at=got;while(at>0&&tail[at-1]!='\n')at--;size-=(got-at);}}
-                result=file_copy(source,targetfd,size);int error=errno;close(targetfd);errno=error;
-            }
-            close(source);if(!result){*total+=(uint64_t)info.st_size;(*count)++;}
+    DIR *dir=fdopendir(rootfd);if(!dir){close(rootfd);return -1;}int result=0;struct dirent *entry;
+    while(!result && (entry=readdir(dir))){
+        if(!file_kind(entry->d_name,kind)||entry->d_name[0]=='.')continue;
+        const char *relative=entry->d_name;
+        int source=openat(rootfd,relative,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);if(source<0)continue;
+        struct stat info;if(fstat(source,&info)||!S_ISREG(info.st_mode)){close(source);continue;}
+        if(clear){
+            close(source);
+            /* Incomplete orphan MP4s are deletable too. Only the recorder
+               knows whether a path is open, being published or finalized. */
+            int removed = kind==1 ? video_rec_delete_file(rootfd,relative) : unlinkat(rootfd,relative,0);
+            if(removed<0){if(errno==ENOENT)continue;result=-1;break;}
+            if(!removed)(*count)++;
+            continue;
         }
-        closedir(files);
+        if(kind==1&&!file_mp4_closed(source,relative)){close(source);continue;}
+        if(kind==2){close(source);source=yolo_events_export_report(relative);if(source<0){result=-1;break;}
+            if(fstat(source,&info)){close(source);result=-1;break;}}
+        if(*total>limit||(uint64_t)info.st_size>limit-*total){close(source);errno=EFBIG;result=-1;break;}
+        char folder[PATH_MAX],target[PATH_MAX];
+        if(snprintf(folder,sizeof(folder),"%s/%s",stage,category)>=(int)sizeof(folder)){close(source);errno=ENAMETOOLONG;result=-1;break;}
+        if(mkdir(folder,0700)&&errno!=EEXIST){close(source);result=-1;break;}
+        if(snprintf(target,sizeof(target),"%s/%s",folder,relative)>=(int)sizeof(target)){
+            close(source);errno=ENAMETOOLONG;result=-1;break;}
+        int linked=0;
+        if(kind==1){
+            if(!linkat(rootfd,relative,AT_FDCWD,target,0)){
+                struct stat linked_info;if(!lstat(target,&linked_info)&&S_ISREG(linked_info.st_mode)&&
+                    linked_info.st_dev==info.st_dev&&linked_info.st_ino==info.st_ino)linked=1;
+                else(void)unlink(target);
+            }
+        }
+        if(!linked){int targetfd=open(target,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
+            if(targetfd<0){close(source);result=-1;break;}
+            off_t size=info.st_size;
+            if(kind==0&&size){char tail[4096];size_t n=size>(off_t)sizeof(tail)?sizeof(tail):(size_t)size;
+                ssize_t got=pread(source,tail,n,size-(off_t)n);if(got>0){ssize_t at=got;while(at>0&&tail[at-1]!='\n')at--;size-=(got-at);}}
+            result=file_copy(source,targetfd,size);int error=errno;close(targetfd);errno=error;
+        }
+        close(source);if(!result){*total+=(uint64_t)info.st_size;(*count)++;}
     }
     int error=errno;closedir(dir);errno=error;return result;
 }
@@ -444,8 +432,8 @@ static void file_send_archive(file_job_t *job,int output,const char *mime,const 
  * as file previews and bulk downloads. Compression must stay off the reactor. */
 static void file_legacy_archive(file_job_t *job,int kind)
 {
-    const char *root=kind==0?job->log_root:PATH_RECORDINGS;
-    const char *category=kind==0?"logs":"recordings";
+    const char *root=kind==0?job->log_root:PATH_VIDEOS;
+    const char *category=kind==0?"logs":"videos";
     uint64_t limit=kind==0?FILE_LOG_ARCHIVE_LIMIT:FILE_REC_ARCHIVE_LIMIT;
     unsigned count=0;uint64_t total=0;int output=-1,error=0;
     char stage[PATH_MAX]="";
@@ -483,12 +471,12 @@ static void file_bulk(file_job_t *job,int clear)
     pthread_mutex_lock(&file_bulk_lock);
     if(clear){
         if(file_walk(job->log_root,NULL,NULL,0,1,FILE_PACK_LIMIT,&logs,&total)||
-           file_walk(PATH_RECORDINGS,NULL,NULL,1,1,FILE_PACK_LIMIT,&recordings,&total)||yolo_events_clear_reports(&results))error=errno;
+           file_walk(PATH_VIDEOS,NULL,NULL,1,1,FILE_PACK_LIMIT,&recordings,&total)||yolo_events_clear_reports(&results))error=errno;
     }else{
         snprintf(stage,sizeof(stage),"%s/.files-snapshot-XXXXXX",PATH_RECORDINGS);
         if(!mkdtemp(stage))error=errno;
         if(!error && (file_walk(job->log_root,stage,"logs",0,0,FILE_PACK_LIMIT,&logs,&total)||
-            file_walk(PATH_RECORDINGS,stage,"recordings",1,0,FILE_PACK_LIMIT,&recordings,&total)||
+            file_walk(PATH_VIDEOS,stage,"videos",1,0,FILE_PACK_LIMIT,&recordings,&total)||
             file_walk(YOLO_EVENTS_DIR,stage,"results",2,0,FILE_PACK_LIMIT,&results,&total)))error=errno;
         if(!error&&!logs&&!recordings&&!results)error=ENOENT;
         if(!error){char name[PATH_MAX];snprintf(name,sizeof(name),"%s/.files-pack-XXXXXX",PATH_RECORDINGS);

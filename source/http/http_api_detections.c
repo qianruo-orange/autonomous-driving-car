@@ -191,58 +191,24 @@ void http_detection_file(app_ctx_t *app, int fd, const char *method, const char 
 {
     (void)app; (void)method; (void)req;
     const char *prefix = "/detectionfile/";
-    int is_report = !strncmp(uri, prefix, strlen(prefix)) && yolo_report_rel_valid(uri + strlen(prefix));
-    if (strncmp(uri, prefix, strlen(prefix)) || (!is_report && !yolo_event_rel_valid(uri + strlen(prefix)))) {
+    const char *relative = uri + strlen(prefix);
+    if (strncmp(uri, prefix, strlen(prefix)) || !yolo_report_rel_valid(relative)) {
         http_handle_404(fd, uri); return;
     }
-    const char *relative = uri + strlen(prefix), *name = relative + 9;
-    if (is_report) {
-        int report = yolo_events_export_report(relative);
-        if (report < 0) {
-            int code = errno == ENOENT ? 404 : errno == EAGAIN ? 409 : errno == EFBIG ? 413 : 500;
-            http_err(fd, code, code == 404 ? "Not Found" : code == 409 ? "Conflict" : "Error",
-                     "Unable to read detection TXT"); return;
-        }
-        struct stat st;
-        if (fstat(report, &st) || st.st_size <= 0) { close(report); http_err(fd, 500, "Error", NULL); return; }
-        FILE *source = fdopen(report, "rb");
-        if (!source) { close(report); http_err(fd, 500, "Error", NULL); return; }
-        char disposition[160];
-        snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
-        http_serve_stream(fd, "text/plain; charset=utf-8",
-                          disposition, source, (size_t)st.st_size, NULL);
-        return;
+    int report = yolo_events_export_report(relative);
+    if (report < 0) {
+        int code = errno == ENOENT ? 404 : errno == EAGAIN ? 409 : errno == EFBIG ? 413 : 500;
+        http_err(fd, code, code == 404 ? "Not Found" : code == 409 ? "Conflict" : "Error",
+                 "Unable to read detection TXT"); return;
     }
-    char date[9]; memcpy(date, relative, 8); date[8] = '\0';
-    int root_fd = open(YOLO_EVENTS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (root_fd < 0) { http_handle_404(fd, uri); return; }
-    int day_fd = openat(root_fd, date, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    close(root_fd);
-    if (day_fd < 0) { http_handle_404(fd, uri); return; }
-    /* Both downloads require the JSON completion marker and a regular JPEG. */
-    size_t len = strlen(name);
-    int is_json = len >= 5 && strcmp(name + len - 5, ".json") == 0;
-    size_t base_len = len - (is_json ? 5 : 4);
-    char marker[64], jpeg[64];
-    snprintf(marker, sizeof(marker), "%.*s.json", (int)base_len, name);
-    snprintf(jpeg, sizeof(jpeg), "%.*s.jpg", (int)base_len, name);
-    struct stat statbuf;
-    int valid_pair = is_report || (!fstatat(day_fd, marker, &statbuf, AT_SYMLINK_NOFOLLOW) && S_ISREG(statbuf.st_mode) &&
-                     !fstatat(day_fd, jpeg, &statbuf, AT_SYMLINK_NOFOLLOW) && S_ISREG(statbuf.st_mode));
-    /* A daily TXT is independently complete; legacy image downloads keep the
-       existing two-file completion checks. */
-    int src_fd = valid_pair ? openat(day_fd, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) : -1;
-    close(day_fd);
-    if (src_fd < 0) { http_handle_404(fd, uri); return; }
-    if (fstat(src_fd, &statbuf) || !S_ISREG(statbuf.st_mode) || statbuf.st_size < 0) {
-        close(src_fd); http_handle_404(fd, uri); return;
-    }
-    FILE *source = fdopen(src_fd, "rb");
-    if (!source) { close(src_fd); http_err(fd, 500, "Error", NULL); return; }
+    struct stat st;
+    if (fstat(report, &st) || st.st_size <= 0) { close(report); http_err(fd, 500, "Error", NULL); return; }
+    FILE *source = fdopen(report, "rb");
+    if (!source) { close(report); http_err(fd, 500, "Error", NULL); return; }
     char disposition[160];
-    snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", name);
-    http_serve_stream(fd, is_report ? "text/plain; charset=utf-8" : is_json ? "application/json" : "image/jpeg", disposition,
-                      source, (size_t)statbuf.st_size, NULL);
+    snprintf(disposition, sizeof(disposition), "Content-Disposition: attachment; filename=\"%s\"\r\n", relative);
+    http_serve_stream(fd, "text/plain; charset=utf-8",
+                      disposition, source, (size_t)st.st_size, NULL);
 }
 
 typedef struct {
@@ -265,18 +231,21 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
     if (!root) { close(root_fd); http_err(fd, 500, "Error", NULL); return; }
     detection_report_t entries[DETECTION_LIST_MAX];
     int count = 0;
-    struct dirent *date;
-    while ((date = readdir(root))) {
-        if (!date_valid(date->d_name)) continue;
-        int directory = openat(root_fd, date->d_name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-        if (directory < 0) continue;
-        char name[64]; snprintf(name, sizeof(name), "result_%.8s.txt", date->d_name);
+    struct dirent *entry;
+    while ((entry = readdir(root))) {
+        /* 只认 result_YYYYMMDD.txt：detections_*.txt 是导出副本，不重复列出 */
+        const char *stamp;
+        if (strlen(entry->d_name) != 19 || strncmp(entry->d_name, "result_", 7) ||
+            strcmp(entry->d_name + 15, ".txt")) continue;
+        stamp = entry->d_name + 7;
+        int numeric = 1;
+        for (int i = 0; i < 8; i++) if (stamp[i] < '0' || stamp[i] > '9') numeric = 0;
+        if (!numeric) continue;
         struct stat st;
-        int valid = !fstatat(directory, name, &st, AT_SYMLINK_NOFOLLOW) && S_ISREG(st.st_mode) && st.st_size > 0;
-        close(directory);
-        if (!valid) continue;
+        if (fstatat(root_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) ||
+            !S_ISREG(st.st_mode) || st.st_size <= 0) continue;
         detection_report_t candidate = {.size = st.st_size, .modified = st.st_mtime};
-        memcpy(candidate.day, date->d_name, 8); candidate.day[8] = '\0';
+        memcpy(candidate.day, stamp, 8); candidate.day[8] = '\0';
         if (count < DETECTION_LIST_MAX) entries[count++] = candidate;
         else {
             int oldest = 0;
@@ -293,8 +262,8 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         if (!localtime_r(&entries[i].modified, &local) || !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M:%S", &local))
             snprintf(modified, sizeof(modified), "Unknown");
         off = http_json_append(json, sizeof(json), off,
-            "%s{\"name\":\"%s/result_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
-            i ? "," : "", entries[i].day, entries[i].day, entries[i].day, entries[i].day + 4,
+            "%s{\"name\":\"result_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            i ? "," : "", entries[i].day, entries[i].day, entries[i].day + 4,
             entries[i].day + 6, (long long)entries[i].size, modified);
         if (off < 0) { http_err(fd, 500, "Error", NULL); return; }
     }

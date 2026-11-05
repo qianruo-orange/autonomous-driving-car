@@ -16,7 +16,21 @@
 
 /* 日志目录不再硬编码 PATH_LOGS：与核心日志保持一致，使用配置的 log_dir */
 
-/* 日志文件列表 JSON API */
+/* 一级平铺的文件名：不允许路径分隔符，避免穿越 recordings/logs/ */
+static int log_name_ok(const char *name)
+{
+    size_t n = name ? strlen(name) : 0;
+    if (n < 5 || n >= 256 || name[0] == '.') return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'))
+            return 0;
+    }
+    return 1;
+}
+
+/* 日志文件列表 JSON API（日志目录一级平铺，不再按日期分层） */
 static void serve_logs(int fd, const char *log_dir, int clear)
 {
     DIR *dir = opendir(log_dir);
@@ -31,44 +45,30 @@ static void serve_logs(int fd, const char *log_dir, int clear)
     struct dirent *de;
     int first = 1, deleted = 0;
     while (off >= 0 && (de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
+        if (!log_name_ok(de->d_name)) continue;
 
-        char subdir[512];
-        snprintf(subdir, sizeof(subdir), "%s/%s", log_dir, de->d_name);
-        struct stat dst;
-        if (stat(subdir, &dst) < 0 || !S_ISDIR(dst.st_mode)) continue;
+        char path[512];
+        if (snprintf(path, sizeof(path), "%s/%s", log_dir, de->d_name) >= (int)sizeof(path)) continue;
+        struct stat st;
+        if (stat(path, &st) < 0 || !S_ISREG(st.st_mode)) continue;
 
-        DIR *sd = opendir(subdir);
-        if (!sd) continue;
-        struct dirent *fde;
-        while ((fde = readdir(sd)) != NULL) {
-            if (fde->d_name[0] == '.') continue;
-
-            char path[512];
-            snprintf(path, sizeof(path), "%s/%s", subdir, fde->d_name);
-            struct stat st;
-            if (stat(path, &st) < 0 || !S_ISREG(st.st_mode)) continue;
-
-            if (clear) {
-                if (unlink(path) == 0) deleted++;
-                continue;
-            }
-            char time_str[32];
-            struct tm modified;
-            localtime_r(&st.st_mtime, &modified);
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &modified);
-
-            char day[sizeof(de->d_name) * 2], name[sizeof(fde->d_name) * 2];
-            http_json_escape(de->d_name, day, sizeof(day));
-            http_json_escape(fde->d_name, name, sizeof(name));
-            off = http_json_append(json, sizeof(json), off,
-                "%s{\"name\":\"%s/%s\",\"size\":%lld,\"mtime\":\"%s\"}",
-                first ? "" : ",", day, name,
-                (long long)st.st_size, time_str);
-            if (off < 0) break;
-            first = 0;
+        if (clear) {
+            if (unlink(path) == 0) deleted++;
+            continue;
         }
-        closedir(sd);
+        char time_str[32];
+        struct tm modified;
+        localtime_r(&st.st_mtime, &modified);
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &modified);
+
+        char name[sizeof(de->d_name) * 2];
+        http_json_escape(de->d_name, name, sizeof(name));
+        off = http_json_append(json, sizeof(json), off,
+            "%s{\"name\":\"%s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            first ? "" : ",", name,
+            (long long)st.st_size, time_str);
+        if (off < 0) break;
+        first = 0;
     }
     closedir(dir);
 
@@ -79,19 +79,21 @@ static void serve_logs(int fd, const char *log_dir, int clear)
 }
 
 /* 下载单个日志文件：复用 http_serve_stream 流式发送 */
-static void serve_log_download(int fd, const char *log_dir, const char *rel)
+static void serve_log_download(int fd, const char *log_dir, const char *name)
 {
-    char subdir[64], name[256];
-    if (http_split_relative(rel, subdir, sizeof(subdir), name, sizeof(name)) != 0) {
-        http_handle_404(fd, rel);
+    if (!log_name_ok(name)) {
+        http_handle_404(fd, name);
         return;
     }
 
     char path[512];
-    snprintf(path, sizeof(path), "%s/%s/%s", log_dir, subdir, name);
+    if (snprintf(path, sizeof(path), "%s/%s", log_dir, name) >= (int)sizeof(path)) {
+        http_handle_404(fd, name);
+        return;
+    }
 
     FILE *fp = fopen(path, "rb");
-    if (!fp) { http_handle_404(fd, rel); return; }
+    if (!fp) { http_handle_404(fd, name); return; }
 
     size_t size = http_file_size(fp);
 
@@ -102,15 +104,17 @@ static void serve_log_download(int fd, const char *log_dir, const char *rel)
 }
 
 /* 删除日志文件 */
-static void serve_log_delete(int fd, const char *log_dir, const char *rel)
+static void serve_log_delete(int fd, const char *log_dir, const char *name)
 {
-    char subdir[64], name[256];
-    if (http_split_relative(rel, subdir, sizeof(subdir), name, sizeof(name)) != 0) {
+    if (!log_name_ok(name)) {
         http_err(fd, 400, "Bad Request", NULL);
         return;
     }
     char path[512];
-    snprintf(path, sizeof(path), "%s/%s/%s", log_dir, subdir, name);
+    if (snprintf(path, sizeof(path), "%s/%s", log_dir, name) >= (int)sizeof(path)) {
+        http_err(fd, 400, "Bad Request", NULL);
+        return;
+    }
     if (unlink(path) == 0)
         http_ok_text(fd, "ok");
     else

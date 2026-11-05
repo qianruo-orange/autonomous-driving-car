@@ -7,7 +7,7 @@
  *   GET  /api/rec/list    录制文件列表
  *   GET  /api/rec/pack    打包下载全部录像 (tar.gz)
  *   POST /api/rec/delete  删除录制文件（body = 文件名）
- *   GET  /recfile/<name>  下载录制文件
+ *   GET  /recfile/<name>  下载录制文件（recordings/videos/ 一级平铺）
  */
 
 #include <time.h>
@@ -18,9 +18,9 @@
 #include "http/http_internal.h"
 #include "video/video_rec.h"
 
-#define REC_DIR PATH_RECORDINGS
+#define REC_DIR PATH_VIDEOS
 
-/* 单文件名合法性：annot_*.mp4（标注 H.264 录像）、rec_*.mp4 */
+/* 单文件名合法性：annot_*.mp4（标注 H.264 录像）、rec_*.mp4；不含路径分隔符 */
 static int rec_file_valid(const char *name)
 {
     size_t len = name ? strlen(name) : 0;
@@ -35,14 +35,6 @@ static int rec_file_valid(const char *name)
             (name[i] < '0' || name[i] > '9'))
             return 0;
     return 1;
-}
-
-/* 解析录制相对路径：要求 YYYYMMDD/annot_*.mp4 形式且不含 '..'（防路径穿越） */
-static int rec_resolve_rel(const char *rel, char *subdir, size_t subdir_size,
-                           char *name, size_t name_size)
-{
-    return http_split_relative(rel, subdir, subdir_size, name, name_size) || !rec_file_valid(name)
-               ? -1 : 0;
 }
 
 /* 状态 JSON */
@@ -67,7 +59,7 @@ static void serve_rec_status(int fd)
     http_ok_json(fd, json, (size_t)off);
 }
 
-/* 录制文件列表（按 mtime 倒序；两层：YYYYMMDD/annot_*.mp4） */
+/* 录制文件列表（按 mtime 倒序；recordings/videos/ 一级平铺） */
 static void serve_rec_list(int fd)
 {
     struct ent { char name[160]; time_t mtime; int64_t size; };
@@ -83,28 +75,15 @@ static void serve_rec_list(int fd)
     struct dirent *de;
     while ((de = readdir(dir)) != NULL && n < cap) {
         if (de->d_name[0] == '.') continue;
-        char subdir[512];
-        snprintf(subdir, sizeof(subdir), "%s/%s", REC_DIR, de->d_name);
-        struct stat dst;
-        if (stat(subdir, &dst) < 0 || !S_ISDIR(dst.st_mode)) continue;
-
-        DIR *sd = opendir(subdir);
-        if (!sd) continue;
-        struct dirent *fde;
-        while ((fde = readdir(sd)) != NULL && n < cap) {
-            if (fde->d_name[0] == '.') continue;
-            if (!rec_file_valid(fde->d_name)) continue;
-            char path[512];
-            snprintf(path, sizeof(path), "%s/%s", subdir, fde->d_name);
-            struct stat st;
-            if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-            snprintf(ents[n].name, sizeof(ents[n].name), "%s/%s",
-                     de->d_name, fde->d_name);
-            ents[n].mtime = st.st_mtime;
-            ents[n].size  = (int64_t)st.st_size;
-            n++;
-        }
-        closedir(sd);
+        if (!rec_file_valid(de->d_name)) continue;
+        struct stat st;
+        char path[512];
+        if (snprintf(path, sizeof(path), "%s/%s", REC_DIR, de->d_name) >= (int)sizeof(path)) continue;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+        safe_strncpy(ents[n].name, sizeof(ents[n].name), de->d_name);
+        ents[n].mtime = st.st_mtime;
+        ents[n].size  = (int64_t)st.st_size;
+        n++;
     }
     closedir(dir);
 
@@ -129,18 +108,20 @@ static void serve_rec_list(int fd)
     http_ok_json(fd, json, (size_t)off);
 }
 
-/* 下载：/recfile/<YYYYMMDD/annot_*.mp4> */
-static void serve_rec_download(int fd, const char *rel)
+/* 下载：/recfile/<annot_*.mp4> */
+static void serve_rec_download(int fd, const char *name)
 {
-    char subdir[64], name[256];
-    if (rec_resolve_rel(rel, subdir, sizeof(subdir), name, sizeof(name)) != 0) {
-        http_handle_404(fd, rel);
+    if (!rec_file_valid(name)) {
+        http_handle_404(fd, name);
         return;
     }
     char path[512];
-    snprintf(path, sizeof(path), "%s/%s/%s", REC_DIR, subdir, name);
+    if (snprintf(path, sizeof(path), "%s/%s", REC_DIR, name) >= (int)sizeof(path)) {
+        http_handle_404(fd, name);
+        return;
+    }
     FILE *fp = fopen(path, "rb");
-    if (!fp) { http_handle_404(fd, rel); return; }
+    if (!fp) { http_handle_404(fd, name); return; }
     size_t size = http_file_size(fp);
     char disp[320];
     snprintf(disp, sizeof(disp),
@@ -148,7 +129,7 @@ static void serve_rec_download(int fd, const char *rel)
     http_serve_stream(fd, "video/mp4", disp, fp, size, NULL);
 }
 
-/* 删除：body = YYYYMMDD/annot_*.mp4 */
+/* 删除：body = annot_*.mp4 */
 static void serve_rec_delete(int fd, const char *req)
 {
     char name[160];
@@ -160,18 +141,15 @@ static void serve_rec_delete(int fd, const char *req)
     size_t len = strlen(name);
     while (len > 0 && (name[len-1] == '\n' || name[len-1] == '\r' ||
                        name[len-1] == ' ')) name[--len] = '\0';
-    char subdir[64], fname[256];
-    if (rec_resolve_rel(name, subdir, sizeof(subdir), fname, sizeof(fname)) != 0) {
+    if (!rec_file_valid(name)) {
         http_err(fd, 400, "Bad Request", NULL);
         return;
     }
     int root = open(REC_DIR, O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
-    int day = root < 0 ? -1 : openat(root,subdir,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
-    if(root>=0)close(root);
-    if(day<0){http_err(fd,404,"Not Found",NULL);return;}
-    int removed = video_rec_delete_file(day,name);
+    if (root < 0) { http_err(fd, 404, "Not Found", NULL); return; }
+    int removed = video_rec_delete_file(root, name);
     int error = errno;
-    close(day);
+    close(root);
     errno = error;
     if(removed==1)http_err(fd,409,"Conflict","recording in progress");
     else if(!removed)http_ok_text(fd,"ok");
@@ -187,22 +165,11 @@ static void serve_rec_clear(int fd)
     if(!dir){if(root>=0)close(root);http_err(fd,500,"Error",NULL);return;}
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
-        if (strlen(de->d_name) != 8 || strspn(de->d_name,"0123456789") != 8) continue;
-        int day = openat(root,de->d_name,O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
-        if(day<0)continue;
-        DIR *sd = fdopendir(day);
-        if(!sd){close(day);failed=1;continue;}
-        struct dirent *fde;
-        while ((fde = readdir(sd)) != NULL) {
-            if (fde->d_name[0] == '.') continue;
-            if (!rec_file_valid(fde->d_name)) continue;   /* 跳过打包临时文件等 */
-            char rel[160];
-            snprintf(rel, sizeof(rel), "%s/%s", de->d_name, fde->d_name);
-            int removed = video_rec_delete_file(dirfd(sd),rel);
-            if (!removed) del++;
-            else if (removed < 0) failed = 1;
-        }
-        closedir(sd);
+        if (de->d_name[0] == '.') continue;
+        if (!rec_file_valid(de->d_name)) continue;   /* 跳过打包临时文件等 */
+        int removed = video_rec_delete_file(dirfd(dir), de->d_name);
+        if (!removed) del++;
+        else if (removed < 0) failed = 1;
     }
     closedir(dir);
     if(failed){http_err(fd,500,"Error","Some recordings could not be deleted");return;}
@@ -234,8 +201,7 @@ void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *ur
     } else if (strcmp(uri, "/api/rec/split") == 0) {
         if (strcmp(method, "POST") != 0) { http_err(fd, 405, "Method Not Allowed", NULL); return; }
         const char *file = http_body_start(req_buf);
-        char subdir[64], name[256];
-        if (!file || rec_resolve_rel(file, subdir, sizeof(subdir), name, sizeof(name)) != 0) {
+        if (!file || !rec_file_valid(file)) {
             http_err(fd, 400, "Bad Request", "expected recording filename required");
             return;
         }

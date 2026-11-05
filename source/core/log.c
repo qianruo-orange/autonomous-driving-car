@@ -30,8 +30,25 @@ static log_ctx_t g_log = { .mutex = PTHREAD_MUTEX_INITIALIZER };
 
 #define LOG_MAX_SIZE (10 * 1024 * 1024)  /* 10MB */
 
+/* 逐级建目录：默认日志目录是 recordings/logs，父目录可能还不存在 */
+static int log_mkpath(const char *dir)
+{
+    if (!dir || !*dir) return -1;
+    char path[PATH_MAX];
+    int length = snprintf(path, sizeof(path), "%s", dir);
+    if (length <= 0 || (size_t)length >= sizeof(path)) { errno = ENAMETOOLONG; return -1; }
+    for (char *p = path + 1; *p; p++) {
+        if (*p != '/') continue;
+        *p = '\0';
+        if (mkdir(path, 0755) && errno != EEXIST) return -1;
+        *p = '/';
+    }
+    if (mkdir(path, 0755) && errno != EEXIST) return -1;
+    return 0;
+}
+
 /* Exclusive creation preserves old logs even on rapid restarts or clock
-   adjustments. The timestamp remains meaningful outside the date directory. */
+   adjustments. The timestamp in the name keeps a restart from overwriting. */
 static void open_log_channel(int is_error)
 {
     FILE **fpp = is_error ? &g_log.fp_error : &g_log.fp_info;
@@ -52,7 +69,7 @@ static void open_log_channel(int is_error)
         else
             snprintf(name, sizeof(name), "%s_%s_%s_%03ld_%d.log", "log",
                      is_error ? "error" : "info", stamp, tv.tv_usec / 1000, index);
-        int length = snprintf(path, sizeof(path), "%s/%s/%s", g_log.dir, g_log.date, name);
+        int length = snprintf(path, sizeof(path), "%s/%s", g_log.dir, name);
         if (length < 0 || (size_t)length >= sizeof(path)) return;
         int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
         if (fd < 0) { if (errno == EEXIST) continue; return; }
@@ -84,11 +101,7 @@ static void ensure_date(void)
     if (strcmp(cur, g_log.date) == 0) return;
 
     safe_strncpy(g_log.date, sizeof(g_log.date), cur);
-    /* 二级目录：按日期存放 logs/YYYYMMDD/ */
-    char subdir[512];
-    snprintf(subdir, sizeof(subdir), "%s/%s", g_log.dir, g_log.date);
-    mkdir(subdir, 0755);
-
+    /* 目录不按日期分层：日期只出现在文件名里，跨天换一个新的日志文件 */
     open_log_channel(0);
     open_log_channel(1);
 }
@@ -100,7 +113,7 @@ int log_init(void *arg)
                           ? app->cfg->log_dir : PATH_LOGS;
     pthread_mutex_lock(&g_log.mutex);
     safe_strncpy(g_log.dir, sizeof(g_log.dir), dir);
-    mkdir(dir, 0755);
+    log_mkpath(dir);
     g_log.date[0] = '\0';
     ensure_date();
     pthread_mutex_unlock(&g_log.mutex);

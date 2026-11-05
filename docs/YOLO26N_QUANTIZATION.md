@@ -168,7 +168,7 @@ COCO128 属于 COCO train2017 的小子集。上述 mAP 用于固定样本上的
 
 运行路径为 `config/yolo26.rknn`，由现有构建和部署脚本按哈希同步。模型、校准图像和相机样本不纳入 Git，代码、中文报告和 PDF 纳入版本管理。
 
-去掉特征后，新结果仍追加到 `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt`。保留时间、数量、图像尺寸、焦距原始值、帧号 `seq`、`capture_ms`、目标索引 `index`、类别编号 `class`、类别名、置信度及坐标；不再生成 `feature_method`、`feature_dim`、`feature_valid` 和 `feature[...]`。
+去掉特征后，新结果仍追加到 `recordings/results/result_YYYYMMDD.txt`。保留时间、数量、图像尺寸、焦距原始值、帧号 `seq`、`capture_ms`、目标索引 `index`、类别编号 `class`、类别名、置信度及坐标；不再生成 `feature_method`、`feature_dim`、`feature_valid` 和 `feature[...]`。
 
 推理结果按值进入有界队列，由已有报告线程批量落盘，相机和推理线程不直接写文件。跟踪使用原始检测框估计速度，显示用的平滑放在跟踪之后。模型重载清空跟踪历史，避免不同运行会话之间错误沿用目标状态。视觉目标选择不会开启车辆跟随或电机。
 
