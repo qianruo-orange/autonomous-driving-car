@@ -10,7 +10,7 @@
  * yolo/rknn_yolo.h — RKNN + YOLO26 检测框架（主模块：模型管理 + 多线程推理池）。
  *
  * 模块组成（见 source/yolo/ 下各文件）：
- *  - yolo_image.c      图像处理（未压缩像素转换 / 缩放）
+ *  - video/rga_preprocess.c  RGA 硬件预处理（色彩转换 + letterbox）
  *  - yolo_cv.cpp       依赖 OpenCV 的预处理（letterbox 缩放、线程数收敛）
  *  - yolo_classes.c    类别名表加载（config/coco.names，回退内置 COCO 80 类）
  *  - yolo_postprocess.c decoded YOLO26 detection filtering and NMS

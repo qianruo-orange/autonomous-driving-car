@@ -6,7 +6,7 @@
 
 ## 中文文档
 
-自动驾驶小车（Autonomous Driving Car）是一个**感知、推理、控制**一体化的 Linux 车载平台。当前版本把相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、无损录像和浏览器管理界面跑在同一个 C/C++ 应用里。LLM 推理属于规划能力，尚未实现。
+自动驾驶小车（Autonomous Driving Car）是一个**感知、推理、控制**一体化的 Linux 车载平台。当前版本把相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、无损录像和浏览器管理界面跑在同一个纯 C11 应用里。LLM 推理属于规划能力，尚未实现。
 
 目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核和模型平台都按这颗 SoC 在编译期确定。
 
@@ -315,9 +315,9 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 
 应用依赖 NPU、JPEG 和 RGA 三个引擎，**不需要** MPP 用户态库或 VEPU510 编码器。
 
-**用户态。** `librknnrt.so`（2.5.0）、`librga.so`、libsystemd、libnl-3/libnl-route-3、OpenCV core/imgproc。
+**用户态。** `librknnrt.so`（2.5.0）、`librga.so`、libsystemd、libnl-3/libnl-route-3。
 
-**构建。** C11/C++11 编译器、GNU Make、CMake 3.18+、Bash，以及常用的 `flock`、`sha256sum`、`strings`、`awk`、`tar`、`zip`。
+**构建。** C11 编译器、GNU Make、CMake 3.18+、Bash，以及常用的 `flock`、`sha256sum`、`strings`、`awk`、`tar`、`zip`。源码不含 C++，也不需要 OpenCV。
 
 ### 构建与部署
 
@@ -351,7 +351,7 @@ sudo bash scripts/deploy.sh -i    # 安装并启动
 A Linux vehicle platform for **perception, inference and control** on a single
 real-time kernel. The current build runs camera capture, RKNN YOLO26 inference,
 visual tracking, differential wheel control, CAN/CAN-FD communication, lossless
-recording and a browser management interface as one C/C++ application.
+recording and a browser management interface as one C11 application.
 LLM inference is planned, not implemented.
 
 The target board is the **Radxa ROCK 4D / RK3576**: the NPU cores, RGA cores and
@@ -757,10 +757,11 @@ The application requires the NPU, JPEG and RGA engines. It does **not** require
 an MPP install or the VEPU510 encoder.
 
 **Userspace.** `librknnrt.so` (2.5.0), `librga.so`, libsystemd,
-libnl-3/libnl-route-3, OpenCV core/imgproc.
+libnl-3/libnl-route-3.
 
-**Build.** C11/C++11 compiler, GNU Make, CMake 3.18+, Bash, and the usual
-`flock`, `sha256sum`, `strings`, `awk`, `tar`, `zip`.
+**Build.** C11 compiler, GNU Make, CMake 3.18+, Bash, and the usual `flock`,
+`sha256sum`, `strings`, `awk`, `tar`, `zip`. The sources contain no C++ and do
+not need OpenCV.
 
 ### Build and deployment
 

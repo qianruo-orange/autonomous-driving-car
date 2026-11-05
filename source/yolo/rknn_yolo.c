@@ -29,7 +29,7 @@
  * 必要流程：YOLO 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
  * 启动路径整体失败退出；运行期热重载失败由 HTTP 接口报告 saved_reload_failed。
  *
- * 图像处理与后处理已拆分为独立模块（yolo_image / yolo_postprocess），
+ * 后处理已拆分为独立模块（yolo_postprocess），图像预处理在 RGA 上完成（video/rga_preprocess），
  * 本文件仅保留：模型生命周期、推理线程池、任务队列、结果队列、
  * 环形队列槽消费、快照与对外 API。
  */
@@ -52,7 +52,6 @@
 
 #include "yolo/rknn_yolo.h"
 #include "control/car_sport_ctrl.h"
-#include "yolo/yolo_image.h"
 #include "yolo/yolo_postprocess.h"
 #include "yolo/yolo_classes.h"
 #include "control/image_tracking.h"
@@ -1038,10 +1037,6 @@ int rknn_yolo_init(void *arg)
     app_ctx_t *app = (app_ctx_t *)arg;
     if (!app || !app->cfg) {
         LOG_ERROR("yolo: init without config");
-        return -1;
-    }
-    if (yolo_image_init() < 0) {
-        LOG_ERROR("yolo: cannot configure OpenCV for calling-thread processing");
         return -1;
     }
     memset(&g_yolo, 0, sizeof(g_yolo));

@@ -3,7 +3,6 @@
 #define _GNU_SOURCE
 #include "video/jpeg_decoder.h"
 #include "core/log.h"
-#include "yolo/yolo_image.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/videodev2.h>
@@ -252,55 +251,6 @@ static int nv12_ring_reserve(jpeg_decoder_t *d, int w, int h)
     return 0;
 }
 
-static int receive(jpeg_decoder_t *d, unsigned char *rgb)
-{
-    long long deadline = now_ms() + DECODE_TIMEOUT_MS;
-    int output_done = 0, capture_done = 0, failed = 0;
-    while (!output_done || !capture_done) {
-        for (int capture = 0; capture < 2; ++capture) {
-            if (capture ? capture_done : output_done) continue;
-            struct v4l2_plane plane = {0};
-            struct v4l2_buffer buffer = {.type = capture ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE :
-                V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE,
-                .memory = capture ? V4L2_MEMORY_DMABUF : V4L2_MEMORY_MMAP,
-                .length = 1, .m.planes = &plane};
-            if (xioctl(d->fd, VIDIOC_DQBUF, &buffer)) {
-                if (errno == EAGAIN) continue;
-                return -1;
-            }
-            if (buffer.flags & V4L2_BUF_FLAG_ERROR) failed = 1;
-            if (!capture) { output_done = 1; continue; }
-            if (buffer.index >= CAPTURE_BUFFERS || (buffer.flags & V4L2_BUF_FLAG_LAST) ||
-                plane.data_offset || plane.bytesused < d->format.plane_fmt[0].sizeimage ||
-                plane.bytesused > d->raw[buffer.index].length) { errno = EIO; return -1; }
-            if (!failed) {
-                /* Cached DMA-BUF avoids repeated CPU reads from device MMAP memory. */
-                struct dma_buf_sync sync = {.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
-                if (xioctl(d->raw[buffer.index].fd, DMA_BUF_IOCTL_SYNC, &sync)) return -1;
-                const unsigned char *base = d->raw[buffer.index].data;
-                int stride = (int)d->format.plane_fmt[0].bytesperline;
-                yolo_nv12_to_rgb_full(base, base + (size_t)stride * d->format.height,
-                                       stride, d->width, d->height, rgb);
-                sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-                if (xioctl(d->raw[buffer.index].fd, DMA_BUF_IOCTL_SYNC, &sync)) return -1;
-            }
-            if (queue_buffer(d, buffer.type, buffer.index, 0)) return -1;
-            capture_done = 1;
-        }
-        if (capture_done && output_done) break;
-        int remaining = (int)(deadline - now_ms());
-        if (remaining <= 0) { errno = ETIMEDOUT; return -1; }
-        struct pollfd wait = {.fd = d->fd, .events = (short)((capture_done ? 0 : POLLIN) |
-                                                             (output_done ? 0 : POLLOUT))};
-        int rc = poll(&wait, 1, remaining);
-        if (rc < 0 && errno == EINTR) continue;
-        if (rc <= 0 || (wait.revents & (POLLNVAL | POLLHUP))) { errno = ETIMEDOUT; return -1; }
-    }
-    if (failed) { errno = EIO; return -1; }
-    return 0;
-}
-/* 与 receive() 同构，但把 NV12 直接拷进环形 dma-buf，不做 RGB 转换。
-   RGA 会在这块缓冲上一次性完成 CSC + letterbox 缩放。 */
 static int receive_nv12(jpeg_decoder_t *d, unsigned char *dst)
 {
     long long deadline = now_ms() + DECODE_TIMEOUT_MS;
@@ -380,21 +330,3 @@ int jpeg_decoder_nv12(jpeg_decoder_t *d, const unsigned char *jpeg, size_t lengt
     return rc;
 }
 
-int jpeg_decoder_rgb(jpeg_decoder_t *d, const unsigned char *jpeg, size_t length,
-                     unsigned char *rgb, int w, int h)
-{
-    if (!d || !jpeg || !rgb || length < 4 || w <= 0 || h <= 0 || w > 8192 || h > 8192 ||
-        jpeg[0] != 0xff || jpeg[1] != 0xd8) return -1;
-    if (d->width && (d->width != w || d->height != h)) release_buffers(d);
-    int rc = d->width ? queue_jpeg(d, jpeg, length) : prepare(d, jpeg, length, w, h);
-    if (!rc) rc = receive(d, rgb);
-    if (rc) {
-        int saved = errno;
-        unsigned long long errors = atomic_fetch_add(&decode_errors, 1) + 1;
-        if (errors <= 3 || errors % 100 == 0)
-            LOG_ERROR("jpeg: hardware decode failed on %s: %s", d->device, strerror(saved));
-        release_buffers(d);
-        errno = saved;
-    } else atomic_fetch_add(&decoded_frames, 1);
-    return rc;
-}

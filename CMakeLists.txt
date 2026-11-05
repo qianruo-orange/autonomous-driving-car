@@ -108,19 +108,3 @@ target_link_libraries(autonomous-driving-car PRIVATE ${LIBNLROUTE3})
 find_library(LIBRKNNRT rknnrt REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 
-# OpenCV（core + imgproc，仅 imgproc 的 resize）：推理前的 RGB letterbox 缩放
-# 此前还负责检测框/标签渲染，那套渲染已删除（框只在浏览器 canvas 上画一次）
-# RGA 2D 加速器（librga，im2d C API）：letterbox + resize 硬件化。
-# 编译期只需要头文件；运行时用 dlopen("librga.so") 加载，库缺失则回退 CPU 路径，
-# 因此这里不把 librga 写进 DT_NEEDED（否则缺库时进程起不来）。
-find_path(LIBRGA_INCLUDE_DIR rga/im2d.h
-          HINTS /usr/local/include /usr/include)
-if (LIBRGA_INCLUDE_DIR)
-    target_include_directories(autonomous-driving-car PRIVATE ${LIBRGA_INCLUDE_DIR})
-    target_link_libraries(autonomous-driving-car PRIVATE ${CMAKE_DL_LIBS})
-else()
-    message(WARNING "rga/im2d.h 未找到：RGA 预处理不可用，将始终回退 CPU 路径")
-endif()
-
-find_package(OpenCV REQUIRED COMPONENTS core imgproc)
-target_link_libraries(autonomous-driving-car PRIVATE ${OpenCV_LIBS})
