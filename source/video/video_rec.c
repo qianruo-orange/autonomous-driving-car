@@ -32,6 +32,7 @@
 
 #include "video/video_rec.h"
 #include "video/rec_mjpeg.h"
+#include "video/rec_encode.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 #include "core/common.h"
@@ -66,6 +67,7 @@ static struct {
     /* 本节会话累计的跳过帧与错误态（供 /api/rec/status） */
     unsigned long long skipped_cadence, skipped_size;
     int io_error;
+    rec_encode_t *enc;            /* 压缩编码线程（H.264 保存），无损 AVI 之外的副本 */
 } g_rec;
 
 /* 帧时间戳旁路文件：recordings/YYYYMMDD/frames.tsv
@@ -407,6 +409,11 @@ void *video_rec_task(void *arg)
 
             pthread_mutex_lock(&g_rec_files_lock);
             mjp = rec_mjpeg_create(dir, "video", pw, ph, fps, fname, sizeof(fname));
+            if (mjp) {
+                /* 同一帧同时走压缩保存：JPEG 副本交给编码线程解码 + 硬件编码 */
+                rec_encode_stop(g_rec.enc);
+                g_rec.enc = rec_encode_start(dir, "h264", pw, ph, fps, 0);
+            }
             if (!mjp) {
                 pthread_mutex_unlock(&g_rec_files_lock);
                 pthread_mutex_lock(&g_rec.lock);
@@ -529,6 +536,7 @@ void *video_rec_task(void *arg)
 
                 uint64_t wts = now_ms();
                 int wr = rec_mjpeg_write_frame(mjp, jpg, jlen, wts);
+                rec_encode_push(g_rec.enc, jpg, jlen, wts);
                 free(jpg);
                 if (wr != REC_MJ_OK) {
                     if (wr == REC_MJ_ERR_IO) {
@@ -589,6 +597,8 @@ void *video_rec_task(void *arg)
             uint32_t n_frames = rec_mjpeg_frames(mjp);
             uint32_t n_bytes  = rec_mjpeg_bytes(mjp);
             pthread_mutex_lock(&g_rec_files_lock);
+            rec_encode_stop(g_rec.enc);
+            g_rec.enc = NULL;
             rec_mjpeg_finalize(mjp);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
