@@ -1075,9 +1075,13 @@ int rknn_yolo_init(void *arg)
     pthread_cond_init(&g_yolo.r_not_empty, NULL);
     pthread_cond_init(&g_yolo.r_not_full, NULL);
 
+    /* 解码通路按 config 的 jpeg_decode 选定，必须在第一次 open 之前设置 */
+    jpeg_decoder_set_mode(app->cfg->jpeg_hw);
     g_yolo.hardware_decode = jpeg_decoder_available();
-    LOG_INFO("yolo: JPEG hardware decoder %s",
-             g_yolo.hardware_decode ? "rockchip-jpegd" : "unavailable (required for MJPEG capture)");
+    LOG_INFO("yolo: JPEG decode %s", g_yolo.hardware_decode
+             ? "hardware (rockchip-jpegd)"
+             : (app->cfg->jpeg_hw ? "software (hardware unavailable, fallback)"
+                                  : "software (libjpeg-turbo)"));
     if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable; live inference remains enabled");
     /* YOLO 为必要流程：无 YOLO（模型缺失/NPU 不可用）直接报错，服务启动失败 */
@@ -1214,7 +1218,7 @@ void *rknn_yolo_task(void *arg)
             pthread_mutex_unlock(&g_producer_mutex);
             if (decoder_unavailable) {
                 atomic_store(&g_yolo.hardware_decode, 0);
-                LOG_ERROR("yolo: MJPEG capture requires rockchip-jpegd hardware decoding; stopping");
+                LOG_ERROR("yolo: MJPEG capture requires a working JPEG decoder; stopping");
                 app->fatal = 1;
                 app->running = 0;
                 break;

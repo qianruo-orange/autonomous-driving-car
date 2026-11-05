@@ -63,6 +63,7 @@ static void config_defaults(struct app_config_t *cfg)
     cfg->video_height = 480;
     cfg->video_fps    = 0;    /* 0 = driver default frame rate */
     cfg->mjpeg_max_kbps = 0;  /* 0 = 不限；MJPEG 透传每客户端码率预算 */
+    cfg->jpeg_hw      = 1;    /* 1 = 相机 MJPEG 走 V4L2 硬解；硬解不可用时自动回落软解 */
 
     rknn_yolo_default_model_path(cfg->yolo_model, sizeof(cfg->yolo_model));
     safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), "config/coco.names");
@@ -101,6 +102,7 @@ int config_load(struct app_config_t *cfg)
     safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), "config/coco.names");
     cfg->yolo_input_size = 640; cfg->yolo_conf = 0.25f; cfg->yolo_nms = 0.45f;
     cfg->yolo_interval_ms = 10; { int _c = npu_core_count(); if (_c < 1) _c = 1; cfg->yolo_threads = _c; } /* 默认每核 1 个推理线程 */
+    cfg->jpeg_hw = 1;          /* 与 config_defaults 保持一致：默认硬解，失败回落软解 */
     app_args_t *a = &cfg->args;
     char legacy_web_ifname[IFNAMSIZ] = "";
     int can_feature_configured = 0;
@@ -163,6 +165,9 @@ int config_load(struct app_config_t *cfg)
         else if (strcmp(key, "video_height") == 0) cfg->video_height = parse_int_clamped(val, 1, 4096, 480);
         else if (strcmp(key, "video_fps") == 0) cfg->video_fps = parse_int_clamped(val, 0, 120, 0);
         else if (strcmp(key, "mjpeg_max_kbps") == 0) cfg->mjpeg_max_kbps = parse_int_clamped(val, 0, 200000, 0);
+        else if (strcmp(key, "jpeg_decode") == 0)
+            cfg->jpeg_hw = !(strcmp(val, "sw") == 0 || strcmp(val, "software") == 0 ||
+                             strcmp(val, "0") == 0 || strcmp(val, "off") == 0);
         else if (strcmp(key, "yolo_model") == 0) safe_strncpy(cfg->yolo_model, sizeof(cfg->yolo_model), val);
         else if (strcmp(key, "yolo_names") == 0) safe_strncpy(cfg->yolo_names, sizeof(cfg->yolo_names), val);
         else if (strcmp(key, "yolo_input_size") == 0) cfg->yolo_input_size = parse_int_clamped(val, 32, 2048, 640);
@@ -243,6 +248,7 @@ void config_save(app_ctx_t *app)
     fprintf(fp, "video_height %d\n", cfg->video_height);
     fprintf(fp, "video_fps %d\n", cfg->video_fps);
     fprintf(fp, "mjpeg_max_kbps %d\n", cfg->mjpeg_max_kbps);
+    fprintf(fp, "jpeg_decode %s\n", cfg->jpeg_hw ? "hw" : "sw");
     fprintf(fp, "\n# --- YOLO 检测 (YOLO26, RKNN) ---\n");
     fprintf(fp, "yolo_model %s\n", cfg->yolo_model);
     fprintf(fp, "yolo_names %s\n", cfg->yolo_names[0] ? cfg->yolo_names : "config/coco.names");

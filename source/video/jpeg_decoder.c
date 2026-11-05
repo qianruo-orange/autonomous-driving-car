@@ -2,12 +2,15 @@
 /*
  * JPEG decode to NV12.
  *
- * 默认走 libjpeg-turbo 软件解码：板载 rkjpegd 硬件解码器在 RK3576 上
- * 亮度块内后半段丢细节（同帧对比：块内第 0 行误差 0.10，第 7 行 3.78，
- * 色度完全正确），成片因此布满沿边缘的亮点/暗点。软件解码 720p 约
- * 4~6ms，10~30fps 下 CPU 开销可忽略。
+ * 两条通路，按 config 的 jpeg_decode 选择：
+ *   hw  V4L2 硬解 rockchip-jpegd（默认）。上游 v7 驱动起来后色度平面已经
+ *       正确（u/v 54~56 dB、每帧 1,382,400 字节），亮度 IDCT 仍是块内
+ *       台阶（块内第 0 行误差 ~0.1、第 7 行 ~3.8，同帧 PSNR 33 dB），
+ *       视觉上表现为块状模糊，不是坏点。
+ *   sw  libjpeg-turbo 软解，与 ffmpeg 参考逐像素一致（mean|d| 0.04），
+ *       720p 约 4~6ms，10~30fps 下 CPU 开销可忽略。
  *
- * JPEG_DECODE=hw 环境变量可切回 V4L2 硬件通路（保留以备上游修好）。
+ * 硬解设备打不开时自动回落软解，保证取流不中断。
  */
 #define _GNU_SOURCE
 #include "video/jpeg_decoder.h"
@@ -81,6 +84,20 @@ static void sw_error_exit(j_common_ptr info)
     sw_error_t *err = (sw_error_t *)info->err;
     longjmp(err->jump, 1);
 }
+/* 通路选择：-1 = 未显式设置（看 JPEG_DECODE 环境变量，默认硬解） */
+static int g_want_hw = -1;
+
+void jpeg_decoder_set_mode(int hardware)
+{
+    g_want_hw = hardware ? 1 : 0;
+}
+static int want_hardware(void)
+{
+    if (g_want_hw >= 0) return g_want_hw;
+    const char *mode = getenv("JPEG_DECODE");
+    if (mode && (!strcmp(mode, "sw") || !strcmp(mode, "software"))) return 0;
+    return 1;
+}
 static int open_device(char *path, size_t size)
 {
     for (int i = 0; i < 64; ++i) {
@@ -103,9 +120,9 @@ static int open_device(char *path, size_t size)
 }
 int jpeg_decoder_available(void)
 {
-    /* 软件解码（libjpeg-turbo）恒可用；只有在强制硬件时才探测 V4L2 设备 */
-    const char *mode = getenv("JPEG_DECODE");
-    if (!mode || (strcmp(mode, "hw") && strcmp(mode, "hardware"))) return 1;
+    /* 软解（libjpeg-turbo）恒可用；要求硬解时探测一次 V4L2 设备，
+       好让启动日志和 /api/camera 反映真实通路 */
+    if (!want_hardware()) return 1;
     char path[32];
     int fd = open_device(path, sizeof(path));
     if (fd < 0) return 0;
@@ -139,27 +156,35 @@ static void release_buffers(jpeg_decoder_t *d)
     memset(d->raw, 0, sizeof(d->raw));
     d->output_on = d->capture_on = d->width = d->height = 0;
 }
+/* 软解通路；成功返回 d，失败返回 NULL（cinfo 已复位以便下次重试） */
+static jpeg_decoder_t *open_software(jpeg_decoder_t *d)
+{
+    d->cinfo.err = jpeg_std_error(&d->sw_err.pub);
+    d->sw_err.pub.error_exit = sw_error_exit;
+    if (!setjmp(d->sw_err.jump)) {
+        jpeg_create_decompress(&d->cinfo);
+        d->sw_ready = 1;
+        d->hardware = 0;
+        LOG_INFO("jpeg: software decoder (libjpeg-turbo)");
+        return d;
+    }
+    d->sw_ready = 0;
+    LOG_ERROR("jpeg: libjpeg init failed");
+    return NULL;
+}
 jpeg_decoder_t *jpeg_decoder_open(void)
 {
     jpeg_decoder_t *d = calloc(1, sizeof(*d));
     if (!d) return NULL;
     d->fd = -1;
-    const char *mode = getenv("JPEG_DECODE");
-    int want_hw = mode && (!strcmp(mode, "hw") || !strcmp(mode, "hardware"));
-    if (!want_hw) {
-        d->cinfo.err = jpeg_std_error(&d->sw_err.pub);
-        d->sw_err.pub.error_exit = sw_error_exit;
-        if (!setjmp(d->sw_err.jump)) {
-            jpeg_create_decompress(&d->cinfo);
-            d->sw_ready = 1;
-            LOG_INFO("jpeg: software decoder (libjpeg-turbo), hardware path disabled");
-            return d;
-        }
-        LOG_ERROR("jpeg: libjpeg init failed, falling back to hardware decoder");
-        d->sw_ready = 0;
-    }
+    if (!want_hardware()) return open_software(d);
     d->fd = open_device(d->device, sizeof(d->device));
-    if (d->fd < 0) { free(d); return NULL; }
+    if (d->fd < 0) {
+        /* 硬解不可用（内核无 rkjpegd / 设备被占用）时保住取流，退回软解 */
+        LOG_ERROR("jpeg: hardware decoder unavailable (%s), falling back to software",
+                  strerror(errno));
+        return open_software(d);
+    }
     d->hardware = 1;
     LOG_INFO("jpeg: hardware decoder %s (rockchip-jpegd)", d->device);
     return d;
