@@ -677,6 +677,16 @@ static void http_process_request(http_conn_t *c)
     /* 认证/命令类处理可能耗时（crypt 等），先喂狗 */
     watchdog_feed_self("http");
 
+    /* 非 GET 请求都是显式动作，记下来源，便于追查是谁在改文件 */
+    if (strcmp(c->method, "GET")) {
+        struct sockaddr_in peer;
+        socklen_t plen = sizeof(peer);
+        char ip[INET_ADDRSTRLEN] = "-";
+        if (getpeername(fd, (struct sockaddr *)&peer, &plen) == 0)
+            inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
+        LOG_INFO("http %s %s from %s", c->method, c->uri, ip);
+    }
+
     if (!strncmp(c->uri, "/api/files/", 11)) {
         int video = !strncmp(c->uri, "/api/files/video?", 17);
         int allowed = video ? http_files_video_authorized(c->uri, req) :
