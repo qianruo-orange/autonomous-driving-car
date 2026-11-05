@@ -487,6 +487,20 @@ void *video_rec_task(void *arg)
                     continue;
                 }
 
+                /* 按日分段：日期一变就切到新一天的文件，避免一段横跨两天 */
+                {
+                    char today[16];
+                    time_t nowt = time(NULL);
+                    struct tm nowtm;
+                    localtime_r(&nowt, &nowtm);
+                    strftime(today, sizeof(today), "%Y%m%d", &nowtm);
+                    if (strcmp(today, day) != 0) {
+                        pthread_mutex_lock(&g_rec.lock);
+                        g_rec.split_pending = 1;
+                        pthread_mutex_unlock(&g_rec.lock);
+                    }
+                }
+
                 pthread_mutex_lock(&g_rec.lock);
                 int split = g_rec.split_pending && g_rec.recording;
                 pthread_mutex_unlock(&g_rec.lock);
@@ -506,6 +520,7 @@ void *video_rec_task(void *arg)
                         mjp = next;
                         safe_strncpy(cur_name, sizeof(cur_name), next_name);
                         rec_sidecar_open(next_day);   /* 跨天切分时换旁路文件 */
+                        safe_strncpy(day, sizeof(day), next_day);
                         last_refresh = now_ms();
                         snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
                         pthread_mutex_lock(&g_rec.lock);
