@@ -5,12 +5,13 @@
 #include <stddef.h>
 
 /**
- * Lossless recording: camera-native MJPEG frames are written verbatim into
- * AVI(MJPG) segments. No decode, no re-encode, no scaling — every frame in the
- * file is byte-identical to the sensor output. The recording thread consumes
- * raw JPEG buffers from the frame ring; HTTP APIs queue start/stop/split
- * commands; file deletion is synchronized with segment creation, publication
- * and finalization.
+ * Recording sessions. The camera JPEG is decoded to NV12 (hardware JPEG
+ * decoder), detection boxes are drawn on the Y plane, and the result is
+ * encoded to H.264 (MPP, fixed QP) and muxed into MP4 — one product, one file
+ * at a time. The recording thread drives the segment lifecycle (open at start,
+ * rotate on day change or size cap, finalize with a moov box); HTTP APIs queue
+ * start/stop/split commands; deletion is synchronized with segment creation,
+ * publication and finalization.
  */
 
 /* 录制状态快照（供 HTTP status 接口 / 前端轮询） */
@@ -23,7 +24,7 @@ typedef struct {
     double             fps;         /* 实时平均帧率（最后若干帧） */
     int                split_pending;
     int                split_error;
-    char               encoder[32]; /* "mjpeg-native" while recording, else "none" */
+    char               encoder[32]; /* "h264-mp4" while recording, else "none" */
     /* 本段会话累计的跳过帧：录制跟不上采集 / 尺寸与配置不符 */
     unsigned long long skipped_cadence;
     unsigned long long skipped_size;

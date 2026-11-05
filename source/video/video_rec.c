@@ -1,17 +1,18 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
- * video_rec.c — 无损录像：相机原生 MJPEG 直封 AVI(MJPG)。
+ * video_rec.c — 录像会话管理：把带框的 H.264 写进 MP4。
  *
  * 链路：V4L2 原始 JPEG → NV12 → 画框 → H.264 → MP4（详见 video/rec_annot.c）。
- *   全程不解码、不重编码、不缩放，文件里每一帧与传感器输出完全相同。
+ *   本文件只负责"什么时候开一段、写到哪个文件、什么时候切段"，一帧的编解码
+ *   全在 rec_annot 线程里完成。
  *
  * 线程模型：main 模块表 "rec" 线程，空闲时 100ms 轮询喂狗；
  *   默认自动录制：任务启动即开始，按天分目录（recordings/YYYYMMDD），
- *   达到会话上限（帧数/体积）自动续录下一段；HTTP 线程可下发
+ *   跨天或单段超过 REC_SEGMENT_BYTES 时自动续录下一段；HTTP 线程可下发
  *   video_rec_start/stop 手动控制，手动停止后不再自动续录。
  *
- * 录像不依赖 YOLO：原始帧里没有检测框，框只在网页前端按帧序号叠加。
- * 因此 YOLO 停摆或重建都不影响录像连续性。
+ * 录像不依赖 YOLO：没有检测框的帧同样入队（recordings 里只有一份 MP4，
+ * 框按帧画在 Y 平面上）。
  */
 
 #define _GNU_SOURCE
@@ -27,7 +28,6 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/time.h>
-#include <dirent.h>
 #include <time.h>
 
 #include "video/video_rec.h"
@@ -42,6 +42,9 @@
 
 /* 低于此剩余空间就不再开新段，避免录到一半 ENOSPC 后反复建/删空文件 */
 #define REC_MIN_FREE_BYTES   (512ull * 1024ull * 1024ull)
+/* 单段体积上限：到点就收尾并续录下一段。固定 QP 后码率随画面浮动，
+ * 用字节数而不是时长来切，段大小才是可预期的（也方便网页端下载） */
+#define REC_SEGMENT_BYTES    (512ull * 1024ull * 1024ull)
 /* 录制中回填头部并落盘的间隔：掉电后最多丢失这段窗口的索引 */
 #define REC_REFRESH_MS       2000ull
 /* I/O 失败后的退避，避免磁盘满时空转刷日志 */
@@ -66,7 +69,7 @@ static struct {
     /* 本节会话累计的跳过帧与错误态（供 /api/rec/status） */
     unsigned long long skipped_cadence, skipped_size;
     int io_error;
-    rec_annot_t *annot;        /* 标注录像（H.264/MP4），与无损 AVI 并行 */
+    rec_annot_t *annot;        /* 标注录像（H.264/MP4），唯一的录像产物 */
 } g_rec;
 
 /* 帧时间戳旁路文件：recordings/YYYYMMDD/frames.tsv
@@ -85,9 +88,8 @@ int video_rec_delete_file(int day_fd, const char *relative)
     size_t length = relative ? strlen(relative) : 0;
     if (length < 14 || length >= 256 || relative[8] != '/' ||
         strstr(relative, "..") ||
-        (strncmp(relative + 9, "video_", 6) && strncmp(relative + 9, "rec_", 4) &&
-         strncmp(relative + 9, "annot_", 6)) ||
-        (strcmp(relative + length - 4, ".mp4") && strcmp(relative + length - 4, ".avi"))) {
+        (strncmp(relative + 9, "rec_", 4) && strncmp(relative + 9, "annot_", 6)) ||
+        (strcmp(relative + length - 4, ".mp4"))) {
         errno = EINVAL;
         return -1;
     }
@@ -195,7 +197,7 @@ static int rec_take_raw_frame(frame_ring_t *ring, unsigned char **out, size_t *l
 }
 
 /* 实测帧率（不写死）：连续抓若干新帧取平均间隔，fps = 1000/avg_ms。
-   只用来填 AVI 头部的 dwRate；失败返回 0（无视频帧）。 */
+   填 MP4 的 mvhd/tkhd 时间基；失败返回 0（无视频帧）。 */
 static int rec_measure_fps(app_ctx_t *app, frame_ring_t *ring)
 {
     enum { N = 8 };
@@ -274,47 +276,6 @@ static void rec_sidecar_frame(const char *file, unsigned long long frame)
     fprintf(g_sidecar, "%s\t%llu\t%llu\t%llu\n", file, frame, mono_ms, wall);
 }
 
-/* 修复上次异常退出（掉电、被 kill）留下的未收尾分段。只处理 RIFF 长度与文件
- * 长度不一致的 video_*.avi；在录制线程启动时扫一次，不进入录制热路径。 */
-static void rec_repair_orphans(void)
-{
-    DIR *root = opendir(REC_DIR);
-    if (!root) return;
-    int repaired = 0;
-    struct dirent *de;
-    while ((de = readdir(root))) {
-        if (de->d_name[0] == '.') continue;
-        char daydir[512];
-        snprintf(daydir, sizeof(daydir), "%s/%s", REC_DIR, de->d_name);
-        DIR *day = opendir(daydir);
-        if (!day) continue;
-        struct dirent *f;
-        while ((f = readdir(day))) {
-            size_t n = strlen(f->d_name);
-            if (n < 10 || strncmp(f->d_name, "video_", 6) ||
-                strcmp(f->d_name + n - 4, ".avi"))
-                continue;
-            char path[1024];
-            snprintf(path, sizeof(path), "%s/%s", daydir, f->d_name);
-            struct stat st;
-            if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 12) continue;
-            FILE *fp = fopen(path, "rb");
-            if (!fp) continue;
-            unsigned char h[12];
-            size_t got = fread(h, 1, sizeof(h), fp);
-            fclose(fp);
-            if (got != sizeof(h) || memcmp(h, "RIFF", 4) || memcmp(h + 8, "AVI ", 4))
-                continue;
-            uint32_t riff = (uint32_t)h[4] | ((uint32_t)h[5] << 8) |
-                            ((uint32_t)h[6] << 16) | ((uint32_t)h[7] << 24);
-            if (riff != 0 && (off_t)riff + 8 == st.st_size) continue;   /* 已完整收尾 */
-        }
-        closedir(day);
-    }
-    closedir(root);
-    if (repaired) LOG_INFO("rec: repaired %d unfinished segment(s)", repaired);
-}
-
 /* ---- 录制线程 ---- */
 
 void *video_rec_task(void *arg)
@@ -327,7 +288,6 @@ void *video_rec_task(void *arg)
         return NULL;
     }
     frame_ring_t *ring = video_stream_get_ring();
-    rec_repair_orphans();          /* 收尾上次异常退出留下的分段，只做一次 */
     int auto_rec = 1;                    /* 默认自动开启录制 */
 
     while (app->running) {
@@ -401,7 +361,7 @@ void *video_rec_task(void *arg)
             }
 
             pthread_mutex_lock(&g_rec_files_lock);
-            /* 会话由标注录像驱动：MP4 是唯一产物，无损 AVI 不再参与 */
+            /* MP4 是唯一产物：解码、画框、编码、封装都在 rec_annot 线程里 */
             rec_annot_stop(g_rec.annot);
             g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0,
                                           fname, sizeof(fname));
@@ -423,8 +383,8 @@ void *video_rec_task(void *arg)
             }
             char rel[192];
             snprintf(rel, sizeof(rel), "%s/%s", day, fname);
-            LOG_INFO("rec: recording started -> %s (%dx%d @%dfps, lossless MJPEG/AVI, "
-                     "camera native frames)", rel, pw, ph, fps);
+            LOG_INFO("rec: recording started -> %s (%dx%d @%dfps, H.264/MP4, FIXQP)",
+                     rel, pw, ph, fps);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 1;
             safe_strncpy(g_rec.encoder, sizeof(g_rec.encoder), "h264-mp4");
@@ -485,25 +445,26 @@ void *video_rec_task(void *arg)
                     continue;
                 }
 
-                /* 按日分段：日期一变就切到新一天的文件，避免一段横跨两天 */
+                /* 分段条件：跨天，或单段写到体积上限（固定 QP 后码率浮动，
+                   用字节数切段才能保证每段大小可预期） */
                 {
                     char today[16];
                     time_t nowt = time(NULL);
                     struct tm nowtm;
                     localtime_r(&nowt, &nowtm);
                     strftime(today, sizeof(today), "%Y%m%d", &nowtm);
-                    if (strcmp(today, day) != 0) {
-                        pthread_mutex_lock(&g_rec.lock);
+                    pthread_mutex_lock(&g_rec.lock);
+                    if (strcmp(today, day) != 0 || g_rec.bytes >= REC_SEGMENT_BYTES)
                         g_rec.split_pending = 1;
-                        pthread_mutex_unlock(&g_rec.lock);
-                    }
+                    pthread_mutex_unlock(&g_rec.lock);
                 }
 
                 pthread_mutex_lock(&g_rec.lock);
                 int split = g_rec.split_pending && g_rec.recording;
                 pthread_mutex_unlock(&g_rec.lock);
                 if (split) {
-                    /* 每帧都是关键帧，直接对齐到下一帧切分 */
+                    /* 收尾当前段（写入 moov）后立刻开新段：新编码器第一帧就是 IDR，
+                       两段之间只有一次编码器重建的间隔 */
                     char next_name[128] = "", next_day[16], next_dir[512];
                     time_t split_time = time(NULL);
                     struct tm split_tm;
@@ -550,11 +511,8 @@ void *video_rec_task(void *arg)
 
                 rec_sidecar_frame(cur_name, rec_annot_frames(g_rec.annot));
 
-                /* 定期回填头部并落盘：掉电后文件仍可按最后刷新点播放 */
+                /* 定期落盘帧索引：掉电后最多丢这一段窗口的记录 */
                 if (wts - last_refresh >= REC_REFRESH_MS) {
-                    /* 相机帧率随光照变化（实测 30 → 10 fps），而 AVI 头只能声明
-                     * 一个速率；段内变化会让回放时长失真最多 3 倍。偏差超过 25%
-                     * 就按帧边界切段，新段用实测速率写头。 */
                     if (g_sidecar) fflush(g_sidecar);
                     last_refresh = wts;
                 }
@@ -574,7 +532,7 @@ void *video_rec_task(void *arg)
             pthread_mutex_unlock(&g_rec.lock);
             pthread_mutex_unlock(&g_rec_files_lock);
             if (rec_raw_gap || rec_size_skip)
-                LOG_INFO("rec: lossless skipped %llu frames (cadence), %llu (size)",
+                LOG_INFO("rec: skipped %llu frames (cadence), %llu (size)",
                          rec_raw_gap, rec_size_skip);
             if (n_frames > 0)
                 LOG_INFO("rec: recording finished -> %s (%u frames, %u bytes)",

@@ -87,6 +87,7 @@ typedef struct {
     unsigned char    *rgb;
     size_t            rgb_cap;
     int               nv12_fd;   /* >=0：RGA 路径，解码器 NV12 dma-buf（rgb 为 NULL） */
+    unsigned char    *annot_nv12; /* 标注录像：解码时拷好的一整帧 NV12 */
     int               w, h;
     unsigned long long seq;
     unsigned long long capture_ms, deliver_ms, decode_start_us, decode_end_us;
@@ -491,7 +492,7 @@ static void *yolo_worker_task(void *arg)
         res.post_done_us = yolo_now_us();
         yolo_record_result(&job, &res);
         /* 标注录像：把本帧 NV12 与检测框交给编码线程（内部立即拷贝） */
-        if (job.nv12_fd >= 0) {
+        if (job.annot_nv12) {
             float xyxy[YOLO_MAX_DETS * 4];
             int n = res.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : res.count;
             for (int i = 0; i < n; i++) {
@@ -500,8 +501,10 @@ static void *yolo_worker_task(void *arg)
                 xyxy[4 * i + 2] = res.dets[i].x2;
                 xyxy[4 * i + 3] = res.dets[i].y2;
             }
-            video_rec_annot_frame(annot_buf, job.w, job.h, xyxy, n);
+            video_rec_annot_frame(job.annot_nv12, job.w, job.h, xyxy, n);
         }
+        free(job.annot_nv12);
+        job.annot_nv12 = NULL;
         if (idx == 0) {
             static unsigned long long last_timing_us;
             unsigned long long finished_us = yolo_now_us();
@@ -1181,6 +1184,7 @@ void *rknn_yolo_task(void *arg)
 
         /* The claim holds the camera buffer while JPEG is submitted to DMA. */
         int decode_ok = 0, decoder_unavailable = 0;
+        unsigned char *annot_copy = NULL;
         unsigned long long decode_start_us = yolo_now_us();
         if (raw && w > 0 && h > 0) {
             if (fmt == FRAME_RING_FMT_MJPEG) {
@@ -1190,13 +1194,10 @@ void *rknn_yolo_task(void *arg)
                     atomic_store(&g_yolo.hardware_decode, 1);
                     {
                     size_t need = (size_t)w * h * 3 / 2;
-                    if (annot_cap < need) {
-                        free(annot_buf);
-                        annot_buf = malloc(need);
-                        annot_cap = annot_buf ? need : 0;
-                    }
+                    free(annot_copy);
+                    annot_copy = malloc(need);
                     decode_ok = jpeg_decoder_nv12(decoder, raw, raw_len, w, h,
-                                                  &nv12_fd, annot_buf) == 0;
+                                                  &nv12_fd, annot_copy) == 0;
                 }
                 }
             } else if (fmt == FRAME_RING_FMT_YUYV) {
@@ -1223,6 +1224,7 @@ void *rknn_yolo_task(void *arg)
         }
 
         yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap, .nv12_fd = nv12_fd,
+                           .annot_nv12 = annot_copy,
                            .w = w, .h = h, .seq = seq, .capture_ms = capture_ms, .deliver_ms = deliver_ms,
                            .decode_start_us = decode_start_us, .decode_end_us = yolo_now_us(),
                            .metadata = metadata };

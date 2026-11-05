@@ -260,7 +260,7 @@ rec_mp4_t *rec_mp4_create_named(const char *dir, const char *name, int w, int h,
     if (!s) return NULL;
     s->w = w; s->h = h;
     s->fps = fps > 0 ? fps : 30;
-    /* 会话目录按日期分层，逐级建出来（AVI 时代由 rec_mjpeg 负责） */
+    /* 会话目录按日期分层，逐级建出来 */
     {
         char tmp[512];
         snprintf(tmp, sizeof(tmp), "%s", dir);

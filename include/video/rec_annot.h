@@ -9,8 +9,8 @@
  * video/rec_annot.h —— 带检测框的标注录像（H.264/MP4）。
  *
  * 取推理路径已经解出的 NV12 dma-buf（零额外解码），在 Y 平面直接画框，
- * 交给 MPP 硬件编码，再封装成 MP4。与无损 AVI 录像互不影响：
- * AVI 仍写相机原始帧，本模块只是额外产出一份带框的压缩视频。
+ * 交给 MPP 硬件编码（恒定 QP，不做码率控制），再封装成 MP4。这是录像的
+ * 唯一产物，没有并行的第二路文件。
  *
  * 队列有界、满时丢最旧帧，编码线程不会阻塞推理。
  */
@@ -23,7 +23,8 @@ typedef struct {
     int   cls;
 } rec_annot_box_t;
 
-/* 启动线程并创建第一个 MP4。bitrate_kbps 为 0 时按分辨率估算。 */
+/* 启动线程并创建第一个 MP4。bitrate_kbps 在固定 QP 下不再影响画质，
+   只作为 MPP 内部记账的名义码率；传 0 时按分辨率估算。 */
 rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, int fps,
                              int bitrate_kbps, char *name_out, size_t name_size);
 

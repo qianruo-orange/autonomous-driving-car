@@ -32,7 +32,12 @@
 
 #define ANNOT_QUEUE_CAP  12
 #define ANNOT_MAX_BOXES  32
-#define ANNOT_SEGMENT_MB 512
+
+/* 恒定量化步长。FIXQP 模式下画质只由这一个数决定：
+ *   20 —— 720p 30fps 的细线（眼镜框、线缆）不断裂，边缘振铃肉眼不可见；
+ *   每降 6 相当于码率翻倍，18 再往上是肉眼收益很小的区间，24 则明显发糊。
+ * 想换画质/换体积只改这里。 */
+#define ANNOT_FIX_QP     20
 
 typedef struct {
     unsigned char *nv12;
@@ -55,7 +60,6 @@ struct rec_annot {
     int w, h, fps, bitrate_kbps;
 
     rec_mp4_t *mp4;
-    uint64_t segment_bytes;
 
     MppCtx enc_ctx;
     MppApi *enc_mpi;
@@ -111,9 +115,16 @@ static int encoder_open(rec_annot_t *s)
     mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", s->h);
     mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP);
     mpp_enc_cfg_set_s32(cfg, "prep:range", MPP_FRAME_RANGE_JPEG);
-    mpp_enc_cfg_set_s32(cfg, "rc:mode", MPP_ENC_RC_MODE_VBR);
+
+    /* 恒定 QP：不做码率控制，画质只由 ANNOT_FIX_QP 决定，体积随画面复杂度浮动。
+     * 之前是 VBR —— RC 的职责是"把目标码率花完"，画面简单时它不会主动降 QP
+     * 去换画质，于是 I 帧长期停在 qp_max_i(30)，细线被打断、边缘起振铃。
+     * FIXQP 下 rc_model_v2 直接把 init_quality 当 quality_target，I/P 同值。 */
+    mpp_enc_cfg_set_s32(cfg, "rc:mode", MPP_ENC_RC_MODE_FIXQP);
     mpp_enc_cfg_set_u32(cfg, "rc:max_reenc_times", 0);
     mpp_enc_cfg_set_u32(cfg, "rc:drop_mode", MPP_ENC_RC_DROP_FRM_DISABLED);
+    /* FIXQP 不看码率，但 MPP 仍用 bps_target 算 bit_per_frame / gop_total_bits，
+     * 留 0 有除零风险；这里只作名义值，实际码率由 QP 决定 */
     mpp_enc_cfg_set_s32(cfg, "rc:bps_target", s->bitrate_kbps * 1000);
     mpp_enc_cfg_set_s32(cfg, "rc:bps_max", s->bitrate_kbps * 1000 * 17 / 16);
     mpp_enc_cfg_set_s32(cfg, "rc:bps_min", s->bitrate_kbps * 1000 * 15 / 16);
@@ -124,26 +135,28 @@ static int encoder_open(rec_annot_t *s)
     mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num", s->fps);
     mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denom", 1);
     mpp_enc_cfg_set_s32(cfg, "rc:gop", s->fps * 2);
-    /* 质量下限与上限：VBR 掉码率时不让 QP 无限放大 */
-    mpp_enc_cfg_set_s32(cfg, "rc:qp_init", 24);
-    mpp_enc_cfg_set_s32(cfg, "rc:qp_min", 10);
-    mpp_enc_cfg_set_s32(cfg, "rc:qp_max", 32);
-    mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", 10);
-    mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", 30);
+    /* 五项都给同一个值：qp_min/max 只是边界，FIXQP 真正取的是 qp_init */
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_init", ANNOT_FIX_QP);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_min", ANNOT_FIX_QP);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_max", ANNOT_FIX_QP);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", ANNOT_FIX_QP);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", ANNOT_FIX_QP);
     mpp_enc_cfg_set_s32(cfg, "h264:profile", 100);
-    mpp_enc_cfg_set_s32(cfg, "h264:level", 40);
+    /* 4.1：固定 QP 后码率没有上限，High@4.0 在 720p30 只允许 20 Mbps */
+    mpp_enc_cfg_set_s32(cfg, "h264:level", 41);
     mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 1);
     if (s->enc_mpi->control(s->enc_ctx, MPP_ENC_SET_CFG, cfg) != MPP_OK) {
         mpp_enc_cfg_deinit(cfg);
-    /* 每个 IDR 重发 SPS/PPS：分段重建 muxer 时需要参数集才能生成 avcC */
+        return -1;
+    }
+    mpp_enc_cfg_deinit(cfg);
+    /* 每个 IDR 重发 SPS/PPS：分段重建 muxer 时需要参数集才能生成 avcC。
+     * 原先这段被写在 SET_CFG 的失败分支里，成功路径从来没执行过。 */
     {
         MppEncHeaderMode hm = MPP_ENC_HEADER_MODE_EACH_IDR;
         if (s->enc_mpi->control(s->enc_ctx, MPP_ENC_SET_HEADER_MODE, &hm) != MPP_OK)
             LOG_ERROR("rec_annot: 无法启用逐 IDR 参数集");
     }
-        return -1;
-    }
-    mpp_enc_cfg_deinit(cfg);
     if (mpp_buffer_group_get_internal(&s->grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) return -1;
     for (int i = 0; i < 4; i++)
         if (mpp_buffer_get(s->grp, &s->buf[i], (size_t)s->w * s->h * 3 / 2) != MPP_OK)
@@ -205,7 +218,7 @@ static void drain_packets(rec_annot_t *s)
         size_t len = mpp_packet_get_length(pkt);
         int eos = mpp_packet_get_eos(pkt);
         if (len && s->mp4) annot_feed(s, ptr, len);
-        if (len) { s->segment_bytes += len; atomic_fetch_add(&s->bytes_total, len); }
+        if (len) atomic_fetch_add(&s->bytes_total, len);
         mpp_packet_deinit(&pkt);
         if (eos) break;
     }
@@ -246,11 +259,7 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     mpp_frame_deinit(&out);
     if (rc) return -1;
     drain_packets(s);
-    if (s->segment_bytes >= (uint64_t)ANNOT_SEGMENT_MB * 1024 * 1024) {
-        rec_mp4_close(s->mp4);
-        s->mp4 = rec_mp4_create_named(s->dir, s->name, s->w, s->h, s->fps);
-        s->segment_bytes = 0;
-    }
+    /* 分段交给 video_rec：这里直接换名会截断同名文件，而且外部不知道名字变了 */
     return 0;
 }
 
@@ -263,6 +272,7 @@ static void *annot_task(void *arg)
         while (s->running && s->count == 0) pthread_cond_wait(&s->wake, &s->lock);
         if (!s->running && s->count == 0) { pthread_mutex_unlock(&s->lock); break; }
         annot_frame_t f = s->q[s->head];
+        s->q[s->head].nv12 = NULL;      /* 槽位已交出，stop() 不能再 free 一次 */
         s->head = (s->head + 1) % ANNOT_QUEUE_CAP;
         s->count--;
         pthread_mutex_unlock(&s->lock);
@@ -316,10 +326,11 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
     }
     s->w = w; s->h = h;
     s->fps = fps > 0 ? fps : 30;
-    /* 质量优先：720p 约 8 Mbps（约 0.29 bit/像素/帧），录出来的画面才干净 */
+    /* 码率不再决定画质（FIXQP），这个值只作为 MPP 内部记账用的名义值：
+       H.264 的 bps 字段仍参与 bit_per_frame 计算，不能为 0 */
     s->bitrate_kbps = bitrate_kbps > 0 ? bitrate_kbps
-                                       : (int)((long long)w * h * 30 * 45 / 100 / 1000 / 1000) * 1000;
-    if (s->bitrate_kbps < 6000) s->bitrate_kbps = 6000;
+                                       : (int)((long long)w * h * 30 * 90 / 100 / 1000 / 1000) * 1000;
+    if (s->bitrate_kbps < 12000) s->bitrate_kbps = 12000;
     pthread_mutex_init(&s->lock, NULL);
     pthread_cond_init(&s->wake, NULL);
     s->running = 1;
@@ -329,7 +340,8 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
         free(s);
         return NULL;
     }
-    LOG_INFO("rec_annot: 标注录像线程启动（%dx%d, %d kbps）", w, h, s->bitrate_kbps);
+    LOG_INFO("rec_annot: 标注录像线程启动（%dx%d, FIXQP qp=%d, 名义 %d kbps）",
+             w, h, ANNOT_FIX_QP, s->bitrate_kbps);
     return s;
 }
 
@@ -347,6 +359,7 @@ int rec_annot_push(rec_annot_t *s, const void *nv12, int w, int h,
     if (!s->running) { pthread_mutex_unlock(&s->lock); free(copy); return -1; }
     if (s->count == ANNOT_QUEUE_CAP) {
         annot_frame_t old = s->q[s->head];
+        s->q[s->head].nv12 = NULL;      /* 同上：交出所有权，避免 stop() 二次 free */
         s->head = (s->head + 1) % ANNOT_QUEUE_CAP;
         s->count--;
         pthread_mutex_unlock(&s->lock);
@@ -374,6 +387,7 @@ void rec_annot_stop(rec_annot_t *s)
     pthread_cond_broadcast(&s->wake);
     pthread_mutex_unlock(&s->lock);
     pthread_join(s->tid, NULL);
+    /* 只释放仍留在队列里的帧：已出队的槽位在出队时就被置 NULL 了 */
     for (int i = 0; i < ANNOT_QUEUE_CAP; i++) free(s->q[i].nv12);
     pthread_mutex_destroy(&s->lock);
     pthread_cond_destroy(&s->wake);
