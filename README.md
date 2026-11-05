@@ -6,7 +6,7 @@
 
 ## 中文文档
 
-自动驾驶小车（Autonomous Driving Car）是一个**感知、推理、控制**一体化的 Linux 车载平台。当前版本把相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、无损录像和浏览器管理界面跑在同一个纯 C11 应用里。LLM 推理属于规划能力，尚未实现。
+自动驾驶小车（Autonomous Driving Car）是一个**感知、推理、控制**一体化的 Linux 车载平台。当前版本把相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、标注录像和浏览器管理界面跑在同一个纯 C11 应用里。LLM 推理属于规划能力，尚未实现。
 
 目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核和模型平台都按这颗 SoC 在编译期确定。
 
@@ -18,7 +18,7 @@
 
 三个加速器分工明确：JPEG 解码器输出 NV12，RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 只承担后处理与结果分发。端到端 44 ms，整机 CPU 占用约 2 %。
 
-视频保持传感器原始画质：直播转发相机 MJPEG 字节，录像把同样的字节写入 AVI，画面与相机输出完全一致。检测框由浏览器 canvas 按帧序号叠加，不进入直播和录像画面。
+直播保持传感器原始画质：`/video/mjpeg` 直接转发相机 MJPEG 字节，检测框由浏览器 canvas 按帧序号叠加。录像走另一条路——推理解出的 NV12 画上框后由 VEPU510 硬件编成 H.264，保存为 MP4。
 
 ### 实测性能
 
@@ -50,7 +50,7 @@ curl -s http://127.0.0.1/api/video/stats
 
 ### 架构
 
-单个 C/C++ 进程加协作式工作线程。[main.c](source/core/main.c) 按固定顺序运行模块表；共享帧环、结果队列和控制器快照把各阶段连起来。图中蓝色为数据处理，绿色为输出，琥珀色为检查，红色为失败路径。标注 MP4 与无损 AVI 并行产出，前者带检测框、走硬件 H.264 编码。
+单个 C/C++ 进程加协作式工作线程。[main.c](source/core/main.c) 按固定顺序运行模块表；共享帧环、结果队列和控制器快照把各阶段连起来。图中蓝色为数据处理，绿色为输出，琥珀色为检查，红色为失败路径。录像只有一份标注 MP4：带检测框、走硬件 H.264 编码。
 
 #### 运行时总览
 
@@ -58,7 +58,7 @@ curl -s http://127.0.0.1/api/video/stats
 flowchart LR
     Camera["V4L2<br/>相机 MJPEG"] --> Ring["帧环<br/>原始 JPEG + NV12 fd"]
     Ring --> YOLO["RGA letterbox<br/>→ RKNN YOLO26"]
-    Ring -->|原始 JPEG| Video["无损 AVI 录像<br/>直播 MJPEG"]
+    Ring -->|原始 JPEG| Video["直播 MJPEG<br/>相机原始字节"]
     YOLO --> Results["结果队列<br/>最新帧优先"]
     Results -->|NV12 + 检测框| Annot["标注 MP4<br/>H.264 硬件编码"]
     Results --> Track["视觉跟踪<br/>平滑"]
@@ -93,7 +93,6 @@ flowchart LR
     Raw --> Nv12
     Post --> Latest
     Raw -->|字节一致拷贝| Live["直播 MJPEG<br/>每帧带 X-Seq"]
-    Raw -->|字节一致拷贝| AVI["AVI(MJPG)<br/>recordings/YYYYMMDD"]
     Nv12 -->|同一份 NV12| Annot["标注 MP4<br/>H.264 硬件编码"]
     Post -.->|检测框| Annot
     Latest --> Api["/api/detections/live"]
@@ -103,7 +102,7 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Raw,Nv12,Rga,Canvas,Npu,Post,Latest,Track,Api process
-    class Live,AVI,Annot,Browser,Reports output
+    class Live,Annot,Browser,Reports output
 ```
 
 两个推理线程，每个绑定一个 NPU 核**和**一个 RGA 核：
@@ -123,7 +122,7 @@ flowchart LR
     HTTP -.-> Settings["相机 / 模型 / CAN / CPU / 网络 / ANO"]
     Settings -.-> Modules["运行时模块"]
     HTTP --> Files["文件线程<br/>打包 / 下载 / 清理"]
-    Storage["日志 / AVI<br/>TXT 记录"] --> Files
+    Storage["日志 / MP4<br/>TXT 记录"] --> Files
     Files --> Browser
     CAN["SocketCAN<br/>CAN / CAN FD"] --> DBC["DBC 解码<br/>收发快照"]
     DBC --> HTTP
@@ -225,9 +224,11 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 ### 录像与可观测性
 
-录像无损且自动开始。每次会话先实测真实采集节奏，然后写 `recordings/YYYYMMDD/video_<日期>_<时间>.avi`，把相机 JPEG 帧原样存入 AVI(MJPG) 容器，带完整 `idx1` 索引和文件头回填。容器里存的就是相机 JPEG 帧本身，画质与传感器输出一致，文件大小等于相机自身数据率：720p/30fps 下约 **1.9 MB/s**，即 **6.8 GB/小时**。分段只按**日期变化**触发：跨天时结束当前文件、在新日期目录 `recordings/YYYYMMDD/` 下开始下一段，录像不中断。另有手动分段接口供前端调用。AVI(RIFF) 的块长度与偏移是 32 位，单文件到约 **4 GiB**（720p/30fps 约 35 分钟）会被格式本身强制分段——这是唯一的例外。
+录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/YYYYMMDD/` 下写 `annot_<日期>_<时间>.mp4`：推理路径解出的 NV12 在 Y 平面画上检测框，再交给 VEPU510 硬件编成 H.264。720p 约 **3 Mbps**，即 **1.3 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。
 
-录像从不等待推理，所以模型卡住或重载不会中断录像。每次会话同时写出两份录像：无损 AVI 保留相机原始帧；另一份 `annot_<日期>_<时间>.mp4` 把检测框烧进画面，用 VEPU510 硬件编成 H.264（720p 约 **3 Mbps**，体积约为 AVI 的 **1/5**，VLC/ffplay 可直接播放）。标注录像取的是推理路径已经解出的 NV12，不重复解码，每帧只多一次内存拷贝。检测框只画在标注录像上，浏览器画面仍是原始帧加叠加层。
+分段只按**日期变化**触发：跨天时结束当前文件、在新日期目录下开始下一段，录像不中断。另有手动分段接口供前端调用。MP4 的样本偏移是 64 位的，单文件不受 4 GiB 限制。
+
+录像从不等待推理，所以模型卡住或重载不会中断录像。检测框只画进 MP4；浏览器画面仍是原始字节加前端叠加层。
 
 每日 TXT 记录所有完成的推理，包括没有检测到目标的帧：采集时间、帧序号、图像尺寸、可用的镜头位置、目标序号/类别/置信度，以及原图坐标 `X1 X2 Y1 Y2`。写入在推理线程之外批量进行。
 
@@ -257,7 +258,7 @@ curl -s http://127.0.0.1/api/system
 | `config/yolo26.rknn`、`config/coco.names` | 模型与类别标签 |
 | `config/*.dbc` | CAN 数据库 |
 | `logs/YYYYMMDD/` | 应用日志 |
-| `recordings/YYYYMMDD/` | 无损 AVI(MJPG) 录像 |
+| `recordings/YYYYMMDD/` | 标注 MP4 录像 |
 | `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | 每日推理结果 |
 
 关键视频设置：
@@ -286,7 +287,7 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | 位置 | 职责 |
 | --- | --- |
 | `source/core/` | 模块生命周期、共享上下文、配置、日志、CPU 亲和性 |
-| `source/video/` | 采集、帧环、RGA 预处理、无损 AVI 录像、标注 MP4 录像、MJPEG 直播 |
+| `source/video/` | 采集、帧环、RGA 预处理、标注 MP4 录像、MJPEG 直播 |
 | `source/yolo/` | 推理池、后处理、跟踪事件、结果记录 |
 | `source/control/` | 视觉跟踪、运动控制 |
 | `source/can/` | SocketCAN、端口/ID 注册、数据槽、DBC 解码、电机协议 |
@@ -300,7 +301,7 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | `tools/model/` | 离线模型链路：ONNX 导出、RKNN 量化、数据集准备、原始输出 dump、mAP 评测 |
 | `docs/` | 架构、延迟、量化、实时调度等文档 |
 
-视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`rga_preprocess.c` 负责 RGA 画布，`video_rec.c` 负责录像会话，`rec_mjpeg.c` 负责 AVI 容器，`rec_annot.c` 负责标注编码线程，`rec_mp4.c` 负责 MP4 容器。
+视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`rga_preprocess.c` 负责 RGA 画布，`video_rec.c` 负责录像会话与分段，`rec_annot.c` 负责画框与硬件编码线程，`rec_mp4.c` 负责 MP4 容器。
 
 ### 依赖
 
@@ -354,7 +355,7 @@ sudo bash scripts/deploy.sh -i    # 安装并启动
 
 A Linux vehicle platform for **perception, inference and control** on a single
 real-time kernel. The current build runs camera capture, RKNN YOLO26 inference,
-visual tracking, differential wheel control, CAN/CAN-FD communication, lossless
+visual tracking, differential wheel control, CAN/CAN-FD communication, annotated
 recording and a browser management interface as one C11 application.
 LLM inference is planned, not implemented.
 
@@ -372,10 +373,11 @@ conversion and scaling in one pass, the NPU emits the detection tensors, and the
 CPU only handles postprocessing and result dispatch. End to end this is 44 ms at
 about 2 % whole-system CPU load.
 
-Video keeps the sensor's own quality: live view forwards the camera's MJPEG
-bytes and recording writes the same bytes into AVI, so what you get is exactly
-what the camera produced. Boxes are overlaid by the browser canvas, aligned by
-frame sequence number, and never enter the stream or the recording.
+The live view keeps the sensor's own quality: `/video/mjpeg` forwards the
+camera's MJPEG bytes and the browser canvas overlays the boxes, aligned by frame
+sequence number. Recording takes a different path - the NV12 the inference path
+decoded gets the boxes drawn in and the VEPU510 encodes it to H.264, stored as
+MP4.
 
 ### Measured performance
 
@@ -422,7 +424,7 @@ outputs, amber nodes are checks, red nodes are failure paths.
 flowchart LR
     Camera["V4L2<br/>camera MJPEG"] --> Ring["Frame ring<br/>raw JPEG + NV12 fd"]
     Ring --> YOLO["RGA letterbox<br/>→ RKNN YOLO26"]
-    Ring -->|Native JPEG| Video["Lossless AVI<br/>live MJPEG"]
+    Ring -->|Native JPEG| Video["Live MJPEG<br/>raw camera bytes"]
     YOLO --> Results["Result queue<br/>latest frame wins"]
     Results -->|NV12 + boxes| Annot["Annotated MP4<br/>H.264 hardware encode"]
     Results --> Track["Visual tracking<br/>smoothing"]
@@ -457,7 +459,6 @@ flowchart LR
     Raw --> Nv12
     Post --> Latest
     Raw -->|Byte-identical copy| Live["Live MJPEG<br/>X-Seq per frame"]
-    Raw -->|Byte-identical copy| AVI["AVI(MJPG)<br/>recordings/YYYYMMDD"]
     Nv12 -->|Same NV12| Annot["Annotated MP4<br/>H.264 hardware encode"]
     Post -.->|Boxes| Annot
     Latest --> Api["/api/detections/live"]
@@ -467,7 +468,7 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Raw,Nv12,Rga,Canvas,Npu,Post,Latest,Track,Api process
-    class Live,AVI,Annot,Browser,Reports output
+    class Live,Annot,Browser,Reports output
 ```
 
 Two worker threads, each bound to one NPU core **and** one RGA core:
@@ -490,7 +491,7 @@ flowchart LR
     HTTP -.-> Settings["Camera / model / CAN / CPU / network / ANO"]
     Settings -.-> Modules["Runtime modules"]
     HTTP --> Files["File workers<br/>archive / download / cleanup"]
-    Storage["Logs / AVI<br/>TXT reports"] --> Files
+    Storage["Logs / MP4<br/>TXT reports"] --> Files
     Files --> Browser
     CAN["SocketCAN<br/>CAN / CAN FD"] --> DBC["DBC decoding<br/>RX / TX snapshots"]
     DBC --> HTTP
@@ -638,28 +639,22 @@ whole frames are dropped so latency does not accumulate.
 
 ### Recording and observability
 
-Recording is lossless and starts automatically. Each session measures the real
-capture cadence, writes `recordings/YYYYMMDD/video_<date>_<time>.avi`, and
-stores camera JPEG frames verbatim in an AVI(MJPG) container with a proper
-`idx1` index and header backfill. The container stores the camera's JPEG frames themselves, so
-quality matches the sensor output and file size equals the camera's data rate:
-about **1.9 MB/s**, or **6.8 GB/hour** at 720p/30 fps. Segments break on a
-**date change**: at midnight the current file is closed and the next one starts
-in the new day's directory without interrupting the recording. A manual split
-endpoint exists for the UI. The one exception is AVI(RIFF) itself - its chunk
-lengths and offsets are 32-bit, so a file must split near **4 GiB** (about 35
-minutes at 720p/30 fps).
+Recording starts automatically and produces a **single MP4 with the detection
+boxes burned in**. Each session writes `annot_<date>_<time>.mp4` under
+`recordings/YYYYMMDD/`: the NV12 the inference path already decoded gets the
+boxes drawn into its luma plane, then the VEPU510 encodes it to H.264. That is
+about **3 Mbps**, or **1.3 GB/hour** at 720p, and the file plays in VLC, ffplay
+and the browser. No frame is decoded twice - the annotated file reuses the NV12
+from inference and costs one memory copy per frame.
 
-Every session writes two files: the lossless AVI keeps the camera's own frames,
-and `annot_<date>_<time>.mp4` has the detection boxes burned in, encoded as
-H.264 by the VEPU510 (about **3 Mbps** at 720p, roughly **1/5** the size, plays
-in VLC or ffplay). The annotated file reuses the NV12 the inference path has
-already decoded, so no frame is decoded twice - it costs one memory copy per
-frame. Boxes are drawn only into the annotated file; the browser picture is
-still the original frame plus an overlay.
+Segments break on a **date change**: at midnight the current file is closed and
+the next one starts in the new day's directory without interrupting the
+recording. A manual split endpoint exists for the UI. MP4 sample offsets are
+64-bit, so a single file is not limited to 4 GiB.
 
 Recording never waits on inference, so a stalled or reloading model does not
-interrupt it.
+interrupt it. The boxes are drawn into the MP4 only; the browser picture is
+still the raw bytes plus a client-side overlay.
 
 Daily TXT reports record completed inferences, including frames with no
 detections: capture time, sequence, dimensions, lens position when available,
@@ -701,7 +696,7 @@ Updates retain `config.txt`, `follow.conf`, `car_motor_can.conf`,
 | `config/yolo26.rknn`, `config/coco.names` | Model and class labels |
 | `config/*.dbc` | CAN databases |
 | `logs/YYYYMMDD/` | Application logs |
-| `recordings/YYYYMMDD/` | Lossless AVI(MJPG) recordings |
+| `recordings/YYYYMMDD/` | Annotated MP4 recordings |
 | `recordings/detections/YYYYMMDD/result_YYYYMMDD.txt` | Daily inference results |
 
 Key video settings:
@@ -736,7 +731,7 @@ locking rules are in [communication flow](docs/COMMUNICATION_FLOW.md).
 | Location | Responsibility |
 | --- | --- |
 | `source/core/` | Module lifecycle, shared context, configuration, logging, CPU affinity |
-| `source/video/` | Capture, frame ring, RGA preprocessing, lossless AVI recording, annotated MP4 recording, MJPEG streaming |
+| `source/video/` | Capture, frame ring, RGA preprocessing, annotated MP4 recording, MJPEG streaming |
 | `source/yolo/` | Inference pool, postprocessing, tracking events, reports |
 | `source/control/` | Visual tracking, motion control |
 | `source/can/` | SocketCAN, port/ID registration, data slots, DBC decoding, motor protocol |
@@ -752,9 +747,8 @@ locking rules are in [communication flow](docs/COMMUNICATION_FLOW.md).
 
 Video modules: `video_stream.c` owns capture and MJPEG fan-out,
 `frame_ring.c` owns buffer handoff, `rga_preprocess.c` owns the RGA canvas,
-`video_rec.c` owns recording sessions, `rec_mjpeg.c` owns the AVI container,
-`rec_annot.c` owns the annotation encoder thread, and `rec_mp4.c` owns the MP4
-container.
+`video_rec.c` owns recording sessions and segmentation, `rec_annot.c` owns the
+box-drawing and hardware encoder thread, and `rec_mp4.c` owns the MP4 container.
 
 ### Requirements
 
