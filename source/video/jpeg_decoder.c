@@ -1,13 +1,25 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Stateful V4L2 JPEG decode. The calling image thread owns both queues. */
+/*
+ * JPEG decode to NV12.
+ *
+ * 默认走 libjpeg-turbo 软件解码：板载 rkjpegd 硬件解码器在 RK3576 上
+ * 亮度块内后半段丢细节（同帧对比：块内第 0 行误差 0.10，第 7 行 3.78，
+ * 色度完全正确），成片因此布满沿边缘的亮点/暗点。软件解码 720p 约
+ * 4~6ms，10~30fps 下 CPU 开销可忽略。
+ *
+ * JPEG_DECODE=hw 环境变量可切回 V4L2 硬件通路（保留以备上游修好）。
+ */
 #define _GNU_SOURCE
 #include "video/jpeg_decoder.h"
 #include "core/log.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <jpeglib.h>
 #include <linux/videodev2.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-heap.h>
+#include <setjmp.h>
 #include <poll.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -28,13 +40,27 @@ typedef struct { void *data; size_t length; int fd; } mapped_buffer_t;
    环深 8 远大于在途帧数，避免与 worker 竞争。 */
 #define NV12_RING 8
 typedef struct { int fd; unsigned char *va; size_t len; } nv12_slot_t;
+
+/* libjpeg 错误处理：默认实现会 exit()，这里必须 longjmp 回来 */
+typedef struct { struct jpeg_error_mgr pub; jmp_buf jump; } sw_error_t;
+
+/* 软件解码的 iMCU 行缓冲（4:2:0，最大 16 行亮度 + 8 行色度） */
+#define SW_MAX_H 8192
+#define SW_ICMCU_ROWS (DCTSIZE * 2)
+
 struct jpeg_decoder {
-    int fd, width, height, output_on, capture_on;
+    int fd, width, height, output_on, capture_on, hardware;
     char device[32];
     mapped_buffer_t coded, raw[CAPTURE_BUFFERS];
     struct v4l2_pix_format_mplane format;
     nv12_slot_t nv12[NV12_RING];
     int nv12_next, nv12_w, nv12_h;
+    /* 软件解码器：cinfo 跨帧复用，避免每帧 create/destroy */
+    int sw_ready;
+    struct jpeg_decompress_struct cinfo;
+    sw_error_t sw_err;
+    unsigned char *sw_buf;
+    size_t sw_cap;
 };
 static atomic_ullong decoded_frames, decode_errors;
 
@@ -49,6 +75,11 @@ static long long now_ms(void)
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+static void sw_error_exit(j_common_ptr info)
+{
+    sw_error_t *err = (sw_error_t *)info->err;
+    longjmp(err->jump, 1);
 }
 static int open_device(char *path, size_t size)
 {
@@ -72,6 +103,9 @@ static int open_device(char *path, size_t size)
 }
 int jpeg_decoder_available(void)
 {
+    /* 软件解码（libjpeg-turbo）恒可用；只有在强制硬件时才探测 V4L2 设备 */
+    const char *mode = getenv("JPEG_DECODE");
+    if (!mode || (strcmp(mode, "hw") && strcmp(mode, "hardware"))) return 1;
     char path[32];
     int fd = open_device(path, sizeof(path));
     if (fd < 0) return 0;
@@ -109,8 +143,24 @@ jpeg_decoder_t *jpeg_decoder_open(void)
 {
     jpeg_decoder_t *d = calloc(1, sizeof(*d));
     if (!d) return NULL;
+    d->fd = -1;
+    const char *mode = getenv("JPEG_DECODE");
+    int want_hw = mode && (!strcmp(mode, "hw") || !strcmp(mode, "hardware"));
+    if (!want_hw) {
+        d->cinfo.err = jpeg_std_error(&d->sw_err.pub);
+        d->sw_err.pub.error_exit = sw_error_exit;
+        if (!setjmp(d->sw_err.jump)) {
+            jpeg_create_decompress(&d->cinfo);
+            d->sw_ready = 1;
+            LOG_INFO("jpeg: software decoder (libjpeg-turbo), hardware path disabled");
+            return d;
+        }
+        LOG_ERROR("jpeg: libjpeg init failed, falling back to hardware decoder");
+        d->sw_ready = 0;
+    }
     d->fd = open_device(d->device, sizeof(d->device));
     if (d->fd < 0) { free(d); return NULL; }
+    d->hardware = 1;
     LOG_INFO("jpeg: hardware decoder %s (rockchip-jpegd)", d->device);
     return d;
 }
@@ -119,6 +169,8 @@ void jpeg_decoder_close(jpeg_decoder_t *d)
     if (!d) return;
     nv12_ring_free(d);
     release_buffers(d);
+    if (d->sw_ready) jpeg_destroy_decompress(&d->cinfo);
+    free(d->sw_buf);
     free(d);
 }
 static int map_queue(jpeg_decoder_t *d, enum v4l2_buf_type type,
@@ -303,11 +355,126 @@ static int receive_nv12(jpeg_decoder_t *d, unsigned char *dst)
     return 0;
 }
 
+/* 软件解码：jpeg_read_raw_data 取原生分量，不做色度上采样。
+   相机 MJPEG 是 4:2:2（h2v1），也有 4:2:0 的型号，两条都支持：
+   色度水平 2 合 1，垂直方向 4:2:2 需再 2 行平均。输出 NV12，
+   Y 步长 = w，UV 交错步长 = w，与硬件通路的字节布局一致。 */
+static int sw_decode_nv12(jpeg_decoder_t *d, const unsigned char *jpeg, size_t length,
+                          int w, int h, unsigned char *dst)
+{
+    if (w % 16 || h % 16) { errno = EINVAL; return -1; }
+    if (setjmp(d->sw_err.jump)) { jpeg_abort_decompress(&d->cinfo); errno = EIO; return -1; }
+    struct jpeg_decompress_struct *cinfo = &d->cinfo;
+    jpeg_mem_src(cinfo, jpeg, (unsigned long)length);
+    if (jpeg_read_header(cinfo, TRUE) != JPEG_HEADER_OK) { jpeg_abort_decompress(cinfo); errno = EIO; return -1; }
+    if (cinfo->num_components != 3 ||
+        cinfo->comp_info[0].h_samp_factor != 2 || cinfo->comp_info[1].h_samp_factor != 1 ||
+        cinfo->comp_info[2].h_samp_factor != 1 ||
+        cinfo->comp_info[0].v_samp_factor != cinfo->comp_info[1].v_samp_factor ||
+        cinfo->comp_info[1].v_samp_factor != cinfo->comp_info[2].v_samp_factor ||
+        cinfo->comp_info[0].v_samp_factor > 2 || cinfo->comp_info[0].v_samp_factor < 1) {
+        jpeg_abort_decompress(cinfo);
+        errno = EINVAL;
+        return -1;
+    }
+    int vs = cinfo->comp_info[0].v_samp_factor;   /* 2 = 4:2:0，1 = 4:2:2 */
+    cinfo->out_color_space = JCS_YCbCr;
+    cinfo->raw_data_out = TRUE;
+    cinfo->dct_method = JDCT_ISLOW;
+    jpeg_start_decompress(cinfo);
+    if ((int)cinfo->output_width != w || (int)cinfo->output_height != h) {
+        jpeg_abort_decompress(cinfo);
+        errno = EINVAL;
+        return -1;
+    }
+    int cw = (int)cinfo->comp_info[1].downsampled_width;   /* 亮度宽的一半 */
+    int ch = (int)cinfo->comp_info[1].downsampled_height;  /* 亮度高 / vs */
+    if (cw != w / 2 || ch != h / vs) { jpeg_abort_decompress(cinfo); errno = EINVAL; return -1; }
+
+    int rows_per = (int)cinfo->max_v_samp_factor * DCTSIZE;   /* 每次读出的亮度行数 */
+    size_t need = (size_t)cw * (size_t)rows_per * 2;          /* Cb + Cr 行缓冲 */
+    if (need > d->sw_cap) {
+        unsigned char *grown = realloc(d->sw_buf, need);
+        if (!grown) { jpeg_abort_decompress(cinfo); errno = ENOMEM; return -1; }
+        d->sw_buf = grown;
+        d->sw_cap = need;
+    }
+    unsigned char *cb = d->sw_buf, *cr = d->sw_buf + (size_t)cw * rows_per;
+    JSAMPROW yrows[SW_ICMCU_ROWS], cbrows[SW_ICMCU_ROWS], crrows[SW_ICMCU_ROWS];
+    JSAMPARRAY planes[3] = { yrows, cbrows, crrows };
+    for (int i = 0; i < rows_per; ++i) {
+        cbrows[i] = (JSAMPROW)(cb + (size_t)i * cw);
+        crrows[i] = (JSAMPROW)(cr + (size_t)i * cw);
+    }
+    unsigned char *plane_uv = dst + (size_t)w * h;
+    int y = 0;
+    while (y < h) {
+        int rows = rows_per;
+        if (y + rows > h) rows = h - y;
+        for (int i = 0; i < rows; ++i) yrows[i] = (JSAMPROW)(dst + (size_t)(y + i) * w);
+        if (!jpeg_read_raw_data(cinfo, planes, rows_per)) {
+            jpeg_abort_decompress(cinfo);
+            errno = EIO;
+            return -1;
+        }
+        int crow = rows / vs;                 /* 本次拿到的色度行数 */
+        for (int i = 0; i < crow; i += 2) {   /* 每两条亮度行合成一行 UV */
+            unsigned char *line = plane_uv + (size_t)(y / 2 + i / 2) * w;
+            const unsigned char *s0b = cbrows[i], *s0r = crrows[i];
+            const unsigned char *s1b = vs == 1 ? cbrows[i + 1] : cbrows[i];
+            const unsigned char *s1r = vs == 1 ? crrows[i + 1] : crrows[i];
+            if (vs == 1) {                    /* 4:2:2：色度已是半宽，只需垂直 2 行平均 */
+                for (int x = 0; x < cw; ++x) {
+                    line[x * 2] = (unsigned char)((s0b[x] + s1b[x] + 1) >> 1);
+                    line[x * 2 + 1] = (unsigned char)((s0r[x] + s1r[x] + 1) >> 1);
+                }
+            } else {                          /* 4:2:0：色度已是半宽半高，直接使用 */
+                for (int x = 0; x < cw; ++x) {
+                    line[x * 2] = s0b[x];
+                    line[x * 2 + 1] = s0r[x];
+                }
+            }
+        }
+        y += rows;
+    }
+    jpeg_finish_decompress(cinfo);
+    return 0;
+}
+
 int jpeg_decoder_nv12(jpeg_decoder_t *d, const unsigned char *jpeg, size_t length,
                       int w, int h, int *nv12_fd, unsigned char *copy_to)
 {
     if (!d || !jpeg || !nv12_fd || length < 4 || w <= 0 || h <= 0 || w > 8192 || h > 8192 ||
         jpeg[0] != 0xff || jpeg[1] != 0xd8) return -1;
+    if (d->sw_ready) {
+        int rc = nv12_ring_reserve(d, w, h);
+        nv12_slot_t *slot = NULL;
+        if (!rc) {
+            slot = &d->nv12[d->nv12_next];
+            d->nv12_next = (d->nv12_next + 1) % NV12_RING;
+            rc = sw_decode_nv12(d, jpeg, length, w, h, slot->va);
+        }
+        if (!rc && getenv("SAME_FRAME_DUMP")) {
+            static int n;
+            if (n < 1) {
+                n++;
+                FILE *jf = fopen("/tmp/same.jpg", "wb");
+                if (jf) { fwrite(jpeg, 1, length, jf); fclose(jf); }
+                FILE *nf = fopen("/tmp/same.nv12", "wb");
+                if (nf) { fwrite(slot->va, 1, (size_t)w * h * 3 / 2, nf); fclose(nf); }
+            }
+        }
+        if (!rc && copy_to) memcpy(copy_to, slot->va, (size_t)w * h * 3 / 2);
+        if (!rc) { *nv12_fd = slot->fd; d->width = w; d->height = h; }
+        if (rc) {
+            int saved = errno;
+            unsigned long long errors = atomic_fetch_add(&decode_errors, 1) + 1;
+            if (errors <= 3 || errors % 100 == 0)
+                LOG_ERROR("jpeg: software decode failed: %s", strerror(saved));
+            errno = saved;
+        } else atomic_fetch_add(&decoded_frames, 1);
+        return rc;
+    }
     if (d->width && (d->width != w || d->height != h)) release_buffers(d);
     /* prepare() 内部已排队首帧；后续帧只需重新提交 JPEG，不能重复排队 */
     int fresh = (d->width == 0);
