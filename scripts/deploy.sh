@@ -9,9 +9,8 @@ BINARY="$PROJECT_DIR/bin/$APP_NAME"
 SERVICE_SRC="$PROJECT_DIR/$APP_NAME.service"
 SERVICE_NAME="$APP_NAME"
 
-detect_model_platform() {
-    bash "$PROJECT_DIR/scripts/model_sync.sh" detect-platform
-}
+# 平台固定为 RK3576（本工程唯一目标）
+PLATFORM=rk3576
 
 usage() {
     echo "Usage: $0 [-i | -u | -r]"
@@ -140,16 +139,9 @@ do_install() {
         exit 1
     fi
 
-    local platform
-    platform="${CAR_PLATFORM:-$(detect_model_platform || true)}"
-    if [ -z "$platform" ]; then
-        echo "[ERROR] unable to detect the RKNN platform; set CAR_PLATFORM explicitly"
-        return 1
-    fi
-    platform=$(bash "$PROJECT_DIR/scripts/model_sync.sh" normalize-platform --platform "$platform")
     # Check for independently changed models before interrupting the service.
     bash "$PROJECT_DIR/scripts/model_sync.sh" reconcile \
-        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR" --platform "$platform"
+        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR"
 
     prepare_realtime_cgroup
 
@@ -158,7 +150,7 @@ do_install() {
 
     echo "[INSTALL] configuration and canonical model (preserving uploaded model changes)"
     if ! bash "$PROJECT_DIR/scripts/model_sync.sh" install-config \
-        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR" --platform "$platform"; then
+        --project "$PROJECT_DIR" --deployment "$DEPLOY_DIR"; then
         echo "[ERROR] configuration/model synchronization failed; restarting the previous service"
         systemctl start "$SERVICE_NAME" 2>/dev/null || true
         return 1

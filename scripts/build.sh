@@ -11,20 +11,18 @@ CMAKE_DIR="$PROJECT_DIR/cmake"
 LOGS_DIR="$PROJECT_DIR/logs"
 
 usage() {
-    echo "Usage: $0 [-D|--debug] [-R|--release] [-C|--clean] [-P|--platform <platform>]"
+    echo "Usage: $0 [-D|--debug] [-R|--release] [-C|--clean]"
     echo "  -D, --debug     build with debug output to terminal"
     echo "  -R, --release   build for production (default)"
     echo "  -C, --clean     remove build directory, bin directory, cmake directory, generated CMake artifacts, and clear logs"
-    echo "  -P, --platform  目标 RKNPU 平台（rk3588/rk3576/rk3568/rk3566/rk3562 等）"
+    echo "  平台固定为 rk3576（ROCK 4D），不再提供 -P。"
     echo "                  默认从 /proc/device-tree/compatible 自动辨识当前板卡芯片"
     echo "Prepare a board-compatible config/yolo26.rknn before building."
     exit 1
 }
 
-# 平台自动辨识：从设备树 compatible 提取 Rockchip RKNPU 芯片型号（rkXXXX / rvXXXX）
-detect_platform() {
-    bash "$PROJECT_DIR/scripts/model_sync.sh" detect-platform
-}
+# 平台固定为 RK3576（本工程唯一目标）
+PLATFORM=rk3576
 
 # Reconcile uploaded models before validating the single runtime RKNN path.
 # Model preparation is external to this C/C++ build.
@@ -32,13 +30,13 @@ sync_model() {
     local plat="$1"
     local runtime_model="$PROJECT_DIR/config/yolo26.rknn"
     bash "$PROJECT_DIR/scripts/model_sync.sh" reconcile \
-        --project "$PROJECT_DIR" --deployment "${CAR_MODEL_DEPLOYMENT:-/opt/$BIN_NAME}" --platform "$plat"
+        --project "$PROJECT_DIR" --deployment "${CAR_MODEL_DEPLOYMENT:-/opt/$BIN_NAME}"
     if [ ! -f "$runtime_model" ]; then
-        echo "[MODEL] missing config/yolo26.rknn; provide a compatible $plat RKNN model before building"
+        echo "[MODEL] missing config/yolo26.rknn; provide a compatible $PLATFORM RKNN model before building"
         return 1
     fi
-    bash "$PROJECT_DIR/scripts/model_sync.sh" validate --model "$runtime_model" --platform "$plat"
-    echo "[MODEL] using config/yolo26.rknn ($plat)"
+    bash "$PROJECT_DIR/scripts/model_sync.sh" validate --model "$runtime_model"
+    echo "[MODEL] using config/yolo26.rknn ($PLATFORM)"
 }
 
 print_version_info() {
@@ -159,15 +157,11 @@ check_deps() {
 
 # ---------- 参数解析（支持组合使用） ----------
 BUILD_MODE="release"
-PLATFORM_OVERRIDE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -D|--debug)    BUILD_MODE="debug" ;;
         -R|--release)  BUILD_MODE="release" ;;
         -C|--clean)    BUILD_MODE="clean" ;;
-        -P|--platform) shift
-                       [ -n "${1:-}" ] || { echo "[BUILD] 错误: -P 需要平台参数"; usage; }
-                       PLATFORM_OVERRIDE="$1" ;;
         *)             usage ;;
     esac
     shift
@@ -181,21 +175,7 @@ fi
 
 check_deps
 
-# ---------- 平台辨识（-P 显式指定优先，否则自动辨识） ----------
-PLATFORM=""
-detected=$(detect_platform 2>/dev/null || true)
-if [ -n "$PLATFORM_OVERRIDE" ]; then
-    PLATFORM="$PLATFORM_OVERRIDE"
-    echo "[MODEL] 使用指定平台: $PLATFORM"
-elif [ -n "$detected" ]; then
-    PLATFORM="$detected"
-    echo "[MODEL] 自动辨识平台: $PLATFORM"
-else
-    echo "[MODEL] 错误: 无法自动辨识平台（读不到 /proc/device-tree/compatible），请用 -P <platform> 显式指定"
-    exit 1
-fi
-
-PLATFORM=$(bash "$PROJECT_DIR/scripts/model_sync.sh" normalize-platform --platform "$PLATFORM")
+echo "[MODEL] 平台: $PLATFORM"
 
 # 模型同步（失败则中止编译：模型是启动必要项）
 sync_model "$PLATFORM"

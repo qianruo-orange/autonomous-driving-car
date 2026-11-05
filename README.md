@@ -276,7 +276,6 @@ The build produces `bin/autonomous-driving-car`. Deployment installs the executa
 | --- | --- |
 | `bash scripts/build.sh -R` | Release build with optimization and debug information |
 | `bash scripts/build.sh -D` | Debug build with terminal debug output |
-| `bash scripts/build.sh -R -P rk3576` | Build with an explicitly selected model platform |
 | `bash scripts/build.sh -C` | Remove build outputs and clear **project logs**; does not build |
 | `sudo bash scripts/deploy.sh -i` | Install or update, preserving installed data and device settings |
 | `sudo bash scripts/deploy.sh -u` | Uninstall, including installed configuration, logs, and recordings |

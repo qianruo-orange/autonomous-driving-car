@@ -17,14 +17,8 @@ for utility in flock sha256sum strings realpath stat cp mktemp awk grep od head 
     command -v "$utility" >/dev/null || fail "Required command is unavailable: $utility"
 done
 
-normalize_platform() {
-    local value=${1,,} base
-    [[ $value =~ ^(rk|rv)[0-9]{4}[a-z]*$ ]] || return 1
-    for base in rk3588 rk3576 rk3568 rk3566 rk3562 rv1126 rv1109 rv1106 rv1103 rk3399pro rk1808; do
-        if [[ $value =~ ^${base}[a-z]*$ ]]; then printf '%s\n' "$base"; return 0; fi
-    done
-    return 1
-}
+# 本工程只针对 RK3576：平台固定，不再从设备树辨识，也不支持其他 SoC。
+PLATFORM=rk3576
 
 # Reject symlinks in every existing path component, including installation roots.
 # Parent traversal is unnecessary for the script-generated absolute paths.
@@ -98,16 +92,17 @@ atomic_copy() {
 }
 
 validate_model() {
-    local model=$1 platform=$2 header token candidate found=0
+    local model=$1 header
     checked_path "$model" >/dev/null
     [[ -f $model ]] || fail "Prepared RKNN model is missing: $model"
     header=$(od -An -tx1 -N4 -- "$model" | tr -d ' \n')
     [[ $header = 524b4e4e ]] || fail "Invalid RKNN model header: $model"
-    while IFS= read -r token; do
-        candidate=$(normalize_platform "$token") || continue
-        if [[ $candidate = "$platform" ]]; then found=1; break; fi
-    done < <(strings -a -- "$model" | grep -Eio '(rk|rv)[0-9]{4}[a-z]*' || :)
-    [[ $found = 1 ]] || fail "RKNN model does not report target $platform: $model"
+    # 模型里带有 target_platform 字符串，必须报告 rk3576。
+    # 用计数而不是 grep -q：grep 提前退出会让 strings 收到 SIGPIPE，
+    # 在 set -o pipefail 下整条管道会被判为失败。
+    local found
+    found=$(strings -a -- "$model" | grep -c "$PLATFORM" || true)
+    [[ ${found:-0} -gt 0 ]] || fail "RKNN model does not report target $PLATFORM: $model"
     MODEL_SHA=$(digest "$model")
 }
 
@@ -137,7 +132,7 @@ read_baselines() {
     SHARED_SHA=''
     baseline_paths=("$project/config/.last-deployed.sha256"
                     "$project/config/models/.last-deployed.sha256"
-                    "$project/config/models/$platform/.last-deployed.sha256")
+                    "$project/config/models/$PLATFORM/.last-deployed.sha256")
     for path in "${baseline_paths[@]}"; do
         checked_path "$path" >/dev/null
         regular_or_missing "$path"
@@ -193,8 +188,8 @@ reconcile() {
     source=$(checked_path "$source"); deployed=$(checked_path "$deployed")
     regular_or_missing "$source"; regular_or_missing "$deployed"
     read_baselines
-    if [[ -f $source ]]; then validate_model "$source" "$platform"; source_sha=$MODEL_SHA; fi
-    if [[ -f $deployed ]]; then validate_model "$deployed" "$platform"; deployed_sha=$MODEL_SHA; fi
+    if [[ -f $source ]]; then validate_model "$source"; source_sha=$MODEL_SHA; fi
+    if [[ -f $deployed ]]; then validate_model "$deployed"; deployed_sha=$MODEL_SHA; fi
     SYNC_SHA=$source_sha; SYNC_ACTION=source-only; selected=$source
     if [[ -z $source_sha && -z $deployed_sha ]]; then
         fail "No prepared config/yolo26.rknn is available for $platform"
@@ -262,39 +257,28 @@ install_config() {
 
 command=${1:-}; [[ -n $command ]] || fail 'A command is required'
 shift
-project=''; deployment=/opt/autonomous-driving-car; platform=''; model=''
-compatible=/proc/device-tree/compatible
+project=''; deployment=/opt/autonomous-driving-car; platform=''; model=
 while (($#)); do
     [[ $# -ge 2 ]] || fail "Missing value for $1"
     case $1 in
-        --project) project=$2;; --deployment) deployment=$2;; --platform) platform=$2;;
-        --model) model=$2;; --compatible) compatible=$2;; *) fail "Unknown option: $1";;
+        --project) project=$2;; --deployment) deployment=$2;;
+        --model) model=$2;; *) fail "Unknown option: $1";;
     esac
     shift 2
 done
 case $command in
-    detect-platform)
-        [[ -f $compatible ]] || fail "Cannot read device-tree compatible: $compatible"
-        while IFS= read -r -d '' token || [[ -n $token ]]; do
-            [[ $token = rockchip,* ]] || continue
-            if found=$(normalize_platform "${token#rockchip,}"); then printf '%s\n' "$found"; exit 0; fi
-        done < "$compatible"
-        fail 'No supported Rockchip platform in device-tree compatible';;
-    normalize-platform)
-        normalize_platform "$platform" || fail "Unsupported model platform: $platform";;
     validate)
-        platform=$(normalize_platform "$platform") || fail 'A supported --platform is required'
+        # 平台固定，不再要求 --platform
         [[ -n $model ]] || fail '--model is required'
         model=$(checked_path "$model")
-        validate_model "$model" "$platform"
-        printf '[MODEL] validated %s (%s): %s\n' "$model" "$platform" "$MODEL_SHA";;
+        validate_model "$model"
+        printf '[MODEL] validated %s (%s): %s\n' "$model" "$PLATFORM" "$MODEL_SHA";;
     reconcile|install-config)
-        platform=$(normalize_platform "$platform") || fail 'A supported --platform is required'
         [[ -n $project ]] || fail '--project is required'
         project=$(checked_path "$project"); deployment=$(checked_path "$deployment")
         [[ -d $project && $project != "$deployment" ]] || fail 'Source must be an existing directory different from deployment'
         lock_source
         if [[ $command = install-config ]]; then install_config; else reconcile; fi
-        printf '[MODEL] %s config/yolo26.rknn (%s): %s\n' "$SYNC_ACTION" "$platform" "$SYNC_SHA";;
+        printf '[MODEL] %s config/yolo26.rknn (%s): %s\n' "$SYNC_ACTION" "$PLATFORM" "$SYNC_SHA";;
     *) fail "Unknown command: $command";;
 esac
