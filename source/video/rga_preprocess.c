@@ -24,6 +24,9 @@
 static void *g_lib;
 static IM_STATUS (*p_improcess)(rga_buffer_t, rga_buffer_t, rga_buffer_t,
                                 im_rect, im_rect, im_rect, int);
+static IM_STATUS (*p_improcessOpt)(rga_buffer_t, rga_buffer_t, rga_buffer_t,
+                                   im_rect, im_rect, im_rect,
+                                   int, int *, im_opt_t *, int);
 static rga_buffer_t (*p_wrapbuffer_fd_t)(int, int, int, int, int, int);
 static const char *(*p_imStrError)(IM_STATUS);
 
@@ -40,6 +43,10 @@ static int rga_symbols_load(void)
                                  im_rect, im_rect, im_rect, int))dlsym(g_lib, "improcess");
     p_wrapbuffer_fd_t = (rga_buffer_t (*)(int, int, int, int, int, int))dlsym(g_lib, "wrapbuffer_fd_t");
     /* 错误字符串函数在不同版本导出名不同（imStrError / imStrError_t），可缺省 */
+    p_improcessOpt = (IM_STATUS (*)(rga_buffer_t, rga_buffer_t, rga_buffer_t,
+                                    im_rect, im_rect, im_rect,
+                                    int, int *, im_opt_t *, int))
+                     dlsym(g_lib, "improcessOpt");
     p_imStrError = (const char *(*)(IM_STATUS))dlsym(g_lib, "imStrError_t");
     if (!p_imStrError) p_imStrError = (const char *(*)(IM_STATUS))dlsym(g_lib, "imStrError");
     if (!p_improcess || !p_wrapbuffer_fd_t) {
@@ -124,7 +131,7 @@ void rga_preprocess_close(rga_preprocess_t *p)
     free(p);
 }
 
-unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, int src_h,
+unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, int src_h, int core,
                                   float *scale_x, float *scale_y, int *pad_x, int *pad_y)
 {
     if (!p || !p->ready || src_fd < 0 || src_w <= 0 || src_h <= 0) return NULL;
@@ -148,7 +155,19 @@ unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, in
     im_rect drect = { px, py, rw, rh };
     im_rect prect = { 0, 0, 0, 0 };
 
-    IM_STATUS st = p_improcess(src, p->dst, pat, srect, drect, prect, IM_SYNC);
+    /* 按核提交：双核各绑一个推理线程，避免全部落到 core0（librga 默认行为） */
+    IM_STATUS st;
+    if (core != RGA_CORE_AUTO && p_improcessOpt) {
+        im_opt_t opt;
+        memset(&opt, 0, sizeof(opt));
+        opt.version = RGA_CURRENT_API_HEADER_VERSION;
+        /* RK3576 的 RGA2E 属于 RGA2 系列：核选择位是 0x4/0x8（RGA3 的 0x1/0x2 会被驱动判为
+           "job assign failed"，实测确认） */
+        opt.core = (core == RGA_CORE_1) ? IM_SCHEDULER_RGA2_CORE1 : IM_SCHEDULER_RGA2_CORE0;
+        st = p_improcessOpt(src, p->dst, pat, srect, drect, prect, -1, NULL, &opt, IM_SYNC);
+    } else {
+        st = p_improcess(src, p->dst, pat, srect, drect, prect, IM_SYNC);
+    }
     if (st != IM_STATUS_SUCCESS) {
         static unsigned long long errors;
         if (!(errors++ % 100u))

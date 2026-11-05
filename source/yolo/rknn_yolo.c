@@ -605,6 +605,7 @@ static void *yolo_worker_task(void *arg)
         unsigned char *model_in = NULL;
         if (job.nv12_fd >= 0 && g_yolo.rga)
             model_in = rga_preprocess_run(g_yolo.rga, job.nv12_fd, job.w, job.h,
+                                          (idx & 1) ? RGA_CORE_1 : RGA_CORE_0,
                                           &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
         if (!model_in) {
             static unsigned long long rga_fail;

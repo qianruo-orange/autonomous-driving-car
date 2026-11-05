@@ -18,10 +18,14 @@ int rga_preprocess_available(void);
 rga_preprocess_t *rga_preprocess_open(int dst_w, int dst_h);
 void rga_preprocess_close(rga_preprocess_t *p);
 
+/* RGA 核心选择：RGA2E 双核，推理线程按 worker 序号各绑一个，与 NPU 双核对应。
+   AUTO 交给驱动调度（默认会全部落到 core0）。 */
+enum { RGA_CORE_AUTO = 0, RGA_CORE_0 = 1, RGA_CORE_1 = 2 };
+
 /* 一帧：NV12 dma-buf 源 → letterbox 到画布。
-   src_fd 由 jpeg_decoder_nv12() 提供；几何输出用于后处理逆映射。
+   src_fd 由 jpeg_decoder_nv12() 提供；core 见上面的枚举；几何输出用于后处理逆映射。
    成功返回画布虚拟地址（可直接喂 rknn），失败返回 NULL。 */
-unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, int src_h,
+unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, int src_h, int core,
                                   float *scale_x, float *scale_y, int *pad_x, int *pad_y);
 
 /* 画布虚拟地址与尺寸 */
