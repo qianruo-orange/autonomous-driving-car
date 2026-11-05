@@ -135,6 +135,12 @@ static int encoder_open(rec_annot_t *s)
     mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 1);
     if (s->enc_mpi->control(s->enc_ctx, MPP_ENC_SET_CFG, cfg) != MPP_OK) {
         mpp_enc_cfg_deinit(cfg);
+    /* 每个 IDR 重发 SPS/PPS：分段重建 muxer 时需要参数集才能生成 avcC */
+    {
+        MppEncHeaderMode hm = MPP_ENC_HEADER_MODE_EACH_IDR;
+        if (s->enc_mpi->control(s->enc_ctx, MPP_ENC_SET_HEADER_MODE, &hm) != MPP_OK)
+            LOG_ERROR("rec_annot: 无法启用逐 IDR 参数集");
+    }
         return -1;
     }
     mpp_enc_cfg_deinit(cfg);
@@ -344,6 +350,15 @@ int rec_annot_push(rec_annot_t *s, int nv12_fd, int w, int h,
     sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
     ioctl(nv12_fd, DMA_BUF_IOCTL_SYNC, &sync);
     munmap(src, len);
+    if (getenv("NV12_DUMP")) {
+        static int dumped;
+        if (dumped < 3) {
+            char path[64];
+            snprintf(path, sizeof(path), "/tmp/frame%d.nv12", dumped++);
+            FILE *df = fopen(path, "wb");
+            if (df) { fwrite(copy, 1, len, df); fclose(df); }
+        }
+    }
 
     pthread_mutex_lock(&s->lock);
     if (!s->running) { pthread_mutex_unlock(&s->lock); free(copy); return -1; }

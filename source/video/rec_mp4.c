@@ -329,7 +329,8 @@ int rec_mp4_write(rec_mp4_t *s, const unsigned char *annexb, size_t len)
         struct grab g = { s->sps, &s->sps_len, s->pps, &s->pps_len };
         scan_nals(annexb, len, grab_param_sets, &g);
         if (!s->sps_len || !s->pps_len) {
-            LOG_ERROR("rec_mp4: 首帧缺少 SPS/PPS，无法封装");
+            static int warned;
+            if (!warned++) LOG_ERROR("rec_mp4: 首帧缺少 SPS/PPS，等待下一个关键帧");
             return -1;
         }
         start_mdat(s);
