@@ -8,7 +8,7 @@
 
 自动驾驶小车（Autonomous Driving Car）是一个**感知、推理、控制**一体化的 Linux 车载平台。当前版本把相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、无损录像和浏览器管理界面跑在同一个 C/C++ 应用里。LLM 推理属于规划能力，尚未实现。
 
-目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核和模型平台都按这颗 SoC 在编译期确定，运行时无需探测。
+目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核和模型平台都按这颗 SoC 在编译期确定。
 
 推理链路全部由硬件完成：
 
@@ -354,9 +354,8 @@ visual tracking, differential wheel control, CAN/CAN-FD communication, lossless
 recording and a browser management interface as one C/C++ application.
 LLM inference is planned, not implemented.
 
-The target board is the **Radxa ROCK 4D / RK3576**, and the NPU cores, RGA cores
-and model platform are fixed for that SoC at compile time, so nothing is probed
-at runtime.
+The target board is the **Radxa ROCK 4D / RK3576**: the NPU cores, RGA cores and
+model platform are fixed for that SoC at compile time.
 
 The whole inference chain runs on hardware accelerators:
 
