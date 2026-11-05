@@ -27,7 +27,6 @@
 
 #include "core/log.h"
 #include "video/rec_mp4.h"
-#include "video/live_h264.h"
 
 #define ANNOT_QUEUE_CAP  12
 #define ANNOT_MAX_BOXES  32
@@ -63,6 +62,7 @@ struct rec_annot {
 
     atomic_ullong frames, dropped;
     atomic_uint last_ms;
+    atomic_int   disabled;        /* 硬件不可用时置位，永不重试 */
 };
 
 static void draw_box_nv12(unsigned char *y, int w, int h,
@@ -167,16 +167,13 @@ static void annot_feed(rec_annot_t *s, const unsigned char *p, size_t len)
             memcpy(joined, pending, pending_len);
             memcpy(joined + pending_len, p, len);
             rec_mp4_write(s->mp4, joined, pending_len + len);
-            live_h264_publish(joined, pending_len + len);
             free(joined);
         } else {
             rec_mp4_write(s->mp4, p, len);
-            live_h264_publish(p, len);
-        }
+            }
         pending_len = 0;
     } else {
         rec_mp4_write(s->mp4, p, len);
-        live_h264_publish(p, len);
     }
 }
 
@@ -202,7 +199,11 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
         if (!s->mp4) return -1;
     }
     if (!s->enc_ready && encoder_open(s) != 0) {
-        LOG_ERROR("rec_annot: 硬件编码器初始化失败；标注录像停用");
+        if (s->enc_ctx) { mpp_destroy(s->enc_ctx); s->enc_ctx = NULL; }
+        if (s->grp) { mpp_buffer_group_put(s->grp); s->grp = NULL; }
+        if (s->buf) { mpp_buffer_put(s->buf); s->buf = NULL; }
+        atomic_store(&s->disabled, 1);
+        LOG_ERROR("rec_annot: 硬件编码器不可用，本次运行停用标注录像");
         return -1;
     }
     if (f->w != s->w || f->h != s->h) return -1;
@@ -246,6 +247,7 @@ static void *annot_task(void *arg)
 
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (atomic_load(&s->disabled)) { free(f.nv12); break; }
         int ok = encode_frame(s, &f);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         unsigned ms = (unsigned)((t1.tv_sec - t0.tv_sec) * 1000 +
@@ -302,6 +304,7 @@ int rec_annot_push(rec_annot_t *s, int nv12_fd, int w, int h,
                    const rec_annot_box_t *boxes, int count)
 {
     if (!s || nv12_fd < 0 || w <= 0 || h <= 0) return -1;
+    if (atomic_load((atomic_int *)&s->disabled)) return -1;
     size_t len = (size_t)w * h * 3 / 2;
     unsigned char *copy = malloc(len);
     if (!copy) return -1;

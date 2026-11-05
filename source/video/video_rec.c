@@ -33,7 +33,6 @@
 #include "video/video_rec.h"
 #include "video/rec_mjpeg.h"
 #include "video/rec_annot.h"
-#include "video/live_h264.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 #include "core/common.h"
@@ -412,9 +411,9 @@ void *video_rec_task(void *arg)
             pthread_mutex_lock(&g_rec_files_lock);
             mjp = rec_mjpeg_create(dir, "video", pw, ph, fps, fname, sizeof(fname));
             if (mjp) {
+                /* 排查中：暂时不启动标注编码，验证 MPP 是否为崩溃源 */
                 rec_annot_stop(g_rec.annot);
-                g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0);
-                live_h264_start(pw, ph, fps);
+                g_rec.annot = getenv("REC_ANNOT") ? rec_annot_start(dir, "annot", pw, ph, fps, 0) : NULL;
             }
             if (!mjp) {
                 pthread_mutex_unlock(&g_rec_files_lock);
@@ -615,7 +614,6 @@ void *video_rec_task(void *arg)
             pthread_mutex_lock(&g_rec_files_lock);
             rec_annot_stop(g_rec.annot);
             g_rec.annot = NULL;
-            live_h264_stop();
             rec_mjpeg_finalize(mjp);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;

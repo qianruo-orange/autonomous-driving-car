@@ -218,7 +218,6 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq` 头，浏览器据此知道当前画面是哪一帧。
 
-带检测框的画面走 `GET /video/live.mp4`：标注后的 H.264，按 fMP4 分片推送（一个 init segment 加每帧一个 `moof`/`mdat`），浏览器用 MediaSource 边下边播。它和标注录像共用同一颗 VEPU510 编出的码流，720p 约 **3 Mbps**。客户端落后时丢掉旧分片而不是重发初始段，所以直播既不会中断也不会无限追帧。
 
 框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h`，以及每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）。浏览器把记录与显示帧对齐；如果该帧没有推理结果，就回退到六帧内最近的记录，再远则跳过该帧。
 
@@ -622,13 +621,6 @@ tabs. The slot expires 30 s after its last connection closes and an extra
 address receives HTTP 503.
 
 #### Live view and overlay
-
-Annotated video is served from `GET /video/live.mp4`: H.264 with the boxes
-burned in, delivered as fMP4 fragments (one init segment, then a `moof`/`mdat`
-per frame) for MediaSource playback. It shares the single VEPU510 bitstream
-with the annotated recorder, about **3 Mbps** at 720p. A client that falls
-behind drops stale fragments instead of being sent a second init segment, so
-the stream neither breaks nor chases an ever-growing backlog.
 
 The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of
 the camera's own JPEG frames. Each part carries an `X-Seq` header so the browser

@@ -38,7 +38,7 @@
 
 /* 只保留标注 MP4：AVI 仍按原逻辑计时、计数、触发分段，但写入 /dev/null，
    不在 recordings/ 下留下无损文件。改成 1 即恢复双份录像。 */
-#define REC_LOSSLESS_TO_DISK 0
+#define REC_LOSSLESS_TO_DISK 1
 
 /* 不设人为容量上限：分段由调用方按日期、帧率变化或手动触发。唯一的天花板来自
  * AVI(RIFF) 本身——块长度与 movi 偏移都是 uint32，所以单文件不能到 4 GiB。 */
