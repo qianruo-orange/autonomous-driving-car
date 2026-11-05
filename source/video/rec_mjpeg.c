@@ -36,6 +36,10 @@
 
 #include "video/rec_mjpeg.h"
 
+/* 只保留标注 MP4：AVI 仍按原逻辑计时、计数、触发分段，但写入 /dev/null，
+   不在 recordings/ 下留下无损文件。改成 1 即恢复双份录像。 */
+#define REC_LOSSLESS_TO_DISK 0
+
 /* 不设人为容量上限：分段由调用方按日期、帧率变化或手动触发。唯一的天花板来自
  * AVI(RIFF) 本身——块长度与 movi 偏移都是 uint32，所以单文件不能到 4 GiB。 */
 #define REC_MJ_INIT_CAP  1024u
@@ -194,10 +198,12 @@ rec_mjpeg_t *rec_mjpeg_create(const char *dir, const char *prefix, int w, int h,
         if (len < 0 || (size_t)len >= sizeof(s->name)) break;
         len = snprintf(s->path, sizeof(s->path), "%s/%s", dir, s->name);
         if (len < 0 || (size_t)len >= sizeof(s->path)) break;
-        int fd = open(s->path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        int fd = REC_LOSSLESS_TO_DISK
+                     ? open(s->path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644)
+                     : open("/dev/null", O_WRONLY | O_CLOEXEC);
         if (fd < 0) { if (errno == EEXIST) continue; break; }
         s->fp = fdopen(fd, "wb");
-        if (!s->fp) { close(fd); unlink(s->path); }
+        if (!s->fp) { close(fd); if (REC_LOSSLESS_TO_DISK) unlink(s->path); }
         break;
     }
     if (!s->fp) { free(s); return NULL; }
