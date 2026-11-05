@@ -223,7 +223,7 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 录像无损且自动开始。每次会话先实测真实采集节奏，然后写 `recordings/YYYYMMDD/video_<日期>_<时间>.avi`，把相机 JPEG 帧原样存入 AVI(MJPG) 容器，带完整 `idx1` 索引和文件头回填。容器里存的就是相机 JPEG 帧本身，画质与传感器输出一致，文件大小等于相机自身数据率：720p/30fps 下约 **1.9 MB/s**，即 **6.8 GB/小时**。不设人为容量上限：分段由**日期变化**、**帧率漂移超过 25%** 或手动触发，录像在新文件里继续，每个文件落在所属日期目录 `recordings/YYYYMMDD/` 下。唯一的硬性天花板来自 AVI(RIFF) 本身——块长度与偏移是 32 位，单文件到约 **4 GiB**（720p/30fps 约 35 分钟）时必须分段。
 
-录像从不等待推理，所以模型卡住或重载不会中断录像。录像保留相机原始画面，检测框只存在于浏览器叠加层；需要带框的画面请看直播。
+录像从不等待推理，所以模型卡住或重载不会中断录像。每次会话同时写出两份录像：无损 AVI 保留相机原始帧；另一份 `annot_<日期>_<时间>.mp4` 把检测框烧进画面，用 VEPU510 硬件编成 H.264（720p 约 **3 Mbps**，体积约为 AVI 的 **1/5**，VLC/ffplay 可直接播放）。标注录像取的是推理路径已经解出的 NV12，不重复解码，每帧只多一次内存拷贝。检测框只画在标注录像上，浏览器画面仍是原始帧加叠加层。
 
 每日 TXT 记录所有完成的推理，包括没有检测到目标的帧：采集时间、帧序号、图像尺寸、可用的镜头位置、目标序号/类别/置信度，以及原图坐标 `X1 X2 Y1 Y2`。写入在推理线程之外批量进行。
 
@@ -282,7 +282,7 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | 位置 | 职责 |
 | --- | --- |
 | `source/core/` | 模块生命周期、共享上下文、配置、日志、CPU 亲和性 |
-| `source/video/` | 采集、帧环、RGA 预处理、无损 AVI 录像、MJPEG 直播 |
+| `source/video/` | 采集、帧环、RGA 预处理、无损 AVI 录像、标注 MP4 录像、MJPEG 直播 |
 | `source/yolo/` | 推理池、后处理、跟踪事件、结果记录 |
 | `source/control/` | 视觉跟踪、运动控制 |
 | `source/can/` | SocketCAN、端口/ID 注册、数据槽、DBC 解码、电机协议 |
@@ -296,7 +296,7 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | `tools/model/` | 离线模型链路：ONNX 导出、RKNN 量化、数据集准备、原始输出 dump、mAP 评测 |
 | `docs/` | 架构、延迟、量化、实时调度等文档 |
 
-视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`rga_preprocess.c` 负责 RGA 画布，`video_rec.c` 负责录像会话，`rec_mjpeg.c` 负责 AVI 容器本身。
+视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`rga_preprocess.c` 负责 RGA 画布，`video_rec.c` 负责录像会话，`rec_mjpeg.c` 负责 AVI 容器，`rec_annot.c` 负责标注编码线程，`rec_mp4.c` 负责 MP4 容器。
 
 ### 依赖
 
@@ -311,11 +311,11 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | RKNPU（`rknpu`） | 需要 —— 推理 |
 | JPEG 解码（`rkjpegd`） | 需要 —— 解码 |
 | RGA3 / RGA2E（`rga3`） | 需要 —— 预处理 |
-| VEPU510 编码（`mpp`） | 不需要 —— 应用不编码 |
+| VEPU510 编码（`mpp`） | 需要 —— 标注录像的 H.264 编码 |
 
-应用依赖 NPU、JPEG 和 RGA 三个引擎，**不需要** MPP 用户态库或 VEPU510 编码器。
+应用用到 NPU、JPEG、RGA 和 VEPU510 四个引擎；标注录像需要 MPP 用户态库 `librockchip_mpp.so`，装在 `/usr/local/lib`。
 
-**用户态。** `librknnrt.so`（2.5.0）、`librga.so`、libsystemd、libnl-3/libnl-route-3。
+**用户态。** `librknnrt.so`（2.5.0）、`librga.so`、`librockchip_mpp.so`、libsystemd、libnl-3/libnl-route-3。
 
 **构建。** C11 编译器、GNU Make、CMake 3.18+、Bash，以及常用的 `flock`、`sha256sum`、`strings`、`awk`、`tar`、`zip`。源码不含 C++，也不需要 OpenCV。
 
@@ -636,12 +636,20 @@ capture cadence, writes `recordings/YYYYMMDD/video_<date>_<time>.avi`, and
 stores camera JPEG frames verbatim in an AVI(MJPG) container with a proper
 `idx1` index and header backfill. The container stores the camera's JPEG frames themselves, so
 quality matches the sensor output and file size equals the camera's data rate:
-about **1.9 MB/s**, or **6.8 GB/hour** at 720p/30 fps. Files split near **1.9 GB** (~16 min) and
-recording continues in a new segment.
+about **1.9 MB/s**, or **6.8 GB/hour** at 720p/30 fps. There is no artificial
+size cap: segments break on a date change, a frame-rate drift over 25 % or a
+manual request, and each file lives under the directory of its own day.
+
+Every session writes two files: the lossless AVI keeps the camera's own frames,
+and `annot_<date>_<time>.mp4` has the detection boxes burned in, encoded as
+H.264 by the VEPU510 (about **3 Mbps** at 720p, roughly **1/5** the size, plays
+in VLC or ffplay). The annotated file reuses the NV12 the inference path has
+already decoded, so no frame is decoded twice - it costs one memory copy per
+frame. Boxes are drawn only into the annotated file; the browser picture is
+still the original frame plus an overlay.
 
 Recording never waits on inference, so a stalled or reloading model does not
-interrupt it. Recordings keep the camera's original frames; boxes live only in
-the browser overlay, so use the live view for annotated inspection.
+interrupt it.
 
 Daily TXT reports record completed inferences, including frames with no
 detections: capture time, sequence, dimensions, lens position when available,
@@ -718,7 +726,7 @@ locking rules are in [communication flow](docs/COMMUNICATION_FLOW.md).
 | Location | Responsibility |
 | --- | --- |
 | `source/core/` | Module lifecycle, shared context, configuration, logging, CPU affinity |
-| `source/video/` | Capture, frame ring, RGA preprocessing, lossless AVI recording, MJPEG streaming |
+| `source/video/` | Capture, frame ring, RGA preprocessing, lossless AVI recording, annotated MP4 recording, MJPEG streaming |
 | `source/yolo/` | Inference pool, postprocessing, tracking events, reports |
 | `source/control/` | Visual tracking, motion control |
 | `source/can/` | SocketCAN, port/ID registration, data slots, DBC decoding, motor protocol |
@@ -734,7 +742,9 @@ locking rules are in [communication flow](docs/COMMUNICATION_FLOW.md).
 
 Video modules: `video_stream.c` owns capture and MJPEG fan-out,
 `frame_ring.c` owns buffer handoff, `rga_preprocess.c` owns the RGA canvas,
-`video_rec.c` owns recording sessions, and `rec_mjpeg.c` owns the AVI container.
+`video_rec.c` owns recording sessions, `rec_mjpeg.c` owns the AVI container,
+`rec_annot.c` owns the annotation encoder thread, and `rec_mp4.c` owns the MP4
+container.
 
 ### Requirements
 
@@ -751,13 +761,14 @@ builds these drivers **into** the image:
 | RKNPU (`rknpu`) | yes — inference |
 | JPEG decoder (`rkjpegd`) | yes — decode |
 | RGA3 / RGA2E (`rga3`) | yes — preprocessing |
-| VEPU510 encoder (`mpp`) | no — the application does not encode |
+| VEPU510 encoder (`mpp`) | yes — H.264 encoding for annotated recording |
 
-The application requires the NPU, JPEG and RGA engines. It does **not** require
-an MPP install or the VEPU510 encoder.
+The application uses the NPU, JPEG, RGA and VEPU510 engines. Annotated
+recording needs the MPP userspace library `librockchip_mpp.so` under
+`/usr/local/lib`.
 
-**Userspace.** `librknnrt.so` (2.5.0), `librga.so`, libsystemd,
-libnl-3/libnl-route-3.
+**Userspace.** `librknnrt.so` (2.5.0), `librga.so`, `librockchip_mpp.so`,
+libsystemd, libnl-3/libnl-route-3.
 
 **Build.** C11 compiler, GNU Make, CMake 3.18+, Bash, and the usual `flock`,
 `sha256sum`, `strings`, `awk`, `tar`, `zip`. The sources contain no C++ and do
