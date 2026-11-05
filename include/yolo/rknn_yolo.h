@@ -40,6 +40,7 @@ int rknn_yolo_enabled(void);
 int rknn_yolo_reloading(void);
 /* 返回平台 NPU 核心数（RK3588=3 / RK3576=2 / 其余单核）。 */
 int npu_core_count(void);
+/* 本工程固定为 rk3576（不再探测 SoC）。保留该接口仅为兼容旧模型路径迁移。 */
 /* Canonical model platform name (RK3588S -> rk3588), or "unknown" when the
  * device tree is unsupported. Explicit yolo_model paths remain configurable. */
 const char *npu_platform_name(void);

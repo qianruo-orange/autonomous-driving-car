@@ -67,7 +67,7 @@
 #include "video/jpeg_decoder.h"
 #include "video/rga_preprocess.h"
 
-#define YOLO_MAX_WORKERS 15    /* Actual count is a multiple of detected NPU cores. */
+#define YOLO_MAX_WORKERS 2     /* RK3576：NPU 双核，一核一个线程 */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
 #define YOLO_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，composer 消费渲染 */
 #define YOLO_HIST_N      16    /* 最近结果环形缓冲深度（供前端按 seq 对齐叠框） */
@@ -98,25 +98,6 @@ typedef struct {
     unsigned         out_count;
 } yolo_worker_t;
 
-typedef struct {
-    double fps, camera_fps, latency_ms, worker_ms;
-} adaptive_observation_t;
-
-enum { ADAPT_BASELINE, ADAPT_TRIAL, ADAPT_HOLD };
-typedef struct {
-    int cores, capacity, best_workers, trial_workers, phase, unstable_votes;
-    int pending_workers, pending_votes;
-    unsigned tested;
-    unsigned long long hold_until_us;
-    adaptive_observation_t best, load_reference;
-} adaptive_controller_t;
-
-typedef struct {
-    unsigned long long started_us, collect_after_us, last_sample_seq;
-    unsigned long long captured, rendered, samples, latency_sum_ms;
-    unsigned long long worker_samples, worker_sum_us;
-} adaptive_window_t;
-
 /* 模块全局上下文 */
 static struct {
     _Atomic int    enabled;                  /* 推理池可用（画框流可用） */
@@ -128,8 +109,6 @@ static struct {
     int            nthreads;                 /* Workers evenly assigned to detected NPU cores. */
     int            active_workers;
     int            events_initialized;
-    adaptive_controller_t adaptive;
-    adaptive_window_t adaptive_window;
 
     rga_preprocess_t *rga;                   /* RGA 硬件预处理（NULL = 回退 CPU 路径） */
     unsigned char *model;                    /* 模型文件内存（共享给所有 worker init） */
@@ -188,178 +167,6 @@ static unsigned long long yolo_now_us(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (unsigned long long)ts.tv_sec * 1000000u + (unsigned long long)ts.tv_nsec / 1000u;
-}
-
-static unsigned adaptive_worker_bit(const adaptive_controller_t *control, int workers)
-{
-    return 1u << (workers / control->cores - 1);
-}
-
-static int adaptive_controller_init(adaptive_controller_t *control, int cores, int capacity)
-{
-    memset(control, 0, sizeof(*control));
-    control->cores = cores;
-    control->capacity = capacity;
-    control->best_workers = cores * 2 > capacity ? capacity : cores * 2;
-    control->tested = 0; /* Rejected candidates, retained while demand is stable. */
-    control->phase = ADAPT_HOLD;
-    return control->best_workers;
-}
-
-/* Compare delivered frames, not RKNN service time: NPU contention increases
-   service time, so using it to request more workers creates positive feedback.
-   Preserve throughput first; among equivalent rates prefer lower frame age,
-   then fewer workers. Reject large latency regressions even for a small FPS gain. */
-static int adaptive_observation_better(const adaptive_observation_t *candidate,
-                                      const adaptive_observation_t *baseline,
-                                      int candidate_workers, int baseline_workers)
-{
-    double tolerance = fmax(.75, baseline->camera_fps * .025);
-    if (candidate->fps < baseline->fps - tolerance) return 0;
-    if (baseline->latency_ms > 0 && candidate->latency_ms > baseline->latency_ms * 1.35 + 15) return 0;
-    if (candidate->fps > baseline->fps + tolerance) return 1;
-    if (candidate->latency_ms < baseline->latency_ms - 5) return 1;
-    if (candidate->latency_ms > baseline->latency_ms + 5) return 0;
-    return candidate_workers < baseline_workers;
-}
-
-/* Live playback has priority over exploration. Do not periodically re-test a
-   known bad low count. More workers are considered only after sustained supply
-   deficit; fewer require measured service-time headroom, not a blind trial. */
-static int adaptive_controller_observe(adaptive_controller_t *control,
-                                      unsigned long long now,
-                                      const adaptive_observation_t *observation)
-{
-    if (control->phase == ADAPT_TRIAL) {
-        if (adaptive_observation_better(observation, &control->best,
-                                        control->trial_workers, control->best_workers)) {
-            /* The former count was measured and lost this comparison. Do not
-               immediately alternate back when another window has noise. */
-            control->tested |= adaptive_worker_bit(control, control->best_workers);
-            control->best_workers = control->trial_workers;
-            control->best = *observation;
-            control->load_reference = *observation;
-        } else control->tested |= adaptive_worker_bit(control, control->trial_workers);
-        control->trial_workers = 0;
-        control->pending_workers = control->pending_votes = 0;
-        control->unstable_votes = 0;
-        control->hold_until_us = now + 8000000u;
-        control->phase = ADAPT_HOLD;
-        return control->best_workers;
-    }
-    /* Let in-flight frames drain after accepting or rejecting a trial. This is
-       a cooldown only: elapsed time never requests an exploratory trial. */
-    if (now < control->hold_until_us) {
-        control->best = *observation;
-        return control->best_workers;
-    }
-    if (control->load_reference.camera_fps <= 0) control->load_reference = *observation;
-    int changed = fabs(observation->camera_fps - control->load_reference.camera_fps) >
-                      fmax(2, control->load_reference.camera_fps * .2) ||
-                  (observation->worker_ms > 0 && control->load_reference.worker_ms > 0 &&
-                   (observation->worker_ms > control->load_reference.worker_ms * 1.4 ||
-                    observation->worker_ms < control->load_reference.worker_ms * .7));
-    control->unstable_votes = changed ? control->unstable_votes + 1 : 0;
-    if (control->unstable_votes >= 3) {
-        control->tested = 0;
-        control->load_reference = *observation;
-        control->unstable_votes = 0;
-    }
-    control->best = *observation;
-    control->phase = ADAPT_HOLD;
-    int next = control->best_workers;
-    if (observation->camera_fps > 0) {
-        double tolerance = fmax(.75, observation->camera_fps * .05);
-        if (observation->fps + tolerance < observation->camera_fps) {
-            if (next < control->capacity) next += control->cores;
-        } else if (observation->worker_ms > 0 && next > control->cores) {
-            /* Sum of worker occupancy must fit the smaller pool with at least
-               25 percent spare capacity. Contention makes this conservative. */
-            double demand = observation->camera_fps * observation->worker_ms / 1000.0;
-            if (demand <= (next - control->cores) * .75) next -= control->cores;
-        }
-    }
-    if (next == control->best_workers || (control->tested & adaptive_worker_bit(control, next))) {
-        control->pending_workers = control->pending_votes = 0;
-        return control->best_workers;
-    }
-    if (next != control->pending_workers) {
-        control->pending_workers = next;
-        control->pending_votes = 1;
-    } else control->pending_votes++;
-    if (control->pending_votes < 3) return control->best_workers;
-    control->trial_workers = next;
-    control->phase = ADAPT_TRIAL;
-    return next;
-}
-
-static void yolo_adapt_workers(unsigned long long worker_us)
-{
-    /* 固定双线程：不做自适应扩缩，避免运行时线程数抖动影响 RT 调度 */
-    (void)worker_us;
-    return;
-    frame_ring_t *ring = video_stream_get_ring();
-    if (!ring) return;
-    /* Serialize the snapshot and controller together so out-of-order workers
-       cannot move a measurement window back to an older counter snapshot. */
-    pthread_mutex_lock(&g_yolo.q_lock);
-    frame_ring_lock(ring);
-    unsigned long long captured = ring->produce_seq, rendered = ring->displayed_frames;
-    /* 标注帧是唯一出口（录像取的是原始 JPEG）：吞吐与延迟都以渲染为准 */
-    unsigned long long sample_seq = rendered;
-    unsigned long long age = ring->processing_age_ms;
-    frame_ring_unlock(ring);
-    unsigned long long now = yolo_now_us();
-    int changed = 0, selected = 0;
-    double measured_fps = 0, measured_age = 0;
-    int phase = 0;
-    adaptive_window_t *window = &g_yolo.adaptive_window;
-    if (now < window->collect_after_us) {
-        pthread_mutex_unlock(&g_yolo.q_lock);
-        return;
-    }
-    if (!window->started_us || captured < window->captured || rendered < window->rendered) {
-        window->started_us = now;
-        window->captured = captured;
-        window->rendered = rendered;
-        window->last_sample_seq = sample_seq;
-        window->samples = window->latency_sum_ms = 0;
-        window->worker_samples = window->worker_sum_us = 0;
-    }
-    window->worker_sum_us += worker_us;
-    window->worker_samples++;
-    if (sample_seq != window->last_sample_seq && age) {
-        window->last_sample_seq = sample_seq;
-        window->latency_sum_ms += age;
-        window->samples++;
-    }
-    if (now - window->started_us >= 1000000u && window->samples) {
-        double seconds = (double)(now - window->started_us) / 1000000.0;
-        double delivered = (double)(rendered - window->rendered) / seconds;
-        adaptive_observation_t observation = {
-            .fps = delivered,
-            .camera_fps = (double)(captured - window->captured) / seconds,
-            .latency_ms = (double)window->latency_sum_ms / window->samples,
-            .worker_ms = (double)window->worker_sum_us / window->worker_samples / 1000.0
-        };
-        int current = __atomic_load_n(&g_yolo.active_workers, __ATOMIC_RELAXED);
-        int target = adaptive_controller_observe(&g_yolo.adaptive, now, &observation);
-        window->started_us = 0;
-        if (target != current) {
-            __atomic_store_n(&g_yolo.active_workers, target, __ATOMIC_RELAXED);
-            window->collect_after_us = now + 250000u;
-            selected = target;
-            changed = 1;
-            measured_fps = observation.fps;
-            measured_age = observation.latency_ms;
-            phase = g_yolo.adaptive.phase;
-            pthread_cond_broadcast(&g_yolo.q_not_empty);
-        }
-    }
-    pthread_mutex_unlock(&g_yolo.q_lock);
-    if (changed) LOG_INFO("yolo: adaptive workers -> %d/%d (%s; previous %.2f fps, %.1f ms)",
-                          selected, g_yolo.nthreads, phase == ADAPT_TRIAL ? "trial" : "selected",
-                          measured_fps, measured_age);
 }
 
 int rknn_yolo_active_workers(void)
@@ -674,7 +481,6 @@ static void *yolo_worker_task(void *arg)
         res.decode_end_us = job.decode_end_us;
         res.post_done_us = yolo_now_us();
         yolo_record_result(&job, &res);
-        yolo_adapt_workers(outputs_us - worker_us);
         if (idx == 0) {
             static unsigned long long last_timing_us;
             unsigned long long finished_us = yolo_now_us();
@@ -939,73 +745,13 @@ int rknn_yolo_validate_model(const char *path)
     return result;
 }
 
-/* 通过设备树 compatible 推断 NPU 核心数（合法 core mask 上限 = 2^npu_cores - 1）。
- * 默认 1 核（CORE_0 始终合法），未知/单核平台安全回退。结果缓存，仅首次读取。 */
-/* 通过设备树 compatible 推断 NPU 核心数，覆盖 Rockchip 全系 RKNPU：
- *   RK3588 / RK3588S        -> 3 核 (合法掩码上限 7)
- *   RK3576 / RK3576M        -> 2 核 (合法掩码上限 3)
- *   RK3568 / RK3566 / RK3562 -> 1 核 (合法掩码上限 1)
- *   RV1126 / RV1109 / RV1106 / RV1103 -> 1 核
- *   RK3399PRO / RK1808      -> 1 核
- * 合法 core mask 上限 = 2^npu_cores - 1，据此只用合法单核掩码，从根上杜绝运行时的
- * "unavailable core mask found for current platform" 报错，全系兼容。
- * 未识别 SoC 默认 1 核（CORE_0 始终合法），保证不报错、可启动；
- * 新增平台只需在此表追加一行。结果缓存，仅首次读取。 */
-typedef struct { const char *name; int cores; } npu_platform_info_t;
-static const npu_platform_info_t npu_platforms[] = {
-    {"rk3588", 3}, {"rk3576", 2}, {"rk3568", 1}, {"rk3566", 1},
-    {"rk3562", 1}, {"rv1126", 1}, {"rv1109", 1}, {"rv1106", 1},
-    {"rv1103", 1}, {"rk3399pro", 1}, {"rk1808", 1}
-};
-static const npu_platform_info_t npu_unknown_platform = {"unknown", 1};
-static const npu_platform_info_t *npu_platform = &npu_unknown_platform;
-static pthread_once_t npu_platform_once = PTHREAD_ONCE_INIT;
+/* 本工程只针对 Radxa ROCK 4D / RK3576：NPU 固定双核（Core0/Core1）。
+   原先按设备树 compatible 推断核数的平台表已移除，不再做跨平台自适应。 */
+#define NPU_CORE_COUNT 2
 
-/* Device-tree compatible strings are NUL separated. Accept only Rockchip
- * vendor entries and alphabetic SoC suffixes, e.g. rk3588s or rk3576m. */
-static const npu_platform_info_t *npu_platform_from_compatible(const char *data, size_t size)
-{
-    if (!data) return &npu_unknown_platform;
-    for (size_t offset = 0; offset < size; ) {
-        size_t length = strnlen(data + offset, size - offset);
-        const char *token = data + offset;
-        if (length > 9 && !memcmp(token, "rockchip,", 9)) {
-            const char *name = token + 9;
-            size_t name_length = length - 9;
-            for (size_t i = 0; i < sizeof(npu_platforms) / sizeof(npu_platforms[0]); ++i) {
-                size_t base_length = strlen(npu_platforms[i].name);
-                if (name_length < base_length || memcmp(name, npu_platforms[i].name, base_length)) continue;
-                size_t suffix = base_length;
-                while (suffix < name_length && name[suffix] >= 'a' && name[suffix] <= 'z') suffix++;
-                if (suffix == name_length) return &npu_platforms[i];
-            }
-        }
-        offset += length + 1;
-    }
-    return &npu_unknown_platform;
-}
+const char *npu_platform_name(void) { return "rk3576"; }
 
-static void npu_detect_platform_once(void)
-{
-    char data[512];
-    FILE *file = fopen("/proc/device-tree/compatible", "rb");
-    if (!file) return;
-    size_t size = fread(data, 1, sizeof(data), file);
-    fclose(file);
-    npu_platform = npu_platform_from_compatible(data, size);
-}
-
-const char *npu_platform_name(void)
-{
-    pthread_once(&npu_platform_once, npu_detect_platform_once);
-    return npu_platform->name;
-}
-
-int npu_core_count(void)
-{
-    (void)npu_platform_name();
-    return npu_platform->cores;
-}
+int npu_core_count(void) { return NPU_CORE_COUNT; }
 
 void rknn_yolo_default_model_path(char *out, size_t size)
 {
@@ -1025,12 +771,7 @@ static int yolo_worker_setup(yolo_worker_t *wk, int idx)
         wk->ctx = 0;
         return -1;
     }
-    /* 绑定 NPU 核：按 SoC 实际 NPU 核心数派发（npu_core_count 已覆盖 RK3588 三核 /
-     * RK3576 双核 / RK356x·RV1126·RV110x·RK3399PRO·RK1808 单核等全系），worker i
-     * 固定绑到核 (i % npu_cores)。单核掩码 1<<k 必然 <= 合法掩码上限 2^npu_cores-1，
-     * 从根上不再请求非法掩码，消除运行时的 "unavailable core mask found for current
-     * platform" 报错；未知平台默认核 0，全系兼容。 */
-    /* 固定绑定：worker0 -> NPU Core0，worker1 -> NPU Core1（RK3576 就这两个核）。 */
+    /* RK3576 固定绑定：worker0 -> NPU Core0，worker1 -> NPU Core1 */
     int core = idx & 1;
     rknn_core_mask mask = (rknn_core_mask)(1u << core);
     if (rknn_set_core_mask(wk->ctx, mask) != RKNN_SUCC) {
@@ -1150,14 +891,9 @@ static int yolo_start_pool(void)
     /* 重读运行时配置（支持热重载） */
     g_yolo.conf = cfg->yolo_conf > 0 ? cfg->yolo_conf : 0.25f;
     g_yolo.nms  = cfg->yolo_nms  > 0 ? cfg->yolo_nms  : 0.45f;
-    /* 固定两个推理线程，一核一个，由启动流程统一创建；不再做自适应扩缩。 */
-    int cores = npu_core_count();
-    if (cores < 1) cores = 1;
-    (void)cores;
-    int capacity = 2;   /* 固定两线程：NPU 只有两核，多开只会让同一核上串行 */
-    g_yolo.nthreads = capacity;
-    __atomic_store_n(&g_yolo.active_workers, capacity, __ATOMIC_RELAXED);
-    memset(&g_yolo.adaptive_window, 0, sizeof(g_yolo.adaptive_window));
+    /* RK3576：NPU 双核，固定两个推理线程，一核一个 */
+    g_yolo.nthreads = NPU_CORE_COUNT;
+    __atomic_store_n(&g_yolo.active_workers, NPU_CORE_COUNT, __ATOMIC_RELAXED);
 
     safe_strncpy(g_yolo.names_path, sizeof(g_yolo.names_path),
                  cfg->yolo_names[0] ? cfg->yolo_names : "config/coco.names");
@@ -1263,14 +999,13 @@ static int yolo_start_pool(void)
         yolo_stop_pool();
         return -1;
     }
-    g_yolo.adaptive_window.collect_after_us = yolo_now_us() + 8000000u;
     g_yolo.enabled = 1;
     /* 环内 raw 释放规则切回推理路径（infer_done 门槛） */
     if (yolo_ring()) frame_ring_set_yolo_active(yolo_ring(), 1);
     LOG_INFO("yolo: model '%s' loaded, classes '%s' (%d), input %dx%d, "
-             "1 detection output, adaptive threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
+             "1 detection output, fixed threads %d/%d (NPU core i%%%d), conf %.2f nms %.2f",
              model_path, g_yolo.names_path, ncls, g_yolo.in_w, g_yolo.in_h,
-             rknn_yolo_active_workers(), g_yolo.nthreads, cores, g_yolo.conf, g_yolo.nms);
+             rknn_yolo_active_workers(), g_yolo.nthreads, NPU_CORE_COUNT, g_yolo.conf, g_yolo.nms);
     return 0;
 }
 

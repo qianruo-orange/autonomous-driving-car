@@ -13,6 +13,7 @@
 
 #include "http/http_internal.h"
 #include "video/rga_preprocess.h"
+#include "yolo/rknn_yolo.h"
 #include "core/version.h"
 
 #define MAX_CORES     16
@@ -91,31 +92,18 @@ void http_system_api(app_ctx_t *app, int fd)
     fp = fopen("/sys/class/thermal/thermal_zone0/temp", "r");
     if (fp) { fscanf(fp, "%d", &temp); fclose(fp); temp /= 1000; }
 
-    /* NPU 逐核负载（RKNPU 全系兼容：RK3588 三核 / RK3576 双核 / RK3566 等单核；
-     * 逐核定位 "CoreN: x%" 自适应解析，核数按实际解析结果统计（npu_count），
-     * 前端按 npu_count 动态渲染；任意核缺失保持 -1，前端显示 N/A */
-    int npu_cores[3] = {-1, -1, -1};
-    int npu_count = 0;
+    /* 本工程只针对 RK3576：NPU 固定双核，按 Core0/Core1 两行解析，无核数自适应 */
+    int npu_cores[2] = { -1, -1 };
+    const int npu_count = npu_core_count();
     fp = fopen("/sys/kernel/debug/rknpu/load", "r");
     if (fp) {
         char buf[256];
         while (fgets(buf, sizeof(buf), fp)) {
-            for (int c = 0; c < 3; c++) {
-                if (npu_cores[c] >= 0) continue;
+            for (int c = 0; c < npu_count; c++) {
                 char key[16];
                 snprintf(key, sizeof(key), "Core%d:", c);
                 const char *p = strstr(buf, key);
-                if (p && sscanf(p + strlen(key), " %d%%", &npu_cores[c]) == 1
-                    && c + 1 > npu_count)
-                    npu_count = c + 1;
-            }
-            /* 无 Core 前缀的单值格式："NPU load: x%"（单核 SoC） */
-            if (npu_count == 0) {
-                int v;
-                if (sscanf(buf, "NPU load: %d%%", &v) == 1) {
-                    npu_cores[0] = v;
-                    npu_count = 1;
-                }
+                if (p) sscanf(p + strlen(key), " %d%%", &npu_cores[c]);
             }
         }
         fclose(fp);
