@@ -16,6 +16,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <linux/dma-buf.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -58,8 +60,10 @@ struct rec_annot {
     MppCtx enc_ctx;
     MppApi *enc_mpi;
     MppBufferGroup grp;
-    MppBuffer buf;
-    int enc_ready;
+
+    MppBuffer buf[4];
+
+    int buf_next;    int enc_ready;
 
     atomic_ullong frames, dropped, bytes_total;
     atomic_uint last_ms;
@@ -120,6 +124,12 @@ static int encoder_open(rec_annot_t *s)
     mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num", s->fps);
     mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denom", 1);
     mpp_enc_cfg_set_s32(cfg, "rc:gop", s->fps * 2);
+    /* 质量下限与上限：VBR 掉码率时不让 QP 无限放大 */
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_init", 24);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_min", 10);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_max", 32);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_min_i", 10);
+    mpp_enc_cfg_set_s32(cfg, "rc:qp_max_i", 30);
     mpp_enc_cfg_set_s32(cfg, "h264:profile", 100);
     mpp_enc_cfg_set_s32(cfg, "h264:level", 40);
     mpp_enc_cfg_set_s32(cfg, "h264:cabac_en", 1);
@@ -129,7 +139,9 @@ static int encoder_open(rec_annot_t *s)
     }
     mpp_enc_cfg_deinit(cfg);
     if (mpp_buffer_group_get_internal(&s->grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) return -1;
-    if (mpp_buffer_get(s->grp, &s->buf, (size_t)s->w * s->h * 3 / 2) != MPP_OK) return -1;
+    for (int i = 0; i < 4; i++)
+        if (mpp_buffer_get(s->grp, &s->buf[i], (size_t)s->w * s->h * 3 / 2) != MPP_OK)
+            return -1;
     s->enc_ready = 1;
     return 0;
 }
@@ -202,14 +214,17 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     if (!s->enc_ready && encoder_open(s) != 0) {
         if (s->enc_ctx) { mpp_destroy(s->enc_ctx); s->enc_ctx = NULL; }
         if (s->grp) { mpp_buffer_group_put(s->grp); s->grp = NULL; }
-        if (s->buf) { mpp_buffer_put(s->buf); s->buf = NULL; }
+        for (int i = 0; i < 4; i++)
+            if (s->buf[i]) { mpp_buffer_put(s->buf[i]); s->buf[i] = NULL; }
         atomic_store(&s->disabled, 1);
         LOG_ERROR("rec_annot: 硬件编码器不可用，本次运行停用标注录像");
         return -1;
     }
     if (f->w != s->w || f->h != s->h) return -1;
 
-    unsigned char *dst = mpp_buffer_get_ptr(s->buf);
+    MppBuffer frame_buf = s->buf[s->buf_next];
+    s->buf_next = (s->buf_next + 1) % 4;
+    unsigned char *dst = mpp_buffer_get_ptr(frame_buf);
     memcpy(dst, f->nv12, (size_t)s->w * s->h * 3 / 2);
     for (int i = 0; i < f->count; i++) draw_box_nv12(dst, s->w, s->h, &f->boxes[i], 3);
 
@@ -220,7 +235,7 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     mpp_frame_set_hor_stride(out, s->w);
     mpp_frame_set_ver_stride(out, s->h);
     mpp_frame_set_fmt(out, MPP_FMT_YUV420SP);
-    mpp_frame_set_buffer(out, s->buf);
+    mpp_frame_set_buffer(out, frame_buf);
     int rc = (s->enc_mpi->encode_put_frame(s->enc_ctx, out) == MPP_OK) ? 0 : -1;
     mpp_frame_deinit(&out);
     if (rc) return -1;
@@ -265,7 +280,8 @@ static void *annot_task(void *arg)
             mpp_frame_deinit(&eos);
         }
         drain_packets(s);
-        if (s->buf) { mpp_buffer_put(s->buf); s->buf = NULL; }
+        for (int i = 0; i < 4; i++)
+            if (s->buf[i]) { mpp_buffer_put(s->buf[i]); s->buf[i] = NULL; }
         if (s->grp) { mpp_buffer_group_put(s->grp); s->grp = NULL; }
         mpp_destroy(s->enc_ctx);
     }
@@ -294,9 +310,10 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
     }
     s->w = w; s->h = h;
     s->fps = fps > 0 ? fps : 30;
+    /* 质量优先：720p 约 8 Mbps（约 0.29 bit/像素/帧），录出来的画面才干净 */
     s->bitrate_kbps = bitrate_kbps > 0 ? bitrate_kbps
-                                       : (int)((long long)w * h * 30 / 8 / 1000 / 1000) * 1000;
-    if (s->bitrate_kbps < 1000) s->bitrate_kbps = 1000;
+                                       : (int)((long long)w * h * 30 * 45 / 100 / 1000 / 1000) * 1000;
+    if (s->bitrate_kbps < 6000) s->bitrate_kbps = 6000;
     pthread_mutex_init(&s->lock, NULL);
     pthread_cond_init(&s->wake, NULL);
     s->running = 1;
@@ -320,7 +337,12 @@ int rec_annot_push(rec_annot_t *s, int nv12_fd, int w, int h,
     if (!copy) return -1;
     void *src = mmap(NULL, len, PROT_READ, MAP_SHARED, nv12_fd, 0);
     if (src == MAP_FAILED) { free(copy); return -1; }
+    /* 解码器由 DMA 写入，CPU 读取前必须让缓存失效，否则看到的是半旧数据 */
+    struct dma_buf_sync sync = { .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
+    ioctl(nv12_fd, DMA_BUF_IOCTL_SYNC, &sync);
     memcpy(copy, src, len);
+    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+    ioctl(nv12_fd, DMA_BUF_IOCTL_SYNC, &sync);
     munmap(src, len);
 
     pthread_mutex_lock(&s->lock);
