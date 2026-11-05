@@ -6,6 +6,7 @@
 #include "video/rec_mp4.h"
 
 #include <errno.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -259,6 +260,18 @@ rec_mp4_t *rec_mp4_create_named(const char *dir, const char *name, int w, int h,
     if (!s) return NULL;
     s->w = w; s->h = h;
     s->fps = fps > 0 ? fps : 30;
+    /* 会话目录按日期分层，逐级建出来（AVI 时代由 rec_mjpeg 负责） */
+    {
+        char tmp[512];
+        snprintf(tmp, sizeof(tmp), "%s", dir);
+        for (char *q = tmp + 1; *q; q++) {
+            if (*q != '/') continue;
+            *q = '\0';
+            mkdir(tmp, 0755);
+            *q = '/';
+        }
+        mkdir(tmp, 0755);
+    }
     snprintf(s->path, sizeof(s->path), "%s/%s", dir, name);
     s->fp = fopen(s->path, "wb");
     if (!s->fp) {

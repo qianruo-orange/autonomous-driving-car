@@ -2,7 +2,7 @@
 /**
  * video_rec.c — 无损录像：相机原生 MJPEG 直封 AVI(MJPG)。
  *
- * 链路：V4L2 原始 JPEG → 逐字节写进 AVI（详见 video/rec_mjpeg.c）。
+ * 链路：V4L2 原始 JPEG → NV12 → 画框 → H.264 → MP4（详见 video/rec_annot.c）。
  *   全程不解码、不重编码、不缩放，文件里每一帧与传感器输出完全相同。
  *
  * 线程模型：main 模块表 "rec" 线程，空闲时 100ms 轮询喂狗；
@@ -31,7 +31,6 @@
 #include <time.h>
 
 #include "video/video_rec.h"
-#include "video/rec_mjpeg.h"
 #include "video/rec_annot.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
@@ -309,12 +308,6 @@ static void rec_repair_orphans(void)
             uint32_t riff = (uint32_t)h[4] | ((uint32_t)h[5] << 8) |
                             ((uint32_t)h[6] << 16) | ((uint32_t)h[7] << 24);
             if (riff != 0 && (off_t)riff + 8 == st.st_size) continue;   /* 已完整收尾 */
-            if (rec_mjpeg_repair_file(path) == 0) {
-                repaired++;
-                LOG_INFO("rec: repaired unfinished segment %s", path);
-            } else {
-                LOG_ERROR("rec: cannot repair %s", path);
-            }
         }
         closedir(day);
     }
@@ -393,7 +386,6 @@ void *video_rec_task(void *arg)
             snprintf(dir, sizeof(dir), "%s/%s", REC_DIR, day);
 
             char fname[128] = "";
-            rec_mjpeg_t *mjp = NULL;
 
             /* 空间不足时不要开段：否则写入立刻 ENOSPC，只会反复建/删空文件 */
             unsigned long long free_bytes = 0;
@@ -435,7 +427,7 @@ void *video_rec_task(void *arg)
                      "camera native frames)", rel, pw, ph, fps);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 1;
-            safe_strncpy(g_rec.encoder, sizeof(g_rec.encoder), "mjpeg-native");
+            safe_strncpy(g_rec.encoder, sizeof(g_rec.encoder), "h264-mp4");
             g_rec.start_fail = 0;
             g_rec.start_ms = now_ms();
             g_rec.frames = 0;
@@ -524,7 +516,6 @@ void *video_rec_task(void *arg)
                                                   next_name, sizeof(next_name));
                     if (g_rec.annot) {
                         int finalized = 0;
-                        mjp = NULL;
                         safe_strncpy(cur_name, sizeof(cur_name), next_name);
                         rec_sidecar_open(next_day);   /* 跨天切分时换旁路文件 */
                         safe_strncpy(day, sizeof(day), next_day);
@@ -551,18 +542,6 @@ void *video_rec_task(void *arg)
 
                 uint64_t wts = now_ms();
                 free(jpg);
-                int wr = REC_MJ_OK;   /* 帧已由标注线程异步写入 */
-                if (wr != REC_MJ_OK) {
-                    if (wr == REC_MJ_ERR_IO) {
-                        pthread_mutex_lock(&g_rec.lock);
-                        g_rec.io_error = 2;
-                        pthread_mutex_unlock(&g_rec.lock);
-                        LOG_ERROR("rec: write failed on %s: %s", cur_name, strerror(errno));
-                        io_backoff = 1;
-                    }
-                    done = 1;   /* 到段上限或写失败：收尾后再决定是否续录 */
-                    break;
-                }
                 pthread_mutex_lock(&g_rec.lock);
                 g_rec.frames = rec_annot_frames(g_rec.annot);
                 g_rec.bytes  = rec_annot_bytes(g_rec.annot);
@@ -576,18 +555,6 @@ void *video_rec_task(void *arg)
                     /* 相机帧率随光照变化（实测 30 → 10 fps），而 AVI 头只能声明
                      * 一个速率；段内变化会让回放时长失真最多 3 倍。偏差超过 25%
                      * 就按帧边界切段，新段用实测速率写头。 */
-                    uint64_t elapsed = wts - rec_mjpeg_start_ms(mjp);
-                    uint64_t done_frames = rec_mjpeg_frames(mjp);
-                    if (mjp && rec_mjpeg_refresh(mjp) != 0) {
-                        pthread_mutex_lock(&g_rec.lock);
-                        g_rec.io_error = 2;
-                        pthread_mutex_unlock(&g_rec.lock);
-                        LOG_ERROR("rec: header refresh failed on %s: %s", cur_name,
-                                  strerror(errno));
-                        io_backoff = 1;
-                        done = 1;
-                        break;
-                    }
                     if (g_sidecar) fflush(g_sidecar);
                     last_refresh = wts;
                 }
