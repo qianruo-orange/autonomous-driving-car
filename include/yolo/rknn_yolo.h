@@ -38,10 +38,9 @@ void rknn_yolo_destroy(void *arg);
 int rknn_yolo_enabled(void);
 /* Planned pool replacement pauses annotated frames without a runtime fault. */
 int rknn_yolo_reloading(void);
-/* 返回平台 NPU 核心数（RK3588=3 / RK3576=2 / 其余单核）。 */
+/* RK3576 固定双核 NPU（不再按平台探测）。 */
 int npu_core_count(void);
-/* 本工程固定为 rk3576（不再探测 SoC）。保留该接口仅为兼容旧模型路径迁移。 */
- * device tree is unsupported. Explicit yolo_model paths remain configurable. */
+/* 固定返回 "rk3576"；保留该接口仅为兼容旧模型的路径迁移。 */
 const char *npu_platform_name(void);
 /* Conversion, runtime defaults and uploads share config/yolo26.rknn. */
 void rknn_yolo_default_model_path(char *out, size_t size);
