@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
+
+
+
  * rknn_yolo.c — RKNN + YOLO26 检测主模块：模型管理 + 多线程推理池 + 按序渲染。
  *
  * 数据流（yolo_task 采集线程 + 自适应推理 worker + 1 渲染 composer）：
@@ -66,6 +69,12 @@
 #include "video/jpeg_decoder.h"
 #include "video/rga_preprocess.h"
 #include "video/video_rec.h"
+
+/* 标注录像的 NV12 暂存：解码器出队瞬间拷进来，之后读的就是这份，
+   不再依赖可能已被复用的解码器缓冲。__thread 保证每 worker 独立。 */
+static __thread unsigned char *annot_buf;
+static __thread size_t annot_cap;
+
 
 #define YOLO_MAX_WORKERS 2     /* RK3576：NPU 双核，一核一个线程 */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
@@ -491,7 +500,7 @@ static void *yolo_worker_task(void *arg)
                 xyxy[4 * i + 2] = res.dets[i].x2;
                 xyxy[4 * i + 3] = res.dets[i].y2;
             }
-            video_rec_annot_frame(job.nv12_fd, job.w, job.h, xyxy, n);
+            video_rec_annot_frame(annot_buf, job.w, job.h, xyxy, n);
         }
         if (idx == 0) {
             static unsigned long long last_timing_us;
@@ -1179,7 +1188,16 @@ void *rknn_yolo_task(void *arg)
                 decoder_unavailable = !decoder;
                 if (decoder) {
                     atomic_store(&g_yolo.hardware_decode, 1);
-                    decode_ok = jpeg_decoder_nv12(decoder, raw, raw_len, w, h, &nv12_fd) == 0;
+                    {
+                    size_t need = (size_t)w * h * 3 / 2;
+                    if (annot_cap < need) {
+                        free(annot_buf);
+                        annot_buf = malloc(need);
+                        annot_cap = annot_buf ? need : 0;
+                    }
+                    decode_ok = jpeg_decoder_nv12(decoder, raw, raw_len, w, h,
+                                                  &nv12_fd, annot_buf) == 0;
+                }
                 }
             } else if (fmt == FRAME_RING_FMT_YUYV) {
                 /* YUYV 需要 RGA 直接吃 4:2:2，当前通路只实现 NV12 */

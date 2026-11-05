@@ -333,32 +333,15 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
     return s;
 }
 
-int rec_annot_push(rec_annot_t *s, int nv12_fd, int w, int h,
+int rec_annot_push(rec_annot_t *s, const void *nv12, int w, int h,
                    const rec_annot_box_t *boxes, int count)
 {
-    if (!s || nv12_fd < 0 || w <= 0 || h <= 0) return -1;
+    if (!s || !nv12 || w <= 0 || h <= 0) return -1;
     if (atomic_load((atomic_int *)&s->disabled)) return -1;
     size_t len = (size_t)w * h * 3 / 2;
     unsigned char *copy = malloc(len);
     if (!copy) return -1;
-    void *src = mmap(NULL, len, PROT_READ, MAP_SHARED, nv12_fd, 0);
-    if (src == MAP_FAILED) { free(copy); return -1; }
-    /* 解码器由 DMA 写入，CPU 读取前必须让缓存失效，否则看到的是半旧数据 */
-    struct dma_buf_sync sync = { .flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ };
-    ioctl(nv12_fd, DMA_BUF_IOCTL_SYNC, &sync);
-    memcpy(copy, src, len);
-    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-    ioctl(nv12_fd, DMA_BUF_IOCTL_SYNC, &sync);
-    munmap(src, len);
-    if (getenv("NV12_DUMP")) {
-        static int dumped;
-        if (dumped < 3) {
-            char path[64];
-            snprintf(path, sizeof(path), "/tmp/frame%d.nv12", dumped++);
-            FILE *df = fopen(path, "wb");
-            if (df) { fwrite(copy, 1, len, df); fclose(df); }
-        }
-    }
+    memcpy(copy, nv12, len);          /* 数据由解码器在出队瞬间拷好，这里只是转交 */
 
     pthread_mutex_lock(&s->lock);
     if (!s->running) { pthread_mutex_unlock(&s->lock); free(copy); return -1; }

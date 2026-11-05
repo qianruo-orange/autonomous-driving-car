@@ -29,7 +29,7 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
 
 /* 提交一帧：NV12 dma-buf fd + 该帧的检测框。内部立即拷贝，fd 可马上归还。
    返回 0 成功（或队列丢弃），-1 已停止。 */
-int rec_annot_push(rec_annot_t *s, int nv12_fd, int w, int h,
+int rec_annot_push(rec_annot_t *s, const void *nv12, int w, int h,
                    const rec_annot_box_t *boxes, int count);
 
 /* 停止线程、冲刷编码器、收尾 MP4 并释放。 */

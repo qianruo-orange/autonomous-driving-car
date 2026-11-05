@@ -304,7 +304,7 @@ static int receive_nv12(jpeg_decoder_t *d, unsigned char *dst)
 }
 
 int jpeg_decoder_nv12(jpeg_decoder_t *d, const unsigned char *jpeg, size_t length,
-                      int w, int h, int *nv12_fd)
+                      int w, int h, int *nv12_fd, unsigned char *copy_to)
 {
     if (!d || !jpeg || !nv12_fd || length < 4 || w <= 0 || h <= 0 || w > 8192 || h > 8192 ||
         jpeg[0] != 0xff || jpeg[1] != 0xd8) return -1;
@@ -317,6 +317,8 @@ int jpeg_decoder_nv12(jpeg_decoder_t *d, const unsigned char *jpeg, size_t lengt
         nv12_slot_t *slot = &d->nv12[d->nv12_next];
         d->nv12_next = (d->nv12_next + 1) % NV12_RING;
         rc = receive_nv12(d, slot->va);
+        /* 出队这一刻内核刚把数据交给 CPU；此刻拷贝才不会读到半旧的行 */
+        if (!rc && copy_to) memcpy(copy_to, slot->va, (size_t)w * h * 3 / 2);
         if (!rc) *nv12_fd = slot->fd;
     }
     if (rc) {
