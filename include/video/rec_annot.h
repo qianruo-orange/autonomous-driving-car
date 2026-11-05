@@ -25,7 +25,7 @@ typedef struct {
 
 /* 启动线程并创建第一个 MP4。bitrate_kbps 为 0 时按分辨率估算。 */
 rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, int fps,
-                             int bitrate_kbps);
+                             int bitrate_kbps, char *name_out, size_t name_size);
 
 /* 提交一帧：NV12 dma-buf fd + 该帧的检测框。内部立即拷贝，fd 可马上归还。
    返回 0 成功（或队列丢弃），-1 已停止。 */
@@ -38,5 +38,12 @@ void rec_annot_stop(rec_annot_t *s);
 /* 统计：已编码帧、丢弃帧、最近一帧编码耗时（ms） */
 void rec_annot_stats(const rec_annot_t *s, unsigned long long *frames,
                      unsigned long long *dropped, unsigned *last_ms);
+
+/* 会话统计：已编码帧数与累计字节数（供 /api/rec/status）。 */
+unsigned long long rec_annot_frames(const rec_annot_t *s);
+unsigned long long rec_annot_bytes(const rec_annot_t *s);
+
+/* 当前文件是否已打开（会话启动后第一帧才会真正建文件）。 */
+int rec_annot_active(const rec_annot_t *s);
 
 #endif /* REC_ANNOT_H */

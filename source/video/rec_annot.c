@@ -49,6 +49,7 @@ struct rec_annot {
     int head, tail, count;
 
     char dir[256], prefix[64];
+    char name[128];               /* 会话开始就定好文件名，MP4 按名创建 */
     int w, h, fps, bitrate_kbps;
 
     rec_mp4_t *mp4;
@@ -60,7 +61,7 @@ struct rec_annot {
     MppBuffer buf;
     int enc_ready;
 
-    atomic_ullong frames, dropped;
+    atomic_ullong frames, dropped, bytes_total;
     atomic_uint last_ms;
     atomic_int   disabled;        /* 硬件不可用时置位，永不重试 */
 };
@@ -186,7 +187,7 @@ static void drain_packets(rec_annot_t *s)
         size_t len = mpp_packet_get_length(pkt);
         int eos = mpp_packet_get_eos(pkt);
         if (len && s->mp4) annot_feed(s, ptr, len);
-        if (len) s->segment_bytes += len;
+        if (len) { s->segment_bytes += len; atomic_fetch_add(&s->bytes_total, len); }
         mpp_packet_deinit(&pkt);
         if (eos) break;
     }
@@ -195,7 +196,7 @@ static void drain_packets(rec_annot_t *s)
 static int encode_frame(rec_annot_t *s, annot_frame_t *f)
 {
     if (!s->mp4) {
-        s->mp4 = rec_mp4_create(s->dir, s->prefix, s->w, s->h, s->fps, NULL, 0);
+        s->mp4 = rec_mp4_create_named(s->dir, s->name, s->w, s->h, s->fps);
         if (!s->mp4) return -1;
     }
     if (!s->enc_ready && encoder_open(s) != 0) {
@@ -226,7 +227,7 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     drain_packets(s);
     if (s->segment_bytes >= (uint64_t)ANNOT_SEGMENT_MB * 1024 * 1024) {
         rec_mp4_close(s->mp4);
-        s->mp4 = rec_mp4_create(s->dir, s->prefix, s->w, s->h, s->fps, NULL, 0);
+        s->mp4 = rec_mp4_create_named(s->dir, s->name, s->w, s->h, s->fps);
         s->segment_bytes = 0;
     }
     return 0;
@@ -275,13 +276,22 @@ static void *annot_task(void *arg)
 }
 
 rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, int fps,
-                             int bitrate_kbps)
+                             int bitrate_kbps, char *name_out, size_t name_size)
 {
     if (!dir || !prefix || w <= 0 || h <= 0) return NULL;
     rec_annot_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     snprintf(s->dir, sizeof(s->dir), "%s", dir);
     snprintf(s->prefix, sizeof(s->prefix), "%s", prefix);
+    {
+        time_t now = time(NULL);
+        struct tm tm;
+        char when[32];
+        localtime_r(&now, &tm);
+        strftime(when, sizeof(when), "%Y%m%d_%H%M%S", &tm);
+        snprintf(s->name, sizeof(s->name), "%s_%s.mp4", prefix, when);
+        if (name_out && name_size) snprintf(name_out, name_size, "%s", s->name);
+    }
     s->w = w; s->h = h;
     s->fps = fps > 0 ? fps : 30;
     s->bitrate_kbps = bitrate_kbps > 0 ? bitrate_kbps
@@ -357,4 +367,19 @@ void rec_annot_stats(const rec_annot_t *s, unsigned long long *frames,
     if (frames) *frames = atomic_load(&s->frames);
     if (dropped) *dropped = atomic_load(&s->dropped);
     if (last_ms) *last_ms = atomic_load(&s->last_ms);
+}
+
+unsigned long long rec_annot_frames(const rec_annot_t *s)
+{
+    return s ? (unsigned long long)atomic_load(&s->frames) : 0;
+}
+
+unsigned long long rec_annot_bytes(const rec_annot_t *s)
+{
+    return s ? (unsigned long long)atomic_load(&s->bytes_total) : 0;
+}
+
+int rec_annot_active(const rec_annot_t *s)
+{
+    return s && s->mp4;
 }

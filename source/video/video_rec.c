@@ -409,12 +409,11 @@ void *video_rec_task(void *arg)
             }
 
             pthread_mutex_lock(&g_rec_files_lock);
-            mjp = rec_mjpeg_create(dir, "video", pw, ph, fps, fname, sizeof(fname));
-            if (mjp) {
-                rec_annot_stop(g_rec.annot);
-                g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0);
-            }
-            if (!mjp) {
+            /* 会话由标注录像驱动：MP4 是唯一产物，无损 AVI 不再参与 */
+            rec_annot_stop(g_rec.annot);
+            g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0,
+                                          fname, sizeof(fname));
+            if (!g_rec.annot) {
                 pthread_mutex_unlock(&g_rec_files_lock);
                 pthread_mutex_lock(&g_rec.lock);
                 g_rec.start_fail = 3;
@@ -438,7 +437,7 @@ void *video_rec_task(void *arg)
             g_rec.recording = 1;
             safe_strncpy(g_rec.encoder, sizeof(g_rec.encoder), "mjpeg-native");
             g_rec.start_fail = 0;
-            g_rec.start_ms = rec_mjpeg_start_ms(mjp);
+            g_rec.start_ms = now_ms();
             g_rec.frames = 0;
             g_rec.bytes = 0;
             g_rec.last_frame_ts = 0;
@@ -520,11 +519,12 @@ void *video_rec_task(void *arg)
                     strftime(next_day, sizeof(next_day), "%Y%m%d", &split_tm);
                     snprintf(next_dir, sizeof(next_dir), "%s/%s", REC_DIR, next_day);
                     pthread_mutex_lock(&g_rec_files_lock);
-                    rec_mjpeg_t *next = rec_mjpeg_create(next_dir, "video", pw, ph,
-                                                         fps, next_name, sizeof(next_name));
-                    if (next) {
-                        int finalized = rec_mjpeg_finalize(mjp);
-                        mjp = next;
+                    rec_annot_stop(g_rec.annot);
+                    g_rec.annot = rec_annot_start(next_dir, "annot", pw, ph, fps, 0,
+                                                  next_name, sizeof(next_name));
+                    if (g_rec.annot) {
+                        int finalized = 0;
+                        mjp = NULL;
                         safe_strncpy(cur_name, sizeof(cur_name), next_name);
                         rec_sidecar_open(next_day);   /* 跨天切分时换旁路文件 */
                         safe_strncpy(day, sizeof(day), next_day);
@@ -532,7 +532,7 @@ void *video_rec_task(void *arg)
                         snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
                         pthread_mutex_lock(&g_rec.lock);
                         safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
-                        g_rec.start_ms = rec_mjpeg_start_ms(mjp);
+                        g_rec.start_ms = now_ms();
                         g_rec.frames = g_rec.bytes = 0;
                         g_rec.last_frame_ts = 0;
                         g_rec.split_pending = 0;
@@ -550,8 +550,8 @@ void *video_rec_task(void *arg)
                 }
 
                 uint64_t wts = now_ms();
-                int wr = rec_mjpeg_write_frame(mjp, jpg, jlen, wts);
                 free(jpg);
+                int wr = REC_MJ_OK;   /* 帧已由标注线程异步写入 */
                 if (wr != REC_MJ_OK) {
                     if (wr == REC_MJ_ERR_IO) {
                         pthread_mutex_lock(&g_rec.lock);
@@ -564,12 +564,12 @@ void *video_rec_task(void *arg)
                     break;
                 }
                 pthread_mutex_lock(&g_rec.lock);
-                g_rec.frames = rec_mjpeg_frames(mjp);
-                g_rec.bytes  = rec_mjpeg_bytes(mjp);
+                g_rec.frames = rec_annot_frames(g_rec.annot);
+                g_rec.bytes  = rec_annot_bytes(g_rec.annot);
                 g_rec.last_frame_ts = wts;
                 pthread_mutex_unlock(&g_rec.lock);
 
-                rec_sidecar_frame(cur_name, rec_mjpeg_frames(mjp));
+                rec_sidecar_frame(cur_name, rec_annot_frames(g_rec.annot));
 
                 /* 定期回填头部并落盘：掉电后文件仍可按最后刷新点播放 */
                 if (wts - last_refresh >= REC_REFRESH_MS) {
@@ -578,7 +578,7 @@ void *video_rec_task(void *arg)
                      * 就按帧边界切段，新段用实测速率写头。 */
                     uint64_t elapsed = wts - rec_mjpeg_start_ms(mjp);
                     uint64_t done_frames = rec_mjpeg_frames(mjp);
-                    if (rec_mjpeg_refresh(mjp) != 0) {
+                    if (mjp && rec_mjpeg_refresh(mjp) != 0) {
                         pthread_mutex_lock(&g_rec.lock);
                         g_rec.io_error = 2;
                         pthread_mutex_unlock(&g_rec.lock);
@@ -594,12 +594,11 @@ void *video_rec_task(void *arg)
             }
 
             /* ---- 结束会话（finalize 内部释放对象） ---- */
-            uint32_t n_frames = rec_mjpeg_frames(mjp);
-            uint32_t n_bytes  = rec_mjpeg_bytes(mjp);
+            uint32_t n_frames = (uint32_t)rec_annot_frames(g_rec.annot);
+            uint32_t n_bytes  = (uint32_t)rec_annot_bytes(g_rec.annot);
             pthread_mutex_lock(&g_rec_files_lock);
             rec_annot_stop(g_rec.annot);
             g_rec.annot = NULL;
-            rec_mjpeg_finalize(mjp);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
             g_rec.split_pending = 0;

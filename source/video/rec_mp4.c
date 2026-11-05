@@ -252,6 +252,24 @@ static void write_moov(rec_mp4_t *s)
     box_end(fp, moov);
 }
 
+rec_mp4_t *rec_mp4_create_named(const char *dir, const char *name, int w, int h, int fps)
+{
+    if (!dir || !name || w <= 0 || h <= 0) return NULL;
+    rec_mp4_t *s = calloc(1, sizeof(*s));
+    if (!s) return NULL;
+    s->w = w; s->h = h;
+    s->fps = fps > 0 ? fps : 30;
+    snprintf(s->path, sizeof(s->path), "%s/%s", dir, name);
+    s->fp = fopen(s->path, "wb");
+    if (!s->fp) {
+        LOG_ERROR("rec_mp4: 打开 %s 失败: %s", s->path, strerror(errno));
+        free(s);
+        return NULL;
+    }
+    LOG_INFO("rec_mp4: 标注录像 %s（H.264/MP4）", s->path);
+    return s;
+}
+
 rec_mp4_t *rec_mp4_create(const char *dir, const char *prefix, int w, int h, int fps,
                           char *name_out, size_t name_size)
 {

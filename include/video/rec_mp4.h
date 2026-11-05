@@ -25,6 +25,9 @@ typedef struct rec_mp4 rec_mp4_t;
 rec_mp4_t *rec_mp4_create(const char *dir, const char *prefix, int w, int h, int fps,
                           char *name_out, size_t name_size);
 
+/* 用指定文件名创建（调用方已决定名字，用于会话与文件名对齐）。 */
+rec_mp4_t *rec_mp4_create_named(const char *dir, const char *name, int w, int h, int fps);
+
 /* 写入一帧 Annex-B 访问单元。返回 0 成功，-1 失败。 */
 int rec_mp4_write(rec_mp4_t *s, const unsigned char *annexb, size_t len);
 
