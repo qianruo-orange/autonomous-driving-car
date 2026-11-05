@@ -45,8 +45,6 @@
 /* 单段体积上限：到点就收尾并续录下一段。固定 QP 后码率随画面浮动，
  * 用字节数而不是时长来切，段大小才是可预期的（也方便网页端下载） */
 #define REC_SEGMENT_BYTES    (512ull * 1024ull * 1024ull)
-/* 录制中回填头部并落盘的间隔：掉电后最多丢失这段窗口的索引 */
-#define REC_REFRESH_MS       2000ull
 /* I/O 失败后的退避，避免磁盘满时空转刷日志 */
 #define REC_IO_BACKOFF_US    (5 * 1000 * 1000)
 
@@ -71,12 +69,6 @@ static struct {
     int io_error;
     rec_annot_t *annot;        /* 标注录像（H.264/MP4），唯一的录像产物 */
 } g_rec;
-
-/* 帧时间戳旁路文件：recordings/YYYYMMDD/frames.tsv
- * 每行 <片段名>\t<帧号>\t<单调ms>\t<墙钟ms>，用于把录像帧和日志/CAN 对时。
- * 纯追加，丢电最多丢最后几行；不参与录像文件列表。 */
-static FILE *g_sidecar;
-static char  g_sidecar_day[16];
 
 /* Serialize publication/finalization of file paths with file deletion. This
  * lock is never held during frame writes, network writes, or idle waits.
@@ -238,44 +230,6 @@ static int rec_free_bytes(unsigned long long *out)
     return 0;
 }
 
-static void rec_sidecar_close(void)
-{
-    if (g_sidecar) fclose(g_sidecar);
-    g_sidecar = NULL;
-    g_sidecar_day[0] = '\0';
-}
-
-/* 按天打开（同一天复用）；首次创建写表头 */
-static void rec_sidecar_open(const char *day)
-{
-    if (g_sidecar && !strcmp(g_sidecar_day, day)) return;
-    rec_sidecar_close();
-    char dir[512], path[576];
-    snprintf(dir, sizeof(dir), "%s/%s", REC_DIR, day);
-    snprintf(path, sizeof(path), "%s/frames.tsv", dir);
-    FILE *fp = fopen(path, "a");
-    if (!fp) {
-        LOG_ERROR("rec: cannot open frame index %s: %s", path, strerror(errno));
-        return;
-    }
-    if (ftell(fp) == 0) fputs("# file\tframe\tmono_ms\twall_ms\n", fp);
-    g_sidecar = fp;
-    safe_strncpy(g_sidecar_day, sizeof(g_sidecar_day), day);
-}
-
-static void rec_sidecar_frame(const char *file, unsigned long long frame)
-{
-    if (!g_sidecar) return;
-    struct timespec rt, mono;
-    clock_gettime(CLOCK_REALTIME, &rt);
-    clock_gettime(CLOCK_MONOTONIC, &mono);
-    unsigned long long wall = (unsigned long long)rt.tv_sec * 1000ull +
-                              (unsigned long long)rt.tv_nsec / 1000000ull;
-    unsigned long long mono_ms = (unsigned long long)mono.tv_sec * 1000ull +
-                                 (unsigned long long)mono.tv_nsec / 1000000ull;
-    fprintf(g_sidecar, "%s\t%llu\t%llu\t%llu\n", file, frame, mono_ms, wall);
-}
-
 /* ---- 录制线程 ---- */
 
 void *video_rec_task(void *arg)
@@ -402,17 +356,11 @@ void *video_rec_task(void *arg)
             pthread_mutex_unlock(&g_rec.lock);
             pthread_mutex_unlock(&g_rec_files_lock);
 
-            /* 帧时间旁路：本节起按天追加 */
-            rec_sidecar_open(day);
-
             /* ---- 录制内层循环 ---- */
             int done = 0;
             unsigned long long rec_raw_gap = 0;   /* 因落后于采集而跳过的帧 */
             unsigned long long rec_size_skip = 0; /* 尺寸与配置不符而跳过的帧 */
-            uint64_t last_refresh = now_ms();     /* 上次头部回填时刻 */
             int io_backoff = 0;                   /* 本段因 I/O 失败收尾，需要退避 */
-            char cur_name[128] = "";
-            safe_strncpy(cur_name, sizeof(cur_name), fname);
             while (app->running && !done) {
                 watchdog_feed_self("rec");
                 pthread_mutex_lock(&g_rec.lock);
@@ -477,10 +425,7 @@ void *video_rec_task(void *arg)
                                                   next_name, sizeof(next_name));
                     if (g_rec.annot) {
                         int finalized = 0;
-                        safe_strncpy(cur_name, sizeof(cur_name), next_name);
-                        rec_sidecar_open(next_day);   /* 跨天切分时换旁路文件 */
                         safe_strncpy(day, sizeof(day), next_day);
-                        last_refresh = now_ms();
                         snprintf(rel, sizeof(rel), "%s/%s", next_day, next_name);
                         pthread_mutex_lock(&g_rec.lock);
                         safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
@@ -509,13 +454,6 @@ void *video_rec_task(void *arg)
                 g_rec.last_frame_ts = wts;
                 pthread_mutex_unlock(&g_rec.lock);
 
-                rec_sidecar_frame(cur_name, rec_annot_frames(g_rec.annot));
-
-                /* 定期落盘帧索引：掉电后最多丢这一段窗口的记录 */
-                if (wts - last_refresh >= REC_REFRESH_MS) {
-                    if (g_sidecar) fflush(g_sidecar);
-                    last_refresh = wts;
-                }
             }
 
             /* ---- 结束会话（finalize 内部释放对象） ---- */
@@ -656,7 +594,6 @@ void video_rec_destroy(void *arg)
     g_rec.recording = 0;
     g_rec.cmd = REC_CMD_NONE;
     pthread_mutex_unlock(&g_rec.lock);
-    rec_sidecar_close();
     pthread_mutex_destroy(&g_rec.lock);
 }
 

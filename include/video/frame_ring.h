@@ -99,7 +99,7 @@ typedef struct frame_ring {
     unsigned long long display_seq;   /* 最新已渲染 seq（maintain 释放 rgb 用） */
     unsigned long long displayed_frames;
     unsigned long long processing_age_ms, processing_age_max_ms;
-    /* 产生 processing_age_max_ms 那一刻的单调时钟，用于和 frames.tsv 事后对时 */
+    /* 产生 processing_age_max_ms 那一刻的单调时钟，用于和日志时间戳对时 */
     unsigned long long processing_age_max_at_ms;
     unsigned capture_fps_num, capture_fps_den;
 
