@@ -50,7 +50,7 @@ curl -s http://127.0.0.1/api/video/stats
 
 ### 架构
 
-单个 C/C++ 进程加协作式工作线程。[main.c](source/core/main.c) 按固定顺序运行模块表；共享帧环、结果队列和控制器快照把各阶段连起来。图中蓝色为数据处理，绿色为输出，琥珀色为检查，红色为失败路径。
+单个 C/C++ 进程加协作式工作线程。[main.c](source/core/main.c) 按固定顺序运行模块表；共享帧环、结果队列和控制器快照把各阶段连起来。图中蓝色为数据处理，绿色为输出，琥珀色为检查，红色为失败路径。标注 MP4 与无损 AVI 并行产出，前者带检测框、走硬件 H.264 编码。
 
 #### 运行时总览
 
@@ -58,8 +58,9 @@ curl -s http://127.0.0.1/api/video/stats
 flowchart LR
     Camera["V4L2<br/>相机 MJPEG"] --> Ring["帧环<br/>原始 JPEG + NV12 fd"]
     Ring --> YOLO["RGA letterbox<br/>→ RKNN YOLO26"]
-    Ring -->|原始 JPEG| Video["直播 MJPEG<br/>AVI 录像"]
+    Ring -->|原始 JPEG| Video["无损 AVI 录像<br/>直播 MJPEG"]
     YOLO --> Results["结果队列<br/>最新帧优先"]
+    Results -->|NV12 + 检测框| Annot["标注 MP4<br/>H.264 硬件编码"]
     Results --> Track["视觉跟踪<br/>平滑"]
     Results --> Overlay["浏览器 canvas<br/>框叠加"]
     Video --> Overlay
@@ -70,7 +71,7 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Camera,Ring,YOLO,Results,Track,Follow process
-    class Video,Overlay,CAN,Reports,ANO output
+    class Video,Annot,Overlay,CAN,Reports,ANO output
 ```
 
 #### 感知与媒体流水线
@@ -93,6 +94,8 @@ flowchart LR
     Post --> Latest
     Raw -->|字节一致拷贝| Live["直播 MJPEG<br/>每帧带 X-Seq"]
     Raw -->|字节一致拷贝| AVI["AVI(MJPG)<br/>recordings/YYYYMMDD"]
+    Nv12 -->|同一份 NV12| Annot["标注 MP4<br/>H.264 硬件编码"]
+    Post -.->|检测框| Annot
     Latest --> Api["/api/detections/live"]
     Api --> Browser["浏览器 canvas"]
     Live --> Browser
@@ -100,7 +103,7 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Raw,Nv12,Rga,Canvas,Npu,Post,Latest,Track,Api process
-    class Live,AVI,Browser,Reports output
+    class Live,AVI,Annot,Browser,Reports output
 ```
 
 两个推理线程，每个绑定一个 NPU 核**和**一个 RGA 核：
@@ -418,8 +421,9 @@ outputs, amber nodes are checks, red nodes are failure paths.
 flowchart LR
     Camera["V4L2<br/>camera MJPEG"] --> Ring["Frame ring<br/>raw JPEG + NV12 fd"]
     Ring --> YOLO["RGA letterbox<br/>→ RKNN YOLO26"]
-    Ring -->|Native JPEG| Video["Live MJPEG<br/>AVI recording"]
+    Ring -->|Native JPEG| Video["Lossless AVI<br/>live MJPEG"]
     YOLO --> Results["Result queue<br/>latest frame wins"]
+    Results -->|NV12 + boxes| Annot["Annotated MP4<br/>H.264 hardware encode"]
     Results --> Track["Visual tracking<br/>smoothing"]
     Results --> Overlay["Browser canvas<br/>box overlay"]
     Video --> Overlay
@@ -430,7 +434,7 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Camera,Ring,YOLO,Results,Track,Follow process
-    class Video,Overlay,CAN,Reports,ANO output
+    class Video,Annot,Overlay,CAN,Reports,ANO output
 ```
 
 #### Perception and media pipeline
@@ -453,6 +457,8 @@ flowchart LR
     Post --> Latest
     Raw -->|Byte-identical copy| Live["Live MJPEG<br/>X-Seq per frame"]
     Raw -->|Byte-identical copy| AVI["AVI(MJPG)<br/>recordings/YYYYMMDD"]
+    Nv12 -->|Same NV12| Annot["Annotated MP4<br/>H.264 hardware encode"]
+    Post -.->|Boxes| Annot
     Latest --> Api["/api/detections/live"]
     Api --> Browser["Browser canvas"]
     Live --> Browser
@@ -460,7 +466,7 @@ flowchart LR
     classDef process fill:#dbeafe,stroke:#2563eb,color:#172554
     classDef output fill:#dcfce7,stroke:#15803d,color:#14532d
     class Raw,Nv12,Rga,Canvas,Npu,Post,Latest,Track,Api process
-    class Live,AVI,Browser,Reports output
+    class Live,AVI,Annot,Browser,Reports output
 ```
 
 Two worker threads, each bound to one NPU core **and** one RGA core:
