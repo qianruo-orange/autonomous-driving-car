@@ -599,18 +599,19 @@ static void *yolo_worker_task(void *arg)
         if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_abandon(&job); break; }
         unsigned long long worker_us = yolo_now_us();
 
-        /* letterbox 预处理：优先 RGA 硬件（NV12 dma-buf 一趟完成 CSC + 缩放），
-           否则回退 CPU（RGB 池内缓冲 + cv::resize）。几何参数供后处理逆映射。 */
+        /* letterbox 预处理：只走 RGA（NV12 dma-buf 一趟完成 CSC + 缩放）。
+           几何参数供后处理逆映射。 */
         float lb_scale_x = 1.0f, lb_scale_y = 1.0f; int lb_pad_x = 0, lb_pad_y = 0;
         unsigned char *model_in = NULL;
         if (job.nv12_fd >= 0 && g_yolo.rga)
             model_in = rga_preprocess_run(g_yolo.rga, job.nv12_fd, job.w, job.h,
                                           &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
         if (!model_in) {
-            if (!job.rgb) { yolo_job_abandon(&job); continue; }
-            yolo_rgb_letterbox(job.rgb, job.w, job.h, wk->in_buf, g_yolo.in_w, g_yolo.in_h,
-                               &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
-            model_in = wk->in_buf;
+            static unsigned long long rga_fail;
+            if (!(rga_fail++ % 100u))
+                LOG_ERROR("yolo: RGA letterbox 失败，任务作废（累计 %llu）", rga_fail);
+            yolo_job_abandon(&job);
+            continue;
         }
         unsigned long long prepared_us = yolo_now_us();
 
@@ -1214,15 +1215,18 @@ static int yolo_start_pool(void)
         g_yolo.in_w = s;
         g_yolo.in_h = s;
     }
-    /* RGA 硬件预处理：letterbox + resize 一趟完成，模型输入画布是 CMA dma-buf。
-       打不开 /dev/rga 或分配失败时保持 NULL，自动回退 CPU 路径。 */
-    if (!g_yolo.rga && rga_preprocess_available())
-        g_yolo.rga = rga_preprocess_open(g_yolo.in_w, g_yolo.in_h);
-    if (g_yolo.rga)
-        LOG_INFO("yolo: 预处理使用 RGA 硬件（NV12 → %dx%d letterbox），CPU 缩放已停用",
-                 g_yolo.in_w, g_yolo.in_h);
-    else
-        LOG_INFO("yolo: RGA 不可用，预处理回退 CPU（OpenCV resize）");
+    /* RGA 硬件预处理（letterbox + resize 一趟完成）是必需组件：
+       本工程为全硬件通路，不做 CPU 回退，缺驱动/库直接判为不可用。 */
+    if (!g_yolo.rga) {
+        if (!rga_preprocess_available() || !(g_yolo.rga = rga_preprocess_open(g_yolo.in_w, g_yolo.in_h))) {
+            LOG_ERROR("yolo: RGA 预处理不可用（/dev/rga 或 librga 缺失）；全硬件通路要求 RGA，停止");
+            yolo_free_workers();
+            g_yolo.enabled = 0;
+            return -1;
+        }
+    }
+    LOG_INFO("yolo: 预处理使用 RGA 硬件（NV12 → %dx%d letterbox），CPU 缩放与转换均已移除",
+             g_yolo.in_w, g_yolo.in_h);
 
     LOG_INFO("yolo: input %s, quantization %s, scale %.8g zp %d",
              get_type_string(in_attr.type), get_qnt_type_string(in_attr.qnt_type),
@@ -1427,40 +1431,31 @@ void *rknn_yolo_task(void *arg)
         int fmt = s->fmt, w = s->w, h = s->h;
         unsigned char *raw = s->raw.buf;
         size_t raw_len = s->raw.len;
-        /* RGA 路径不需要 RGB 池缓冲（解码结果留在 NV12 dma-buf 里直接交给 RGA）；
-           CPU 路径仍按旧逻辑取池内 RGB。 */
-        int use_rga = (g_yolo.rga != NULL && fmt == FRAME_RING_FMT_MJPEG);
+        /* 全硬件通路：解码结果只以 NV12 dma-buf 形式交给 RGA，不再产生 RGB。 */
         ring_buf_t rgbb = { 0 };
         int nv12_fd = -1;
-        if (!use_rga) {
-            frame_ring_buf_take_locked(ring, FRAME_RING_POOL_RGB, (size_t)w * h * 3, &rgbb);
-        }
         frame_ring_unlock(ring);
 
         /* The claim holds the camera buffer while JPEG is submitted to DMA. */
         int decode_ok = 0, decoder_unavailable = 0;
         unsigned long long decode_start_us = yolo_now_us();
-        if (raw && (use_rga || rgbb.buf) && w > 0 && h > 0) {
+        if (raw && w > 0 && h > 0) {
             if (fmt == FRAME_RING_FMT_MJPEG) {
                 if (!decoder) decoder = jpeg_decoder_open();
                 decoder_unavailable = !decoder;
                 if (decoder) {
                     atomic_store(&g_yolo.hardware_decode, 1);
-                    if (use_rga)
-                        decode_ok = jpeg_decoder_nv12(decoder, raw, raw_len, w, h, &nv12_fd) == 0;
-                    else
-                        decode_ok = jpeg_decoder_rgb(decoder, raw, raw_len, rgbb.buf, w, h) == 0;
+                    decode_ok = jpeg_decoder_nv12(decoder, raw, raw_len, w, h, &nv12_fd) == 0;
                 }
-            } else if (fmt == FRAME_RING_FMT_YUYV && raw_len >= (size_t)w * h * 2) {
-                yolo_yuyv_to_rgb(raw, w, h, rgbb.buf);
-                decode_ok = 1;
+            } else if (fmt == FRAME_RING_FMT_YUYV) {
+                /* YUYV 需要 RGA 直接吃 4:2:2，当前通路只实现 NV12 */
+                LOG_ERROR("yolo: 全硬件通路只支持 MJPEG/NV12 输入，当前帧格式不支持");
+                decoder_unavailable = 1;
             }
         }
         g_yolo.last_seq = seq;
         if (!decode_ok) {
             frame_ring_lock(ring);
-            if (rgbb.buf)
-                frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
             frame_ring_infer_unclaim_locked(ring, s, 0);   /* 解码失败：infer_dropped++ */
             frame_ring_unlock(ring);
             pthread_mutex_unlock(&g_producer_mutex);

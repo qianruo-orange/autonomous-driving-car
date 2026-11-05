@@ -228,10 +228,13 @@ sudo mkdir -p /usr/local/include/rga && sudo cp librga/include/*.h /usr/local/in
 sudo /sbin/ldconfig
 ```
 
-If the library or `/dev/rga` is missing, the worker logs a warning and falls back
-to the CPU path (`cv::resize`), so the binary still runs on a kernel built without
-the RGA driver. On the board this moved resize from 2 ms to 1 ms and end-to-end
-latency from 47 ms to 44 ms.
+RGA is a **required** component: this project has no CPU fallback for
+preprocessing. Startup checks `/dev/rga` and loads `librga.so` with `dlopen`
+(it is deliberately not in `DT_NEEDED`, so a missing library produces a clear
+error instead of a loader failure); if either is unavailable the inference pool
+refuses to start and the application aborts with an explicit message. On the
+board this moved resize from 2 ms to 1 ms and end-to-end latency from 47 ms to
+44 ms.
 
 ## Hardware and software requirements
 

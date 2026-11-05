@@ -46,7 +46,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 | 采集 2560×1440 → 1280×720 | −5 ms | 此前一直误用 1440p |
 | 运行时 2.3.0 → 2.5.0 | 同模型 −25% | 官方 notes 的多输入输出 CPU 负载优化 |
 | 类别输出 NCHW → NHWC | −2 ms（post 4→1） | 逐锚点读 80 个分数由跨 5376 字节变连续 |
-| **letterbox+resize 改用 RGA 硬件** | **−3 ms（47→44）** | 解码只输出 NV12 dma-buf，RGA 一趟完成 CSC+缩放；resize 2→1 ms，且省掉 CPU 的 NV12→RGB 转换 |
+| **letterbox+resize 改用 RGA 硬件** | **−3 ms（47→44）** | 解码只输出 NV12 dma-buf，RGA 一趟完成 CSC+缩放；resize 2→1 ms，且省掉 CPU 的 NV12→RGB 转换。**全硬件通路，无 CPU 回退**：RGA 缺失时推理池拒绝启动 |
 | 框输出 FP16 | 精度 +2.45 mAP50-95 | 延迟无变化，见量化报告 16 |
 
 ## 4. 验证后否定的方案

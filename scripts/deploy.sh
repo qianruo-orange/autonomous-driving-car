@@ -89,7 +89,7 @@ do_uninstall() {
 }
 
 # RGA 预处理依赖 librga.so（运行时动态加载）与 /dev/rga 设备。
-# 库缺失不致命：应用会自动回退 CPU 路径，但每帧慢约 3 ms，所以这里尽量装上。
+# 全硬件通路要求 RGA：库/设备缺失时推理池不会启动，部署阶段先装好并提示。
 install_rga_library() {
     local lib=/usr/local/lib/librga.so
     local inc=/usr/local/include/rga
@@ -116,13 +116,13 @@ install_rga_library() {
             /sbin/ldconfig
         else
             echo "[WARN] librga.so 未安装且未找到源文件（可用 LIBRGA_SOURCE 指定）"
-            echo "        预处理将回退 CPU 路径，每帧多约 3 ms；安装方式见 README「Preprocessing on the RGA」"
+            echo "        全硬件通路要求 RGA：缺库时推理池不会启动；安装方式见 README「Preprocessing on the RGA」"
         fi
     fi
     if [ -e /dev/rga ]; then
         echo "[CHECK] /dev/rga 存在（RGA 驱动已加载）"
     else
-        echo "[WARN] /dev/rga 不存在：内核未带 RGA 驱动，预处理回退 CPU 路径"
+        echo "[WARN] /dev/rga 不存在：内核未带 RGA 驱动；全硬件通路要求 RGA，推理池不会启动"
     fi
 }
 
