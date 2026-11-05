@@ -132,6 +132,50 @@ static int encoder_open(rec_annot_t *s)
     return 0;
 }
 
+/* MPP 可能把 SPS/PPS/SEI 单独成包：缓存到下一个切片包，拼成完整访问单元。 */
+static unsigned char *pending;
+static size_t pending_len, pending_cap;
+
+static int pkt_has_vcl(const unsigned char *buf, size_t len)
+{
+    for (size_t i = 0; i + 4 <= len; i++)
+        if (buf[i] == 0 && buf[i+1] == 0 && buf[i+2] == 1) {
+            int t = buf[i+3] & 0x1f;
+            if (t == 1 || t == 5) return 1;
+            i += 2;
+        }
+    return 0;
+}
+
+static void annot_feed(rec_annot_t *s, const unsigned char *p, size_t len)
+{
+    if (!pkt_has_vcl(p, len)) {
+        if (pending_len + len > pending_cap) {
+            size_t cap = pending_len + len + 4096;
+            unsigned char *grown = realloc(pending, cap);
+            if (!grown) return;
+            pending = grown; pending_cap = cap;
+        }
+        memcpy(pending + pending_len, p, len);
+        pending_len += len;
+        return;
+    }
+    if (pending_len) {
+        unsigned char *joined = malloc(pending_len + len);
+        if (joined) {
+            memcpy(joined, pending, pending_len);
+            memcpy(joined + pending_len, p, len);
+            rec_mp4_write(s->mp4, joined, pending_len + len);
+            free(joined);
+        } else {
+            rec_mp4_write(s->mp4, p, len);
+        }
+        pending_len = 0;
+    } else {
+        rec_mp4_write(s->mp4, p, len);
+    }
+}
+
 static void drain_packets(rec_annot_t *s)
 {
     for (;;) {
@@ -140,10 +184,8 @@ static void drain_packets(rec_annot_t *s)
         const unsigned char *ptr = mpp_packet_get_pos(pkt);
         size_t len = mpp_packet_get_length(pkt);
         int eos = mpp_packet_get_eos(pkt);
-        if (len && s->mp4) {
-            rec_mp4_write(s->mp4, ptr, len);
-            s->segment_bytes += len;
-        }
+        if (len && s->mp4) annot_feed(s, ptr, len);
+        if (len) s->segment_bytes += len;
         mpp_packet_deinit(&pkt);
         if (eos) break;
     }

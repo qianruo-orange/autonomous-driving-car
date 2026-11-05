@@ -703,10 +703,7 @@ static void http_live_stream(int fd)
     unsigned long long idle_ms = 0;
     while (idle_ms < 15000) {
         int rc = live_h264_next(cur, &buf, &len);
-        if (rc < 0) {
-            if (!live_h264_init(&buf, &len) || live_send_all(fd, buf, len) != 0) break;
-            continue;
-        }
+        if (rc < 0) continue;   /* 落后：游标已跳到最旧分片，丢帧但保持流连续 */
         if (rc == 0) { usleep(5000); idle_ms += 5; continue; }
         if (live_send_all(fd, buf, len) != 0) break;
         idle_ms = 0;
