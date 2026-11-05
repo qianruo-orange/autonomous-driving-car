@@ -65,6 +65,7 @@
 #include "video/frame_ring.h"
 #include "video/jpeg_decoder.h"
 #include "video/rga_preprocess.h"
+#include "video/video_rec.h"
 
 #define YOLO_MAX_WORKERS 2     /* RK3576：NPU 双核，一核一个线程 */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
@@ -480,6 +481,18 @@ static void *yolo_worker_task(void *arg)
         res.decode_end_us = job.decode_end_us;
         res.post_done_us = yolo_now_us();
         yolo_record_result(&job, &res);
+        /* 标注录像：把本帧 NV12 与检测框交给编码线程（内部立即拷贝） */
+        if (job.nv12_fd >= 0 && res.count > 0) {
+            float xyxy[YOLO_MAX_DETS * 4];
+            int n = res.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : res.count;
+            for (int i = 0; i < n; i++) {
+                xyxy[4 * i + 0] = res.dets[i].x1;
+                xyxy[4 * i + 1] = res.dets[i].y1;
+                xyxy[4 * i + 2] = res.dets[i].x2;
+                xyxy[4 * i + 3] = res.dets[i].y2;
+            }
+            video_rec_annot_frame(job.nv12_fd, job.w, job.h, xyxy, n);
+        }
         if (idx == 0) {
             static unsigned long long last_timing_us;
             unsigned long long finished_us = yolo_now_us();

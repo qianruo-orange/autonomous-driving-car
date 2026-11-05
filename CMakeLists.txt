@@ -105,6 +105,15 @@ find_library(LIBNLROUTE3 nl-route-3 REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBNLROUTE3})
 
 # RKNN NPU 运行时（librknnrt.so，板载 /usr/lib）
+# Rockchip MPP（librockchip_mpp）：标注录像用硬件 H.264 编码
+find_library(LIBRKMPP rockchip_mpp)
+if (LIBRKMPP)
+    target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKMPP})
+    target_include_directories(autonomous-driving-car PRIVATE /usr/local/include)
+else()
+    message(WARNING "librockchip_mpp 未找到：标注录像不可用")
+endif()
+
 find_library(LIBRKNNRT rknnrt REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 

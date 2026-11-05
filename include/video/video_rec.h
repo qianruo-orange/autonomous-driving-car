@@ -62,4 +62,9 @@ int video_rec_delete_file(int day_fd, const char *relative);
 /* 拷贝当前录制状态 */
 int video_rec_status(video_rec_status_t *out);
 
+
+/* 标注录像：把一帧 NV12（dma-buf）连同检测框交给标注编码线程。
+   xyxy 为 count 组 x1,y1,x2,y2（原图像素）。未启用标注录像时为空操作。 */
+void video_rec_annot_frame(int nv12_fd, int w, int h, const float *xyxy, int count);
+
 #endif /* VIDEO_REC_H */

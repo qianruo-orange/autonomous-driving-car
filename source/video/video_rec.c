@@ -32,6 +32,7 @@
 
 #include "video/video_rec.h"
 #include "video/rec_mjpeg.h"
+#include "video/rec_annot.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 #include "core/common.h"
@@ -66,6 +67,7 @@ static struct {
     /* 本节会话累计的跳过帧与错误态（供 /api/rec/status） */
     unsigned long long skipped_cadence, skipped_size;
     int io_error;
+    rec_annot_t *annot;        /* 标注录像（H.264/MP4），与无损 AVI 并行 */
 } g_rec;
 
 /* 帧时间戳旁路文件：recordings/YYYYMMDD/frames.tsv
@@ -407,6 +409,10 @@ void *video_rec_task(void *arg)
 
             pthread_mutex_lock(&g_rec_files_lock);
             mjp = rec_mjpeg_create(dir, "video", pw, ph, fps, fname, sizeof(fname));
+            if (mjp) {
+                rec_annot_stop(g_rec.annot);
+                g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0);
+            }
             if (!mjp) {
                 pthread_mutex_unlock(&g_rec_files_lock);
                 pthread_mutex_lock(&g_rec.lock);
@@ -604,6 +610,8 @@ void *video_rec_task(void *arg)
             uint32_t n_frames = rec_mjpeg_frames(mjp);
             uint32_t n_bytes  = rec_mjpeg_bytes(mjp);
             pthread_mutex_lock(&g_rec_files_lock);
+            rec_annot_stop(g_rec.annot);
+            g_rec.annot = NULL;
             rec_mjpeg_finalize(mjp);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
@@ -739,4 +747,19 @@ void video_rec_destroy(void *arg)
     pthread_mutex_unlock(&g_rec.lock);
     rec_sidecar_close();
     pthread_mutex_destroy(&g_rec.lock);
+}
+
+void video_rec_annot_frame(int nv12_fd, int w, int h, const float *xyxy, int count)
+{
+    if (!g_rec.annot || nv12_fd < 0 || !xyxy || count <= 0) return;
+    rec_annot_box_t boxes[32];
+    int n = count > 32 ? 32 : count;
+    for (int i = 0; i < n; i++) {
+        boxes[i].x1 = xyxy[4 * i + 0];
+        boxes[i].y1 = xyxy[4 * i + 1];
+        boxes[i].x2 = xyxy[4 * i + 2];
+        boxes[i].y2 = xyxy[4 * i + 3];
+        boxes[i].cls = 0;
+    }
+    rec_annot_push(g_rec.annot, nv12_fd, w, h, boxes, n);
 }
