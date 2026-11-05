@@ -20,15 +20,16 @@
 
 #define REC_DIR PATH_RECORDINGS
 
-/* 单文件名合法性：video_*.mp4 / video_*.avi */
+/* 单文件名合法性：video_*.avi（无损）、annot_*.mp4（标注）、rec_*.* */
 static int rec_file_valid(const char *name)
 {
     size_t len = name ? strlen(name) : 0;
-    size_t prefix = name && !strncmp(name, "video_", 6) ? 6 : 4;
-    /* .avi 是无损录像（相机原生 MJPEG 直封 AVI），.mp4 是旧 H.264 段 */
+    size_t prefix = name && (!strncmp(name, "video_", 6) || !strncmp(name, "annot_", 6)) ? 6 : 4;
+    /* .avi 是无损录像（相机原生 MJPEG 直封 AVI），.mp4 是标注 H.264 录像 */
     int suffix_ok = len >= 4 && (!strcmp(name + len - 4, ".mp4") ||
                                  !strcmp(name + len - 4, ".avi"));
-    if (len < prefix + 5 || (strncmp(name, "rec_", 4) && strncmp(name, "video_", 6)) ||
+    if (len < prefix + 5 ||
+        (strncmp(name, "rec_", 4) && strncmp(name, "video_", 6) && strncmp(name, "annot_", 6)) ||
         !suffix_ok)
         return 0;
     for (size_t i = prefix; i + 4 < len; i++)

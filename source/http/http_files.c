@@ -88,7 +88,7 @@ static int file_kind(const char *name, int kind)
 {
     size_t n=strlen(name);
     if(kind==1) return n>4 && (!strcmp(name+n-4,".mp4")||!strcmp(name+n-4,".avi")) &&
-        (!strncmp(name,"rec_",4)||!strncmp(name,"video_",6));
+        (!strncmp(name,"rec_",4)||!strncmp(name,"video_",6)||!strncmp(name,"annot_",6));
     if(kind==2) return n>4 && !strcmp(name+n-4,".txt") &&
         (!strncmp(name,"detections_",11)||!strncmp(name,"result_",7));
     return n>4 && (strstr(name,".log")!=NULL) && name[0]!='.';
