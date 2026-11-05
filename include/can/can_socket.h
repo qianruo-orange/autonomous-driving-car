@@ -62,7 +62,6 @@ typedef struct {
 } can_binding_t;
 /* CAN validates the configured port and verifies it is a system CAN interface.
  * The returned generation handle binds port, ID, format and destination slot. */
-uint64_t can_component_register(const can_binding_t *);
 /* 仅填业务句柄和载荷；接口、CAN ID、帧格式由 CAN 模块封装。 */
 int can_send(uint64_t handle, const void *data, size_t length);
 /* Motor control already holds can_mutex: bounded immediate send, no stale queue. */

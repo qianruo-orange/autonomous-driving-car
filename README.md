@@ -271,7 +271,7 @@ curl -s http://127.0.0.1/api/system
 
 业务模块注册自己的通信地址并持有接收槽。发送只用**句柄 + 数据 + 长度**，传输层负责解析端口、连接、CAN ID 和帧格式。
 
-- TCP 用 `tcp_component_register()`，CAN 用 `can_component_register()`。
+- TCP 用两阶段注册：`tcp_prepare_register()` 准备，配置保存成功后再 `tcp_commit_register()` 提交；CAN 用 `can_locked_register()`。
 - 发送用 `tcp_send(handle, data, length)` / `can_send(handle, data, length)`。
 - 接收用业务自持槽上的 `data_slot_pop()`。
 
@@ -704,7 +704,7 @@ Business modules register their addresses and own their receive slots. Sending
 uses only **handle + data + length**; the transport resolves ports, connections,
 CAN IDs and frame formats.
 
-- TCP: `tcp_component_register()`, CAN: `can_component_register()`.
+- TCP: `tcp_prepare_register()` then `tcp_commit_register()` once the configuration is saved; CAN: `can_locked_register()`.
 - Send: `tcp_send(handle, data, length)` / `can_send(handle, data, length)`.
 - Receive: `data_slot_pop()` on the business-owned slot.
 

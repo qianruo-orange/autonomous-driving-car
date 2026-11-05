@@ -42,7 +42,7 @@ flowchart LR
 
 ## 3 TCP 注册和连接流
 
-业务准备自己的 `tcp_slot_t` 和 `tcp_component_t`，通过 `tcp_component_register()` 注册端口。成功返回非零的端口业务句柄，失败返回 `0` 并设置 `errno`。
+业务准备自己的 `tcp_slot_t` 和 `tcp_component_t`，通过 `tcp_prepare_register()` 准备端口、配置保存成功后再 `tcp_commit_register()` 提交（两阶段：准备阶段失败可以放弃，不会留下半开端口）。首次注册时 `previous` 传 `0`；改端口时传旧句柄以便原子替换。
 
 ```c
 static tcp_slot_t rx;
@@ -51,7 +51,11 @@ static const tcp_component_t component = {.slot = &rx};
 if (tcp_slot_init(&rx) != 0) {
     /* 初始化失败，不能注册。 */
 }
-uint64_t port_handle = tcp_component_register(9000, &component, NULL);
+tcp_service_stage_t stage;
+if (tcp_prepare_register(ctx, 0, 1, 9000, &component, NULL, &stage) != 0) {
+    /* 准备失败：端口未创建，配置也不用改。 */
+}
+tcp_commit_register(ctx, &stage);      /* 配置保存成功后再提交 */
 ```
 
 业务也可以设置组件的 `poll` 方法，让共享 TCP 工作线程在传输锁外消费该槽；不用 `poll` 时，业务自己的线程负责出槽。组件描述符和槽必须持续有效，不能把短生命周期的局部对象绑定到长期运行的端口。
@@ -71,7 +75,7 @@ TCP 有两类句柄：
 
 | 句柄 | 来源 | 发送目标 |
 | --- | --- | --- |
-| 端口句柄 | `tcp_component_register()` 或配置注册提交结果 | 当前端口的客户端，广播发送 |
+| 端口句柄 | `tcp_prepare_register()` + `tcp_commit_register()` 提交后得到 | 当前端口的客户端，广播发送 |
 | 连接句柄 | 槽内 `TCP_CONNECTED`、`TCP_DATA` 等事件的 `handle` | 对应的当次客户端连接 |
 
 句柄包含代际信息，不是系统 fd。客户端断开后，旧连接句柄不能因为 fd 被系统复用而指向新客户端。端口注销再注册后，旧端口句柄也会失效。
@@ -167,7 +171,7 @@ can_binding_t binding = {
     .fd = 0,
     .slot = &rx
 };
-uint64_t handle = can_component_register(&binding);
+uint64_t handle = can_locked_register(&binding);   /* 电机绑定走加锁版本 */
 ```
 
 注册对象的元数据由 CAN 模块复制保存。槽仍属于业务模块。扩展 ID 要明确设置 `CAN_EFF_FLAG`；经典 CAN 和 CAN FD 的发送格式由注册项的 `fd` 字段确定。

@@ -300,14 +300,6 @@ void tcp_cancel_register(tcp_ctx_t *ctx, tcp_service_stage_t *stage)
     pthread_mutex_unlock(&p->lock);
     pthread_mutex_unlock(&ctx->registry_lock);
 }
-uint64_t tcp_component_register(int port, const tcp_component_t *component, void *user)
-{
-    tcp_service_stage_t stage;
-    if (tcp_prepare_register(server, 0, 1, port, component, user, &stage))
-        return 0;
-    tcp_commit_register(server, &stage);
-    return stage.handle;
-}
 /* 发送路径从句柄还原绑定，不接受业务传入端口、fd 或协议地址。 */
 int tcp_send(uint64_t handle, const void *data, size_t length)
 {

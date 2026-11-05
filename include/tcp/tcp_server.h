@@ -47,7 +47,6 @@ typedef struct {
  * prepare/commit/cancel_register 仅用于需要先保存配置、再切换端口的场景；
  * 准备失败不改变现有连接，准备成功后 commit 不再做可能失败的 socket 操作。 */
 /* Returns a business handle; zero means failure. Register after tcp_init. */
-uint64_t tcp_component_register(int port, const tcp_component_t *, void *user);
 int tcp_prepare_register(tcp_ctx_t *, uint64_t previous_handle, int enabled, int port,
                          const tcp_component_t *, void *user, tcp_service_stage_t *);
 void tcp_commit_register(tcp_ctx_t *, tcp_service_stage_t *);

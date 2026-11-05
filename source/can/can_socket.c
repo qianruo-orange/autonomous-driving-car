@@ -143,26 +143,6 @@ uint64_t can_locked_register(const can_binding_t *spec)
     bindings[i].handle = ((uint64_t)binding_generation << 8) | i;
     return bindings[i].handle;
 }
-uint64_t can_component_register(const can_binding_t *spec)
-{
-    if (!can_app) {
-        errno = ENODEV;
-        return 0;
-    }
-    pthread_mutex_lock(&can_app->can_mutex);
-    uint64_t handle = can_locked_register(spec);
-    if (handle) {
-        int i = binding_index(handle),
-            index = can_iface_index(can_app->can->ifaces, can_app->can->count, bindings[i].port);
-        can_iface_t *iface = &can_app->can->ifaces[index];
-        if (iface->sock_fd >= 0 && can_socket_apply_filters(can_app, iface, iface->sock_fd)) {
-            bindings[i].used = 0;
-            handle = 0;
-        }
-    }
-    pthread_mutex_unlock(&can_app->can_mutex);
-    return handle;
-}
 int can_locked_unregister(uint64_t handle)
 {
     int i = binding_index(handle);
