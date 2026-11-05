@@ -1137,7 +1137,7 @@ static int yolo_start_pool(void)
     int cores = npu_core_count();
     if (cores < 1) cores = 1;
     (void)cores;
-    int capacity = 2;
+    int capacity = 2;   /* 固定两线程：NPU 只有两核，多开只会让同一核上串行 */
     g_yolo.nthreads = capacity;
     __atomic_store_n(&g_yolo.active_workers, capacity, __ATOMIC_RELAXED);
     memset(&g_yolo.adaptive_window, 0, sizeof(g_yolo.adaptive_window));
