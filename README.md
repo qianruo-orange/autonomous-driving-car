@@ -8,15 +8,17 @@
 
 自动驾驶小车（Autonomous Driving Car）是一个**感知、推理、控制**一体化的 Linux 车载平台。当前版本把相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、无损录像和浏览器管理界面跑在同一个 C/C++ 应用里。LLM 推理属于规划能力，尚未实现。
 
-目标板是 **Radxa ROCK 4D / RK3576**，工程只针对这颗 SoC：NPU 核数、RGA 核选择和模型平台都是编译期常量，不做运行时探测。
+目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核和模型平台都按这颗 SoC 在编译期确定，运行时无需探测。
 
-整条推理链路全硬件化，**没有 CPU 回退**：
+推理链路全部由硬件完成：
 
 ```
 相机 MJPEG → jpegd（NV12 dma-buf）→ RGA（色彩转换 + letterbox）→ NPU → C 后处理
 ```
 
-没有 CPU 缩放回退、没有自适应线程池、服务端也不画框。视频端到端无损：直播转发相机原始 MJPEG 字节，录像把同样的字节直接写入 AVI。检测框由浏览器 canvas 叠加，按帧序号对齐。
+三个加速器分工明确：JPEG 解码器输出 NV12，RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 只承担后处理与结果分发。端到端 44 ms，整机 CPU 占用约 2 %。
+
+视频保持传感器原始画质：直播转发相机 MJPEG 字节，录像把同样的字节写入 AVI，画面与相机输出完全一致。检测框由浏览器 canvas 按帧序号叠加，不进入直播和录像画面。
 
 ### 实测性能
 
@@ -108,7 +110,7 @@ flowchart LR
 | `yolo_infer` 0 | Core 0（`mask 0x1`） | RGA2E core 0（`0x4`） |
 | `yolo_infer` 1 | Core 1（`mask 0x2`） | RGA2E core 1（`0x8`） |
 
-解码线程把帧留在 NV12 dma-buf 里；worker 让 RGA 一趟完成色彩转换与缩放，写进 CMA 画布，再把画布地址直接交给 `rknn_inputs_set`。两个加速器之间没有任何拷贝。
+解码线程把帧留在 NV12 dma-buf 里；worker 让 RGA 一趟完成色彩转换与缩放，写进 CMA 画布，再把画布地址直接交给 `rknn_inputs_set`——RGA 与 NPU 之间零拷贝。
 
 #### Web 管理、CAN 与监控
 
@@ -144,7 +146,7 @@ flowchart LR
 
 **采集。** V4L2 MJPEG，1280×720，30 fps。设备通过稳定路径（`/dev/v4l/by-id/...`）打开，因为新增内置媒体驱动会改变 `/dev/videoN` 编号。
 
-**解码。** `rockchip-jpegd` 解到 CMA dma-buf 里的 NV12。这条路径上没有软件 JPEG 解码器，也没有 CPU 色彩转换。
+**解码。** `rockchip-jpegd` 把 JPEG 解到 CMA dma-buf 里的 NV12，解码与色彩转换全部由硬件完成。
 
 **预处理。** RGA 一次调用完成 NV12 → RGB、等比缩放和居中放置到 512×512 画布，约 1 ms。114 灰边只在启动时填一次，之后每帧 RGA 只写中心区域。
 
@@ -167,7 +169,7 @@ worker 只对框张量向运行时请求 float，类别分数自己反量化。�
 
 ### RGA 预处理
 
-RGA 是**必需组件**，没有 CPU 回退。启动时应用检查 `/dev/rga` 并用 `dlopen` 加载 `librga.so`；缺任何一项，推理池拒绝启动并明确报错退出。`librga` 刻意不写进 `DT_NEEDED`，这样缺库时得到的是这条错误信息，而不是 `main` 之前的动态加载失败。
+预处理全部在 RGA 上完成，它是必需组件。启动时应用检查 `/dev/rga` 并用 `dlopen` 加载 `librga.so`；缺任何一项，推理池拒绝启动并明确报错退出。`librga` 刻意不写进 `DT_NEEDED`，这样缺库时得到的是这条错误信息，而不是 `main` 之前的动态加载失败。
 
 每块板子安装一次：
 
@@ -205,7 +207,7 @@ RK3576 的 RGA2E 在内核里以 **RGA2** 设备注册，因此按核调度要�
 
 主页与 DBC 页用本地 Linux 账号做 HTTP Basic 认证；配置、日志和管理操作要求 `root` 或 `sudo` 组。部分只读状态接口完全公开。
 
-资源卡片显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 驱动没有负载计数器，因此占用率由应用自行统计——对每次 `improcess` 调用按核计时，1 秒滑窗算出。
+资源卡片显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 占用率由应用按核计时统计——对每次 `improcess` 调用计时，按 1 秒滑窗汇总。
 
 Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。槽位在最后一个连接关闭 30 秒后过期，多余地址收到 HTTP 503。
 
@@ -219,9 +221,9 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 ### 录像与可观测性
 
-录像无损且自动开始。每次会话先实测真实采集节奏，然后写 `recordings/YYYYMMDD/video_<日期>_<时间>.avi`，把相机 JPEG 帧原样存入 AVI(MJPG) 容器，带完整 `idx1` 索引和文件头回填。没有编码器、没有码率目标、没有画质选项，所以文件大小等于相机自身数据率：720p/30fps 下约 **1.9 MB/s**，即 **6.8 GB/小时**。文件在约 **1.9 GB**（约 16 分钟）时自动分段，录像在新文件里继续。
+录像无损且自动开始。每次会话先实测真实采集节奏，然后写 `recordings/YYYYMMDD/video_<日期>_<时间>.avi`，把相机 JPEG 帧原样存入 AVI(MJPG) 容器，带完整 `idx1` 索引和文件头回填。容器里存的就是相机 JPEG 帧本身，画质与传感器输出一致，文件大小等于相机自身数据率：720p/30fps 下约 **1.9 MB/s**，即 **6.8 GB/小时**。文件在约 **1.9 GB**（约 16 分钟）时自动分段，录像在新文件里继续。
 
-录像从不等待推理，所以模型卡住或重载不会中断录像。反过来，录像帧里没有框——框只存在于浏览器叠加层。需要带框的画面请看直播。
+录像从不等待推理，所以模型卡住或重载不会中断录像。录像保留相机原始画面，检测框只存在于浏览器叠加层；需要带框的画面请看直播。
 
 每日 TXT 记录所有完成的推理，包括没有检测到目标的帧：采集时间、帧序号、图像尺寸、可用的镜头位置、目标序号/类别/置信度，以及原图坐标 `X1 X2 Y1 Y2`。写入在推理线程之外批量进行。
 
@@ -352,20 +354,25 @@ visual tracking, differential wheel control, CAN/CAN-FD communication, lossless
 recording and a browser management interface as one C/C++ application.
 LLM inference is planned, not implemented.
 
-The target board is the **Radxa ROCK 4D / RK3576** and the project is written for
-that SoC only: NPU core count, RGA core selection and the model platform are
-compile-time constants, not runtime probes.
+The target board is the **Radxa ROCK 4D / RK3576**, and the NPU cores, RGA cores
+and model platform are fixed for that SoC at compile time, so nothing is probed
+at runtime.
 
-The entire inference pipeline is hardware-accelerated and hardware-only:
+The whole inference chain runs on hardware accelerators:
 
 ```
 camera MJPEG → jpegd (NV12 dma-buf) → RGA (CSC + letterbox) → NPU → C postprocess
 ```
 
-There is no CPU fallback for preprocessing, no adaptive worker pool, and no
-server-side box drawing. Video is lossless end to end: live view forwards the
-camera's own MJPEG bytes, and recording writes those same bytes into AVI. Boxes
-are overlaid in the browser on a canvas, aligned by frame sequence number.
+Each accelerator has one job: the JPEG decoder produces NV12, RGA does colour
+conversion and scaling in one pass, the NPU emits the detection tensors, and the
+CPU only handles postprocessing and result dispatch. End to end this is 44 ms at
+about 2 % whole-system CPU load.
+
+Video keeps the sensor's own quality: live view forwards the camera's MJPEG
+bytes and recording writes the same bytes into AVI, so what you get is exactly
+what the camera produced. Boxes are overlaid by the browser canvas, aligned by
+frame sequence number, and never enter the stream or the recording.
 
 ### Measured performance
 
@@ -466,8 +473,8 @@ Two worker threads, each bound to one NPU core **and** one RGA core:
 
 The decode thread keeps the frame in an NV12 dma-buf; the worker asks RGA for
 colour conversion plus scaling in one pass into a CMA-backed model canvas, and
-passes that canvas address straight to `rknn_inputs_set`. Nothing is copied
-between the accelerators.
+passes that canvas address straight to `rknn_inputs_set`, giving a zero-copy
+handoff between RGA and NPU.
 
 #### Web management, CAN and supervision
 
@@ -508,8 +515,8 @@ threads log and reset instead of stopping the vehicle.
 stable path (`/dev/v4l/by-id/...`), because adding a built-in media driver can
 renumber `/dev/videoN`.
 
-**Decode.** `rockchip-jpegd` decodes to NV12 in a CMA dma-buf. There is no
-software JPEG decoder and no CPU colour conversion on this path.
+**Decode.** `rockchip-jpegd` decodes the JPEG into NV12 inside a CMA dma-buf, so
+decoding and colour conversion both happen in hardware.
 
 **Preprocess.** RGA performs NV12 → RGB, letterbox scaling and placement into a
 512×512 canvas in one call (~1 ms). The 114-grey border is filled once at start
@@ -541,7 +548,7 @@ AP): **mAP50 0.5909, mAP50–95 0.4336**.
 
 ### Preprocessing on the RGA
 
-RGA is a **required** component — there is no CPU fallback. At start up the
+RGA performs all preprocessing and is a required component. At start up the
 application checks `/dev/rga` and loads `librga.so` with `dlopen`; if either is
 missing the inference pool refuses to start and the process aborts with an
 explicit message. `librga` is deliberately not in `DT_NEEDED` so a missing
@@ -602,9 +609,9 @@ Configuration, logs and administrative actions require `root` or `sudo` group
 membership. Some read-only status APIs are public.
 
 The resource card shows CPU per core, **NPU per core**, **RGA per core** and
-memory/disk. NPU load comes from `/sys/kernel/debug/rknpu/load`; RGA load is
-measured inside the application (no driver counter exists) by timing each
-`improcess` call per core over a one-second window.
+memory/disk. NPU load comes from `/sys/kernel/debug/rknpu/load`; RGA load is measured
+inside the application by timing each `improcess` call per core over a
+one-second window.
 
 Web access supports **two source IPv4 addresses**; one address can open many
 tabs. The slot expires 30 s after its last connection closes and an extra
@@ -631,14 +638,14 @@ whole frames are dropped rather than falling behind.
 Recording is lossless and starts automatically. Each session measures the real
 capture cadence, writes `recordings/YYYYMMDD/video_<date>_<time>.avi`, and
 stores camera JPEG frames verbatim in an AVI(MJPG) container with a proper
-`idx1` index and header backfill. There is no encoder, bitrate target or quality
-setting, so file size equals the camera's data rate: about **1.9 MB/s**, or
-**6.8 GB/hour** at 720p/30 fps. Files split near **1.9 GB** (~16 min) and
+`idx1` index and header backfill. The container stores the camera's JPEG frames themselves, so
+quality matches the sensor output and file size equals the camera's data rate:
+about **1.9 MB/s**, or **6.8 GB/hour** at 720p/30 fps. Files split near **1.9 GB** (~16 min) and
 recording continues in a new segment.
 
 Recording never waits on inference, so a stalled or reloading model does not
-interrupt it. Recorded frames contain no boxes; use the live view for annotated
-inspection.
+interrupt it. Recordings keep the camera's original frames; boxes live only in
+the browser overlay, so use the live view for annotated inspection.
 
 Daily TXT reports record completed inferences, including frames with no
 detections: capture time, sequence, dimensions, lens position when available,
@@ -784,8 +791,7 @@ sudo bash scripts/deploy.sh -i    # install and start
 
 The build produces `bin/autonomous-driving-car`; deployment installs the binary,
 frontend, model and configuration under `/opt/autonomous-driving-car`, installs
-the systemd unit and starts the service. There is no platform argument: the
-target is RK3576.
+the systemd unit and starts the service. The platform is fixed to RK3576.
 
 On cgroup v2 systems, deployment installs
 `/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf` so FIFO and
