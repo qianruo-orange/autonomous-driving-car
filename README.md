@@ -396,6 +396,7 @@ Official website: [ANO Tech](https://www.anotc.com/). Downloads and documentatio
 | `include/` | Module interfaces and shared types |
 | `config/` | Device settings, model, labels, CAN databases |
 | `scripts/` | Application build, deployment and model synchronization |
+| `tools/model/` | Offline model pipeline: ONNX export, RKNN quantisation, dataset prep, raw-output dumper and mAP evaluation (see `tools/model/README.md`) |
 
 Video modules: `video_stream.c` owns capture and the MJPEG fan-out, `frame_ring.c` owns buffer handoff, `video_rec.c` owns recording sessions and file lifecycle, and `rec_mjpeg.c` owns the AVI container itself.
 
