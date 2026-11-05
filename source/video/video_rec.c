@@ -8,8 +8,8 @@
  *
  * 线程模型：main 模块表 "rec" 线程，空闲时 100ms 轮询喂狗；
  *   默认自动录制：任务启动即开始，文件平铺在 recordings/videos/，
- *   单段超过 REC_SEGMENT_BYTES 时自动续录下一段；HTTP 线程可下发
- *   video_rec_start/stop 手动控制，手动停止后不再自动续录。
+ *   一天一个 video_YYYYMMDD.mp4，跨过零点自动收尾并续录新一天的文件；
+ *   HTTP 线程可下发 video_rec_start/stop 手动控制，手动停止后不再自动续录。
  *
  * 录像不依赖 YOLO：没有检测框的帧同样入队（recordings 里只有一份 MP4，
  * 框按帧画在 Y 平面上）。
@@ -42,9 +42,6 @@
 
 /* 低于此剩余空间就不再开新段，避免录到一半 ENOSPC 后反复建/删空文件 */
 #define REC_MIN_FREE_BYTES   (512ull * 1024ull * 1024ull)
-/* 单段体积上限：到点就收尾并续录下一段。固定 QP 后码率随画面浮动，
- * 用字节数而不是时长来切，段大小才是可预期的（也方便网页端下载） */
-#define REC_SEGMENT_BYTES    (512ull * 1024ull * 1024ull)
 /* I/O 失败后的退避，避免磁盘满时空转刷日志 */
 #define REC_IO_BACKOFF_US    (5 * 1000 * 1000)
 
@@ -60,6 +57,7 @@ static struct {
     int  recording;               /* 录制中标志（线程写，start 前读） */
     int  start_fail;              /* 最近一次 start 失败原因（0=无） */
     char file[128];               /* 当前录制文件名 */
+    char day[16];                 /* 当前文件对应的日期 YYYYMMDD，跨天收尾 */
     uint64_t start_ms, frames, bytes;
     uint64_t last_frame_ts;       /* 最近一帧单调时钟，用于实时 fps */
     int split_pending, split_error;
@@ -79,7 +77,7 @@ int video_rec_delete_file(int directory_fd, const char *name)
 {
     size_t length = name ? strlen(name) : 0;
     if (length < 10 || length >= 256 || strchr(name, '/') || strstr(name, "..") ||
-        (strncmp(name, "rec_", 4) && strncmp(name, "annot_", 6)) ||
+        (strncmp(name, "video_", 6)) ||
         (strcmp(name + length - 4, ".mp4"))) {
         errno = EINVAL;
         return -1;
@@ -120,6 +118,15 @@ static uint64_t now_ms(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+/* 录像按自然日分文件，文件名里的日期就是这里的 YYYYMMDD */
+static void rec_today(char *out, size_t size)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(out, size, "%Y%m%d", &tm);
 }
 
 /* ---- 取帧：相机原始 JPEG ---- */
@@ -309,7 +316,7 @@ void *video_rec_task(void *arg)
             pthread_mutex_lock(&g_rec_files_lock);
             /* MP4 是唯一产物：解码、画框、编码、封装都在 rec_annot 线程里 */
             rec_annot_stop(g_rec.annot);
-            g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0,
+            g_rec.annot = rec_annot_start(dir, "video", pw, ph, fps, 0,
                                           fname, sizeof(fname));
             if (!g_rec.annot) {
                 pthread_mutex_unlock(&g_rec_files_lock);
@@ -345,6 +352,7 @@ void *video_rec_task(void *arg)
             g_rec.skipped_size = 0;
             g_rec.io_error = 0;
             safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
+            rec_today(g_rec.day, sizeof(g_rec.day));
             pthread_mutex_unlock(&g_rec.lock);
             pthread_mutex_unlock(&g_rec_files_lock);
 
@@ -385,36 +393,40 @@ void *video_rec_task(void *arg)
                     continue;
                 }
 
-                /* 分段条件：单段写到体积上限（固定 QP 后码率浮动，
-                   用字节数切段才能保证每段大小可预期） */
-                pthread_mutex_lock(&g_rec.lock);
-                if (g_rec.bytes >= REC_SEGMENT_BYTES) g_rec.split_pending = 1;
-                pthread_mutex_unlock(&g_rec.lock);
+                /* 每天一个文件：跨过零点就收尾当前段，下一段用新日期命名 */
+                {
+                    char today[16];
+                    rec_today(today, sizeof(today));
+                    pthread_mutex_lock(&g_rec.lock);
+                    if (strcmp(today, g_rec.day)) g_rec.split_pending = 1;
+                    pthread_mutex_unlock(&g_rec.lock);
+                }
 
                 pthread_mutex_lock(&g_rec.lock);
                 int split = g_rec.split_pending && g_rec.recording;
                 pthread_mutex_unlock(&g_rec.lock);
                 if (split) {
-                    /* 收尾当前段（写入 moov）后立刻开新段：新编码器第一帧就是 IDR，
-                       两段之间只有一次编码器重建的间隔 */
+                    /* 收尾当前文件（写入 moov）后立刻续录下一个：新编码器第一帧
+                       就是 IDR，两段之间只有一次编码器重建的间隔 */
                     char next_name[128] = "", next_dir[512];
                     snprintf(next_dir, sizeof(next_dir), "%s", REC_DIR);
                     pthread_mutex_lock(&g_rec_files_lock);
                     rec_annot_stop(g_rec.annot);
-                    g_rec.annot = rec_annot_start(next_dir, "annot", pw, ph, fps, 0,
+                    g_rec.annot = rec_annot_start(next_dir, "video", pw, ph, fps, 0,
                                                   next_name, sizeof(next_name));
                     if (g_rec.annot) {
                         int finalized = 0;
                         snprintf(rel, sizeof(rel), "%s", next_name);
                         pthread_mutex_lock(&g_rec.lock);
                         safe_strncpy(g_rec.file, sizeof(g_rec.file), rel);
+                        rec_today(g_rec.day, sizeof(g_rec.day));
                         g_rec.start_ms = now_ms();
                         g_rec.frames = g_rec.bytes = 0;
                         g_rec.last_frame_ts = 0;
                         g_rec.split_pending = 0;
                         g_rec.split_error = finalized == 0 ? 0 : 2;
                         pthread_mutex_unlock(&g_rec.lock);
-                        LOG_INFO("rec: file split, continuing -> %s", rel);
+                        LOG_INFO("rec: continuing in new file -> %s", rel);
                     } else {
                         pthread_mutex_lock(&g_rec.lock);
                         g_rec.split_pending = 0;

@@ -316,12 +316,19 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
     snprintf(s->dir, sizeof(s->dir), "%s", dir);
     snprintf(s->prefix, sizeof(s->prefix), "%s", prefix);
     {
+        /* 一天一个文件：video_YYYYMMDD.mp4。同一天重开（重启或手动收尾）
+           时加 _1、_2 后缀，避免覆盖当天已经录好的内容。 */
         time_t now = time(NULL);
         struct tm tm;
-        char when[32];
+        char when[32], path[512];
         localtime_r(&now, &tm);
-        strftime(when, sizeof(when), "%Y%m%d_%H%M%S", &tm);
+        strftime(when, sizeof(when), "%Y%m%d", &tm);
         snprintf(s->name, sizeof(s->name), "%s_%s.mp4", prefix, when);
+        for (int index = 1; index < 1000; index++) {
+            snprintf(path, sizeof(path), "%s/%s", s->dir, s->name);
+            if (access(path, F_OK) != 0) break;
+            snprintf(s->name, sizeof(s->name), "%s_%s_%d.mp4", prefix, when, index);
+        }
         if (name_out && name_size) snprintf(name_out, name_size, "%s", s->name);
     }
     s->w = w; s->h = h;

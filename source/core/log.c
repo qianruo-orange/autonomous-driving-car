@@ -47,8 +47,8 @@ static int log_mkpath(const char *dir)
     return 0;
 }
 
-/* Exclusive creation preserves old logs even on rapid restarts or clock
-   adjustments. The timestamp in the name keeps a restart from overwriting. */
+/* 一天一个文件：log_info_YYYYmmdd.log / log_err_YYYYmmdd.log。重启、断电后
+   继续追加同名文件，不再因为时间戳不同而散成一堆小文件。 */
 static void open_log_channel(int is_error)
 {
     FILE **fpp = is_error ? &g_log.fp_error : &g_log.fp_info;
@@ -56,41 +56,38 @@ static void open_log_channel(int is_error)
     if (*fpp && *fpp != stderr) fclose(*fpp);
     *fpp = stderr;
     active_path[0] = '\0';
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
+    time_t now = time(NULL);
     struct tm tm;
-    localtime_r(&tv.tv_sec, &tm);
-    char stamp[32], name[128], path[PATH_MAX];
-    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm);
-    for (int index = 0; index < 10000; index++) {
-        if (!index)
-            snprintf(name, sizeof(name), "%s_%s_%s_%03ld.log", "log",
-                     is_error ? "error" : "info", stamp, tv.tv_usec / 1000);
-        else
-            snprintf(name, sizeof(name), "%s_%s_%s_%03ld_%d.log", "log",
-                     is_error ? "error" : "info", stamp, tv.tv_usec / 1000, index);
-        int length = snprintf(path, sizeof(path), "%s/%s", g_log.dir, name);
-        if (length < 0 || (size_t)length >= sizeof(path)) return;
-        int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
-        if (fd < 0) { if (errno == EEXIST) continue; return; }
-        FILE *fp = fdopen(fd, "a");
-        if (!fp) { close(fd); unlink(path); return; }
-        *fpp = fp;
-        safe_strncpy(active_path, PATH_MAX, path);
-        return;
-    }
+    localtime_r(&now, &tm);
+    char day[16], name[64], path[PATH_MAX];
+    strftime(day, sizeof(day), "%Y%m%d", &tm);
+    snprintf(name, sizeof(name), "log_%s_%s.log", is_error ? "err" : "info", day);
+    int length = snprintf(path, sizeof(path), "%s/%s", g_log.dir, name);
+    if (length < 0 || (size_t)length >= sizeof(path)) return;
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (fd < 0) return;
+    FILE *fp = fdopen(fd, "a");
+    if (!fp) { close(fd); return; }
+    *fpp = fp;
+    safe_strncpy(active_path, PATH_MAX, path);
 }
 
-/* Deletion and size rotation open a fresh timestamped file. Existing logs and
-   legacy .log.1 backups are never renamed or overwritten. */
+/* 超过 10MB 时把当天文件挪成 .1（覆盖上一份），再从空文件继续写同名。 */
 static void rotate_check(int is_error)
 {
     FILE **fpp = is_error ? &g_log.fp_error : &g_log.fp_info;
     const char *path = is_error ? g_log.error_path : g_log.info_path;
     if (!*fpp || *fpp == stderr || !*path) return;
     struct stat st;
-    if (stat(path, &st) != 0 || st.st_size > LOG_MAX_SIZE)
-        open_log_channel(is_error);
+    if (stat(path, &st) != 0 || st.st_size <= LOG_MAX_SIZE) return;
+
+    char backup[PATH_MAX];
+    int length = snprintf(backup, sizeof(backup), "%s.1", path);
+    if (length < 0 || (size_t)length >= sizeof(backup)) return;
+    fclose(*fpp);
+    *fpp = NULL;
+    if (rename(path, backup) != 0) { open_log_channel(is_error); return; }
+    open_log_channel(is_error);
 }
 
 static void ensure_date(void)

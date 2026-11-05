@@ -20,19 +20,15 @@
 
 #define REC_DIR PATH_VIDEOS
 
-/* 单文件名合法性：annot_*.mp4（标注 H.264 录像）、rec_*.mp4；不含路径分隔符 */
+/* 单文件名合法性：video_YYYYMMDD.mp4（同一天重开时带 _N 后缀）；不含路径分隔符 */
 static int rec_file_valid(const char *name)
 {
     size_t len = name ? strlen(name) : 0;
-    size_t prefix = name && !strncmp(name, "annot_", 6) ? 6 : 4;
-    int suffix_ok = len >= 4 && !strcmp(name + len - 4, ".mp4");
-    if (len < prefix + 5 ||
-        (strncmp(name, "rec_", 4) && strncmp(name, "annot_", 6)) ||
-        !suffix_ok)
+    if (len < 6 + 8 + 4 || strncmp(name, "video_", 6) ||
+        strcmp(name + len - 4, ".mp4"))
         return 0;
-    for (size_t i = prefix; i + 4 < len; i++)
-        if (name[i] != '-' && name[i] != '_' &&
-            (name[i] < '0' || name[i] > '9'))
+    for (size_t i = 6; i + 4 < len; i++)
+        if (name[i] != '_' && (name[i] < '0' || name[i] > '9'))
             return 0;
     return 1;
 }
@@ -108,7 +104,7 @@ static void serve_rec_list(int fd)
     http_ok_json(fd, json, (size_t)off);
 }
 
-/* 下载：/recfile/<annot_*.mp4> */
+/* 下载：/recfile/<video_YYYYMMDD.mp4> */
 static void serve_rec_download(int fd, const char *name)
 {
     if (!rec_file_valid(name)) {
@@ -129,7 +125,7 @@ static void serve_rec_download(int fd, const char *name)
     http_serve_stream(fd, "video/mp4", disp, fp, size, NULL);
 }
 
-/* 删除：body = annot_*.mp4 */
+/* 删除：body = video_YYYYMMDD.mp4 */
 static void serve_rec_delete(int fd, const char *req)
 {
     char name[160];
