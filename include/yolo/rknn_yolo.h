@@ -35,9 +35,7 @@
    模型缺失/NPU 不可用返回 -1（无 YOLO 直接报错，服务启动失败） */
 int rknn_yolo_init(void *arg);
 void rknn_yolo_destroy(void *arg);
-int rknn_yolo_enabled(void);
 /* Planned pool replacement pauses annotated frames without a runtime fault. */
-int rknn_yolo_reloading(void);
 /* RK3576 固定双核 NPU（不再按平台探测）。 */
 int npu_core_count(void);
 /* 固定返回 "rk3576"；保留该接口仅为兼容旧模型的路径迁移。 */

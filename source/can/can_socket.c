@@ -171,24 +171,6 @@ int can_locked_unregister(uint64_t handle)
     bindings[i].used = 0;
     return 0;
 }
-int can_component_unregister(uint64_t handle)
-{
-    if (!can_app) {
-        errno = ENODEV;
-        return -1;
-    }
-    pthread_mutex_lock(&can_app->can_mutex);
-    int i = binding_index(handle), result = -1;
-    if (i >= 0) {
-        int channel = can_iface_index(can_app->can->ifaces, can_app->can->count, bindings[i].port);
-        result = can_locked_unregister(handle);
-        can_iface_t *iface = channel < 0 ? NULL : &can_app->can->ifaces[channel];
-        if (iface && iface->sock_fd >= 0)
-            result = can_socket_apply_filters(can_app, iface, iface->sock_fd);
-    }
-    pthread_mutex_unlock(&can_app->can_mutex);
-    return result;
-}
 /* 每次按接口名重新定位通道，避免 Web 修改通道顺序后把旧句柄发到另一总线。
  * CAN ID、经典/FD 格式均取自注册项；业务只提供载荷。 */
 static int can_binding_send_locked(uint64_t handle, const void *bytes, size_t length, int immediate)
@@ -891,17 +873,6 @@ out:
     app->running = 0;
     watchdog_unregister_self("can_send");
     return NULL;
-}
-
-int can_socket_set_filter(int fd, canid_t id, canid_t mask)
-{
-    struct can_filter filter = ordinary_filter((can_filter_t){.id = id, .mask = mask});
-    if (setsockopt(fd, SOL_CAN_RAW, CAN_RAW_FILTER, &filter, sizeof(filter)) < 0) {
-        LOG_ERROR("setsockopt CAN_RAW_FILTER id=%08X mask=%08X", id, mask);
-        return -1;
-    }
-    LOG_INFO("CAN filter set: id=%08X mask=%08X", id, mask);
-    return 0;
 }
 
 int can_enumerate_system(char names[][IFNAMSIZ], int max)

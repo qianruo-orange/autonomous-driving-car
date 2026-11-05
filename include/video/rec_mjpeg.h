@@ -50,7 +50,6 @@ int rec_mjpeg_finalize(rec_mjpeg_t *s);
 int rec_mjpeg_repair_file(const char *path);
 
 /* 会话信息（录制状态展示用） */
-const char *rec_mjpeg_name(const rec_mjpeg_t *s);
 uint32_t    rec_mjpeg_frames(const rec_mjpeg_t *s);
 uint32_t    rec_mjpeg_bytes(const rec_mjpeg_t *s);
 uint64_t    rec_mjpeg_start_ms(const rec_mjpeg_t *s);

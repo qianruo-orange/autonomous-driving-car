@@ -360,11 +360,6 @@ int rec_mjpeg_finalize(rec_mjpeg_t *s)
     return result;
 }
 
-const char *rec_mjpeg_name(const rec_mjpeg_t *s)
-{
-    return s ? s->name : "";
-}
-
 uint32_t rec_mjpeg_frames(const rec_mjpeg_t *s)
 {
     return s ? s->n_frames : 0;

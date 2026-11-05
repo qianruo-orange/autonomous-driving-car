@@ -35,27 +35,6 @@ void frame_ring_init(frame_ring_t *r)
     pthread_condattr_destroy(&attr);
 }
 
-void frame_ring_destroy(frame_ring_t *r)
-{
-    for (int i = 0; i < FRAME_RING_N; i++) {
-        frame_slot_t *s = &r->slots[i];
-        if (s->raw_present && !s->raw_is_mmap) free(s->raw.buf);
-        if (s->rgb.buf)  free(s->rgb.buf);
-    }
-    pool_item_t *it = r->pool_rgb;
-    while (it) {
-        pool_item_t *next = it->next;
-        free(it->buf);
-        free(it);
-        it = next;
-    }
-    pthread_mutex_destroy(&r->lock);
-    for (int i = 0; i < FRAME_TOPIC_COUNT; i++)
-        pthread_cond_destroy(&r->published[i]);
-    pthread_cond_destroy(&r->released);
-    memset(r, 0, sizeof(*r));
-}
-
 void frame_ring_set_raw_release_cb(frame_ring_t *r,
                                    void (*cb)(void *arg, int vbuf_index),
                                    void *arg)
@@ -87,26 +66,6 @@ static pool_item_t **pool_head(frame_ring_t *r, int which)
 {
     (void)which;   /* 仅剩 RGB 一个阶段缓冲池 */
     return &r->pool_rgb;
-}
-
-void frame_ring_buf_take_locked(frame_ring_t *r, int which, size_t min_cap,
-                                ring_buf_t *out)
-{
-    pool_item_t **head = pool_head(r, which);
-    pool_item_t *prev = NULL, *it = *head;
-    while (it && it->cap < min_cap) { prev = it; it = it->next; }
-    if (it) {
-        if (prev) prev->next = it->next;
-        else      *head = it->next;
-        out->buf = it->buf;
-        out->cap = it->cap;
-        out->len = 0;
-        free(it);
-    } else {
-        out->buf = (unsigned char *)malloc(min_cap);
-        out->cap = out->buf ? min_cap : 0;
-        out->len = 0;
-    }
 }
 
 void frame_ring_buf_put_locked(frame_ring_t *r, int which,
@@ -217,18 +176,6 @@ void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decod
 }
 
 /* ---- 显示 ---- */
-
-frame_slot_t *frame_ring_display_pick_locked(frame_ring_t *r,
-                                             unsigned long long next_seq)
-{
-    frame_slot_t *best = NULL;
-    for (int i = 0; i < FRAME_RING_N; i++) {
-        frame_slot_t *s = &r->slots[i];
-        if (s->seq <= next_seq || !s->rgb_done || !s->rgb.buf) continue;
-        if (!best || s->seq > best->seq) best = s;
-    }
-    return best;
-}
 
 void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
 {

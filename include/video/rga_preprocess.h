@@ -32,11 +32,7 @@ unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, in
    pct[] 顺序固定为 core0/core1；RGA 未启用时返回 -1。
    jobs 为累计作业数（用于前端显示吞吐）。 */
 void rga_preprocess_load(int pct[2], unsigned long long *jobs);
-int rga_preprocess_active(void);
 
 /* 画布虚拟地址与尺寸 */
-unsigned char *rga_preprocess_canvas(const rga_preprocess_t *p);
-int rga_preprocess_width(const rga_preprocess_t *p);
-int rga_preprocess_height(const rga_preprocess_t *p);
 
 #endif /* RGA_PREPROCESS_H */

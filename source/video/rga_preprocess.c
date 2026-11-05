@@ -107,14 +107,6 @@ void rga_preprocess_load(int pct[2], unsigned long long *jobs)
     pthread_mutex_unlock(&load_lock);
 }
 
-int rga_preprocess_active(void)
-{
-    pthread_mutex_lock(&load_lock);
-    int active = load_active;
-    pthread_mutex_unlock(&load_lock);
-    return active;
-}
-
 struct rga_preprocess {
     int dst_fd;
     unsigned char *dst_va;
@@ -250,6 +242,3 @@ unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, in
     return p->dst_va;
 }
 
-unsigned char *rga_preprocess_canvas(const rga_preprocess_t *p) { return p ? p->dst_va : NULL; }
-int rga_preprocess_width(const rga_preprocess_t *p) { return p ? p->dst_w : 0; }
-int rga_preprocess_height(const rga_preprocess_t *p) { return p ? p->dst_h : 0; }

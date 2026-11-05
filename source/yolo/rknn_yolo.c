@@ -1085,16 +1085,6 @@ void rknn_yolo_destroy(void *arg)
     g_yolo.enabled = 0;
 }
 
-int rknn_yolo_enabled(void)
-{
-    return g_yolo.enabled;
-}
-
-int rknn_yolo_reloading(void)
-{
-    return atomic_load(&g_reloading);
-}
-
 /* ---- YOLO 采集线程（main 模块框架 task）：等新帧 → claim → 解码 → 投递队列 ---- */
 int rknn_yolo_hardware_decoder(void)
 {

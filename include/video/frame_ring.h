@@ -149,7 +149,6 @@ typedef struct {
 
 /* ---- 生命周期 ---- */
 void frame_ring_init(frame_ring_t *r);
-void frame_ring_destroy(frame_ring_t *r);
 void frame_ring_set_raw_release_cb(frame_ring_t *r,
                                    void (*cb)(void *arg, int vbuf_index),
                                    void *arg);
@@ -177,7 +176,6 @@ void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decod
 /* ---- 显示（composer） ---- */
 /* 取 seq > next_seq 的最新 rgb_done 槽（最新结果优先）；无则 NULL。
    调用方持锁拷贝 res、取出 rgb 指针并 take 池缓冲，解锁后渲染，再 commit */
-frame_slot_t *frame_ring_display_pick_locked(frame_ring_t *r, unsigned long long next_seq);
 /* 渲染完成：display_done=1，释放被跳过槽与旧槽的 rgb */
 void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s);
 
@@ -198,7 +196,6 @@ int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeou
 
 /* ---- 缓冲池（须持锁） ---- */
 /* 取容量 >= min_cap 的池内缓冲（不足时 malloc），回写 ring_buf_t（cap 为实际容量） */
-void frame_ring_buf_take_locked(frame_ring_t *r, int which, size_t min_cap, ring_buf_t *out);
 /* 归还缓冲（cap 为实际分配容量，来自 take 或槽内 ring_buf_t.cap） */
 void frame_ring_buf_put_locked(frame_ring_t *r, int which, unsigned char *buf, size_t cap);
 

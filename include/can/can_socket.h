@@ -63,7 +63,6 @@ typedef struct {
 /* CAN validates the configured port and verifies it is a system CAN interface.
  * The returned generation handle binds port, ID, format and destination slot. */
 uint64_t can_component_register(const can_binding_t *);
-int can_component_unregister(uint64_t handle);
 /* 仅填业务句柄和载荷；接口、CAN ID、帧格式由 CAN 模块封装。 */
 int can_send(uint64_t handle, const void *data, size_t length);
 /* Motor control already holds can_mutex: bounded immediate send, no stale queue. */
@@ -77,7 +76,6 @@ int can_socket_open(const char *ifname, int fd_mode);
 void can_socket_close(int fd);
 
 /* 设置 CAN 硬件接收过滤器 */
-int can_socket_set_filter(int fd, canid_t id, canid_t mask);
 
 /* 通过 ip link 命令配置 CAN 接口 */
 int can_socket_configure(const char *ifname, int bitrate, int dbitrate, int fd, int restart_ms,
