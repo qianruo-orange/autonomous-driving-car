@@ -467,6 +467,8 @@
   }
 
   /* withFreq：CPU 卡在每个核下面单独显示该核的实时频率；NPU 没有逐核频率，不显示 */
+  var rgaInited = false;
+
   function initCoreBars(id, names, withFreq) {
     var h = '';
     for (var i = 0; i < names.length; i++)
@@ -569,20 +571,19 @@
       var mb = document.getElementById('mem_bar');
       mb.style.width = d.mem_pct + '%'; mb.className = d.mem_pct < 60 ? 'green' : d.mem_pct < 85 ? 'yellow' : 'red';
 
-      /* GPU：优先显示负载%；RK356x/RK3576 驱动未暴露 load 时显示当前频率(MHz) */
-      var gpuEl = document.getElementById('gpu_val');
-      var gb = document.getElementById('gpu_bar');
-      if (gpuEl && gb) {
-        if (d.gpu >= 0) {
-          gpuEl.textContent = d.gpu + '%';
-          gb.style.width = d.gpu + '%'; gb.className = 'blue';
-        } else if (d.gpu_freq >= 0) {
-          gpuEl.textContent = d.gpu_freq + ' MHz';   /* 驱动的 load 恒为 -1，只报频率 */
-          gb.style.width = '0%';
-        } else {
-          gpuEl.textContent = 'N/A';
-          gb.style.width = '0%';
-        }
+      /* RGA 双核负载：后端按核统计硬件作业占用率（1 秒窗口） */
+      if (!rgaInited) {
+        rgaInited = true;
+        initCoreBars('rga_cores', ['Core0', 'Core1']);
+      }
+      var rgaPct = [d.rga_core0, d.rga_core1];
+      for (var ri = 0; ri < 2; ri++) {
+        var rp = rgaPct[ri];
+        var rpEl = document.getElementById('rga_cores_pct' + ri);
+        if (!rpEl) continue;
+        rpEl.textContent = (typeof rp === 'number' && rp >= 0) ? rp + '%' : 'N/A';
+        var rb = document.getElementById('rga_cores_bar' + ri);
+        if (rb) { rb.style.width = (typeof rp === 'number' && rp >= 0 ? rp : 0) + '%'; rb.className = 'blue'; }
       }
 
       var dp = Math.round(100 - d.disk_avail * 100 / d.disk_total);

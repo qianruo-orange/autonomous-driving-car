@@ -12,6 +12,7 @@
  */
 
 #include "http/http_internal.h"
+#include "video/rga_preprocess.h"
 #include "core/version.h"
 
 #define MAX_CORES     16
@@ -120,40 +121,11 @@ void http_system_api(app_ctx_t *app, int fd)
         fclose(fp);
     }
 
-    /* GPU (Mali) — 自适应查找 devfreq 节点：RK3588=fb000000.gpu / RK3576=27800000.gpu 等。
-       优先读 load（RK3588 等暴露负载的驱动）；RK356x/RK3576 驱动未暴露 load 时，
-       回退读 cur_freq 作为 GPU 频率指标（Hz→MHz），保证 GPU 卡片在所有平台都有真实信息 */
-    long gpu_load = -1;
-    long gpu_freq = -1;
-    DIR *dev = opendir("/sys/class/devfreq");
-    if (dev) {
-        struct dirent *de;
-        while ((de = readdir(dev))) {
-            if (strstr(de->d_name, "gpu") == NULL) continue;
-            char base[256];
-            snprintf(base, sizeof(base), "/sys/class/devfreq/%s", de->d_name);
-            FILE *gfp;
-            char gp[320];
-            snprintf(gp, sizeof(gp), "%s/load", base);
-            gfp = fopen(gp, "r");
-            if (gfp) {
-                char buf[64];
-                if (fgets(buf, sizeof(buf), gfp)) sscanf(buf, "%ld", &gpu_load);
-                fclose(gfp);
-            }
-            if (gpu_load < 0) {   /* 无 load 文件时回退读当前频率 */
-                snprintf(gp, sizeof(gp), "%s/cur_freq", base);
-                gfp = fopen(gp, "r");
-                if (gfp) {
-                    long f = -1;
-                    if (fscanf(gfp, "%ld", &f) == 1 && f > 0) gpu_freq = f / 1000000;
-                    fclose(gfp);
-                }
-            }
-            if (gpu_load >= 0 || gpu_freq >= 0) break;
-        }
-        closedir(dev);
-    }
+    /* RGA（RGA2E 双核）负载：由预处理模块按核计时统计（1 秒窗口）。
+       没有 devfreq/load 文件可读，只有驱动时钟，因此占用率来自应用侧实测。 */
+    int rga_pct[2] = { -1, -1 };
+    unsigned long long rga_jobs = 0;
+    rga_preprocess_load(rga_pct, &rga_jobs);
 
     /* 组装 JSON（使用边界检查宏） */
     JSON_ADD(json, off, "{"
@@ -181,13 +153,13 @@ void http_system_api(app_ctx_t *app, int fd)
         "\"mem_pct\":%d,\"mem_total\":%ld,\"mem_avail\":%ld,"
         "\"disk_total\":%ld,\"disk_avail\":%ld,"
         "\"temp\":%d,"
-        "\"gpu\":%ld,\"gpu_freq\":%ld,"
+        "\"rga_core0\":%d,\"rga_core1\":%d,\"rga_jobs\":%llu,"
         "\"app_version\":\"%s\",\"git_commit\":\"%s\",\"build_date\":\"%s\""
         "}",
         mem_pct, mem_total, mem_avail,
         disk_total, disk_avail,
         temp,
-        gpu_load, gpu_freq,
+        rga_pct[0], rga_pct[1], rga_jobs,
         APP_VERSION, APP_GIT_COMMIT, APP_BUILD_DATE);
 
     http_ok_json(fd, json, (size_t)off);

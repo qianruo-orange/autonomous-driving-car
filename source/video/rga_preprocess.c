@@ -12,6 +12,8 @@
 #include <linux/dma-heap.h>
 
 #include <dlfcn.h>
+#include <pthread.h>
+#include <time.h>
 
 #include "rga/im2d.h"
 #include "core/log.h"
@@ -55,6 +57,62 @@ static int rga_symbols_load(void)
         return 0;
     }
     return 1;
+}
+
+/* ---- 按核负载统计（1 秒窗口）---- */
+static pthread_mutex_t load_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned long long load_window_us;
+static unsigned long long load_busy_us[2];
+static int load_pct[2] = { -1, -1 };
+static unsigned long long load_jobs_total;
+static int load_active;
+
+static unsigned long long now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000000ull + (unsigned long long)ts.tv_nsec / 1000ull;
+}
+
+static void load_account(int core, unsigned long long duration_us)
+{
+    int idx = (core == RGA_CORE_1) ? 1 : 0;
+    unsigned long long now = now_us();
+    pthread_mutex_lock(&load_lock);
+    if (!load_window_us) load_window_us = now;
+    load_busy_us[idx] += duration_us;
+    load_jobs_total++;
+    unsigned long long elapsed = now - load_window_us;
+    if (elapsed >= 1000000ull) {
+        for (int i = 0; i < 2; i++) {
+            unsigned long long pct = load_busy_us[i] * 100ull / elapsed;
+            load_pct[i] = pct > 100ull ? 100 : (int)pct;
+            load_busy_us[i] = 0;
+        }
+        load_window_us = now;
+    }
+    pthread_mutex_unlock(&load_lock);
+}
+
+void rga_preprocess_load(int pct[2], unsigned long long *jobs)
+{
+    pthread_mutex_lock(&load_lock);
+    if (!load_active) {
+        pct[0] = pct[1] = -1;
+    } else {
+        pct[0] = load_pct[0] < 0 ? 0 : load_pct[0];
+        pct[1] = load_pct[1] < 0 ? 0 : load_pct[1];
+    }
+    if (jobs) *jobs = load_jobs_total;
+    pthread_mutex_unlock(&load_lock);
+}
+
+int rga_preprocess_active(void)
+{
+    pthread_mutex_lock(&load_lock);
+    int active = load_active;
+    pthread_mutex_unlock(&load_lock);
+    return active;
 }
 
 struct rga_preprocess {
@@ -119,6 +177,12 @@ rga_preprocess_t *rga_preprocess_open(int dst_w, int dst_h)
     memset(p->dst_va, RGA_FILL_VALUE, len);
     p->dst = p_wrapbuffer_fd_t(p->dst_fd, dst_w, dst_h, dst_w, dst_h, RK_FORMAT_RGB_888);
     p->ready = 1;
+    pthread_mutex_lock(&load_lock);
+    load_active = 1;
+    load_window_us = 0;
+    load_busy_us[0] = load_busy_us[1] = 0;
+    load_pct[0] = load_pct[1] = 0;
+    pthread_mutex_unlock(&load_lock);
     LOG_INFO("rga: letterbox 画布 %dx%d RGB888（CMA dma-buf，%.1f MB）", dst_w, dst_h, len / 1048576.0);
     return p;
 }
@@ -155,6 +219,7 @@ unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, in
     im_rect drect = { px, py, rw, rh };
     im_rect prect = { 0, 0, 0, 0 };
 
+    unsigned long long rga_t0 = now_us();
     /* 按核提交：双核各绑一个推理线程，避免全部落到 core0（librga 默认行为） */
     IM_STATUS st;
     if (core != RGA_CORE_AUTO && p_improcessOpt) {
@@ -175,6 +240,8 @@ unsigned char *rga_preprocess_run(rga_preprocess_t *p, int src_fd, int src_w, in
                       p_imStrError ? p_imStrError(st) : "unknown", errors);
         return NULL;
     }
+
+    load_account(core, now_us() - rga_t0);
 
     if (scale_x) *scale_x = (float)rw / (float)src_w;
     if (scale_y) *scale_y = (float)rh / (float)src_h;
