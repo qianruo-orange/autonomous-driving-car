@@ -9,7 +9,7 @@
 采集                   : 1280×720 MJPEG 30 fps，丢帧 0
 模型                   : YOLO26n 512×512，INT8 类别 + FP16 框
 NPU                    : 1188 MHz，Core0/Core1 各一个 worker
-CPU                    : performance 调速器，2016 / 2208 MHz
+CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /api/cpu_freq 控制）
 ```
 
 46 ms 的构成：
@@ -40,7 +40,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz
 
 | 改动 | 收益 | 说明 |
 |---|---:|---|
-| **CPU 调速器 ondemand → performance** | **−14 ms** | 最大单项。帧间隔内降频使所有 CPU 环节变慢且抖动，E2E 60±7 → 46±0.5 |
+| **CPU 调速器 ondemand → performance** | **−14 ms** | 最大单项。帧间隔内降频使所有 CPU 环节变慢且抖动，E2E 60±7 → 46±0.5；该值由前端 /api/cpu_freq 持久化，仓库默认给 performance |
 | NPU 800 → 1188 MHz | −13 ms（run 34.8→12） | 见内核仓 `0005` |
 | 模型 640 → 512 输入 | −7 ms（run 12→8） | 精度同时提升，见量化报告 17 |
 | 采集 2560×1440 → 1280×720 | −5 ms | 此前一直误用 1440p |

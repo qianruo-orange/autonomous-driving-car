@@ -31,7 +31,7 @@ On 2026-11-02, the original FP16 model was verified against the [official YOLO26
 
 The checkpoint declares nano scale and 2,572,280 original parameters. All 204 fused one-to-many weight/bias tensors correspond to the compiled model: 196 shapes match directly, and eight depthwise weights use the equivalent RKNN layout. These tensors account for 2,408,932 parameters. The first two convolution weight tensors (5,040 values) match the official checkpoint byte for byte after FP16 conversion and hardware layout packing; five complete fused bias tensors also match. The numeric check samples provenance rather than auditing every compiled weight.
 
-The model takes 640×640 RGB and produces two INT8 tensors: class scores `[1,80,8400]` and boxes `[1,4,8400]` as centre/size in model pixels. The one2one assignment reduces duplicate candidates but does not remove them, so postprocessing is threshold, top-K and class-wise NMS. Model weights stay outside Git; build and deployment continue to reconcile the local and installed artifact by hash.
+The model takes 512×512 RGB and produces two tensors: class scores `[1,5376,80]` in INT8 (NHWC) and boxes `[1,4,5376]` in FP16 as centre/size in model pixels. The one2one assignment reduces duplicate candidates but does not remove them, so postprocessing is threshold, top-K and class-wise NMS. Model weights stay outside Git; build and deployment continue to reconcile the local and installed artifact by hash.
 
 ## Validation
 

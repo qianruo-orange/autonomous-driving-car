@@ -235,7 +235,7 @@ Prepare the model and labels before the first build:
 
 The RKNN model is not included in Git. Model preparation takes place outside this repository's build process; the scripts do not train, convert, or download models. Working model initialization is required for normal service startup.
 
-The verified RK3576 artifact takes 640×640 RGB and returns one FP16 `[1,84,8400]` tensor containing decoded pixel boxes and class probabilities. The SDK returns float detection values for postprocessing. Models with additional outputs are rejected. Raw multi-head or normalized-coordinate exports require adaptation and cannot be substituted solely because their files have the `.rknn` extension.
+The verified RK3576 artifact takes 512×512 RGB and returns two tensors: class scores `[1,5376,80]` as INT8 (NHWC, so the 80 scores of one anchor are contiguous) and boxes `[1,4,5376]` as FP16 centre/size in model pixels. The worker asks the runtime for float only on the box tensor and dequantises the scores itself; a model with a different output layout is rejected at load time. See [latency profile](docs/LATENCY_PROFILE.md) for the stage timings and [quantisation report](docs/YOLO26N_QUANTIZATION.md) for the model build.
 
 Run builds and deployments through the existing scripts from the repository root:
 
