@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# 中间产物（ONNX / RKNN / 校准图 / dump）
+work/
+*.onnx
+*.rknn
