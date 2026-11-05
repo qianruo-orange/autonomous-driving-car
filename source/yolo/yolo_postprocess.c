@@ -288,7 +288,8 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
 
     /* one2one 头仍会在目标周围留下大量近邻高分锚点（实测 conf>=0.6 时约 85%
        的框互为重复），所以这里照旧做类内贪心 NMS。候选池按分数降序维护。 */
-    enum { YOLO2_CAND_MAX = 128 };
+    /* 候选池 64：输出上限 32，重复框占多数，池再大也只是多扫低分重复项 */
+    enum { YOLO2_CAND_MAX = 64 };
     float cand[YOLO2_CAND_MAX * 6];
     int   ncand = 0;
 
