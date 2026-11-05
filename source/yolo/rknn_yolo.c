@@ -619,8 +619,10 @@ static void *yolo_worker_task(void *arg)
         const unsigned nout = wk->out_count;
         for (unsigned i = 0; i < nout; i++) {
             outputs[i].index = i;
-            /* 单输出沿用 float 解码；one2one 双输出直接取原生 INT8，由后处理反量化 */
-            outputs[i].want_float = (nout == 1) ? 1 : 0;
+            /* 单输出沿用 float 解码；双输出按各路的实际 dtype 取数据：
+               INT8（类别分）走原生缓冲由后处理反量化，FP16（框）让运行时转 float */
+            outputs[i].want_float = (nout == 1) ? 1
+                                 : (wk->out_attr[i].type == RKNN_TENSOR_FLOAT16 ? 1 : 0);
         }
         if (rknn_outputs_get(wk->ctx, nout, outputs, NULL) != RKNN_SUCC) {
             yolo_job_abandon(&job);

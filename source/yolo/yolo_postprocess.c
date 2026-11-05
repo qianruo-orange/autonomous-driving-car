@@ -279,7 +279,10 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
     if (nc_out) *nc_out = nc;
 
     const int8_t *sp = (const int8_t *)scores_buf;
-    const int8_t *bp = (const int8_t *)boxes_buf;
+    /* 框输出可能是 INT8（全量化）或 FP16（保留定位精度）。FP16 由运行时按
+       want_float=1 转成 float 缓冲；这里按 dtype 选择对应的读取方式。 */
+    const int8_t *bp = (ba->type == RKNN_TENSOR_INT8) ? (const int8_t *)boxes_buf : NULL;
+    const float  *bpf = (ba->type == RKNN_TENSOR_INT8) ? NULL : (const float *)boxes_buf;
     const int32_t s_zp = sa->zp, b_zp = ba->zp;
     const float   s_sc = sa->scale, b_sc = ba->scale;
 
@@ -302,10 +305,14 @@ int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,
         if (ncand == YOLO2_CAND_MAX && top <= cand[(YOLO2_CAND_MAX - 1) * 6 + 4]) continue;
 
         /* Mul_2 输出为像素单位 cx,cy,w,h（实测：第 0 列≈cx、第 2 列≈w） */
-        float bcx = yolo_deq_i8(bp[bx_nchw ? (size_t)0 * (size_t)A + (size_t)i : (size_t)i * 4 + 0], b_zp, b_sc);
-        float bcy = yolo_deq_i8(bp[bx_nchw ? (size_t)1 * (size_t)A + (size_t)i : (size_t)i * 4 + 1], b_zp, b_sc);
-        float bw  = yolo_deq_i8(bp[bx_nchw ? (size_t)2 * (size_t)A + (size_t)i : (size_t)i * 4 + 2], b_zp, b_sc);
-        float bh  = yolo_deq_i8(bp[bx_nchw ? (size_t)3 * (size_t)A + (size_t)i : (size_t)i * 4 + 3], b_zp, b_sc);
+        size_t i0 = bx_nchw ? (size_t)0 * (size_t)A + (size_t)i : (size_t)i * 4 + 0;
+        size_t i1 = bx_nchw ? (size_t)1 * (size_t)A + (size_t)i : (size_t)i * 4 + 1;
+        size_t i2 = bx_nchw ? (size_t)2 * (size_t)A + (size_t)i : (size_t)i * 4 + 2;
+        size_t i3 = bx_nchw ? (size_t)3 * (size_t)A + (size_t)i : (size_t)i * 4 + 3;
+        float bcx = bpf ? bpf[i0] : yolo_deq_i8(bp[i0], b_zp, b_sc);
+        float bcy = bpf ? bpf[i1] : yolo_deq_i8(bp[i1], b_zp, b_sc);
+        float bw  = bpf ? bpf[i2] : yolo_deq_i8(bp[i2], b_zp, b_sc);
+        float bh  = bpf ? bpf[i3] : yolo_deq_i8(bp[i3], b_zp, b_sc);
         if (!(bw > 0.0f) || !(bh > 0.0f)) continue;
 
         float x1 = (bcx - bw * 0.5f - (float)lb_pad_x) / lb_scale_x;
