@@ -157,6 +157,56 @@ static void publish_fragment(const unsigned char *data, size_t len)
     pthread_mutex_unlock(&L.lock);
 }
 
+/* MPP 可能把 SPS/PPS/SEI 单独成包；这些包没有切片，不能单独作为一帧。
+   先把它们攒起来，等切片包到达时拼成一个完整访问单元。 */
+static unsigned char *pending;
+static size_t pending_len, pending_cap;
+
+static int has_vcl(const unsigned char *buf, size_t len)
+{
+    for (size_t i = 0; i + 4 <= len; i++) {
+        if (buf[i] == 0 && buf[i+1] == 0 && buf[i+2] == 1) {
+            int t = buf[i+3] & 0x1f;
+            if (t == 1 || t == 5) return 1;
+            i += 2;
+        }
+    }
+    return 0;
+}
+
+static void live_feed_packet(const unsigned char *p, size_t len)
+{
+    if (!has_vcl(p, len)) {
+        if (pending_len + len <= pending_cap) {
+            memcpy(pending + pending_len, p, len);
+            pending_len += len;
+            return;
+        }
+        size_t cap = pending_len + len + 4096;
+        unsigned char *grown = realloc(pending, cap);
+        if (!grown) return;
+        pending = grown; pending_cap = cap;
+        memcpy(pending + pending_len, p, len);
+        pending_len += len;
+        return;
+    }
+    if (pending_len == 0) {
+        fmp4_write(L.muxer, p, len);
+        return;
+    }
+    size_t total = pending_len + len;
+    unsigned char *joined = malloc(total);
+    if (joined) {
+        memcpy(joined, pending, pending_len);
+        memcpy(joined + pending_len, p, len);
+        fmp4_write(L.muxer, joined, total);
+        free(joined);
+    } else {
+        fmp4_write(L.muxer, p, len);
+    }
+    pending_len = 0;
+}
+
 static int encode_frame(live_frame_t *f)
 {
     if (!L.muxer) {
@@ -190,7 +240,7 @@ static int encode_frame(live_frame_t *f)
         if (L.enc_mpi->encode_get_packet(L.enc_ctx, &pkt) != MPP_OK || !pkt) break;
         const unsigned char *p = mpp_packet_get_pos(pkt);
         size_t len = mpp_packet_get_length(pkt);
-        if (len) fmp4_write(L.muxer, p, len);
+        if (len) live_feed_packet(p, len);
         mpp_packet_deinit(&pkt);
     }
     const unsigned char *fb;

@@ -111,7 +111,7 @@ static void scan_nals(const unsigned char *buf, size_t len, void (*cb)(void *, c
         else if (i + 4 <= len && buf[i] == 0 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 1) payload = i + 4;
         else { i++; continue; }
         size_t j = payload;
-        while (j + 3 <= len && !(buf[j] == 0 && buf[j+1] == 0 && buf[j+2] <= 1)) j++;
+        while (j + 3 <= len && !(buf[j] == 0 && buf[j+1] == 0 && buf[j+2] == 1)) j++;
         cb(ctx, buf + payload, (j < len ? j : len) - payload);
         i = (j < len ? j : len);
     }

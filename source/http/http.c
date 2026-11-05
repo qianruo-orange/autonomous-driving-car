@@ -36,6 +36,7 @@
 #include "http/http_client_limit.h"
 #include "yolo/yolo_events.h"
 #include "video/video_stream.h"
+#include "video/live_h264.h"
 #include "watchdog/watchdog.h"
 #include "core/common.h"
 #include "core/epoll_util.h"
@@ -668,6 +669,51 @@ static void http_detection_client_closed(int fd)
 /* ---- 请求处理（连接状态机的一部分） ---- */
 
 /* 视频 MJPEG 走独立推流线程（video 模块创建），其余全部在 Reactor 主循环内处理 */
+/* /video/live.mp4：把标注后的 H.264 以 fMP4 分片推给浏览器（MSE 播放）。 */
+static int live_send_all(int fd, const unsigned char *buf, size_t len)
+{
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = send(fd, buf + off, len - off, MSG_NOSIGNAL);
+        if (n > 0) { off += (size_t)n; continue; }
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        return -1;
+    }
+    return 0;
+}
+
+static void http_live_stream(int fd)
+{
+    int cur = live_h264_attach();
+    if (cur < 0) {
+        http_send_response(fd, 503, "Service Unavailable", "text/plain", "not running", 0);
+        return;
+    }
+    static const char hdr[] =
+        "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nCache-Control: no-store\r\n"
+        "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n";
+    if (live_send_all(fd, (const unsigned char *)hdr, sizeof(hdr) - 1) != 0) {
+        live_h264_detach(cur); return;
+    }
+    const unsigned char *buf; size_t len;
+    for (int i = 0; i < 300 && !live_h264_init(&buf, &len); i++) usleep(10000);
+    if (!live_h264_init(&buf, &len) || live_send_all(fd, buf, len) != 0) {
+        live_h264_detach(cur); return;
+    }
+    unsigned long long idle_ms = 0;
+    while (idle_ms < 15000) {
+        int rc = live_h264_next(cur, &buf, &len);
+        if (rc < 0) {
+            if (!live_h264_init(&buf, &len) || live_send_all(fd, buf, len) != 0) break;
+            continue;
+        }
+        if (rc == 0) { usleep(5000); idle_ms += 5; continue; }
+        if (live_send_all(fd, buf, len) != 0) break;
+        idle_ms = 0;
+    }
+    live_h264_detach(cur);
+}
+
 static void http_process_request(http_conn_t *c)
 {
     app_ctx_t *app = g_http_app;
@@ -723,6 +769,12 @@ static void http_process_request(http_conn_t *c)
         }
         http_err(fd, 503, "Service Unavailable", "Detection export is busy; retry shortly");
         goto finish;
+    }
+
+    if (strcmp(c->uri, "/video/live.mp4") == 0) {
+        conn_detach(c);        /* 长连接由推流循环独占 */
+        http_live_stream(fd);
+        return;
     }
 
     if (strcmp(c->uri, "/video/mjpeg") == 0) {

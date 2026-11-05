@@ -33,6 +33,7 @@
 #include "video/video_rec.h"
 #include "video/rec_mjpeg.h"
 #include "video/rec_annot.h"
+#include "video/live_h264.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 #include "core/common.h"
@@ -412,6 +413,7 @@ void *video_rec_task(void *arg)
             if (mjp) {
                 rec_annot_stop(g_rec.annot);
                 g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0);
+                live_h264_start(pw, ph, fps, 0);
             }
             if (!mjp) {
                 pthread_mutex_unlock(&g_rec_files_lock);
@@ -612,6 +614,7 @@ void *video_rec_task(void *arg)
             pthread_mutex_lock(&g_rec_files_lock);
             rec_annot_stop(g_rec.annot);
             g_rec.annot = NULL;
+            live_h264_stop();
             rec_mjpeg_finalize(mjp);
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
@@ -751,7 +754,8 @@ void video_rec_destroy(void *arg)
 
 void video_rec_annot_frame(int nv12_fd, int w, int h, const float *xyxy, int count)
 {
-    if (!g_rec.annot || nv12_fd < 0 || !xyxy || count <= 0) return;
+    if (nv12_fd < 0 || !xyxy) return;
+    if (count < 0) count = 0;
     rec_annot_box_t boxes[32];
     int n = count > 32 ? 32 : count;
     for (int i = 0; i < n; i++) {
@@ -761,5 +765,13 @@ void video_rec_annot_frame(int nv12_fd, int w, int h, const float *xyxy, int cou
         boxes[i].y2 = xyxy[4 * i + 3];
         boxes[i].cls = 0;
     }
-    rec_annot_push(g_rec.annot, nv12_fd, w, h, boxes, n);
+    if (g_rec.annot) rec_annot_push(g_rec.annot, nv12_fd, w, h, boxes, n);
+    live_box_t lbs[32];
+    for (int i = 0; i < n; i++) {
+        lbs[i].x1 = xyxy[4 * i + 0];
+        lbs[i].y1 = xyxy[4 * i + 1];
+        lbs[i].x2 = xyxy[4 * i + 2];
+        lbs[i].y2 = xyxy[4 * i + 3];
+    }
+    live_h264_push(nv12_fd, w, h, lbs, n);
 }

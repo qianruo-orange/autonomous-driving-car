@@ -482,7 +482,7 @@ static void *yolo_worker_task(void *arg)
         res.post_done_us = yolo_now_us();
         yolo_record_result(&job, &res);
         /* 标注录像：把本帧 NV12 与检测框交给编码线程（内部立即拷贝） */
-        if (job.nv12_fd >= 0 && res.count > 0) {
+        if (job.nv12_fd >= 0) {
             float xyxy[YOLO_MAX_DETS * 4];
             int n = res.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : res.count;
             for (int i = 0; i < n; i++) {
