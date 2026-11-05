@@ -64,9 +64,6 @@ static void publish_locked(const unsigned char *data, size_t len)
     L.write_seq++;
     if (L.write_seq - L.read_base > LIVE_RING) L.read_base = L.write_seq - LIVE_RING;
     L.fragments++;
-    if (L.fragments <= 3 || L.fragments % 300 == 0)
-        LOG_INFO("live_h264: 分片 #%llu %zu 字节（init=%s）",
-                 (unsigned long long)L.fragments, len, L.init ? "有" : "无");
 }
 
 int live_h264_start(int w, int h, int fps)
