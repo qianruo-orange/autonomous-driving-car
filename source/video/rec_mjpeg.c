@@ -36,8 +36,8 @@
 
 #include "video/rec_mjpeg.h"
 
-/* RIFF 各块长度字段是 uint32。留足余量后停写并分段，避免偏移回绕。 */
-#define REC_MJ_MAX_BYTES (1900ull * 1024ull * 1024ull)
+/* 不设人为容量上限：分段由调用方按日期、帧率变化或手动触发。唯一的天花板来自
+ * AVI(RIFF) 本身——块长度与 movi 偏移都是 uint32，所以单文件不能到 4 GiB。 */
 #define REC_MJ_INIT_CAP  1024u
 
 /* 每帧索引项（ckid 固定 '00dc'，故只存 flags/offset/length） */
@@ -251,7 +251,6 @@ int rec_mjpeg_write_frame(rec_mjpeg_t *s, const unsigned char *jpeg, size_t len,
     (void)ts_ms;
     if (!s || !s->fp || !jpeg || len == 0) return REC_MJ_ERR_IO;
     if (len > 0x7FFFFFFFu) return REC_MJ_ERR_IO;
-    if (s->data_bytes + (uint64_t)len + 8ull > REC_MJ_MAX_BYTES) return REC_MJ_ERR_FULL;
 
     if (s->n_frames >= s->idx_cap) {
         uint32_t cap = s->idx_cap * 2u;
@@ -263,7 +262,9 @@ int rec_mjpeg_write_frame(rec_mjpeg_t *s, const unsigned char *jpeg, size_t len,
 
     long pos = ftell(s->fp);
     if (pos < 0) return REC_MJ_ERR_IO;
-    if ((uint64_t)(pos - s->movi_data_start) + (uint64_t)len + 8ull > 0xFFFFFFFFull)
+    /* AVI(RIFF) 的硬上限：块长度与偏移都是 uint32。给头部与 idx1 留 1 MiB 余量，
+       避免 movi 刚好填满时 RIFF 总长回绕。*/
+    if ((uint64_t)(pos - s->movi_data_start) + (uint64_t)len + 8ull > 0xFFF00000ull)
         return REC_MJ_ERR_FULL;
 
     fourcc(s->fp, "00dc");

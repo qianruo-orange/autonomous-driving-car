@@ -23,7 +23,7 @@ typedef struct rec_mjpeg_s rec_mjpeg_t;
 
 /* rec_mjpeg_write_frame() 返回值：调用方据此区分"到段上限该分段"和"I/O 失败" */
 #define REC_MJ_OK          0
-#define REC_MJ_ERR_FULL   -1   /* 到达单段字节上限，正常分段 */
+#define REC_MJ_ERR_FULL   -1   /* 到达 AVI(RIFF) 32 位偏移上限（约 4 GiB），正常分段 */
 #define REC_MJ_ERR_IO     -2   /* 写入/定位失败（ENOSPC、EIO 等），应停止并退避 */
 
 /* 创建会话：目录建文件，文件名 <prefix>_YYYYMMDD_HHMMSS_mmm.avi（写入 name_out）。
