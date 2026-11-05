@@ -34,7 +34,7 @@
 | 每核 RGA 负载 | 约 2 % |
 | 采集 / 丢帧 | 30 fps，环形缓冲丢帧 0 |
 
-44 ms 由两部分构成：33 ms 相机侧延迟（UVC 一帧的固有延迟，不是软件问题）加 11 ms 流水线。逐环节历史与被否定的优化见[延迟剖析](docs/LATENCY_PROFILE.md)。
+44 ms 由两部分构成：33 ms 相机侧延迟（UVC 一帧的固有延迟，不是软件问题）加 11 ms 流水线。逐环节耗时见[延迟剖析](docs/LATENCY_PROFILE.md)。
 
 ### 快速开始
 
@@ -388,8 +388,8 @@ Numbers from the deployed build on the board, 30 fps capture:
 | Capture / dropped frames | 30 fps, 0 from the ring |
 
 44 ms splits into 33 ms of camera-side latency (UV C one-frame delay, not
-software) plus 11 ms of pipeline. See [latency profile](docs/LATENCY_PROFILE.md)
-for the per-stage history and the optimisations that were measured and rejected.
+software) plus 11 ms of pipeline. See [latency profile](docs/LATENCY_PROFILE.md) for
+per-stage timings.
 
 ### Quick start
 
