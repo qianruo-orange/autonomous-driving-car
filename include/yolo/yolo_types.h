@@ -18,6 +18,10 @@ typedef struct {
 typedef struct {
     int               count;
     unsigned long long seq;   /* 对应的视频采集帧序号 */
+    /* 计时用：解码结束与后处理结束时刻（CLOCK_MONOTONIC 微秒）。
+       渲染侧据此算"后处理完成 → 显示提交"的交接开销。 */
+    unsigned long long decode_end_us;
+    unsigned long long post_done_us;
     int               w, h;   /* 检测原图尺寸（解码后） */
     yolo_det_t        dets[YOLO_MAX_DETS];
 } yolo_result_t;

@@ -657,6 +657,8 @@ static void *yolo_worker_task(void *arg)
         rknn_outputs_release(wk->ctx, nout, outputs);
         /* Persist every completed inference before the display queue can
            coalesce it. Empty detections are records too; no photo is encoded. */
+        res.decode_end_us = job.decode_end_us;
+        res.post_done_us = yolo_now_us();
         yolo_record_result(&job, &res);
         yolo_adapt_workers(outputs_us - worker_us);
         if (idx == 0) {
@@ -831,6 +833,24 @@ static void *yolo_render_task(void *arg)
             frame_ring_display_commit_locked(ring, s);
         frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
+
+        /* 交接开销：后处理完成 → 本次显示提交；以及解码结束 → 显示提交 */
+        if (item.post_done_us) {
+            unsigned long long now_us = yolo_now_us();
+            unsigned long long wait = (now_us - item.post_done_us) / 1000u;
+            unsigned long long d2d = item.decode_end_us
+                                     ? (now_us - item.decode_end_us) / 1000u : 0;
+            static unsigned long long last_log_us, wait_sum, d2d_sum, samples;
+            wait_sum += wait; d2d_sum += d2d; samples++;
+            if (now_us - last_log_us >= 10000000u) {
+                last_log_us = now_us;
+                if (samples) {
+                    LOG_INFO("yolo handoff ms: post_to_display=%llu decode_to_display=%llu samples=%llu",
+                             wait_sum / samples, d2d_sum / samples, samples);
+                    wait_sum = d2d_sum = samples = 0;
+                }
+            }
+        }
 
         /* Capture and the bounded result queue already pace this consumer.
            Do not hold a completed frame behind an additional 33 ms timer. */
