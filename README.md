@@ -225,7 +225,7 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 ### 录像与可观测性
 
-录像无损且自动开始。每次会话先实测真实采集节奏，然后写 `recordings/YYYYMMDD/video_<日期>_<时间>.avi`，把相机 JPEG 帧原样存入 AVI(MJPG) 容器，带完整 `idx1` 索引和文件头回填。容器里存的就是相机 JPEG 帧本身，画质与传感器输出一致，文件大小等于相机自身数据率：720p/30fps 下约 **1.9 MB/s**，即 **6.8 GB/小时**。不设人为容量上限：分段由**日期变化**、**帧率漂移超过 25%** 或手动触发，录像在新文件里继续，每个文件落在所属日期目录 `recordings/YYYYMMDD/` 下。唯一的硬性天花板来自 AVI(RIFF) 本身——块长度与偏移是 32 位，单文件到约 **4 GiB**（720p/30fps 约 35 分钟）时必须分段。
+录像无损且自动开始。每次会话先实测真实采集节奏，然后写 `recordings/YYYYMMDD/video_<日期>_<时间>.avi`，把相机 JPEG 帧原样存入 AVI(MJPG) 容器，带完整 `idx1` 索引和文件头回填。容器里存的就是相机 JPEG 帧本身，画质与传感器输出一致，文件大小等于相机自身数据率：720p/30fps 下约 **1.9 MB/s**，即 **6.8 GB/小时**。分段只按**日期变化**触发：跨天时结束当前文件、在新日期目录 `recordings/YYYYMMDD/` 下开始下一段，录像不中断。另有手动分段接口供前端调用。AVI(RIFF) 的块长度与偏移是 32 位，单文件到约 **4 GiB**（720p/30fps 约 35 分钟）会被格式本身强制分段——这是唯一的例外。
 
 录像从不等待推理，所以模型卡住或重载不会中断录像。每次会话同时写出两份录像：无损 AVI 保留相机原始帧；另一份 `annot_<日期>_<时间>.mp4` 把检测框烧进画面，用 VEPU510 硬件编成 H.264（720p 约 **3 Mbps**，体积约为 AVI 的 **1/5**，VLC/ffplay 可直接播放）。标注录像取的是推理路径已经解出的 NV12，不重复解码，每帧只多一次内存拷贝。检测框只画在标注录像上，浏览器画面仍是原始帧加叠加层。
 
@@ -643,9 +643,12 @@ capture cadence, writes `recordings/YYYYMMDD/video_<date>_<time>.avi`, and
 stores camera JPEG frames verbatim in an AVI(MJPG) container with a proper
 `idx1` index and header backfill. The container stores the camera's JPEG frames themselves, so
 quality matches the sensor output and file size equals the camera's data rate:
-about **1.9 MB/s**, or **6.8 GB/hour** at 720p/30 fps. There is no artificial
-size cap: segments break on a date change, a frame-rate drift over 25 % or a
-manual request, and each file lives under the directory of its own day.
+about **1.9 MB/s**, or **6.8 GB/hour** at 720p/30 fps. Segments break on a
+**date change**: at midnight the current file is closed and the next one starts
+in the new day's directory without interrupting the recording. A manual split
+endpoint exists for the UI. The one exception is AVI(RIFF) itself - its chunk
+lengths and offsets are 32-bit, so a file must split near **4 GiB** (about 35
+minutes at 720p/30 fps).
 
 Every session writes two files: the lossless AVI keeps the camera's own frames,
 and `annot_<date>_<time>.mp4` has the detection boxes burned in, encoded as

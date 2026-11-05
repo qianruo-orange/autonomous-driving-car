@@ -579,20 +579,6 @@ void *video_rec_task(void *arg)
                      * 就按帧边界切段，新段用实测速率写头。 */
                     uint64_t elapsed = wts - rec_mjpeg_start_ms(mjp);
                     uint64_t done_frames = rec_mjpeg_frames(mjp);
-                    if (elapsed >= 8000 && done_frames > 0 && fps > 0) {
-                        double measured = (double)done_frames * 1000.0 / (double)elapsed;
-                        if (measured > (double)fps * 1.25 || measured < (double)fps * 0.75) {
-                            int next_fps = (int)(measured + 0.5);
-                            if (next_fps < 1) next_fps = 1;
-                            if (next_fps > 120) next_fps = 120;
-                            LOG_INFO("rec: capture rate %.1f fps vs header %d fps, splitting",
-                                     measured, fps);
-                            fps = next_fps;
-                            pthread_mutex_lock(&g_rec.lock);
-                            g_rec.split_pending = 1;
-                            pthread_mutex_unlock(&g_rec.lock);
-                        }
-                    }
                     if (rec_mjpeg_refresh(mjp) != 0) {
                         pthread_mutex_lock(&g_rec.lock);
                         g_rec.io_error = 2;
