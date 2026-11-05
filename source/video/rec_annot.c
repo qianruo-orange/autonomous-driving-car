@@ -27,6 +27,7 @@
 
 #include "core/log.h"
 #include "video/rec_mp4.h"
+#include "video/live_h264.h"
 
 #define ANNOT_QUEUE_CAP  12
 #define ANNOT_MAX_BOXES  32
@@ -166,13 +167,16 @@ static void annot_feed(rec_annot_t *s, const unsigned char *p, size_t len)
             memcpy(joined, pending, pending_len);
             memcpy(joined + pending_len, p, len);
             rec_mp4_write(s->mp4, joined, pending_len + len);
+            live_h264_publish(joined, pending_len + len);
             free(joined);
         } else {
             rec_mp4_write(s->mp4, p, len);
+            live_h264_publish(p, len);
         }
         pending_len = 0;
     } else {
         rec_mp4_write(s->mp4, p, len);
+        live_h264_publish(p, len);
     }
 }
 

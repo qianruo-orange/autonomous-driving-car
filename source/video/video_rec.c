@@ -87,7 +87,8 @@ int video_rec_delete_file(int day_fd, const char *relative)
     size_t length = relative ? strlen(relative) : 0;
     if (length < 14 || length >= 256 || relative[8] != '/' ||
         strstr(relative, "..") ||
-        (strncmp(relative + 9, "video_", 6) && strncmp(relative + 9, "rec_", 4)) ||
+        (strncmp(relative + 9, "video_", 6) && strncmp(relative + 9, "rec_", 4) &&
+         strncmp(relative + 9, "annot_", 6)) ||
         (strcmp(relative + length - 4, ".mp4") && strcmp(relative + length - 4, ".avi"))) {
         errno = EINVAL;
         return -1;
@@ -413,7 +414,7 @@ void *video_rec_task(void *arg)
             if (mjp) {
                 rec_annot_stop(g_rec.annot);
                 g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0);
-                live_h264_start(pw, ph, fps, 0);
+                live_h264_start(pw, ph, fps);
             }
             if (!mjp) {
                 pthread_mutex_unlock(&g_rec_files_lock);
@@ -766,12 +767,4 @@ void video_rec_annot_frame(int nv12_fd, int w, int h, const float *xyxy, int cou
         boxes[i].cls = 0;
     }
     if (g_rec.annot) rec_annot_push(g_rec.annot, nv12_fd, w, h, boxes, n);
-    live_box_t lbs[32];
-    for (int i = 0; i < n; i++) {
-        lbs[i].x1 = xyxy[4 * i + 0];
-        lbs[i].y1 = xyxy[4 * i + 1];
-        lbs[i].x2 = xyxy[4 * i + 2];
-        lbs[i].y2 = xyxy[4 * i + 3];
-    }
-    live_h264_push(nv12_fd, w, h, lbs, n);
 }

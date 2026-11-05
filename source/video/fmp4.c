@@ -102,18 +102,30 @@ static void au_emit(void *ctx, const unsigned char *nal, size_t len)
     a->len += 4 + len;
 }
 
-static void scan_nals(const unsigned char *buf, size_t len, void (*cb)(void *, const unsigned char *, size_t), void *ctx)
+static void scan_nals(const unsigned char *buf, size_t len,
+                      void (*cb)(void *, const unsigned char *, size_t), void *ctx)
 {
     size_t i = 0;
-    while (i + 3 <= len) {
-        size_t payload;
-        if (buf[i] == 0 && buf[i+1] == 0 && buf[i+2] == 1) payload = i + 3;
-        else if (i + 4 <= len && buf[i] == 0 && buf[i+1] == 0 && buf[i+2] == 0 && buf[i+3] == 1) payload = i + 4;
-        else { i++; continue; }
-        size_t j = payload;
-        while (j + 3 <= len && !(buf[j] == 0 && buf[j+1] == 0 && buf[j+2] == 1)) j++;
-        cb(ctx, buf + payload, (j < len ? j : len) - payload);
-        i = (j < len ? j : len);
+    for (;;) {
+        /* 找下一个起始码 */
+        size_t payload = 0;
+        int found = 0;
+        for (size_t k = i; k + 3 <= len; k++) {
+            if (buf[k] == 0 && buf[k+1] == 0 && buf[k+2] == 1) {
+                payload = k + 3;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) break;
+        /* 找这个 NAL 的结束位置；没有下一个起始码就一直到缓冲区末尾 */
+        size_t next = len;
+        for (size_t k = payload; k + 3 <= len; k++) {
+            if (buf[k] == 0 && buf[k+1] == 0 && buf[k+2] == 1) { next = k; break; }
+        }
+        if (next > payload) cb(ctx, buf + payload, next - payload);
+        i = next;
+        if (next >= len) break;
     }
 }
 
@@ -333,8 +345,7 @@ int fmp4_take(fmp4_t *s, const unsigned char **buf, size_t *len)
     s->count--;
     *buf = b.data;
     *len = b.len;
-    free(b.data);          /* 调用方需在下次 take 前用完返回的缓冲 */
-    return 1;
+    return 1;              /* 缓冲所有权交给调用方，用完由它 free */
 }
 
 uint32_t fmp4_frames(const fmp4_t *s) { return s ? s->samples : 0; }
