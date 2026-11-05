@@ -195,7 +195,7 @@ Capture and rendering publish frame notifications to their subscribers; inferenc
 
 **Visual tracking.** Click a detection on the home page to select it. Numbered labels and the selected object's cyan box are drawn into the annotated frame used for detection reports, and overlaid in the browser. Matching uses constant-velocity prediction, predicted box overlap, displacement, size changes, and class gates, with ambiguous matches rejected. IDs remain local to the running process; associations expire after 800 ms without a match. Display smoothing follows tracking so it does not distort velocity estimates.
 
-The deployed model emits two tensors: class scores `[1,80,8400]` in INT8 and boxes `[1,4,8400]` in FP16. The one2one head reduces candidate count but does not remove duplicates, so the backend keeps its class-wise NMS. Model feature maps, per-target descriptors, appearance matching, and feature fields in the tracking API and new result records have been removed. See the [Chinese quantization report](docs/YOLO26N_QUANTIZATION.md) ([PDF](docs/pdf/YOLO26n量化报告.pdf)) for model preparation, accuracy, timing, output format and rollback. Kernel sources, patches, installation scripts and the Chinese kernel report/PDF are maintained separately in [rock-4d-npu-kernel](https://github.com/qianruo-orange/rock-4d-npu-kernel).
+The deployed model takes 512x512 RGB and emits two tensors: class scores `[1,80,5376]` in INT8 and boxes `[1,4,5376]` in FP16. The one2one head reduces candidate count but does not remove duplicates, so the backend keeps its class-wise NMS. Model feature maps, per-target descriptors, appearance matching, and feature fields in the tracking API and new result records have been removed. See the [Chinese quantization report](docs/YOLO26N_QUANTIZATION.md) ([PDF](docs/pdf/YOLO26n量化报告.pdf)) for model preparation, accuracy, timing, output format and rollback. Kernel sources, patches, installation scripts and the Chinese kernel report/PDF are maintained separately in [rock-4d-npu-kernel](https://github.com/qianruo-orange/rock-4d-npu-kernel).
 
 **Intelligent Following.** The wheel controller consumes detection results independently of visual tracking. Automatic speed uses relative target size; manual mode uses the configured speed. Steering uses PD control, while the left and right wheels each use PI control with measured feedback. Wheel-speed targets and differential steering correction use **m/s**.
 
@@ -230,7 +230,7 @@ Prepare the model and labels before the first build:
 
 | File | Requirement |
 | --- | --- |
-| `config/yolo26.rknn` | Board-compatible model with one RGB input and two detection outputs (INT8 scores, FP16 boxes) |
+| `config/yolo26.rknn` | 512x512 RGB input, two detection outputs (INT8 scores, FP16 boxes) |
 | `config/coco.names` | Class labels matching the model |
 
 The RKNN model is not included in Git. Model preparation takes place outside this repository's build process; the scripts do not train, convert, or download models. Working model initialization is required for normal service startup.
