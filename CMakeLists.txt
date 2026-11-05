@@ -110,5 +110,15 @@ target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 
 # OpenCV（core + imgproc，仅 imgproc 的 resize）：推理前的 RGB letterbox 缩放
 # 此前还负责检测框/标签渲染，那套渲染已删除（框只在浏览器 canvas 上画一次）
+# RGA 2D 加速器（librga，im2d C API）：letterbox + resize 硬件化。
+# 运行时装在 /usr/local/lib；缺失时启动日志会提示并回退 CPU 路径。
+find_library(LIBRGA rga)
+if (LIBRGA)
+    target_link_libraries(autonomous-driving-car PRIVATE ${LIBRGA})
+    target_compile_definitions(autonomous-driving-car PRIVATE HAVE_LIBRGA=1)
+else()
+    message(WARNING "librga 未找到：将回退 CPU 预处理路径")
+endif()
+
 find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 target_link_libraries(autonomous-driving-car PRIVATE ${OpenCV_LIBS})

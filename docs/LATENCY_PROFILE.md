@@ -5,7 +5,7 @@
 ## 1. 当前基线
 
 ```
-端到端 processing_age : 46 ms（stdev 0.5，min 46 / max 47）
+端到端 processing_age : 44 ms（stdev <1）
 采集                   : 1280×720 MJPEG 30 fps，丢帧 0
 模型                   : YOLO26n 512×512，INT8 类别 + FP16 框
 NPU                    : 1188 MHz，Core0/Core1 各一个 worker
@@ -17,7 +17,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 | 部分 | 耗时 | 说明 |
 |---|---:|---|
 | 相机侧 | 33 ms | 驱动时间戳 → DQBUF 返回，UVC 固有的一帧延迟 |
-| 我们的流水线 | 13 ms | decode 1 + resize 2 + run 8 + post 1 + 调度 1 |
+| 我们的流水线 | 11 ms | decode 1 + RGA letterbox 1 + run 8 + post 1 |
 
 ## 2. 测量方法
 
@@ -46,6 +46,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 | 采集 2560×1440 → 1280×720 | −5 ms | 此前一直误用 1440p |
 | 运行时 2.3.0 → 2.5.0 | 同模型 −25% | 官方 notes 的多输入输出 CPU 负载优化 |
 | 类别输出 NCHW → NHWC | −2 ms（post 4→1） | 逐锚点读 80 个分数由跨 5376 字节变连续 |
+| **letterbox+resize 改用 RGA 硬件** | **−3 ms（47→44）** | 解码只输出 NV12 dma-buf，RGA 一趟完成 CSC+缩放；resize 2→1 ms，且省掉 CPU 的 NV12→RGB 转换 |
 | 框输出 FP16 | 精度 +2.45 mAP50-95 | 延迟无变化，见量化报告 16 |
 
 ## 4. 验证后否定的方案
@@ -57,7 +58,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 | 编码器超频 | 应用不编码，无影响 |
 | NV12→letterbox 融合（标量） | 8.17 ms，慢于现有"转换 1.11 + resize 1.11" |
 | NMS 候选池 128→64 | post 无变化：耗时在逐锚点类别扫描而非候选池 |
-| RGA 硬件缩放 | 硬件在、时钟在跑，但无驱动；移植厂商 rga3 需数天换约 3 ms |
+| ~~RGA 硬件缩放~~ | **已实现**：rga3 驱动内置 + librga im2d，见第 3 节；全分辨率与模型输入两趟都走 RGA 反而无收益（固定开销 ×2，实测 3.03 ms） |
 
 ## 5. 剩余空间
 
@@ -65,7 +66,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 |---|---:|---|
 | 采集再降到 640×480 | −2 ms（decode 5→1） | 录像 720p→480p |
 | NEON 融合 NV12→letterbox | −2~3 ms | 需写 NEON 内核 |
-| RGA 移植 | −2 ms | 驱动移植，数天 |
+| ~~RGA 移植~~ | 已完成，−3 ms | 驱动内置（`rock4d-kernel/rockchip-rga3`）+ librga |
 | 相机换 CSI 直连 | 可能削掉 33 ms 的一部分 | 硬件改动 |
 
 应用侧已接近该架构下限（13 ms），继续压缩只能动相机链路或硬件加速器。

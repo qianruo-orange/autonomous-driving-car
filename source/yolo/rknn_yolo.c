@@ -65,6 +65,7 @@
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 #include "video/jpeg_decoder.h"
+#include "video/rga_preprocess.h"
 
 #define YOLO_MAX_WORKERS 15    /* Actual count is a multiple of detected NPU cores. */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
@@ -76,6 +77,7 @@
 typedef struct {
     unsigned char    *rgb;
     size_t            rgb_cap;
+    int               nv12_fd;   /* >=0：RGA 路径，解码器 NV12 dma-buf（rgb 为 NULL） */
     int               w, h;
     unsigned long long seq;
     unsigned long long capture_ms, deliver_ms, decode_start_us, decode_end_us;
@@ -129,6 +131,7 @@ static struct {
     adaptive_controller_t adaptive;
     adaptive_window_t adaptive_window;
 
+    rga_preprocess_t *rga;                   /* RGA 硬件预处理（NULL = 回退 CPU 路径） */
     unsigned char *model;                    /* 模型文件内存（共享给所有 worker init） */
     size_t         model_len;
     int            in_w, in_h;
@@ -596,10 +599,19 @@ static void *yolo_worker_task(void *arg)
         if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_abandon(&job); break; }
         unsigned long long worker_us = yolo_now_us();
 
-        /* letterbox+padding 预处理（等比例 + 114 灰边）；几何参数供后处理逆映射 */
-        float lb_scale_x, lb_scale_y; int lb_pad_x, lb_pad_y;
-        yolo_rgb_letterbox(job.rgb, job.w, job.h, wk->in_buf, g_yolo.in_w, g_yolo.in_h,
-                           &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
+        /* letterbox 预处理：优先 RGA 硬件（NV12 dma-buf 一趟完成 CSC + 缩放），
+           否则回退 CPU（RGB 池内缓冲 + cv::resize）。几何参数供后处理逆映射。 */
+        float lb_scale_x = 1.0f, lb_scale_y = 1.0f; int lb_pad_x = 0, lb_pad_y = 0;
+        unsigned char *model_in = NULL;
+        if (job.nv12_fd >= 0 && g_yolo.rga)
+            model_in = rga_preprocess_run(g_yolo.rga, job.nv12_fd, job.w, job.h,
+                                          &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
+        if (!model_in) {
+            if (!job.rgb) { yolo_job_abandon(&job); continue; }
+            yolo_rgb_letterbox(job.rgb, job.w, job.h, wk->in_buf, g_yolo.in_w, g_yolo.in_h,
+                               &lb_scale_x, &lb_scale_y, &lb_pad_x, &lb_pad_y);
+            model_in = wk->in_buf;
+        }
         unsigned long long prepared_us = yolo_now_us();
 
         rknn_input in;
@@ -608,7 +620,7 @@ static void *yolo_worker_task(void *arg)
         in.type  = RKNN_TENSOR_UINT8;
         in.fmt   = RKNN_TENSOR_NHWC;
         in.size  = (uint32_t)(g_yolo.in_w * g_yolo.in_h * 3);
-        in.buf   = wk->in_buf;
+        in.buf   = model_in;
         if (rknn_inputs_set(wk->ctx, 1, &in) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
         unsigned long long inputs_us = yolo_now_us();
         if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
@@ -690,11 +702,12 @@ static void *yolo_worker_task(void *arg)
         if (s->seq == job.seq && s->raw_claims > 0) {
             s->rgb.buf  = job.rgb;
             s->rgb.cap  = job.rgb_cap;
-            s->rgb.len  = (size_t)job.w * job.h * 3;
-            s->rgb_done = 1;
+            s->rgb.len  = job.rgb ? (size_t)job.w * job.h * 3 : 0;
+            s->rgb_done = 1;   /* 结果就绪；RGA 路径下 rgb 为空，渲染只用 w/h */
             frame_ring_infer_unclaim_locked(ring, s, 1);
         } else {
-            frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, job.rgb, job.rgb_cap);
+            if (job.rgb)
+                frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, job.rgb, job.rgb_cap);
             if (s->seq == job.seq && s->raw_claims > 0)
                 frame_ring_infer_unclaim_locked(ring, s, 1);
         }
@@ -719,8 +732,9 @@ static int yolo_render_take_rgb_locked(frame_ring_t *ring, unsigned long long se
                                       ring_buf_t *rgb, int *w, int *h)
 {
     frame_slot_t *slot = yolo_slot(ring, seq);
-    if (ring->quiescing || slot->seq != seq || !slot->rgb_done || !slot->rgb.buf)
+    if (ring->quiescing || slot->seq != seq || !slot->rgb_done)
         return -1;
+    /* RGA 路径不产生 RGB：渲染只需要帧尺寸（检测框由浏览器 canvas 绘制） */
     *w = slot->w;
     *h = slot->h;
     *rgb = slot->rgb;
@@ -831,7 +845,8 @@ static void *yolo_render_task(void *arg)
         /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，否则缓冲回池 */
         if (!ring->quiescing && s->seq == seq && s->rgb_done)
             frame_ring_display_commit_locked(ring, s);
-        frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
+        if (rgbb.buf)
+            frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
 
         /* 交接开销：后处理完成 → 本次显示提交；以及解码结束 → 显示提交 */
@@ -1199,6 +1214,16 @@ static int yolo_start_pool(void)
         g_yolo.in_w = s;
         g_yolo.in_h = s;
     }
+    /* RGA 硬件预处理：letterbox + resize 一趟完成，模型输入画布是 CMA dma-buf。
+       打不开 /dev/rga 或分配失败时保持 NULL，自动回退 CPU 路径。 */
+    if (!g_yolo.rga && rga_preprocess_available())
+        g_yolo.rga = rga_preprocess_open(g_yolo.in_w, g_yolo.in_h);
+    if (g_yolo.rga)
+        LOG_INFO("yolo: 预处理使用 RGA 硬件（NV12 → %dx%d letterbox），CPU 缩放已停用",
+                 g_yolo.in_w, g_yolo.in_h);
+    else
+        LOG_INFO("yolo: RGA 不可用，预处理回退 CPU（OpenCV resize）");
+
     LOG_INFO("yolo: input %s, quantization %s, scale %.8g zp %d",
              get_type_string(in_attr.type), get_qnt_type_string(in_attr.qnt_type),
              in_attr.scale, in_attr.zp);
@@ -1309,6 +1334,7 @@ void rknn_yolo_destroy(void *arg)
     (void)arg;
     g_yolo.running = 0;
     yolo_stop_pool();
+    if (g_yolo.rga) { rga_preprocess_close(g_yolo.rga); g_yolo.rga = NULL; }
     if (g_yolo.events_initialized) {
         yolo_events_destroy();
         g_yolo.events_initialized = 0;
@@ -1401,21 +1427,29 @@ void *rknn_yolo_task(void *arg)
         int fmt = s->fmt, w = s->w, h = s->h;
         unsigned char *raw = s->raw.buf;
         size_t raw_len = s->raw.len;
-        /* 解码目标：池内 RGB（job 持有，worker 写槽时移交槽） */
-        ring_buf_t rgbb;
-        frame_ring_buf_take_locked(ring, FRAME_RING_POOL_RGB, (size_t)w * h * 3, &rgbb);
+        /* RGA 路径不需要 RGB 池缓冲（解码结果留在 NV12 dma-buf 里直接交给 RGA）；
+           CPU 路径仍按旧逻辑取池内 RGB。 */
+        int use_rga = (g_yolo.rga != NULL && fmt == FRAME_RING_FMT_MJPEG);
+        ring_buf_t rgbb = { 0 };
+        int nv12_fd = -1;
+        if (!use_rga) {
+            frame_ring_buf_take_locked(ring, FRAME_RING_POOL_RGB, (size_t)w * h * 3, &rgbb);
+        }
         frame_ring_unlock(ring);
 
         /* The claim holds the camera buffer while JPEG is submitted to DMA. */
         int decode_ok = 0, decoder_unavailable = 0;
         unsigned long long decode_start_us = yolo_now_us();
-        if (raw && rgbb.buf && w > 0 && h > 0) {
+        if (raw && (use_rga || rgbb.buf) && w > 0 && h > 0) {
             if (fmt == FRAME_RING_FMT_MJPEG) {
                 if (!decoder) decoder = jpeg_decoder_open();
                 decoder_unavailable = !decoder;
                 if (decoder) {
                     atomic_store(&g_yolo.hardware_decode, 1);
-                    decode_ok = jpeg_decoder_rgb(decoder, raw, raw_len, rgbb.buf, w, h) == 0;
+                    if (use_rga)
+                        decode_ok = jpeg_decoder_nv12(decoder, raw, raw_len, w, h, &nv12_fd) == 0;
+                    else
+                        decode_ok = jpeg_decoder_rgb(decoder, raw, raw_len, rgbb.buf, w, h) == 0;
                 }
             } else if (fmt == FRAME_RING_FMT_YUYV && raw_len >= (size_t)w * h * 2) {
                 yolo_yuyv_to_rgb(raw, w, h, rgbb.buf);
@@ -1441,7 +1475,7 @@ void *rknn_yolo_task(void *arg)
             continue;
         }
 
-        yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap,
+        yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap, .nv12_fd = nv12_fd,
                            .w = w, .h = h, .seq = seq, .capture_ms = capture_ms, .deliver_ms = deliver_ms,
                            .decode_start_us = decode_start_us, .decode_end_us = yolo_now_us(),
                            .metadata = metadata };
