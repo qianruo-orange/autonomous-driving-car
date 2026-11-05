@@ -411,9 +411,8 @@ void *video_rec_task(void *arg)
             pthread_mutex_lock(&g_rec_files_lock);
             mjp = rec_mjpeg_create(dir, "video", pw, ph, fps, fname, sizeof(fname));
             if (mjp) {
-                /* 排查中：暂时不启动标注编码，验证 MPP 是否为崩溃源 */
                 rec_annot_stop(g_rec.annot);
-                g_rec.annot = getenv("REC_ANNOT") ? rec_annot_start(dir, "annot", pw, ph, fps, 0) : NULL;
+                g_rec.annot = rec_annot_start(dir, "annot", pw, ph, fps, 0);
             }
             if (!mjp) {
                 pthread_mutex_unlock(&g_rec_files_lock);

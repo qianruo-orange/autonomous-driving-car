@@ -383,6 +383,7 @@ uint64_t rec_mjpeg_start_ms(const rec_mjpeg_t *s)
 
 int rec_mjpeg_refresh(rec_mjpeg_t *s)
 {
+    if (!REC_LOSSLESS_TO_DISK) return 0;   /* 写 /dev/null 时没有可回填的头部 */
     if (!s || !s->fp) return -1;
     if (s->n_frames == 0) return 0;
 
