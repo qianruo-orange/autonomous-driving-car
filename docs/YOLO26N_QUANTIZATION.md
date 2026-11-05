@@ -409,3 +409,111 @@ YOLO26 的 `end2end=True` 分支在 checkpoint 中存在（`one2one_cv2/cv3`）�
 ### 15.9 结论
 
 线上运行的就是官方流程产物：YOLO 导出 ONNX → RKNN 官方工具转成双输出全 INT8 模型，主机侧按 `cx,cy,w,h` 解码并做 NMS。三处与官方文档不符的地方均有实测依据，重跑时应以此为准。
+
+## 16. 框输出 FP16 混合精度方案（2026-11-05 交付）
+
+### 16.1 问题：框输出的量化步长
+
+`Mul_2` 输出的是**像素单位**的 `cx,cy,w,h`，跨度约 0–640。整网 INT8 时该张量只有一组仿射参数：
+
+```
+scale = 2.726881  →  每级 ≈ 2.73 像素，量化误差 ≈ ±1.4 px
+```
+
+对 640 输入的检测器来说，±1.4 px 的定位误差会直接吃掉高 IoU 区间（mAP50–95 比头部 FP16 的旧模型低 3.15 个点）。
+
+### 16.2 方案：只把框输出保 FP16
+
+保留主干与类别输出的 INT8，仅把框输出张量标记为 FP16：
+
+| 张量 | 类型 | zero-point | scale |
+|---|---|---:|---:|
+| `images` | INT8 | −128 | 0.00392156886 |
+| `/model.23/Sigmoid_output_0` | INT8 | −128 | 0.00371079287 |
+| `/model.23/Mul_2_output_0` | **FP16** | — | — |
+
+代价只有传输量：该张量 4×8400 个数，由 1 字节变 2 字节，每帧多 33 KB。模型文件 8,238,952 → 8,242,011 字节（+3 KB）。
+
+### 16.3 构建步骤
+
+官方 `convert.py` 走的是 `rknn.build()`，没有按层指定精度的入口，因此该版本改用 hybrid 两步流程（工具链仍为 **2.3.2**，2.5.0 在本模型上会崩，见 15.7）：
+
+```python
+OUT = ['/model.23/Sigmoid_output_0', '/model.23/Mul_2_output_0']
+
+# step1：截断两支 + 生成量化配置
+rknn.config(mean_values=[[0,0,0]], std_values=[[255,255,255]], target_platform='rk3576')
+rknn.load_onnx(model='yolo26n.onnx', outputs=OUT)
+rknn.hybrid_quantization_step1(dataset=calibration_txt, proposal=False)
+
+# 修改生成的 quantization.cfg
+custom['/model.23/Mul_2_output_0']    = 'float16'
+custom['/model.23/Mul_2_output_0-rs'] = 'float16'
+cfg['custom_quantize_layers'] = custom
+
+# step2：按修改后的配置量化并导出
+rknn.hybrid_quantization_step2(model_input=..., data_input=..., model_quantization_cfg=cfg)
+rknn.export_rknn('yolo26n-box16.rknn')
+```
+
+`proposal=False` 是必要的：本模型的注意力结构在 `proposal=True` 时会触发 2.5.0 的融合 bug，2.3.2 下也可安全跳过。
+
+构建日志会确认精度：
+
+```
+W hybrid_quantization_step2: The default output dtype of '/model.23/Sigmoid_output_0'
+  is changed from 'float32' to 'int8' in rknn model for performance!
+W hybrid_quantization_step2: The default output dtype of '/model.23/Mul_2_output_0'
+  is changed from 'float32' to 'float16' in rknn model for performance!
+```
+
+### 16.4 板端 C 实现
+
+推理侧按每路输出的实际 dtype 决定取值方式，不再假设整网同精度：
+
+```c
+outputs[i].want_float = (nout == 1) ? 1
+                     : (wk->out_attr[i].type == RKNN_TENSOR_FLOAT16 ? 1 : 0);
+```
+
+- INT8（类别分）→ `want_float = 0`，直接拿原生缓冲，由后处理按 zp/scale 反量化；
+- FP16（框）→ `want_float = 1`，由运行时转成 float 缓冲。
+
+后处理 `yolo_postprocess_two()` 按 dtype 选择读取路径，两种模型都能加载：
+
+```c
+const int8_t *bp  = (ba->type == RKNN_TENSOR_INT8) ? (const int8_t *)boxes_buf : NULL;
+const float  *bpf = (ba->type == RKNN_TENSOR_INT8) ? NULL : (const float *)boxes_buf;
+float bcx = bpf ? bpf[i0] : yolo_deq_i8(bp[i0], b_zp, b_sc);
+```
+
+### 16.5 实测结果
+
+板端（RK3576，NPU 1188 MHz，Runtime 2.5.0）：
+
+| 项 | 全 INT8 | 框输出 FP16 |
+|---|---:|---:|
+| `run` | 12.2 ms | 12.2 ms |
+| `outputs` | 0 ms | 0–1 ms |
+| `post` | 2 ms | 2 ms |
+| 模型体积 | 8,238,952 B | 8,242,011 B |
+| mAP50 | 0.5238 | **0.5471** |
+| mAP50–95 | 0.3390 | **0.3635** |
+
+两项精度同时提升（+2.33 / +2.45 点），速度无可见变化，交付哈希 `ba7fc2c4…`。
+
+### 16.6 备选方案对比
+
+| 方案 | 框量化步长 | mAP50 | mAP50–95 | 结论 |
+|---|---:|---:|---:|---|
+| 全 INT8（四通道共用 scale） | 2.73 px | 0.5238 | 0.3390 | 已弃用 |
+| 框通道拆 4 个独立输出 | 2.51 / 2.73 / 2.62 / 2.63 px | 未测 | 未测 | **无收益，未采用** |
+| **框输出 FP16（现交付）** | ≈ 0 | **0.5471** | **0.3635** | 采用 |
+
+拆 4 路之所以无效：量化范围由**校准数据的实际分布**决定，校准集中存在接近整幅的大框，w/h 的范围同样被顶到 640 附近，拆分后步长只从 2.73 降到 2.62，且输出数由 2 增到 5、取输出开销上升。该实验模型保留在 `build/yolo26n-5out.rknn`，未部署。
+
+### 16.7 复现与回滚
+
+复现：按 16.3 的脚本，校准集使用 `data/calibration.txt`（96 张，64 COCO + 32 实拍，640×640 letterbox），工具链 2.3.2。
+
+回滚到全 INT8：把 `yolo26n-official.rknn` 一类全 INT8 模型放回 `config/yolo26.rknn` 即可，二进制同时支持两种输出精度（16.4 的双路径），无需改代码或降级运行时。
