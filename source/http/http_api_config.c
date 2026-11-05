@@ -243,7 +243,7 @@ static int apply_video(app_ctx_t *app, const http_form_field_t *fields, int coun
     return changed;
 }
 
-/* Confidence/NMS changes reload the inference pool; concurrency is adaptive. */
+/* Confidence/NMS changes reload the inference pool (fixed two workers). */
 static int apply_yolo(app_ctx_t *app, const http_form_field_t *fields, int count)
 {
     struct app_config_t *cfg = app->cfg;

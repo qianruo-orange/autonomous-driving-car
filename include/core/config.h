@@ -76,7 +76,7 @@ struct app_config_t {
     float         yolo_conf;          /* 置信度阈值 */
     float         yolo_nms;           /* NMS IoU 阈值 */
     int           yolo_interval_ms;   /* Legacy file compatibility; automatic pacing ignores this value. */
-    int           yolo_threads;       /* Legacy file compatibility; the pool selects active workers adaptively. */
+    int           yolo_threads;       /* Legacy file compatibility; the pool is fixed at two workers. */
 };
 
 /* 生命周期表入口，接收 app_ctx_t 上下文。 */
