@@ -105,16 +105,6 @@ find_library(LIBNLROUTE3 nl-route-3 REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBNLROUTE3})
 
 # RKNN NPU 运行时（librknnrt.so，板载 /usr/lib）
-# Rockchip MPP（librockchip_mpp）：压缩录像线程用硬件 MJPEG 解码 + H.264 编码
-find_library(LIBRKMPP rockchip_mpp)
-if (LIBRKMPP)
-    target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKMPP})
-    target_include_directories(autonomous-driving-car PRIVATE /usr/local/include)
-    target_compile_definitions(autonomous-driving-car PRIVATE HAVE_MPP=1)
-else()
-    message(WARNING "librockchip_mpp 未找到：压缩录像不可用，仅保留无损 AVI")
-endif()
-
 find_library(LIBRKNNRT rknnrt REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 
