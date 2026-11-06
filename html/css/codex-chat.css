@@ -45,6 +45,24 @@
 /* Shared settings widgets (config page) */
 .codex-head-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .codex-head-actions .btn{margin:0;padding:4px 10px;font-size:12px;white-space:nowrap}
+/* 检查更新发现新版本后，同一个按钮变成「安装更新」并高亮 */
+.codex-head-actions .btn.ready{border-color:var(--accent);color:var(--accent)}
+/* 登录后的额度行：套餐徽标 + 两个滚动窗口用量条 */
+.codex-quota{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px dashed var(--card-border);font-size:12px;color:var(--muted)}
+.codex-quota[hidden]{display:none}
+.codex-plan{padding:2px 10px;border-radius:999px;border:1px solid var(--card-border2);background:var(--btn-bg);color:var(--accent);font-weight:700;letter-spacing:.5px;font-size:11px}
+.codex-plan.warn{color:#e0913a;border-color:#e0913a}
+.codex-meter{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.codex-meter-label{white-space:nowrap}
+.codex-meter-bar{display:block;width:92px;height:6px;border-radius:999px;background:var(--track);overflow:hidden}
+.codex-meter-bar i{display:block;height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#34d399,#5eead4);transition:width .3s}
+.codex-meter-bar i.warn{background:linear-gradient(90deg,#fbbf24,#fde047)}
+.codex-meter-bar i.bad{background:linear-gradient(90deg,#f87171,#fb7185)}
+.codex-meter-val{color:var(--text);font-weight:600;min-width:32px;text-align:right}
+.codex-reset{margin-left:auto;min-width:0;text-align:right}
+@media (max-width:720px){
+  .codex-reset{margin-left:0;text-align:left}
+}
 .codex-login-btn.ok{color:var(--name);border-color:var(--name)}
 .codex-login-btn.warn{color:#e0913a;border-color:#e0913a}
 .codex-login-area{margin-top:10px}

@@ -35,8 +35,8 @@
     var s = document.createElement('style');
     s.id = 'auth-box-style';
     s.textContent =
-      '#auth-overlay{position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(4,8,20,.45);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}' +
-      '#auth-box{width:min(340px,calc(100vw - 48px));background:var(--card-bg);border:1px solid var(--card-border2);border-radius:18px;padding:22px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow);color:var(--text)}' +
+      '#auth-overlay{position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(4,8,20,.45)}' +
+      '#auth-box{width:min(340px,calc(100vw - 48px));background:var(--card-bg);border:1px solid var(--card-border2);border-radius:18px;padding:22px;box-shadow:var(--shadow);color:var(--text)}' +
       '#auth-box h3{font-size:15px;color:var(--text-strong);margin-bottom:4px}' +
       '#auth-box .auth-sub{font-size:12px;color:var(--muted);margin-bottom:6px}' +
       '#auth-box label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}' +

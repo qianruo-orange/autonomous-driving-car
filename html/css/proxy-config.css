@@ -4,10 +4,11 @@
 .proxy-badge{font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--card-border);background:var(--btn-bg);color:var(--muted);margin-left:8px}
 .proxy-badge.ok{color:#0a0;border-color:#0a0}
 .proxy-badge.warn{color:#c60;border-color:#c60}
-/* Save / apply / reload sit at the right of the card title bar. */
+/* Save sits at the right of the card title bar and shares .card-save geometry. */
 .proxy-head-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.proxy-head-actions .btn{margin:0;padding:4px 10px;font-size:12px;white-space:nowrap}
-.proxy-status{display:block;margin:10px 0 0;font-size:12px;line-height:1.5;min-height:18px;white-space:normal;word-break:break-word}
+.proxy-status{display:block;margin:8px 0 0;font-size:12px;line-height:1.5;min-height:0;white-space:normal;word-break:break-word}
+/* 无提示文字时不占高度，卡片底部贴合内容 */
+.proxy-status:empty{display:none;margin:0}
 @media (max-width:720px){
   .proxy-head-actions{margin-left:0;width:100%;justify-content:flex-start}
 }

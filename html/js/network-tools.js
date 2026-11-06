@@ -21,9 +21,7 @@
   }
 
   function ntResultEl(type) {
-    return document.getElementById(type === 'ping' ? 'nt_ping_result' :
-                                   type === 'speed' ? 'nt_speed_result' :
-                                   'nt_reach_result');
+    return document.getElementById(type === 'ping' ? 'nt_ping_result' : 'nt_speed_result');
   }
 
   function ntTarget(type) {
@@ -33,7 +31,6 @@
       if (sel.value === 'custom') return document.getElementById('nt_speed_custom').value.trim();
       return sel.value;
     }
-    if (type === 'reach') return document.getElementById('nt_reach_target').value.trim();
     return '';
   }
 
@@ -83,7 +80,7 @@
       el.innerHTML = '<span class="nt-fail">✗ ' + ntError(data.error) + '</span>';
       return;
     }
-    if (type === 'ping' || type === 'reach') ntRenderPing(el, data);
+    if (type === 'ping') ntRenderPing(el, data);
     else if (type === 'speed') ntRenderSpeed(el, data);
   }
 
@@ -109,19 +106,6 @@
       return;
     }
 
-    /* 可达性测试复用 ping 后端，从 URL 提取主机名 */
-    var apiType = type;
-    var apiTarget = target;
-    if (type === 'reach') {
-      apiType = 'ping';
-      try {
-        var u = new URL(target);
-        apiTarget = u.hostname;
-      } catch(e) {
-        apiTarget = target.replace(/^https?:\/\//, '').split('/')[0];
-      }
-    }
-
     var el = ntResultEl(type);
     ntRender(type, {status: 'starting'});
 
@@ -129,7 +113,7 @@
       var r = await authFetch('/api/nettest', {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'type=' + encodeURIComponent(apiType) + '&target=' + encodeURIComponent(apiTarget)
+        body: 'type=' + encodeURIComponent(type) + '&target=' + encodeURIComponent(target)
       });
       if (!r.ok) {
         ntRender(type, {status: 'failed', httpStatus: r.status});

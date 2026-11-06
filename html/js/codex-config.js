@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* codex-config.js — Codex CLI login and settings on /config.
    One title-bar button serves both directions: "Sign in" (start / retry the
-   device-code flow) when signed out, "Sign out" when signed in. */
+   device-code flow) when signed out, "Sign out" when signed in.
+   The model list, the reasoning levels per model and the account quota all
+   come from the CLI itself, so the card never shows a model the CLI cannot
+   run. */
 (function () {
   'use strict';
   function el(id) { return document.getElementById(id); }
@@ -18,6 +21,158 @@
   var saving = false;
   var loggedIn = false;
   var loginRequested = false;
+  var models = [];
+  var modelsLoaded = false;
+  var currentModel = '';
+  var currentEffort = 'medium';
+
+  var EFFORT_TEXT = {
+    minimal: '极低', low: '低', medium: '中', high: '高',
+    xhigh: '极高', max: '最大', ultra: '极限'
+  };
+
+  function effortLabel(effort, isDefault) {
+    var name = EFFORT_TEXT[effort] ? t(EFFORT_TEXT[effort]) : '';
+    return (name ? name + '（' + effort + '）' : effort) + (isDefault ? ' · ' + t('推荐') : '');
+  }
+
+  function modelOf(slug) {
+    for (var i = 0; i < models.length; i++) {
+      if (models[i].slug === slug) return models[i];
+    }
+    return null;
+  }
+
+  function paintEfforts(slug, keep) {
+    var model = modelOf(slug);
+    var efforts = (model && model.efforts.length) ? model.efforts : ['low', 'medium', 'high'];
+    var wanted = keep && efforts.indexOf(keep) >= 0 ? keep : (model && model.default_effort) || 'medium';
+    if (efforts.indexOf(wanted) < 0) wanted = efforts[0];
+    effortSel.replaceChildren();
+    efforts.forEach(function (effort) {
+      var option = document.createElement('option');
+      option.value = effort;
+      option.textContent = effortLabel(effort, model && model.default_effort === effort);
+      if (effort === wanted) option.selected = true;
+      effortSel.appendChild(option);
+    });
+    currentEffort = wanted;
+  }
+
+  function paintModels(selected) {
+    modelSel.replaceChildren();
+    var found = false;
+    var fallback = document.createElement('option');
+    fallback.value = '';
+    setI18nText(fallback, '默认（跟随 CLI）');
+    if (!selected) { fallback.selected = true; found = true; }
+    modelSel.appendChild(fallback);
+    models.forEach(function (model) {
+      var option = document.createElement('option');
+      option.value = model.slug;
+      option.textContent = model.name && model.name !== model.slug
+        ? model.name + ' (' + model.slug + ')' : model.slug;
+      if (model.slug === selected) { option.selected = true; found = true; }
+      modelSel.appendChild(option);
+    });
+    if (selected && !found) {
+      /* A model saved before a CLI downgrade stays selectable, but is marked. */
+      var kept = document.createElement('option');
+      kept.value = selected;
+      kept.textContent = selected + ' · ' + t('当前已保存');
+      kept.selected = true;
+      modelSel.appendChild(kept);
+    }
+    currentModel = selected || '';
+    paintEfforts(currentModel, currentEffort);
+  }
+
+  async function loadModels() {
+    try {
+      var data = await App.json('/api/codex/models', {authenticated: true, timeout: 45000});
+      if (!data.ok) throw new Error(data.error || 'HTTP 500');
+      models = data.models || [];
+      modelsLoaded = true;
+      paintModels(currentModel);
+    } catch (error) {
+      modelsLoaded = false;
+      if (!modelSel.options.length) {
+        var option = document.createElement('option');
+        option.value = '';
+        setI18nText(option, '模型列表读取失败');
+        modelSel.appendChild(option);
+      }
+    }
+  }
+
+  /* ---- 额度 ---- */
+  var quotaBox = el('codex_quota');
+  var quotaPlan = el('codex_plan');
+  var quotaReset = el('codex_reset');
+  var quotaStop = null;
+
+  function setMeter(barId, pctId, window) {
+    var bar = el(barId), pct = el(pctId);
+    if (!bar || !pct) return;
+    if (!window || typeof window.used_percent !== 'number') {
+      bar.style.width = '0%'; bar.className = '';
+      pct.textContent = '—';
+      return;
+    }
+    var used = Math.max(0, Math.min(100, window.used_percent));
+    bar.style.width = used.toFixed(0) + '%';
+    bar.className = used >= 85 ? 'bad' : used >= 60 ? 'warn' : '';
+    pct.textContent = used.toFixed(0) + '%';
+  }
+
+  function clockOf(seconds) {
+    if (!seconds) return '';
+    var d = new Date(seconds * 1000);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleString(undefined, {month: '2-digit', day: '2-digit',
+                                        hour: '2-digit', minute: '2-digit'});
+  }
+
+  function paintQuota(data) {
+    if (!quotaBox) return;
+    if (!data || data.ok === false || !data.signed_in) {
+      quotaBox.hidden = true;
+      return;
+    }
+    quotaBox.hidden = false;
+    var plan = String(data.plan || '').toLowerCase();
+    quotaPlan.textContent = plan ? plan.toUpperCase() : '—';
+    quotaPlan.className = 'codex-plan' + (data.allowed ? '' : ' warn');
+    setMeter('codex_bar_5h', 'codex_pct_5h', data.primary);
+    setMeter('codex_bar_wk', 'codex_pct_wk', data.secondary);
+    var parts = [];
+    if (!data.allowed) parts.push(t('额度已用尽'));
+    var reset = clockOf(data.secondary && data.secondary.resets_at);
+    if (reset) parts.push(t('每周额度 {time} 重置', {time: reset}));
+    if (data.credits && data.credits.has && data.credits.balance) {
+      parts.push(t('余额 {balance}', {balance: data.credits.balance}));
+    }
+    if (data.reset_credits) parts.push(t('可用重置次数 {count}', {count: data.reset_credits}));
+    quotaReset.textContent = parts.join(' · ');
+  }
+
+  async function loadQuota() {
+    try {
+      paintQuota(await App.json('/api/codex/quota', {authenticated: true, timeout: 30000}));
+    } catch (error) {
+      if (quotaBox) quotaBox.hidden = true;
+    }
+  }
+
+  function syncQuota() {
+    if (loggedIn && !quotaStop) {
+      quotaStop = App.poll(loadQuota, {interval: 60000});
+    } else if (!loggedIn && quotaStop) {
+      quotaStop();
+      quotaStop = null;
+      if (quotaBox) quotaBox.hidden = true;
+    }
+  }
 
   function render(data) {
     var login = data.login || {};
@@ -38,8 +193,29 @@
       login.state === 'starting' || login.state === 'pending';
 
     var s = data.settings || {};
-    if (document.activeElement !== modelSel) modelSel.value = s.model || '';
-    if (document.activeElement !== effortSel) effortSel.value = s.effort || 'medium';
+    var savedModel = s.model || '';
+    var savedEffort = s.effort || 'medium';
+    if (!modelsLoaded) {
+      if (!modelSel.options.length) {
+        /* 目录还没回来时先占位，避免选中态被空列表清掉 */
+        var placeholder = document.createElement('option');
+        placeholder.value = savedModel;
+        placeholder.textContent = savedModel || t('默认（跟随 CLI）');
+        modelSel.appendChild(placeholder);
+        currentModel = savedModel;
+      }
+    } else {
+      /* 服务端保存的模型变了（别处改过或刚登录），按目录重建一次 */
+      if (savedModel !== currentModel) paintModels(savedModel);
+      if (document.activeElement !== modelSel) modelSel.value = currentModel;
+      if (document.activeElement !== effortSel) {
+        var model = modelOf(currentModel);
+        if (!model || model.efforts.indexOf(savedEffort) >= 0) {
+          effortSel.value = savedEffort;
+          currentEffort = savedEffort;
+        }
+      }
+    }
 
     var url = login.url || '';
     var code = login.code || '';
@@ -57,6 +233,7 @@
     } else {
       setI18nText(deviceHint, '正在获取一次性设备码，拿到后打开链接输入即可完成授权。');
     }
+    syncQuota();
   }
 
   async function load(signal) {
@@ -69,6 +246,7 @@
   }
 
   App.poll(load, {interval: 2000});
+  loadModels();
   document.addEventListener('languagechange', function () { load(); paintUpdate(); });
 
   async function saveSettings() {
@@ -81,6 +259,8 @@
       });
       var result = await response.json();
       if (!result.ok) throw new Error(result.error || 'HTTP ' + response.status);
+      currentModel = modelSel.value;
+      currentEffort = effortSel.value;
       App.status('codex', 'ok', t('已保存 Codex 设置'));
       await load();
     } catch (error) {
@@ -89,7 +269,10 @@
       saving = false;
     }
   }
-  modelSel.addEventListener('change', saveSettings);
+  modelSel.addEventListener('change', function () {
+    paintEfforts(modelSel.value, '');
+    saveSettings();
+  });
   effortSel.addEventListener('change', saveSettings);
 
   loginBtn.addEventListener('click', async function () {
@@ -136,40 +319,83 @@
   var updateBtn = el('codex_update_check');
   var updateResult = el('codex_update_result');
   var updateState = null;
+  var canInstall = false;
+  var installing = false;
 
   function paintUpdate() {
     updateResult.hidden = !updateState;
+    updateBtn.textContent = canInstall ? t('安装更新') : t('检查更新');
+    updateBtn.className = 'btn btn-back' + (canInstall ? ' ready' : '');
+    updateBtn.disabled = installing;
     if (!updateState) return;
     updateResult.className = 'codex-update-text' + (updateState.cls ? ' ' + updateState.cls : '');
     if (updateState.mode === 'checking') {
       updateResult.textContent = t('检查中…'); return;
     }
+    if (updateState.mode === 'installing') {
+      updateResult.textContent = t('正在安装更新，请勿断电…'); return;
+    }
     if (updateState.mode === 'error') {
       updateResult.textContent = t('检查更新失败') + ': ' + updateState.error; return;
+    }
+    if (updateState.mode === 'installed') {
+      var r = updateState.data;
+      var done = r.ok
+        ? t('已更新到 {version}', {version: r.version || '—'})
+        : t('安装失败') + (r.error ? ': ' + r.error : '');
+      updateResult.textContent = done + (r.ok ? '' : ' · ' + t('可查看板端日志重试'));
+      return;
     }
     var d = updateState.data;
     var txt = t('当前 {current} · 最新 {latest}',
       {current: d.current || '—', latest: d.latest || '—'});
     if (!d.cli_found) txt += ' · ' + t('未找到 Codex CLI');
-    else if (d.update_available) txt += ' · ' + t('有可用更新') + ' · ' + t('在板端执行 codex update 升级');
+    else if (d.update_available) txt += ' · ' + t('有可用更新，点击安装更新');
     else txt += ' · ' + t('已是最新版本');
     if (d.stale) txt += ' · ' + t('使用上次检查结果');
     updateResult.textContent = txt;
   }
 
-  updateBtn.addEventListener('click', async function () {
-    updateBtn.disabled = true;
+  async function checkUpdate() {
+    canInstall = false;
     updateState = {mode: 'checking', cls: ''}; paintUpdate();
+    updateBtn.disabled = true;
     try {
       var data = await App.json('/api/codex/update/check',
         {authenticated: true, timeout: 30000});
       if (!data.ok) throw new Error(data.error || 'HTTP 500');
-      updateState = {mode: 'ok', data: data,
-        cls: data.update_available ? 'accent' : ''};
+      canInstall = !!data.update_available;
+      updateState = {mode: 'ok', data: data, cls: canInstall ? 'accent' : ''};
     } catch (error) {
+      canInstall = false;
       updateState = {mode: 'error', error: error.message, cls: 'err'};
     }
     paintUpdate();
-    updateBtn.disabled = false;
+  }
+
+  async function installUpdate() {
+    installing = true;
+    canInstall = false;
+    updateState = {mode: 'installing', cls: 'accent'}; paintUpdate();
+    try {
+      var data = await App.json('/api/codex/update/install',
+        {authenticated: true, method: 'POST', timeout: 600000});
+      updateState = {mode: 'installed', data: data || {}, cls: data && data.ok ? 'accent' : 'err'};
+      App.status('codex', data && data.ok ? 'ok' : 'err',
+        data && data.ok ? t('已更新到 {version}', {version: data.version || '—'}) : t('安装失败'));
+      await loadModels();
+      await load();
+    } catch (error) {
+      updateState = {mode: 'installed', data: {ok: false, error: error.message}, cls: 'err'};
+    } finally {
+      installing = false;
+      canInstall = false;
+      paintUpdate();
+    }
+  }
+
+  updateBtn.addEventListener('click', function () {
+    if (installing) return;
+    if (canInstall) installUpdate(); else checkUpdate();
   });
 })();

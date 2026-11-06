@@ -11,7 +11,7 @@
   --muted-2:#586a88;
   --accent:#5ec2f0;
   --accent-hover:#8fd6f7;
-  --card-bg:rgba(18,30,52,.58);
+  --card-bg:rgba(16,27,47,.90);
   --card-border:rgba(94,194,240,.14);
   --card-border2:rgba(94,194,240,.28);
   --input-bg:rgba(10,17,32,.6);
@@ -37,7 +37,7 @@ html[data-theme="light"]{
   --muted-2:#90a0b8;
   --accent:#1f6fb8;
   --accent-hover:#185a99;
-  --card-bg:rgba(255,255,255,.74);
+  --card-bg:rgba(255,255,255,.94);
   --card-border:rgba(40,90,150,.16);
   --card-border2:rgba(40,90,150,.30);
   --input-bg:#ffffff;
@@ -57,14 +57,16 @@ html[data-theme="light"]{
 
 body{font-family:Segoe UI,sans-serif;background:var(--bg);color:var(--text);padding:24px;min-height:100vh;transition:background .3s,color .3s}
 /* Shared native select appearance; page styles only determine field layout. */
-html[data-theme] select{min-height:38px;padding:8px 32px 8px 12px;border:1px solid var(--card-border2);border-radius:9px;background-color:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px;font-weight:400;line-height:1.4;color-scheme:var(--control-scheme);backdrop-filter:blur(4px);cursor:pointer;transition:border-color .15s,box-shadow .15s}
+html[data-theme] select{min-height:38px;padding:8px 32px 8px 12px;border:1px solid var(--card-border2);border-radius:9px;background-color:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px;font-weight:400;line-height:1.4;color-scheme:var(--control-scheme);cursor:pointer;transition:border-color .15s,box-shadow .15s}
 html[data-theme] select:hover:not(:disabled){border-color:var(--accent)}
 html[data-theme] select:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-color:var(--accent);box-shadow:0 0 0 2px var(--glow)}
 html[data-theme] select:disabled{opacity:.55;cursor:not-allowed}
 html[data-theme] select option{color:var(--text);background-color:var(--select-menu-bg)}
 html[data-theme] select option:disabled{color:var(--select-disabled-text);background-color:var(--select-disabled-bg)}
 h1{color:var(--accent);font-size:20px;margin-bottom:4px;text-shadow:0 0 20px var(--glow)}
-.card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;padding:18px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight);transition:border-color .25s,box-shadow .25s}
+/* 卡片不再对背景做实时模糊（大表面积 blur 在板载浏览器上是主要掉帧来源），
+   改用更实的半透明底色保留毛玻璃观感。 */
+.card{background:var(--card-bg);border:1px solid var(--card-border);border-radius:18px;padding:18px;box-shadow:var(--shadow),inset 0 1px 0 var(--card-highlight);transition:border-color .18s}
 .card:hover{border-color:var(--card-border2)}
 .card h3{font-size:14px;color:var(--accent);margin-bottom:10px;padding-left:10px;border-left:3px solid var(--accent);border-radius:0 4px 4px 0}
 a{color:var(--accent);text-decoration:none;transition:color .2s}
@@ -78,15 +80,18 @@ a:hover{color:var(--accent-hover)}
 .indigo{background:linear-gradient(90deg,#818cf8,#a78bfa);box-shadow:0 0 10px rgba(129,140,248,.35)}
 
 /* ---- 主题切换按钮（右上角悬浮） ---- */
-.theme-btn{position:fixed;top:12px;right:12px;z-index:999;padding:6px 14px;border-radius:20px;border:1px solid var(--card-border2);background:linear-gradient(135deg,rgba(94,194,240,.1),rgba(94,194,240,.04));color:var(--accent);cursor:pointer;font-size:14px;font-weight:600;backdrop-filter:blur(8px);box-shadow:var(--shadow);transition:all .25s}
+.theme-btn{position:fixed;top:12px;right:12px;z-index:999;padding:6px 14px;border-radius:20px;border:1px solid var(--card-border2);background:linear-gradient(135deg,rgba(94,194,240,.1),rgba(94,194,240,.04));color:var(--accent);cursor:pointer;font-size:14px;font-weight:600;box-shadow:var(--shadow);transition:transform .15s ease,box-shadow .15s ease,background .15s ease}
 .theme-btn:hover{background:linear-gradient(135deg,rgba(94,194,240,.2),rgba(94,194,240,.1));transform:translateY(-1px);box-shadow:0 4px 16px rgba(94,194,240,.25)}
 
 /* ---- 通用按钮样式 ---- */
-.btn{padding:8px 18px;border-radius:10px;border:none;cursor:pointer;font-size:13px;margin:4px;transition:all .25s;display:inline-flex;align-items:center;gap:4px;font-weight:500}
-.btn-back{background:linear-gradient(135deg,rgba(94,194,240,.08),rgba(94,194,240,.04));color:var(--text);border:1px solid var(--card-border);backdrop-filter:blur(8px);text-decoration:none;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.btn{padding:8px 18px;border-radius:10px;border:none;cursor:pointer;font-size:13px;margin:4px;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease,color .15s ease;display:inline-flex;align-items:center;gap:4px;font-weight:500}
+.btn-back{background:linear-gradient(135deg,rgba(94,194,240,.08),rgba(94,194,240,.04));color:var(--text);border:1px solid var(--card-border);text-decoration:none;box-shadow:0 2px 8px rgba(0,0,0,.1)}
 .btn-back:hover{background:linear-gradient(135deg,rgba(94,194,240,.18),rgba(94,194,240,.1));border-color:var(--accent);color:var(--accent);box-shadow:0 4px 16px rgba(94,194,240,.2);transform:translateY(-1px)}
 .btn-save{background:linear-gradient(135deg,#236e4a,#2d8a5c);color:#fff;box-shadow:0 2px 12px rgba(35,110,74,.3);border:none}
 .btn-save:hover{box-shadow:0 4px 20px rgba(35,110,74,.5);transform:translateY(-1px)}
+/* 各卡片标题栏右上角的保存按钮：统一尺寸、字重与间距（原先各页内联 padding 不一致） */
+.card-save{margin:0 0 0 auto;padding:4px 14px;font-size:12px;line-height:1.5;border-radius:9px;white-space:nowrap}
+#card_can .card-save{margin-left:0}
 
 /* Header controls share geometry across all pages and keep action colors. */
 .top-bar{flex-wrap:wrap;gap:12px}

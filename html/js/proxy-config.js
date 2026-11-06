@@ -67,19 +67,17 @@
     }
   }
 
-  async function save(apply) {
+  async function save() {
     if (pending) return;
     pending = true;
     try {
       var j = await call('/api/proxy/config', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload(apply))
+        body: JSON.stringify(payload(true))
       });
-      setStatus(apply
-        ? (j.applied ? t('已保存并应用') : t('已保存，但应用失败') + ': ' + (j.apply_error || ''))
-        : t('已保存（需保存并应用才能对整机生效）'),
-        apply && !j.applied ? 'warn' : 'ok');
+      setStatus(j.applied ? t('已保存并应用') : t('已保存，但应用失败') + ': ' + (j.apply_error || ''),
+        j.applied ? 'ok' : 'warn');
       await load();
     } catch (e) {
       setStatus(t('保存失败') + ': ' + e.message, 'warn');
@@ -89,10 +87,6 @@
   }
 
   var bSave = el('proxy_save');
-  var bApply = el('proxy_apply');
-  var bReload = el('proxy_reload');
-  if (bSave) bSave.addEventListener('click', function () { save(false); });
-  if (bApply) bApply.addEventListener('click', function () { save(true); });
-  if (bReload) bReload.addEventListener('click', load);
+  if (bSave) bSave.addEventListener('click', save);
   load();
 })();

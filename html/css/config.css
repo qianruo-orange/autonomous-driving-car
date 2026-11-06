@@ -38,12 +38,12 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .top{display:flex;align-items:center;gap:16px;margin-bottom:16px}
 .top h1{margin-bottom:0}
 .top .nav{margin:0 0 0 auto;display:flex;gap:8px}
-.top .nav a{padding:6px 12px;background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));border:1px solid var(--card-border);border-radius:10px;font-size:13px;text-decoration:none;backdrop-filter:blur(8px);transition:all .25s;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+.top .nav a{padding:6px 12px;background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));border:1px solid var(--card-border);border-radius:10px;font-size:13px;text-decoration:none;transition:all .25s;box-shadow:0 2px 6px rgba(0,0,0,.08)}
 .top .nav a:hover{background:linear-gradient(135deg,rgba(94,194,240,.16),rgba(94,194,240,.08));border-color:var(--accent);box-shadow:0 4px 12px rgba(94,194,240,.15);transform:translateY(-1px)}
 .top .theme-btn{position:static;margin-left:16px;flex:none}
 .row{display:flex;align-items:center;margin:8px 0}
 .row label{width:150px;color:var(--muted);font-size:14px;margin-right:12px}
-.row input{flex:1;background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:5px 8px;border-radius:6px;max-width:180px;font-size:13px;backdrop-filter:blur(4px)}
+.row input{flex:1;background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:5px 8px;border-radius:6px;max-width:180px;font-size:13px}
 .row select{flex:1;max-width:180px;min-width:0}
 .ip-cur{color:var(--muted);font-size:12px;margin-top:6px}
 .tip{color:var(--muted);font-size:12px;line-height:1.5;margin:6px 0 4px}
@@ -150,28 +150,32 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
   .card{padding:14px}
 }
 /* Bottom rows: merged network card and CPU frequency | Codex CLI. */
-.bottom-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;margin-bottom:16px}
+/* Cards in one row share the row height, so 系统配置 pairs stay level. */
+.bottom-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch;margin-bottom:16px}
 .bottom-grid>.card{max-width:none;min-width:0;width:100%;margin-bottom:0}
 /* Merged network card fills the whole row; fields lay flat like the YOLO card. */
 .bottom-grid #card_network{grid-column:1 / -1}
 .net-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px 16px;align-items:start;margin-top:12px}
 .net-field{grid-column:span 3;display:flex;flex-direction:column;gap:6px;min-width:0}
 .net-field.w4{grid-column:span 4}
+.net-field.w6{grid-column:span 6}
 .net-field>label{font-size:12px;color:var(--muted)}
 .net-field>input,.net-field>select{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--card-border);background:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px}
 .net-field>input:focus,.net-field>select:focus{outline:none;border-color:var(--accent)}
 .net-field .nt-result{display:block;margin:0;font-size:12px;line-height:1.5;color:var(--muted);white-space:normal;overflow-wrap:anywhere;min-height:14px}
+/* 未运行测试时不占位，避免卡片底部留白 */
+.net-field .nt-result:empty{display:none}
 .net-field .nt-result.testing{color:var(--accent)}
 .net-field .nt-result .nt-ok{color:#4cc9a0}
 .net-field .nt-result .nt-fail{color:#e0556a}
 .net-field .nt-result .nt-val{color:var(--text);font-weight:600}
 @media(max-width:1100px){
   .net-field{grid-column:span 6}
-  .net-field.w4{grid-column:span 6}
+  .net-field.w4,.net-field.w6{grid-column:span 6}
 }
 @media(max-width:960px){
   .bottom-grid{grid-template-columns:minmax(0,1fr)}
 }
 @media(max-width:640px){
-  .net-field,.net-field.w4{grid-column:span 12}
+  .net-field,.net-field.w4,.net-field.w6{grid-column:span 12}
 }
