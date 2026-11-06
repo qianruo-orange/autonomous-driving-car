@@ -81,3 +81,18 @@ tr.row-active td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
   .file-preview-dialog{padding:14px}
   .file-global-actions{flex-basis:100%;margin-left:0}
 }
+
+/* ===== file table action buttons ===== */
+/* 操作列统一右对齐、不换行、按钮之间固定间隔，避免「下载/预览」叠在一起 */
+table tr td:last-child{text-align:right;white-space:nowrap;vertical-align:middle}
+table tr td:last-child>a,
+table tr td:last-child>button{
+  display:inline-flex;align-items:center;justify-content:center;
+  margin-left:8px;vertical-align:middle;white-space:nowrap}
+table tr td:last-child>a:first-child,
+table tr td:last-child>button:first-child{margin-left:0}
+/* 按钮形态的「下载/预览」沿用链接观感 */
+table tr td:last-child>button.dl{
+  background:transparent;border:0;padding:2px 4px;color:var(--accent);
+  font-size:12px;font-family:inherit;cursor:pointer}
+table tr td:last-child>button.dl:hover{text-decoration:underline}
