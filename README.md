@@ -148,7 +148,7 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/video/devices
 
 - 网页上传：`/config` → YOLO → 选择 `.rknn` 与 `.names` →「上传」
 - 命令行：替换 `config/yolo26.rknn` 后执行 `sudo ./scripts/deploy.sh -i`（`model_sync.sh` 会校验一致性）
-- 量化流程见 [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md)、[docs/YOLO26n量化报告.pdf](docs/YOLO26n量化报告.pdf)
+- 量化流程见 [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md)、[docs/YOLO26n量化报告.pdf](docs/pdf/YOLO26n量化报告.pdf)
 
 ## 8. Codex 集成
 
@@ -211,8 +211,8 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/video/stats
 | [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md) | 实时调度（PREEMPT_RT、FIFO、CPU 隔离） |
 | [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | 功能测试报告 |
 | [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | YOLO26n RKNN 量化全过程 |
-| [docs/推理流水线延迟剖析.pdf](docs/推理流水线延迟剖析.pdf) | 延迟剖析（PDF） |
-| [docs/YOLO26n量化报告.pdf](docs/YOLO26n量化报告.pdf) | 量化报告（PDF） |
+| [docs/推理流水线延迟剖析.pdf](docs/pdf/推理流水线延迟剖析.pdf) | 延迟剖析（PDF） |
+| [docs/YOLO26n量化报告.pdf](docs/pdf/YOLO26n量化报告.pdf) | 量化报告（PDF） |
 
 ---
 
@@ -340,8 +340,8 @@ When editing CSS, always keep the file tail — a truncated write once stripped 
 | [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md) | PREEMPT_RT, FIFO scheduling, CPU isolation |
 | [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | Functional test report |
 | [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | YOLO26n RKNN quantisation walkthrough |
-| [docs/推理流水线延迟剖析.pdf](docs/推理流水线延迟剖析.pdf) | Latency profile (PDF) |
-| [docs/YOLO26n量化报告.pdf](docs/YOLO26n量化报告.pdf) | Quantisation report (PDF) |
+| [docs/推理流水线延迟剖析.pdf](docs/pdf/推理流水线延迟剖析.pdf) | Latency profile (PDF) |
+| [docs/YOLO26n量化报告.pdf](docs/pdf/YOLO26n量化报告.pdf) | Quantisation report (PDF) |
 
 ---
 
