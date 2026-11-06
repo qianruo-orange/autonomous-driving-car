@@ -4,6 +4,7 @@
  * A successful start transfers the socket to this detached worker. */
 #define _GNU_SOURCE
 #include "yolo/yolo_events.h"
+#include "core/common.h"
 #include <pthread.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -116,7 +117,15 @@ static void *detection_download_worker(void *argument)
         download_error(job->fd, EIO, &clock);
         goto done;
     }
-    const char *filename = job->archive ? "detections_pack.tar.gz" : job->relative + 9;
+    char stamp[24], pack_name[96];
+    const char *filename;
+    if (job->archive) {
+        local_stamp(stamp, sizeof(stamp));
+        snprintf(pack_name, sizeof(pack_name), "detections_pack_%s.tar.gz", stamp);
+        filename = pack_name;
+    } else {
+        filename = job->relative + 9;
+    }
     const char *mime = job->archive ? "application/gzip" :
         "text/plain; charset=utf-8";
     char header[512];

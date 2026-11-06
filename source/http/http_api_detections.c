@@ -33,9 +33,11 @@ void http_detection_reports_pack(app_ctx_t *app, int fd, const char *method, con
     }
     FILE *stream = fdopen(archive, "rb");
     if (!stream) { close(archive); http_err(fd, 500, "Error", NULL); return; }
-    http_serve_stream(fd, "application/gzip",
-        "Content-Disposition: attachment; filename=\"detections_pack.tar.gz\"\r\n",
-        stream, (size_t)st.st_size, NULL);
+    char stamp[24], disposition[112];
+    local_stamp(stamp, sizeof(stamp));
+    snprintf(disposition, sizeof(disposition),
+             "Content-Disposition: attachment; filename=\"detections_pack_%s.tar.gz\"\r\n", stamp);
+    http_serve_stream(fd, "application/gzip", disposition, stream, (size_t)st.st_size, NULL);
 }
 
 void http_detection_report_delete(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)

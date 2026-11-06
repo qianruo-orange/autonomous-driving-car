@@ -44,6 +44,16 @@ static inline uint64_t monotonic_ms(void)
     return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
 }
 
+/* 下载文件名的时间戳：本地时间 YYYYMMDD_HHMMSS，让多次打包下载不重名。 */
+static inline void local_stamp(char *text, size_t size)
+{
+    if (!text || size < 16) return;
+    time_t now = time(NULL);
+    struct tm parts;
+    if (!localtime_r(&now, &parts) || !strftime(text, size, "%Y%m%d_%H%M%S", &parts))
+        snprintf(text, size, "00000000_000000");
+}
+
 struct can_ctx;
 struct tcp_ctx;
 struct app_config_t;

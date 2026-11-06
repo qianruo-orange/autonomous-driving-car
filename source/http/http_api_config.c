@@ -541,9 +541,11 @@ static void serve_config_pack(int fd, const char *config_dir)
     }
     size_t size = http_file_size(fp);
 
-    http_serve_stream(fd, "application/gzip",
-                      "Content-Disposition: attachment; filename=\"config_pack.tar.gz\"\r\n",
-                      fp, size, tmppath);
+    char stamp[24], disposition[96];
+    local_stamp(stamp, sizeof(stamp));
+    snprintf(disposition, sizeof(disposition),
+             "Content-Disposition: attachment; filename=\"config_pack_%s.tar.gz\"\r\n", stamp);
+    http_serve_stream(fd, "application/gzip", disposition, fp, size, tmppath);
 }
 
 /* /api/config/export：打包下载整个 config 目录

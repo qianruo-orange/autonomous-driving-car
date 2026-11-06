@@ -460,8 +460,11 @@ static void file_legacy_archive(file_job_t *job,int kind)
     if(stage[0])file_remove_tree(stage);
     pthread_mutex_unlock(&file_bulk_lock);
     if(error){if(output>=0)close(output);file_error(job,error);return;}
-    file_send_archive(job,output,"application/gzip",
-                      kind==0?"logs_pack.tar.gz":"recordings_pack.tar.gz");
+    char stamp[24], pack_name[96];
+    local_stamp(stamp, sizeof(stamp));
+    snprintf(pack_name, sizeof(pack_name),
+             kind==0?"logs_pack_%s.tar.gz":"recordings_pack_%s.tar.gz", stamp);
+    file_send_archive(job,output,"application/gzip",pack_name);
 }
 
 static void file_bulk(file_job_t *job,int clear)
@@ -487,7 +490,10 @@ static void file_bulk(file_job_t *job,int clear)
     if(error){if(output>=0)close(output);file_error(job,error);return;}
     if(clear){char json[256];int n=snprintf(json,sizeof(json),"{\"deleted\":%u,\"logs\":%u,\"recordings\":%u,\"results\":%u,\"kept_active\":true}",
         logs+recordings+results,logs,recordings,results);file_response(job,200,"application/json",NULL,json,(size_t)n);return;}
-    file_send_archive(job,output,"application/zip","autonomous-driving-car_files.zip");
+    char stamp[24], pack_name[96];
+    local_stamp(stamp,sizeof(stamp));
+    snprintf(pack_name,sizeof(pack_name),"autonomous-driving-car_files_%s.zip",stamp);
+    file_send_archive(job,output,"application/zip",pack_name);
 }
 
 static void *file_worker(void *argument)
