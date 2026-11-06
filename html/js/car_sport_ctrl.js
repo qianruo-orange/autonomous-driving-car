@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 (function() {
     /* 跟随卡片紧跟在 CPU 频率 / Codex 那一行之后（网络代理卡片已在它下面） */
+    /* 跟随卡片挂在 Web/视频 那一行之后的专属槽位里（在代理卡片之上） */
+    const slot = document.getElementById('follow_slot');
     const cpuCard = document.getElementById('card_cpufreq');
-    const grid = (cpuCard && cpuCard.parentNode)
+    const grid = slot || (cpuCard && cpuCard.parentNode)
                  || document.querySelector('.can-grid');
     if (!grid) return;
     const card = document.createElement('form');
