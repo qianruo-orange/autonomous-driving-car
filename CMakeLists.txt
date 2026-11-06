@@ -122,3 +122,22 @@ target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 find_library(LIBJPEG jpeg REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBJPEG})
 
+# ---- 板载命令行工具 ----
+# 两个工具不进 source/ 的 glob：它们是给人（和语言模型）直接调用的可执行文件，
+# 不参与主程序链接，也不引入额外依赖。
+add_executable(adc-agent tools/agent/adc_agent.c)
+target_compile_options(adc-agent PRIVATE -Wall -Wextra $<$<CONFIG:Release>:-g>)
+target_link_libraries(adc-agent PRIVATE m)
+set_target_properties(adc-agent PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin"
+)
+
+# Codex 对话桥：C11 重写版，替换原先的 scripts/codex_bridge.py
+add_executable(codex-bridge tools/codex/codex-bridge.c)
+target_compile_definitions(codex-bridge PRIVATE _GNU_SOURCE)
+target_compile_options(codex-bridge PRIVATE -Wall -Wextra $<$<CONFIG:Release>:-g>)
+target_link_libraries(codex-bridge PRIVATE pthread)
+set_target_properties(codex-bridge PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin"
+)
+

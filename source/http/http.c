@@ -35,6 +35,7 @@
 #include "http/http_internal.h"
 #include "http/http_client_limit.h"
 #include "agent/agent_hw.h"
+#include "agent/agent_view.h"
 #include "yolo/yolo_events.h"
 #include "video/video_stream.h"
 #include "watchdog/watchdog.h"
@@ -862,6 +863,8 @@ static void http_process_request(http_conn_t *c)
         { "/api/agent/state",         0, NULL,   http_agent_state,         http_check_auth_root },
         { "/api/agent/audit",         0, NULL,   http_agent_audit,         http_check_auth_root },
         { "/api/agent/observe",       0, "GET",  http_agent_observe,       NULL },
+        { "/api/agent/perception",    0, "GET",  http_agent_perception,    NULL },
+        { "/api/agent/frame",         0, "GET",  http_agent_frame,         NULL },
         { "/api/agent/motion",        0, "POST", http_agent_motion,        NULL },
         { "/api/agent/stop",          0, "POST", http_agent_stop,          NULL },
         { "/api/agent/estop",         0, "POST", http_agent_estop,         NULL },

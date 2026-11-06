@@ -2,9 +2,9 @@
 /**
  * http_api_codex.c — Web chat bridge to the local Codex CLI.
  *
- * The HTTP layer stays thin: every request spawns scripts/codex_bridge.py,
- * which owns the CLI process, the device-code login flow and the on-disk
- * conversation log. Long turns are detached by the bridge, so no HTTP worker
+ * The HTTP layer stays thin: every request spawns bin/codex-bridge (C, built
+ * from tools/codex/codex-bridge.c), which owns the CLI process, the device-code
+ * login flow and the on-disk conversation log. Long turns are detached by the bridge, so no HTTP worker
  * ever waits for a model. Every /api/codex/ route requires root-level auth.
  */
 #include <errno.h>
@@ -19,7 +19,7 @@
 #include "http/http_internal.h"
 
 #define CODEX_ROOT   "/opt/autonomous-driving-car"
-#define CODEX_BRIDGE CODEX_ROOT "/bin/codex_bridge.py"
+#define CODEX_BRIDGE CODEX_ROOT "/bin/codex-bridge"
 #define CODEX_OUT    CODEX_ROOT "/.codex/out"
 #define CODEX_INBOX  CODEX_ROOT "/.codex/inbox"
 #define CODEX_BUF    262144
@@ -83,7 +83,6 @@ static int bridge_run(const char *cmd, const char *input, long input_len,
 
     char *argv[12];
     int n = 0;
-    argv[n++] = (char *)"python3";
     argv[n++] = (char *)CODEX_BRIDGE;
     argv[n++] = (char *)cmd;
     argv[n++] = (char *)"--out";
@@ -106,7 +105,7 @@ static int bridge_run(const char *cmd, const char *input, long input_len,
     posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
     pid_t pid = -1;
-    int rc = posix_spawnp(&pid, "python3", &actions, NULL, argv, environ);
+    int rc = posix_spawn(&pid, CODEX_BRIDGE, &actions, NULL, argv, environ);
     posix_spawn_file_actions_destroy(&actions);
     if (rc == 0) {
         int status = 0;

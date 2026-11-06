@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "control/car_sport_ctrl.h"
+#include "agent/agent_view.h"
 #include "core/log.h"
 #include "http/http_internal.h"
 
@@ -237,6 +238,14 @@ static int cap_from_request(const char *req, unsigned need, cap_t *out)
     *out = s.caps[i];
     pthread_mutex_unlock(&s.lock);
     return i;
+}
+
+/* 视觉通道与执行通道共用一个凭证表：读像素和打方向盘的授权边界是同一件事，
+ * 差别只在 scope 位上。 */
+int agent_cap_authorize(const char *req, unsigned need)
+{
+    cap_t cap;
+    return cap_from_request(req, need, &cap) < 0 ? -1 : 0;
 }
 
 /* ---- body helpers ---- */
@@ -677,7 +686,7 @@ void http_agent_observe(app_ctx_t *app, int fd, const char *method, const char *
     int have_tel = follow_telemetry_snapshot(&tel) == 0;
     agent_motion_t st;
     int have_agent = follow_agent_snapshot(&st) == 0;
-    char json[1280];
+    char json[9216];
     int off = 0;
     off += snprintf(json + off, sizeof(json) - off, "{\"ts_ms\":%llu,", now_ms());
     off += snprintf(json + off, sizeof(json) - off,
@@ -720,9 +729,18 @@ void http_agent_observe(app_ctx_t *app, int fd, const char *method, const char *
      * plan before it ever reaches the control loop. */
     off += snprintf(json + off, sizeof(json) - off,
                     "\"limits\":{\"v_max\":%.3f,\"steer_max\":%.3f,\"budget_m\":%.1f,"
-                    "\"expires_in_ms\":%llu}}",
+                    "\"expires_in_ms\":%llu},",
                     cap.v_max, cap.steer_max, cap.budget_m,
                     cap.expires_ms > now_ms() ? cap.expires_ms - now_ms() : 0ULL);
+    /* 一次调用同时给"能不能动"和"看见了什么"：只读状态下也能跑完整感知回路。 */
+    off += snprintf(json + off, sizeof(json) - off, "\"perception\":");
+    int p = agent_perception_json(json, sizeof(json), off);
+    if (p < 0) {
+        http_err(fd, 500, "Internal Server Error", "perception snapshot too large");
+        return;
+    }
+    off = p;
+    off += snprintf(json + off, sizeof(json) - off, "}");
     http_ok_json(fd, json, (size_t)off);
 }
 

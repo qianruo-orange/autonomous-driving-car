@@ -24,6 +24,8 @@
 
 int agent_hw_init(void *app);
 void agent_hw_destroy(void *app);
+/* 供 agent_view.c 复用同一套凭证校验（header 或 bearer）。通过返回 0。 */
+int agent_cap_authorize(const char *req, unsigned need);
 /* 供其它模块在关机路径上强制撤销全部凭证 */
 void agent_hw_revoke_all(const char *reason);
 
