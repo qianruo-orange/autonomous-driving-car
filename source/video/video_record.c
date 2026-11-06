@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
- * rec_annot.c —— 标注录像：NV12 画框 + MPP 硬件 H.264 + MP4 封装。
+ * video_record.c —— 标注录像：NV12 画框 + MPP 硬件 H.264 + MP4 封装。
  *
  * 帧来自推理路径已经解好的 NV12 dma-buf；入队时拷一份（1.4 MB / 720p，约
  * 0.3 ms），之后 fd 可以立刻归还，避免和推理抢解码器缓冲。
  */
 #define _GNU_SOURCE
-#include "video/rec_annot.h"
+#include "video/video_record.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -55,10 +55,10 @@ typedef struct {
     unsigned char *nv12;
     int w, h;
     int count;
-    rec_annot_box_t boxes[ANNOT_MAX_BOXES];
+    video_record_box_t boxes[ANNOT_MAX_BOXES];
 } annot_frame_t;
 
-struct rec_annot {
+struct video_record {
     pthread_t tid;
     pthread_mutex_t lock;
     pthread_cond_t wake;
@@ -236,7 +236,7 @@ static void draw_label(unsigned char *y, unsigned char *uv, int w, int h, int st
 
 /* 画一个检测框：单一彩色描边（颜色按类别），左上角贴同色标签条。 */
 static void draw_box_nv12(unsigned char *y, unsigned char *uv, int w, int h, int stride,
-                          const rec_annot_box_t *b, int thickness)
+                          const video_record_box_t *b, int thickness)
 {
     int x1 = (int)(b->x1 + 0.5f), y1 = (int)(b->y1 + 0.5f);
     int x2 = (int)(b->x2 + 0.5f), y2 = (int)(b->y2 + 0.5f);
@@ -246,7 +246,7 @@ static void draw_box_nv12(unsigned char *y, unsigned char *uv, int w, int h, int
     draw_label(y, uv, w, h, stride, x1 < 0 ? 0 : x1, y1 < 0 ? 0 : y1, b->label, c);
 }
 
-static int encoder_open(rec_annot_t *s)
+static int encoder_open(video_record_t *s)
 {
     if (mpp_create(&s->enc_ctx, &s->enc_mpi) != MPP_OK) return -1;
     if (mpp_init(s->enc_ctx, MPP_CTX_ENC, MPP_VIDEO_CodingAVC) != MPP_OK) return -1;
@@ -300,7 +300,7 @@ static int encoder_open(rec_annot_t *s)
     {
         MppEncHeaderMode hm = MPP_ENC_HEADER_MODE_EACH_IDR;
         if (s->enc_mpi->control(s->enc_ctx, MPP_ENC_SET_HEADER_MODE, &hm) != MPP_OK)
-            LOG_ERROR("rec_annot: 无法启用逐 IDR 参数集");
+            LOG_ERROR("video_record: 无法启用逐 IDR 参数集");
     }
     if (mpp_buffer_group_get_internal(&s->grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) return -1;
     for (int i = 0; i < ANNOT_BUF_COUNT; i++) {
@@ -315,7 +315,7 @@ static int encoder_open(rec_annot_t *s)
 
 /* 取一个空闲缓冲，并给它打上帧序号。返回 -1 表示环形已排满：此时宁可丢掉
  * 这一帧，也不能覆盖编码器可能还在读的缓冲。 */
-static int buf_acquire(rec_annot_t *s)
+static int buf_acquire(video_record_t *s)
 {
     /* 先按帧龄把老缓冲放回池子 */
     if (s->put_count > ANNOT_BUF_KEEP) {
@@ -347,7 +347,7 @@ static int pkt_has_vcl(const unsigned char *buf, size_t len)
     return 0;
 }
 
-static void annot_feed(rec_annot_t *s, const unsigned char *p, size_t len, int vcl)
+static void annot_feed(video_record_t *s, const unsigned char *p, size_t len, int vcl)
 {
     if (!vcl) {
         if (pending_len + len > pending_cap) {
@@ -376,7 +376,7 @@ static void annot_feed(rec_annot_t *s, const unsigned char *p, size_t len, int v
     }
 }
 
-static void drain_packets(rec_annot_t *s)
+static void drain_packets(video_record_t *s)
 {
     for (;;) {
         MppPacket pkt = NULL;
@@ -392,7 +392,7 @@ static void drain_packets(rec_annot_t *s)
     }
 }
 
-static int encode_frame(rec_annot_t *s, annot_frame_t *f)
+static int encode_frame(video_record_t *s, annot_frame_t *f)
 {
     if (!s->mp4) {
         s->mp4 = rec_mp4_create_named(s->dir, s->name, s->w, s->h, s->fps);
@@ -404,7 +404,7 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
         for (int i = 0; i < ANNOT_BUF_COUNT; i++)
             if (s->buf[i]) { mpp_buffer_put(s->buf[i]); s->buf[i] = NULL; }
         atomic_store(&s->disabled, 1);
-        LOG_ERROR("rec_annot: 硬件编码器不可用，本次运行停用标注录像");
+        LOG_ERROR("video_record: 硬件编码器不可用，本次运行停用标注录像");
         return -1;
     }
     if (f->w != s->w || f->h != s->h) return -1;
@@ -456,8 +456,8 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
 
 static void *annot_task(void *arg)
 {
-    rec_annot_t *s = arg;
-    pthread_setname_np(pthread_self(), "rec_annot");
+    video_record_t *s = arg;
+    pthread_setname_np(pthread_self(), "video_record");
     for (;;) {
         pthread_mutex_lock(&s->lock);
         while (s->running && s->count == 0) pthread_cond_wait(&s->wake, &s->lock);
@@ -493,16 +493,16 @@ static void *annot_task(void *arg)
         mpp_destroy(s->enc_ctx);
     }
     if (s->mp4) { rec_mp4_close(s->mp4); s->mp4 = NULL; }
-    LOG_INFO("rec_annot: 线程退出，已编码 %llu 帧",
+    LOG_INFO("video_record: 线程退出，已编码 %llu 帧",
              (unsigned long long)atomic_load(&s->frames));
     return NULL;
 }
 
-rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, int fps,
+video_record_t *video_record_start(const char *dir, const char *prefix, int w, int h, int fps,
                              int bitrate_kbps, char *name_out, size_t name_size)
 {
     if (!dir || !prefix || w <= 0 || h <= 0) return NULL;
-    rec_annot_t *s = calloc(1, sizeof(*s));
+    video_record_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     snprintf(s->dir, sizeof(s->dir), "%s", dir);
     snprintf(s->prefix, sizeof(s->prefix), "%s", prefix);
@@ -542,13 +542,13 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
         free(s);
         return NULL;
     }
-    LOG_INFO("rec_annot: 标注录像线程启动（%dx%d, FIXQP qp=%d, 名义 %d kbps）",
+    LOG_INFO("video_record: 标注录像线程启动（%dx%d, FIXQP qp=%d, 名义 %d kbps）",
              w, h, ANNOT_FIX_QP, s->bitrate_kbps);
     return s;
 }
 
-int rec_annot_push(rec_annot_t *s, const void *nv12, int w, int h,
-                   const rec_annot_box_t *boxes, int count)
+int video_record_push(video_record_t *s, const void *nv12, int w, int h,
+                   const video_record_box_t *boxes, int count)
 {
     if (!s || !nv12 || w <= 0 || h <= 0) return -1;
     if (atomic_load((atomic_int *)&s->disabled)) return -1;
@@ -581,7 +581,7 @@ int rec_annot_push(rec_annot_t *s, const void *nv12, int w, int h,
     return 0;
 }
 
-void rec_annot_stop(rec_annot_t *s)
+void video_record_stop(video_record_t *s)
 {
     if (!s) return;
     pthread_mutex_lock(&s->lock);
@@ -596,7 +596,7 @@ void rec_annot_stop(rec_annot_t *s)
     free(s);
 }
 
-void rec_annot_stats(const rec_annot_t *s, unsigned long long *frames,
+void video_record_stats(const video_record_t *s, unsigned long long *frames,
                      unsigned long long *dropped, unsigned *last_ms)
 {
     if (!s) return;
@@ -605,17 +605,17 @@ void rec_annot_stats(const rec_annot_t *s, unsigned long long *frames,
     if (last_ms) *last_ms = atomic_load(&s->last_ms);
 }
 
-unsigned long long rec_annot_frames(const rec_annot_t *s)
+unsigned long long video_record_frames(const video_record_t *s)
 {
     return s ? (unsigned long long)atomic_load(&s->frames) : 0;
 }
 
-unsigned long long rec_annot_bytes(const rec_annot_t *s)
+unsigned long long video_record_bytes(const video_record_t *s)
 {
     return s ? (unsigned long long)atomic_load(&s->bytes_total) : 0;
 }
 
-int rec_annot_active(const rec_annot_t *s)
+int video_record_active(const video_record_t *s)
 {
     return s && s->mp4;
 }

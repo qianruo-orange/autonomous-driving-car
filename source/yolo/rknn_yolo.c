@@ -664,7 +664,7 @@ static void *yolo_worker_task(void *arg)
         yolo_record_result(&job, &res);
         /* 标注录像：把本帧 NV12 与检测框（含类别标签）交给编码线程（内部立即拷贝） */
         if (job.annot_nv12) {
-            rec_annot_box_t boxes[32];
+            video_record_box_t boxes[32];
             int n = res.count > (int)(sizeof(boxes) / sizeof(boxes[0]))
                   ? (int)(sizeof(boxes) / sizeof(boxes[0])) : res.count;
             for (int i = 0; i < n; i++) {
@@ -679,7 +679,7 @@ static void *yolo_worker_task(void *arg)
                 boxes[i].cls = det->cls;
                 snprintf(boxes[i].label, sizeof(boxes[i].label), "%s %.2f", name, (double)det->conf);
             }
-            video_rec_annot_frame(job.annot_nv12, job.w, job.h, boxes, n);
+            video_video_record_frame(job.annot_nv12, job.w, job.h, boxes, n);
         }
         free(job.annot_nv12);
         job.annot_nv12 = NULL;

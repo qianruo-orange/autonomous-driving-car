@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Generated from Consolas Bold 26px: 16x24 cell, ASCII 32..126.
  * Each row is a bitmask, bit 15 = leftmost column. Only the labelled
- * recording overlay uses this table, so it lives next to rec_annot.c. */
+ * recording overlay uses this table, so it lives next to video_record.c. */
 #ifndef REC_FONT_TABLE_H
 #define REC_FONT_TABLE_H
 

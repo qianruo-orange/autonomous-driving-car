@@ -2,9 +2,9 @@
 /**
  * video_rec.c — 录像会话管理：把带框的 H.264 写进 MP4。
  *
- * 链路：V4L2 原始 JPEG → NV12 → 画框 → H.264 → MP4（详见 video/rec_annot.c）。
+ * 链路：V4L2 原始 JPEG → NV12 → 画框 → H.264 → MP4（详见 video/video_record.c）。
  *   本文件只负责"什么时候开一段、写到哪个文件、什么时候切段"，一帧的编解码
- *   全在 rec_annot 线程里完成。
+ *   全在 video_record 线程里完成。
  *
  * 线程模型：main 模块表 "rec" 线程，空闲时 100ms 轮询喂狗；
  *   默认自动录制：任务启动即开始，文件平铺在 recordings/videos/，
@@ -31,7 +31,7 @@
 #include <time.h>
 
 #include "video/video_rec.h"
-#include "video/rec_annot.h"
+#include "video/video_record.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
 #include "core/common.h"
@@ -65,7 +65,7 @@ static struct {
     /* 本节会话累计的跳过帧与错误态（供 /api/rec/status） */
     unsigned long long skipped_cadence, skipped_size;
     int io_error;
-    rec_annot_t *annot;        /* 标注录像（H.264/MP4），唯一的录像产物 */
+    video_record_t *annot;        /* 标注录像（H.264/MP4），唯一的录像产物 */
 } g_rec;
 
 /* Serialize publication/finalization of file paths with file deletion. This
@@ -314,9 +314,9 @@ void *video_rec_task(void *arg)
             }
 
             pthread_mutex_lock(&g_rec_files_lock);
-            /* MP4 是唯一产物：解码、画框、编码、封装都在 rec_annot 线程里 */
-            rec_annot_stop(g_rec.annot);
-            g_rec.annot = rec_annot_start(dir, "video", pw, ph, fps, 0,
+            /* MP4 是唯一产物：解码、画框、编码、封装都在 video_record 线程里 */
+            video_record_stop(g_rec.annot);
+            g_rec.annot = video_record_start(dir, "video", pw, ph, fps, 0,
                                           fname, sizeof(fname));
             if (!g_rec.annot) {
                 pthread_mutex_unlock(&g_rec_files_lock);
@@ -411,8 +411,8 @@ void *video_rec_task(void *arg)
                     char next_name[128] = "", next_dir[512];
                     snprintf(next_dir, sizeof(next_dir), "%s", REC_DIR);
                     pthread_mutex_lock(&g_rec_files_lock);
-                    rec_annot_stop(g_rec.annot);
-                    g_rec.annot = rec_annot_start(next_dir, "video", pw, ph, fps, 0,
+                    video_record_stop(g_rec.annot);
+                    g_rec.annot = video_record_start(next_dir, "video", pw, ph, fps, 0,
                                                   next_name, sizeof(next_name));
                     if (g_rec.annot) {
                         int finalized = 0;
@@ -440,18 +440,18 @@ void *video_rec_task(void *arg)
                 uint64_t wts = now_ms();
                 free(jpg);
                 pthread_mutex_lock(&g_rec.lock);
-                g_rec.frames = rec_annot_frames(g_rec.annot);
-                g_rec.bytes  = rec_annot_bytes(g_rec.annot);
+                g_rec.frames = video_record_frames(g_rec.annot);
+                g_rec.bytes  = video_record_bytes(g_rec.annot);
                 g_rec.last_frame_ts = wts;
                 pthread_mutex_unlock(&g_rec.lock);
 
             }
 
             /* ---- 结束会话（finalize 内部释放对象） ---- */
-            uint32_t n_frames = (uint32_t)rec_annot_frames(g_rec.annot);
-            uint32_t n_bytes  = (uint32_t)rec_annot_bytes(g_rec.annot);
+            uint32_t n_frames = (uint32_t)video_record_frames(g_rec.annot);
+            uint32_t n_bytes  = (uint32_t)video_record_bytes(g_rec.annot);
             pthread_mutex_lock(&g_rec_files_lock);
-            rec_annot_stop(g_rec.annot);
+            video_record_stop(g_rec.annot);
             g_rec.annot = NULL;
             pthread_mutex_lock(&g_rec.lock);
             g_rec.recording = 0;
@@ -603,11 +603,11 @@ void video_rec_destroy(void *arg)
     pthread_mutex_destroy(&g_rec.lock);
 }
 
-void video_rec_annot_frame(const void *nv12, int w, int h,
-                           const rec_annot_box_t *boxes, int count)
+void video_video_record_frame(const void *nv12, int w, int h,
+                           const video_record_box_t *boxes, int count)
 {
     if (!nv12 || !boxes) return;
     if (count < 0) count = 0;
     if (count > 32) count = 32;
-    if (g_rec.annot) rec_annot_push(g_rec.annot, nv12, w, h, boxes, count);
+    if (g_rec.annot) video_record_push(g_rec.annot, nv12, w, h, boxes, count);
 }
