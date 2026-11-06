@@ -48,8 +48,8 @@ void rknn_yolo_default_model_path(char *out, size_t size);
 int rknn_yolo_validate_model(const char *path);
 /* 当前自适应启用的推理 worker 数；推理池不可用时返回 0。 */
 int rknn_yolo_active_workers(void);
-/* Read-only backend selection; the image thread owns the decoder. */
-int rknn_yolo_hardware_decoder(void);
+/* 解码器是否就绪，仅用于状态上报；解码器由取流线程独占。 */
+int rknn_yolo_decoder_ready(void);
 
 /* 读取最近若干帧的检测结果快照（按 seq 严格递增返回，最旧在前）。
    after 为客户端已持有的最大 seq，只有 seq > after 的结果才会返回，便于增量拉取。

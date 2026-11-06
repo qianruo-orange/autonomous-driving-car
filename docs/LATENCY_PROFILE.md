@@ -27,7 +27,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 |---|---|
 | `capture_to_decode` | 帧时间戳 → 开始解码（含相机侧延迟） |
 | `deliver_to_decode` | DQBUF 返回 → 开始解码（应用自身排队） |
-| `decode` | JPEG 硬解 + NV12→RGB |
+| `decode` | libjpeg-turbo 软解 + NV12→RGB |
 | `resize` | letterbox 缩放到模型输入 |
 | `inputs` / `run` / `outputs` | NPU 三段 |
 | `post` | 候选筛选 + NMS |

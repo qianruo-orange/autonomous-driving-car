@@ -19,7 +19,7 @@ CPU 分组按设备能力自动发现。线程在进入任务函数前获得调�
 
 ## 系统条件
 
-部署目标需要 PREEMPT_RT 内核，以及允许服务申请实时调度的权限和运行时预算。2026-11-04 的开机检查确认本机运行 `7.4.0-rc1-npu-rt-vepu510`、PREEMPT_RT、1000 Hz；2026-11-05 复验时 18 个常驻应用线程中 17 个为 FIFO、相机采集为 `SCHED_DEADLINE`，JPEG 硬解、推理、显示与录像计数持续增长。验证记录位于本机 `/var/lib/rock4d-rt/boot-check.json`。
+部署目标需要 PREEMPT_RT 内核，以及允许服务申请实时调度的权限和运行时预算。2026-11-04 的开机检查确认本机运行 `7.4.0-rc1-npu-rt-vepu510`、PREEMPT_RT、1000 Hz；2026-11-05 复验时 18 个常驻应用线程中 17 个为 FIFO、相机采集为 `SCHED_DEADLINE`，JPEG 软解、推理、显示与录像计数持续增长。验证记录位于本机 `/var/lib/rock4d-rt/boot-check.json`。
 
 当前内核启用 `CONFIG_RT_GROUP_SCHED`。cgroup v2 的 CPU 控制器可能使服务子组缺少实时预算，导致申请 FIFO 或 deadline 返回 `EPERM`。`scripts/deploy.sh` 根据运行配置和启动参数判断，并在停止已有服务前处理和验证兼容设置：根 slice 使用 `DisableControllers=cpu`。该主机设置影响整个层级的 CPU 配额与权重；内存和进程数控制器继续工作。它不取消全局实时预算，卸载应用时也不会自动移除。
 

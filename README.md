@@ -10,13 +10,13 @@
 
 目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核和模型平台都按这颗 SoC 在编译期确定。
 
-推理链路全部由硬件完成：
+推理链路里除解码外都由硬件完成：
 
 ```
-相机 MJPEG → jpegd（NV12 dma-buf）→ RGA（色彩转换 + letterbox）→ NPU → C 后处理
+相机 MJPEG → libjpeg-turbo 软解（NV12 dma-buf）→ RGA（色彩转换 + letterbox）→ NPU → C 后处理
 ```
 
-三个加速器分工明确：JPEG 解码器输出 NV12，RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 只承担后处理与结果分发。端到端 44 ms，整机 CPU 占用约 2 %。
+分工明确：libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12（720p 约 4 ms/帧），RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 另承担后处理与结果分发。端到端 44 ms，整机 CPU 占用约 3 %。
 
 直播保持传感器原始画质：`/video/mjpeg` 直接转发相机 MJPEG 字节，检测框由浏览器 canvas 按帧序号叠加。录像走另一条路——推理解出的 NV12 画上框后由 VEPU510 硬件编成 H.264，保存为 MP4。
 
@@ -46,7 +46,7 @@ curl -s http://127.0.0.1/api/video/stats
 
 浏览器打开 `http://<板子IP>/` 进入管理界面。
 
-前置条件：内核需带 Rockchip NPU、JPEG 解码器和 RGA 驱动，用户态需要 `librknnrt.so` 和 `librga.so`，以及准备好的 `config/yolo26.rknn`。详见[依赖](#依赖)与[构建与部署](#构建与部署)。
+前置条件：内核需带 Rockchip NPU 和 RGA 驱动，用户态需要 libjpeg-turbo、`librknnrt.so` 和 `librga.so`，以及准备好的 `config/yolo26.rknn`。详见[依赖](#依赖)与[构建与部署](#构建与部署)。
 
 ### 架构
 
@@ -82,7 +82,7 @@ flowchart LR
         Raw["V4L2 mmap<br/>JPEG 帧"]
     end
     subgraph Infer["2. 固定推理池（2 线程）"]
-        Nv12["jpegd 解码<br/>NV12 dma-buf"] --> Rga["RGA RGA2E<br/>CSC + letterbox"]
+        Nv12["libjpeg-turbo 解码<br/>NV12 dma-buf"] --> Rga["RGA RGA2E<br/>CSC + letterbox"]
         Rga --> Canvas["CMA 画布<br/>512×512 RGB"]
         Canvas --> Npu["RKNN run<br/>8 ms"]
         Npu --> Post["C 后处理<br/>解码 + NMS"]
@@ -148,7 +148,7 @@ flowchart LR
 
 **采集。** V4L2 MJPEG，1280×720，30 fps。设备通过稳定路径（`/dev/v4l/by-id/...`）打开，因为新增内置媒体驱动会改变 `/dev/videoN` 编号。
 
-**解码。** `rockchip-jpegd` 把 JPEG 解到 CMA dma-buf 里的 NV12，解码与色彩转换全部由硬件完成。
+**解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 约 4 ms/帧。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
 
 **预处理。** RGA 一次调用完成 NV12 → RGB、等比缩放和居中放置到 512×512 画布，约 1 ms。114 灰边只在启动时填一次，之后每帧 RGA 只写中心区域。
 
@@ -314,11 +314,11 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | 驱动 | 应用是否需要 |
 | --- | --- |
 | RKNPU（`rknpu`） | 需要 —— 推理 |
-| JPEG 解码（`rkjpegd`） | 需要 —— 解码 |
+| JPEG 解码（`rkjpegd`） | 不需要 —— 解码由 CPU 上的 libjpeg-turbo 完成 |
 | RGA3 / RGA2E（`rga3`） | 需要 —— 预处理 |
 | VEPU510 编码（`mpp`） | 需要 —— 标注录像的 H.264 编码 |
 
-应用用到 NPU、JPEG、RGA 和 VEPU510 四个引擎；标注录像需要 MPP 用户态库 `librockchip_mpp.so`，装在 `/usr/local/lib`。
+应用用到 NPU、RGA 和 VEPU510 三个引擎；标注录像需要 MPP 用户态库 `librockchip_mpp.so`，装在 `/usr/local/lib`。
 
 **用户态。** `librknnrt.so`（2.5.0）、`librga.so`、`librockchip_mpp.so`、libsystemd、libnl-3/libnl-route-3。
 
@@ -362,16 +362,16 @@ LLM inference is planned, not implemented.
 The target board is the **Radxa ROCK 4D / RK3576**: the NPU cores, RGA cores and
 model platform are fixed for that SoC at compile time.
 
-The whole inference chain runs on hardware accelerators:
+Every stage except decoding runs on hardware accelerators:
 
 ```
-camera MJPEG → jpegd (NV12 dma-buf) → RGA (CSC + letterbox) → NPU → C postprocess
+camera MJPEG → libjpeg-turbo decode (NV12 dma-buf) → RGA (CSC + letterbox) → NPU → C postprocess
 ```
 
-Each accelerator has one job: the JPEG decoder produces NV12, RGA does colour
-conversion and scaling in one pass, the NPU emits the detection tensors, and the
-CPU only handles postprocessing and result dispatch. End to end this is 44 ms at
-about 2 % whole-system CPU load.
+libjpeg-turbo turns the JPEG into NV12 on the CPU (~4 ms per 720p frame), RGA
+does colour conversion and scaling in one pass, the NPU emits the detection
+tensors, and the CPU handles postprocessing and result dispatch. End to end this
+is 44 ms at about 3 % whole-system CPU load.
 
 The live view keeps the sensor's own quality: `/video/mjpeg` forwards the
 camera's MJPEG bytes and the browser canvas overlays the boxes, aligned by frame
@@ -407,7 +407,7 @@ curl -s http://127.0.0.1/api/video/stats
 
 Open `http://<board-ip>/` for the web interface.
 
-Prerequisites are a kernel with the Rockchip NPU, JPEG decoder and RGA drivers,
+Prerequisites are a kernel with the Rockchip NPU and RGA drivers, libjpeg-turbo,
 `librknnrt.so`, `librga.so`, and a prepared `config/yolo26.rknn`. Details in
 [Requirements](#requirements) and [Build and deployment](#build-and-deployment).
 
@@ -448,7 +448,7 @@ flowchart LR
         Raw["V4L2 mmap<br/>JPEG frame"]
     end
     subgraph Infer["2. Fixed inference pool (2 threads)"]
-        Nv12["jpegd decode<br/>NV12 dma-buf"] --> Rga["RGA RGA2E<br/>CSC + letterbox"]
+        Nv12["libjpeg-turbo decode<br/>NV12 dma-buf"] --> Rga["RGA RGA2E<br/>CSC + letterbox"]
         Rga --> Canvas["CMA canvas<br/>512×512 RGB"]
         Canvas --> Npu["RKNN run<br/>8 ms"]
         Npu --> Post["C postprocess<br/>decode + NMS"]
@@ -522,8 +522,11 @@ threads log and reset instead of stopping the vehicle.
 stable path (`/dev/v4l/by-id/...`), because adding a built-in media driver can
 renumber `/dev/videoN`.
 
-**Decode.** `rockchip-jpegd` decodes the JPEG into NV12 inside a CMA dma-buf, so
-decoding and colour conversion both happen in hardware.
+**Decode.** libjpeg-turbo decodes the JPEG into NV12 on the CPU (~4 ms per 720p
+frame) and writes it into a CMA dma-buf that RGA reads directly. The on-SoC
+`rockchip-jpegd` (VDPU720) is not used: repeated decodes of the same frame do not
+agree — row 0 of every 8x8 block is exact while the remaining rows differ each
+run, leaving blocky grey patches and broken edges on screen.
 
 **Preprocess.** RGA performs NV12 → RGB, letterbox scaling and placement into a
 512×512 canvas in one call (~1 ms). The 114-grey border is filled once at start
@@ -763,11 +766,11 @@ builds these drivers **into** the image:
 | Driver | Needed by the application |
 | --- | --- |
 | RKNPU (`rknpu`) | yes — inference |
-| JPEG decoder (`rkjpegd`) | yes — decode |
+| JPEG decoder (`rkjpegd`) | no — decoding runs on the CPU via libjpeg-turbo |
 | RGA3 / RGA2E (`rga3`) | yes — preprocessing |
 | VEPU510 encoder (`mpp`) | yes — H.264 encoding for annotated recording |
 
-The application uses the NPU, JPEG, RGA and VEPU510 engines. Annotated
+The application uses the NPU, RGA and VEPU510 engines. Annotated
 recording needs the MPP userspace library `librockchip_mpp.so` under
 `/usr/local/lib`.
 

@@ -72,8 +72,8 @@ static void camera_send_status(app_ctx_t *app, int client, int device)
     int n = snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"focus_auto\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},"
         "\"focus_absolute\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},"
-        "\"hardware_decoder_available\":%s,"
-        "\"encoder\":\"%s\",\"decoder\":\"%s\",\"hardware_decoded_frames\":%llu,\"decode_errors\":%llu}",
+        "\"decoder_available\":%s,"
+        "\"encoder\":\"%s\",\"decoder\":\"%s\",\"decoded_frames\":%llu,\"decode_errors\":%llu}",
         app->cfg->video_device,
         automatic.supported ? "true" : "false", automatic.value, automatic.min, automatic.max, automatic.step,
         automatic.read_only ? "true" : "false", automatic.active ? "true" : "false",
@@ -81,7 +81,7 @@ static void camera_send_status(app_ctx_t *app, int client, int device)
         focus.read_only ? "true" : "false", focus.active ? "true" : "false",
         jpeg_decoder_available() ? "true" : "false",
         recording.encoder,
-        rknn_yolo_hardware_decoder() ? "libjpeg-turbo" : "none", decoded, errors);
+        rknn_yolo_decoder_ready() ? "libjpeg-turbo (software)" : "none", decoded, errors);
     if (n < 0 || n >= (int)sizeof(json)) { http_err(client, 500, "Error", "Camera response failed"); return; }
     http_ok_json(client, json, (size_t)n);
 }

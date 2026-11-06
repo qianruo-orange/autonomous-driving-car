@@ -113,7 +113,7 @@ static struct {
     _Atomic int    enabled;                  /* 推理池可用（画框流可用） */
     _Atomic int    running;                  /* 模块生命周期（destroy 置 0） */
     _Atomic int    pool_running;             /* 推理池生命周期（reload 置 0 停池） */
-    _Atomic int    hardware_decode;
+    _Atomic int    decoder_ready;      /* 解码器是否就绪，仅用于状态上报 */
     app_ctx_t     *app;
     float          conf, nms;
     int            nthreads;                 /* Workers evenly assigned to detected NPU cores. */
@@ -977,7 +977,7 @@ static int yolo_start_pool(void)
         g_yolo.in_h = s;
     }
     /* RGA 硬件预处理（letterbox + resize 一趟完成）是必需组件：
-       本工程为全硬件通路，不做 CPU 回退，缺驱动/库直接判为不可用。 */
+       缺驱动/库直接判为不可用，不做软件回退。 */
     if (!g_yolo.rga) {
         if (!rga_preprocess_available() || !(g_yolo.rga = rga_preprocess_open(g_yolo.in_w, g_yolo.in_h))) {
             LOG_ERROR("yolo: RGA 预处理不可用（/dev/rga 或 librga 缺失）；全硬件通路要求 RGA，停止");
@@ -1075,11 +1075,10 @@ int rknn_yolo_init(void *arg)
     pthread_cond_init(&g_yolo.r_not_empty, NULL);
     pthread_cond_init(&g_yolo.r_not_full, NULL);
 
-    /* 解码固定走 libjpeg-turbo 软解（硬解 rockchip-jpegd 有块写回缺陷）。
-       libjpeg 是链接期依赖，这里的探测只用于状态上报。 */
-    g_yolo.hardware_decode = jpeg_decoder_available();
-    LOG_INFO("yolo: JPEG decode %s", g_yolo.hardware_decode
-             ? "software (libjpeg-turbo)"
+    /* 解码固定走 libjpeg-turbo 软解。libjpeg 是链接期依赖，探测只用于状态上报。 */
+    atomic_store(&g_yolo.decoder_ready, jpeg_decoder_available());
+    LOG_INFO("yolo: JPEG decode %s", atomic_load(&g_yolo.decoder_ready)
+             ? "libjpeg-turbo (software)"
              : "unavailable");
     if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable; live inference remains enabled");
@@ -1114,9 +1113,9 @@ void rknn_yolo_destroy(void *arg)
 }
 
 /* ---- YOLO 采集线程（main 模块框架 task）：等新帧 → claim → 解码 → 投递队列 ---- */
-int rknn_yolo_hardware_decoder(void)
+int rknn_yolo_decoder_ready(void)
 {
-    return atomic_load(&g_yolo.hardware_decode);
+    return atomic_load(&g_yolo.decoder_ready);
 }
 
 void *rknn_yolo_task(void *arg)
@@ -1180,7 +1179,7 @@ void *rknn_yolo_task(void *arg)
         int fmt = s->fmt, w = s->w, h = s->h;
         unsigned char *raw = s->raw.buf;
         size_t raw_len = s->raw.len;
-        /* 全硬件通路：解码结果只以 NV12 dma-buf 形式交给 RGA，不再产生 RGB。 */
+        /* 解码结果只以 NV12 dma-buf 形式交给 RGA，不再产生 RGB。 */
         ring_buf_t rgbb = { 0 };
         int nv12_fd = -1;
         frame_ring_unlock(ring);
@@ -1194,7 +1193,7 @@ void *rknn_yolo_task(void *arg)
                 if (!decoder) decoder = jpeg_decoder_open();
                 decoder_unavailable = !decoder;
                 if (decoder) {
-                    atomic_store(&g_yolo.hardware_decode, 1);
+                    atomic_store(&g_yolo.decoder_ready, 1);
                     {
                     size_t need = (size_t)w * h * 3 / 2;
                     free(annot_copy);
@@ -1205,7 +1204,7 @@ void *rknn_yolo_task(void *arg)
                 }
             } else if (fmt == FRAME_RING_FMT_YUYV) {
                 /* YUYV 需要 RGA 直接吃 4:2:2，当前通路只实现 NV12 */
-                LOG_ERROR("yolo: 全硬件通路只支持 MJPEG/NV12 输入，当前帧格式不支持");
+                LOG_ERROR("yolo: 取流只支持 MJPEG/NV12 输入，当前帧格式不支持");
                 decoder_unavailable = 1;
             }
         }
@@ -1216,7 +1215,7 @@ void *rknn_yolo_task(void *arg)
             frame_ring_unlock(ring);
             pthread_mutex_unlock(&g_producer_mutex);
             if (decoder_unavailable) {
-                atomic_store(&g_yolo.hardware_decode, 0);
+                atomic_store(&g_yolo.decoder_ready, 0);
                 LOG_ERROR("yolo: MJPEG capture requires a working JPEG decoder; stopping");
                 app->fatal = 1;
                 app->running = 0;
