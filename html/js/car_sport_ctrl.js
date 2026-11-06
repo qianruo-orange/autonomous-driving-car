@@ -51,10 +51,11 @@
         heading.appendChild(text);
         const save = document.createElement('button');
         save.type = 'button';
-        save.className = 'btn btn-save';
+        save.className = 'btn btn-save card-save';
         save.dataset.saveGroup = id;
         save.disabled = true;
-        setI18nText(save, '保存');
+        save.innerHTML = '💾 <span></span>';
+        setI18nText(save.querySelector('span'), '保存');
         save.addEventListener('click', () => saveField(keys));
         heading.appendChild(save);
         section.appendChild(heading);

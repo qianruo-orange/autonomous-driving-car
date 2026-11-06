@@ -97,7 +97,7 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #car_fields>[data-car-group="automatic"]>.cfg-grid{grid-template-columns:minmax(0,1fr)}
 .car-param-group{min-width:0;border:1px solid var(--card-border);border-radius:12px;padding:14px}
 .car-param-group h4{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;color:var(--accent)}
-.car-param-group h4 button{margin:0;padding:6px 12px}
+.car-param-group h4 button{margin:0}
 .row button{margin-left:8px;flex:none}
 #msg{padding:8px;margin:8px 0;border-radius:8px;display:none}
 #msg.ok{display:block;background:rgba(76,201,160,.08);border:1px solid rgba(76,201,160,.2);color:#4cc9a0}
