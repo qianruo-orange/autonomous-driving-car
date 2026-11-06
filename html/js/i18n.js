@@ -296,7 +296,7 @@
     'CPU 频率': 'CPU Frequency',
       'CPU 策略组': 'CPU policy group',
       '✓ 已保存，重启后自动恢复': '✓ Saved; restored automatically after restart',
-      '{policy} · CPU {cpus} · 当前 {current} MHz · 实际范围 {min}–{max} MHz · 设置范围 {requestedMin}–{requestedMax} MHz': '{policy} · CPU {cpus} · Current {current} MHz · Effective range {min}–{max} MHz · Requested range {requestedMin}–{requestedMax} MHz',
+      '{policy} · CPU {cpus} · 当前 {current} MHz · 实际 {min}–{max} MHz · 设置 {requestedMin}–{requestedMax} MHz': '{policy} · CPU {cpus} · Current {current} MHz · Effective range {min}–{max} MHz · Requested range {requestedMin}–{requestedMax} MHz',
     '调度策略': 'Governor',
     '最低频率': 'Minimum frequency',
     '最高频率': 'Maximum frequency',
