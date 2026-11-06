@@ -112,11 +112,6 @@ table tr td:last-child>button.del{font-size:11px;margin-left:8px;color:#fff}
 
 /* ===== action cell: flex row with equal gaps ===== */
 /* 用 flex + gap 统一间距，彻底去掉各元素不同的 margin/空白节点影响 */
-table tr td:last-child{
-  display:flex;align-items:center;justify-content:flex-end;gap:8px}
-table tr td:last-child>*{margin:0!important;float:none!important}
-table tr td:last-child>button,
-table tr td:last-child>a{flex:0 0 auto}
 
 /* ===== action cell: inline flow, uniform gap ===== */
 /* td 保持 table-cell（flex 会破坏单元格底边），用 font-size:0 消除空白节点，
