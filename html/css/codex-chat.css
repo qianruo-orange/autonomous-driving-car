@@ -57,7 +57,7 @@
 .codex-plan.warn{color:#e0913a;border-color:#e0913a}
 .codex-meter{display:inline-flex;align-items:center;gap:6px;min-width:0}
 .codex-meter-label{white-space:nowrap}
-.codex-meter-bar{display:block;width:92px;height:6px;border-radius:999px;background:var(--track);overflow:hidden}
+.codex-meter-bar{display:block;width:200px;height:12px;border-radius:999px;background:var(--track);overflow:hidden}
 .codex-meter-bar i{display:block;height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#34d399,#5eead4);transition:width .3s}
 .codex-meter-bar i.warn{background:linear-gradient(90deg,#fbbf24,#fde047)}
 .codex-meter-bar i.bad{background:linear-gradient(90deg,#f87171,#fb7185)}
