@@ -102,13 +102,13 @@
             if (error.message !== 'auth cancelled') window.fileToast(t('记录下载失败'), false);
           }
         });
-        actions.appendChild(link);
         var pv = document.createElement('button');
         pv.type = 'button';
-        pv.className = 'dl';
+        pv.className = 'dlbtn';
         setI18nText(pv, '预览');
         pv.addEventListener('click', function () { preview(file); });
         actions.appendChild(pv);
+        actions.appendChild(link);
         var del = document.createElement('button');
         del.type = 'button';
         del.className = 'del';
