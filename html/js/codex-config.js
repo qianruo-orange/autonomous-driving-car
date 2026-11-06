@@ -3,9 +3,9 @@
 (function () {
   'use strict';
   function el(id) { return document.getElementById(id); }
-  var badge = el('codex_status_badge');
-  if (!badge) return;
-  var deviceStart = el('codex_device_start');
+  var loginBtn = el('codex_login_btn');
+  if (!loginBtn) return;
+  var loginArea = el('codex_login_area');
   var deviceLink = el('codex_device_link');
   var deviceCode = el('codex_device_code');
   var deviceCopy = el('codex_device_copy');
@@ -23,17 +23,21 @@
     } else if (login.state === 'error') {
       text = t('登录失败'); cls = 'warn';
     } else {
-      text = t('未登录');
+      text = t('登录');
     }
-    badge.textContent = text;
-    badge.className = 'codex-badge ' + cls;
+    loginBtn.textContent = text;
+    loginBtn.className = 'btn btn-back codex-login-btn' + (cls ? ' ' + cls : '');
+    loginBtn.disabled = pending ||
+      data.logged_in ||
+      login.state === 'starting' || login.state === 'pending';
 
     cliInfo.textContent = (data.cli_found ? 'Codex CLI ' + (data.cli_version || '') : t('未找到 Codex CLI')) +
       ' · ' + (data.cli_path || '');
 
     var url = login.url || '';
     var code = login.code || '';
-    deviceLink.textContent = url || t('请先点击开始登录');
+    loginArea.hidden = !!data.logged_in;
+    deviceLink.textContent = url || t('正在获取登录链接…');
     deviceLink.href = url || '#';
     deviceCode.textContent = code || '— — — —';
     deviceCopy.disabled = !code;
@@ -44,9 +48,8 @@
     } else if (login.state === 'error') {
       deviceHint.textContent = login.message || t('设备码登录失败，请重试');
     } else {
-      setI18nText(deviceHint, '点击开始设备码登录，然后打开链接并输入验证码完成授权。');
+      setI18nText(deviceHint, '正在获取一次性设备码，拿到后打开链接输入即可完成授权。');
     }
-    deviceStart.disabled = pending || login.state === 'starting' || login.state === 'pending';
   }
 
   async function load(signal) {
@@ -61,8 +64,10 @@
   App.poll(load, {interval: 2000});
   document.addEventListener('languagechange', function () { load(); paintUpdate(); });
 
-  deviceStart.addEventListener('click', async function () {
-    pending = true; deviceStart.disabled = true;
+  loginBtn.addEventListener('click', async function () {
+    if (loginBtn.disabled) return;
+    pending = true; loginBtn.disabled = true;
+    loginArea.hidden = false;
     try {
       var response = await authFetch('/api/codex/login/device', {method: 'POST'});
       var result = await response.json();
@@ -71,7 +76,7 @@
       await load();
     } catch (error) {
       App.status('codex', 'err', t('发起登录失败') + ': ' + error.message);
-    } finally { pending = false; deviceStart.disabled = false; }
+    } finally { pending = false; await load(); }
   });
 
   deviceCopy.addEventListener('click', async function () {
@@ -90,6 +95,7 @@
   var updateState = null;
 
   function paintUpdate() {
+    updateResult.hidden = !updateState;
     if (!updateState) return;
     updateResult.className = 'codex-update-text' + (updateState.cls ? ' ' + updateState.cls : '');
     if (updateState.mode === 'checking') {

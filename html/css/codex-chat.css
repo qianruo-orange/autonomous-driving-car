@@ -44,24 +44,19 @@
 .codex-chat-side .codex-chat-form textarea{min-height:44px;max-height:120px}
 
 /* Shared settings widgets (config page) */
-.codex-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:10px}
-.codex-field{display:flex;flex-direction:column;gap:5px;min-width:0}
-.codex-field label{font-size:12px;color:var(--muted)}
-.codex-field input,.codex-field select{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:9px;border:1px solid var(--card-border);background:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px}
-.codex-field input:focus,.codex-field select:focus{outline:none;border-color:var(--accent)}
-.codex-panel{border:1px solid var(--card-border);border-radius:12px;padding:12px;margin-top:12px;background:var(--btn-bg)}
-.codex-panel h4{margin:0 0 8px;font-size:13px;color:var(--accent)}
+.codex-head-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.codex-head-actions .btn{margin:0;padding:4px 10px;font-size:12px;white-space:nowrap}
+.codex-login-btn.ok{color:var(--name);border-color:var(--name)}
+.codex-login-btn.warn{color:#e0913a;border-color:#e0913a}
+.codex-login-area{margin-top:10px}
 .codex-device-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0}
 .codex-device-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:22px;font-weight:700;letter-spacing:2px;color:var(--text-strong);padding:6px 12px;border:1px dashed var(--accent);border-radius:8px;background:var(--input-bg)}
 .codex-device-link{color:var(--accent);font-size:13px;word-break:break-all}
 .codex-hint{font-size:12px;color:var(--muted);line-height:1.5}
-.codex-update-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 2px}
-.codex-update-row .btn{margin:0}
-.codex-update-text{font-size:12px;line-height:1.5;color:var(--muted);word-break:break-word;min-width:0}
+.codex-update-text{display:block;margin:4px 0 0;font-size:12px;line-height:1.5;color:var(--muted);word-break:break-word;min-width:0}
+.codex-update-text[hidden]{display:none}
 .codex-update-text.accent{color:var(--accent);font-weight:600}
 .codex-update-text.err{color:#e0556a}
-.codex-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.codex-actions .btn{margin:0}
 @media (max-width:720px){
   .codex-chat-actions{margin-left:0;width:100%}
   .codex-chat-log{height:240px}

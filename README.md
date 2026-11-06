@@ -248,10 +248,11 @@ systemd 沙箱只开放这一个文件可写
 三者通过需要 root 认证的 `/api/codex/` 接口与 `bin/codex_bridge.py` 协作；C 层只拉起短命的
 Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模型。
 
-- **登录（仅设备码）**：配置页「开始设备码登录」显示登录链接与一次性验证码（15 分钟），
-  复制验证码后在浏览器完成授权。不再提供 API Key 登录；`config.toml` 只使用 Codex 内置的
-  ChatGPT provider，凭据由 CLI 自行从 `.codex/auth.json` 读取。运行参数（模型 / 沙箱 /
-  工作目录）已从界面移除。
+- **登录（仅设备码）**：未登录时标题栏显示「登录」按钮，点击即发起设备码登录并在
+  卡片内展开登录链接与一次性验证码（15 分钟），复制验证码后在浏览器完成授权。
+  不再提供 API Key 登录；`config.toml` 只使用 Codex 内置的 ChatGPT provider，凭据由
+  CLI 自行从 `.codex/auth.json` 读取。运行参数（模型 / 沙箱 / 工作目录）已从界面移除。
+  「检查更新」「退出登录」固定在卡片标题栏右侧。
 - **检查更新**：配置页「检查更新」比对本地 `codex --version` 与 npm registry 上的
   `@openai/codex` 最新版本，查询走整机代理。这是只读检查，不会执行 `codex update`；代理
   偶发 TLS 失败时会重试多个端点，仍失败则显示上次成功检查的结果。
@@ -742,12 +743,14 @@ interaction log. They share the root-authenticated `/api/codex/` endpoints and
 `bin/codex_bridge.py`. The C layer only spawns a short-lived Python process:
 long turns are detached by the bridge, so no HTTP worker waits for a model.
 
-- **Sign-in (device code only)**: "Start device-code login" shows the sign-in
-  link and one-time code (valid 15 minutes); copy the code and authorise in a
-  browser. API-key sign-in is no longer offered and `config.toml` always uses the
-  built-in ChatGPT provider, whose credentials the CLI reads from
+- **Sign-in (device code only)**: when signed out the title bar shows a "Sign in"
+  button; clicking it starts the device-code flow and expands the sign-in link
+  and one-time code (valid 15 minutes) inside the card — copy the code and
+  authorise in a browser. API-key sign-in is no longer offered and `config.toml`
+  always uses the built-in ChatGPT provider, whose credentials the CLI reads from
   `.codex/auth.json`. Runtime options (model / sandbox / workdir) were removed
-  from the UI.
+  from the UI. "Check for updates" and "Sign out" stay on the right of the card
+  title bar.
 - **Check for updates**: the config page compares the local `codex --version`
   with the latest `@openai/codex` release on the npm registry through the
   board-wide proxy. This is read-only — it never runs `codex update`. The proxy
