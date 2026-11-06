@@ -81,7 +81,7 @@ static void camera_send_status(app_ctx_t *app, int client, int device)
         focus.read_only ? "true" : "false", focus.active ? "true" : "false",
         jpeg_decoder_available() ? "true" : "false",
         recording.encoder,
-        rknn_yolo_hardware_decoder() ? "rockchip-jpegd" : "none", decoded, errors);
+        rknn_yolo_hardware_decoder() ? "libjpeg-turbo" : "none", decoded, errors);
     if (n < 0 || n >= (int)sizeof(json)) { http_err(client, 500, "Error", "Camera response failed"); return; }
     http_ok_json(client, json, (size_t)n);
 }

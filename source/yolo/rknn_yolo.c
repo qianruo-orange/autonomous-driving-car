@@ -1075,13 +1075,12 @@ int rknn_yolo_init(void *arg)
     pthread_cond_init(&g_yolo.r_not_empty, NULL);
     pthread_cond_init(&g_yolo.r_not_full, NULL);
 
-    /* 解码通路按 config 的 jpeg_decode 选定，必须在第一次 open 之前设置 */
-    jpeg_decoder_set_mode(app->cfg->jpeg_hw);
+    /* 解码固定走 libjpeg-turbo 软解（硬解 rockchip-jpegd 有块写回缺陷）。
+       libjpeg 是链接期依赖，这里的探测只用于状态上报。 */
     g_yolo.hardware_decode = jpeg_decoder_available();
     LOG_INFO("yolo: JPEG decode %s", g_yolo.hardware_decode
-             ? "hardware (rockchip-jpegd)"
-             : (app->cfg->jpeg_hw ? "software (hardware unavailable, fallback)"
-                                  : "software (libjpeg-turbo)"));
+             ? "software (libjpeg-turbo)"
+             : "unavailable");
     if (yolo_events_init(NULL) == 0) g_yolo.events_initialized = 1;
     else LOG_ERROR("yolo: detection report saving unavailable; live inference remains enabled");
     /* YOLO 为必要流程：无 YOLO（模型缺失/NPU 不可用）直接报错，服务启动失败 */

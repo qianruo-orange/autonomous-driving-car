@@ -117,7 +117,8 @@ endif()
 find_library(LIBRKNNRT rknnrt REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
 
-# libjpeg-turbo：MJPEG -> NV12 软件解码（硬件 rkjpegd 在 RK3576 上亮度块有缺陷）
+# libjpeg-turbo：相机 MJPEG -> NV12 解码（硬件 rockchip-jpegd 的块写回有缺陷，
+# 同帧多次解码结果不一致，故固定使用软件解码）
 find_library(LIBJPEG jpeg REQUIRED)
 target_link_libraries(autonomous-driving-car PRIVATE ${LIBJPEG})
 
