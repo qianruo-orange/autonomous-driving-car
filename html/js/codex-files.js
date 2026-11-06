@@ -104,7 +104,7 @@
         });
         var pv = document.createElement('button');
         pv.type = 'button';
-        pv.className = 'dlbtn';
+        pv.className = 'file-preview-button';
         setI18nText(pv, '预览');
         pv.addEventListener('click', function () { preview(file); });
         actions.appendChild(pv);

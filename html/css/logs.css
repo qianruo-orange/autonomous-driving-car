@@ -102,3 +102,10 @@ table tr td:last-child>button.dlbtn{
   background:transparent;border:1px solid var(--card-border2);border-radius:6px;
   color:var(--text);font-size:12px;font-family:inherit;padding:2px 10px;cursor:pointer}
 table tr td:last-child>button.dlbtn:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ===== action cell normalisation ===== */
+/* 两张表的操作列共用同一套尺寸：预览 11px 描边、下载 12px 链接、删除 11px 红底 */
+table tr td:last-child>button{font-size:11px;border-radius:4px;margin-left:8px}
+table tr td:last-child>button.file-preview-button{margin-right:0;color:var(--accent)}
+table tr td:last-child>a.dl{font-size:12px;margin-left:8px;color:var(--accent)}
+table tr td:last-child>button.del{font-size:11px;margin-left:8px;color:#fff}
