@@ -72,9 +72,6 @@
 
 /* 标注录像的 NV12 暂存：解码器出队瞬间拷进来，之后读的就是这份，
    不再依赖可能已被复用的解码器缓冲。__thread 保证每 worker 独立。 */
-static __thread unsigned char *annot_buf;
-static __thread size_t annot_cap;
-
 
 #define YOLO_MAX_WORKERS 2     /* RK3576：NPU 双核，一核一个线程 */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
@@ -413,7 +410,11 @@ static int yolo_queue_pop(yolo_job_t *job, int worker_index)
         return -1;
     }
     *job = g_yolo.jobs[g_yolo.q_head];
-    g_yolo.jobs[g_yolo.q_head].rgb = NULL;   /* 所有权已移交，防止停池清理时 double-free */
+    /* 所有权（rgb 池缓冲、annot_nv12 堆缓冲）已移交给 worker：槽位必须两个都
+       清掉。只清 rgb 的话，被弹出还没被复写的槽位会在停池清理时按陈旧指针
+       再 free 一次——停止服务时的 "double free or corruption" 就是这个。 */
+    g_yolo.jobs[g_yolo.q_head].rgb = NULL;
+    g_yolo.jobs[g_yolo.q_head].annot_nv12 = NULL;
     g_yolo.q_head = (g_yolo.q_head + 1) % YOLO_QUEUE_CAP;
     g_yolo.q_count--;
     pthread_cond_signal(&g_yolo.q_not_full);
@@ -583,7 +584,7 @@ static void *yolo_worker_task(void *arg)
 
         yolo_job_t job;
         if (yolo_queue_pop(&job, idx) < 0) break;
-        if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_abandon(&job); break; }
+        if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_discard(&job); break; }
         unsigned long long worker_us = yolo_now_us();
 
         /* letterbox 预处理：只走 RGA（NV12 dma-buf 一趟完成 CSC + 缩放）。
@@ -598,7 +599,7 @@ static void *yolo_worker_task(void *arg)
             static unsigned long long rga_fail;
             if (!(rga_fail++ % 100u))
                 LOG_ERROR("yolo: RGA letterbox 失败，任务作废（累计 %llu）", rga_fail);
-            yolo_job_abandon(&job);
+            yolo_job_discard(&job);
             continue;
         }
         unsigned long long prepared_us = yolo_now_us();
@@ -610,9 +611,9 @@ static void *yolo_worker_task(void *arg)
         in.fmt   = RKNN_TENSOR_NHWC;
         in.size  = (uint32_t)(g_yolo.in_w * g_yolo.in_h * 3);
         in.buf   = model_in;
-        if (rknn_inputs_set(wk->ctx, 1, &in) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
+        if (rknn_inputs_set(wk->ctx, 1, &in) != RKNN_SUCC) { yolo_job_discard(&job); continue; }
         unsigned long long inputs_us = yolo_now_us();
-        if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_abandon(&job); continue; }
+        if (rknn_run(wk->ctx, NULL) != RKNN_SUCC) { yolo_job_discard(&job); continue; }
         unsigned long long inference_us = yolo_now_us();
 
         rknn_output outputs[2];
@@ -626,7 +627,7 @@ static void *yolo_worker_task(void *arg)
                                  : (wk->out_attr[i].type == RKNN_TENSOR_FLOAT16 ? 1 : 0);
         }
         if (rknn_outputs_get(wk->ctx, nout, outputs, NULL) != RKNN_SUCC) {
-            yolo_job_abandon(&job);
+            yolo_job_discard(&job);
             continue;
         }
         unsigned long long outputs_us = yolo_now_us();
@@ -702,7 +703,7 @@ static void *yolo_worker_task(void *arg)
 
         /* 停池竞态：推理期间 pool_running 被清 → 作废任务（不写槽，
            避免停池后槽内滞留 rgb 阻碍该槽复用） */
-        if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_abandon(&job); continue; }
+        if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_discard(&job); continue; }
 
         /* rgb 写槽（claim 钉住槽位：任务在途期间不会被复用/清空，
            故 s->seq == job.seq 必然成立；防御分支防退让强制清空的迟到写） */
