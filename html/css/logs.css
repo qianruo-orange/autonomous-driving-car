@@ -1,13 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* logs.css — 日志文件页面样式 毛玻璃水滴风（主题变量化） */
-.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
-.tb-left{display:flex;align-items:center;gap:8px}
-.top-bar,.tb-left{flex-wrap:wrap;gap:8px}
-.btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
 .dl[aria-disabled="true"]{color:var(--muted);pointer-events:none;text-decoration:none}
-.tb-right{display:flex;align-items:center;gap:6px}
-.tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
-.top-bar .theme-btn{position:static;margin-left:0;flex:none}
 .file-manager{display:grid;gap:20px}
 .file-section{min-width:0;padding:16px;border:1px solid var(--card-border);border-radius:14px;background:var(--card-bg)}
 .file-section-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
@@ -17,13 +10,8 @@
 .file-section .file-actions .btn{flex-basis:128px;width:128px;padding:0 8px;font-size:12px}
 .file-actions a[aria-disabled="true"]{opacity:.55;cursor:wait;pointer-events:none}
 .file-global-actions{justify-content:flex-start;margin:0 0 0 8px}
-.btn{display:inline-block;padding:8px 14px;border-radius:8px;border:none;cursor:pointer;font-size:13px;text-decoration:none;transition:all .25s}
-.btn-pack{background:linear-gradient(135deg,rgba(30,111,212,.7),rgba(30,111,212,.5));color:#fff;box-shadow:0 2px 8px rgba(30,111,212,.25)}
-.btn-pack:hover{box-shadow:0 4px 16px rgba(30,111,212,.4);transform:translateY(-1px)}
-.btn-clear{background:linear-gradient(135deg,rgba(192,57,78,.8),rgba(192,57,78,.6));color:#fff;box-shadow:0 2px 8px rgba(192,57,78,.2)}
-.btn-clear:hover{background:linear-gradient(135deg,rgba(192,57,78,1),rgba(192,57,78,.8));box-shadow:0 4px 16px rgba(192,57,78,.35);transform:translateY(-1px)}
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;border-radius:10px}
-table{border-collapse:collapse;width:100%;min-width:480px;background:var(--card-bg);border:1px solid var(--card-border);border-radius:10px;overflow:hidden}
+table{min-width:480px;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
 .file-section table{table-layout:fixed;min-width:880px}
 .file-col-date{width:112px}
 .file-col-name{width:auto}
@@ -37,17 +25,15 @@ table{border-collapse:collapse;width:100%;min-width:480px;background:var(--card-
   .file-col-mtime{width:24%}
   .file-col-actions{width:18%}
 }
-th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--card-border);white-space:nowrap}
 .file-section th,.file-section td{overflow:hidden;text-overflow:ellipsis}
 .file-section th:last-child,.file-section td:last-child{text-align:right}
-th{color:var(--muted);font-size:12px;background:rgba(94,194,240,.03)}
-td{font-size:13px}
-.del{background:linear-gradient(135deg,#c0394e,#d94459);color:#fff;border:none;padding:3px 8px;border-radius:4px;cursor:pointer;font-size:11px;margin-left:8px;transition:all .2s;box-shadow:0 1px 4px rgba(192,57,78,.2)}
-.del:hover{box-shadow:0 3px 10px rgba(192,57,78,.35);transform:translateY(-1px)}
-.del:disabled{background:var(--btn-bg);color:var(--muted);cursor:not-allowed;opacity:1;box-shadow:none;transform:none}
+.del{background:transparent;border:1px solid var(--danger-border);color:var(--danger);padding:3px 9px;border-radius:var(--r-sm);cursor:pointer;font-size:var(--fs-11);transition:background .15s,border-color .15s}
+.del:hover{background:var(--danger-weak);border-color:var(--danger)}
+.del:disabled{background:transparent;border-color:var(--border);color:var(--muted);cursor:not-allowed}
 .dl{color:var(--accent);transition:color .2s}
 .dl:hover{color:var(--accent-hover)}
-.file-preview-button{border:1px solid var(--card-border2);border-radius:4px;background:var(--btn-bg);color:var(--accent);padding:3px 7px;font:inherit;font-size:11px;cursor:pointer;margin-right:8px}
+.file-preview-button{border:1px solid var(--border-strong);border-radius:var(--r-sm);background:var(--btn-bg);color:var(--accent);padding:3px 9px;font:inherit;font-size:var(--fs-11);cursor:pointer;transition:border-color .15s,color .15s}
+.file-preview-button:hover{border-color:var(--border-hover);color:var(--accent-hover)}
 .file-preview-button:disabled{color:var(--muted);cursor:not-allowed;opacity:.6}
 .file-preview-overlay{position:fixed;inset:0;z-index:1001;background:rgba(3,8,20,.72);padding:24px;display:flex;align-items:center;justify-content:center}
 .file-preview-overlay[hidden]{display:none}
@@ -62,13 +48,7 @@ td{font-size:13px}
 /* 正在录制的行高亮 */
 tr.row-active td{background:rgba(30,111,212,.08)}
 tr.row-active td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
-/* 加载/空状态 */
-.loading,.empty{text-align:left;color:var(--muted);padding:18px 12px}
 /* 轻量提示 */
-.toast{position:fixed;left:50%;bottom:32px;transform:translateX(-50%) translateY(80px);background:var(--card-bg);border:1px solid var(--card-border);color:var(--text);padding:10px 18px;border-radius:10px;font-size:13px;opacity:0;transition:all .25s;pointer-events:none;z-index:99;max-width:86vw;box-shadow:0 4px 20px rgba(0,0,0,.2)}
-.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-.toast-ok{border-color:rgba(46,160,67,.6)}
-.toast-err{border-color:rgba(192,57,78,.6)}
 @media(max-width:540px){
   body{padding:12px}
   h1{font-size:18px}
@@ -82,44 +62,17 @@ tr.row-active td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
   .file-global-actions{flex-basis:100%;margin-left:0}
 }
 
-/* ===== file table action buttons ===== */
-/* 操作列统一右对齐、不换行、按钮之间固定间隔，避免「下载/预览」叠在一起 */
-table tr td:last-child{text-align:right;white-space:nowrap;vertical-align:middle}
-table tr td:last-child>a,
-table tr td:last-child>button{
-  display:inline-flex;align-items:center;justify-content:center;
-  margin-left:8px;vertical-align:middle;white-space:nowrap}
-table tr td:last-child>a:first-child,
-table tr td:last-child>button:first-child{margin-left:0}
-/* 按钮形态的「下载/预览」沿用链接观感 */
-table tr td:last-child>button.dl{
-  background:transparent;border:0;padding:2px 4px;color:var(--accent);
-  font-size:12px;font-family:inherit;cursor:pointer}
-table tr td:last-child>button.dl:hover{text-decoration:underline}
-
-/* ===== dlbtn (boxed preview) ===== */
-table tr td:last-child>button.dlbtn{
-  background:transparent;border:1px solid var(--card-border2);border-radius:6px;
-  color:var(--text);font-size:12px;font-family:inherit;padding:2px 10px;cursor:pointer}
-table tr td:last-child>button.dlbtn:hover{border-color:var(--accent);color:var(--accent)}
-
-/* ===== action cell normalisation ===== */
-/* 两张表的操作列共用同一套尺寸：预览 11px 描边、下载 12px 链接、删除 11px 红底 */
-table tr td:last-child>button{font-size:11px;border-radius:4px;margin-left:8px}
-table tr td:last-child>button.file-preview-button{margin-right:0;color:var(--accent)}
-table tr td:last-child>a.dl{font-size:12px;margin-left:8px;color:var(--accent)}
-table tr td:last-child>button.del{font-size:11px;margin-left:8px;color:#fff}
-
-/* ===== action cell: flex row with equal gaps ===== */
-/* 用 flex + gap 统一间距，彻底去掉各元素不同的 margin/空白节点影响 */
-
-/* ===== action cell: inline flow, uniform gap ===== */
-/* td 保持 table-cell（flex 会破坏单元格底边），用 font-size:0 消除空白节点，
-   再靠统一的 margin-left 控制间距 */
-table tr td:last-child{text-align:right;white-space:nowrap;font-size:0}
+/* ===== 操作列 =====
+   右对齐、不换行、按钮等间距。td 保持 table-cell（flex 会破坏单元格底边），
+   用 font-size:0 消除标签之间的空白节点，间距统一由 margin 控制。 */
+table tr td:last-child{text-align:right;white-space:nowrap;vertical-align:middle;font-size:0}
 table tr td:last-child>*{
   display:inline-flex;align-items:center;vertical-align:middle;
-  margin:0 0 0 8px;font-size:12px;line-height:1.4}
+  margin:0 0 0 8px;font-size:var(--fs-12);line-height:1.4}
 table tr td:last-child>*:first-child{margin-left:0}
 table tr td:last-child>button.file-preview-button,
-table tr td:last-child>button.del{font-size:11px}
+table tr td:last-child>button.del{font-size:var(--fs-11)}
+table tr td:last-child>button.dl{
+  background:transparent;border:0;padding:0;color:var(--accent);
+  font-family:inherit;cursor:pointer;font-size:var(--fs-12)}
+table tr td:last-child>button.dl:hover{text-decoration:underline;color:var(--accent-hover)}

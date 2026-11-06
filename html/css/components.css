@@ -1,0 +1,394 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* components.css — 可复用控件的皮肤：按钮、表单、进度条、状态文字、徽标、
+   开关、表格、提示条、弹窗。不再使用 !important：靠选择器层级和加载顺序取胜。 */
+
+/* ========== 按钮 ==========
+   三档语义，视觉重量递增：
+   .btn-back  描边·次级（导航、取消）—— 默认档
+   .btn-save  实心·主操作（保存、确认）
+   .btn-danger 描边·危险（删除、关机、重启）—— hover/focus 才上色
+   危险操作不再用实心红抢占注意力，只有真的要点时才变红。 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--ctl-h);
+  padding: 0 14px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-13);
+  font-weight: 550;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s, box-shadow .15s, transform .15s;
+}
+.btn:active { transform: translateY(1px); }
+
+.btn-back {
+  background: var(--accent-weak);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.btn-back:hover {
+  background: var(--accent-weak-2);
+  border-color: var(--border-hover);
+  color: var(--accent-hover);
+}
+
+.btn-save {
+  background: linear-gradient(135deg, #2a7d57, #35996a);
+  border-color: rgba(76, 201, 160, .45);
+  color: #f2fffa;
+  box-shadow: 0 2px 10px rgba(42, 125, 87, .28);
+}
+.btn-save:hover {
+  background: linear-gradient(135deg, #31905f, #3fae79);
+  box-shadow: 0 4px 16px rgba(42, 125, 87, .42);
+}
+html[data-theme="light"] .btn-save {
+  background: linear-gradient(135deg, #1f7d55, #2a9463);
+  color: #fff;
+}
+
+.btn-pack {
+  background: var(--accent-weak);
+  border-color: var(--border-hover);
+  color: var(--accent);
+}
+.btn-pack:hover { background: var(--accent-weak-2); }
+
+/* 危险：默认只有描边和一点红，hover/按下才实心 */
+.btn-danger,
+.btn-clear {
+  background: transparent;
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+.btn-danger:hover,
+.btn-clear:hover {
+  background: var(--danger-weak);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+html[data-theme="light"] .btn-danger,
+html[data-theme="light"] .btn-clear { color: var(--danger); }
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* 卡片标题栏里的小按钮 */
+.card-save,
+.nt-go {
+  height: var(--ctl-h-sm);
+  padding: 0 12px;
+  font-size: var(--fs-12);
+  border-radius: var(--r-sm);
+  margin: 0 0 0 auto;
+  white-space: nowrap;
+}
+#card_can .card-save { margin-left: 0; }
+
+/* 纯图标按钮（语言、主题）：与顶栏按钮同高同圆角 */
+.icon-btn,
+.theme-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: var(--ctl-h);
+  height: var(--ctl-h);
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--accent-weak);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.icon-btn:hover,
+.theme-btn:hover {
+  background: var(--accent-weak-2);
+  border-color: var(--border-hover);
+  color: var(--accent-hover);
+}
+#langBtn { font-size: var(--fs-12); letter-spacing: .3px; }
+
+/* 电源操作：顶部栏最右侧，描边危险档 */
+.pwr { border-color: var(--danger-border); color: var(--danger); background: transparent; }
+.pwr:hover { background: var(--danger-weak); border-color: var(--danger); }
+.pwr-shutdown { border-color: var(--warn-border); color: var(--warn); }
+.pwr-shutdown:hover { background: var(--warn-weak); border-color: var(--warn); }
+
+/* ========== 表单 ========== */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+/* 标签：子选择器，特异性高于页面里的 .row label，因此不必 !important */
+.row > label,
+.net-field > label,
+.codex-run-field > label,
+.cfg-grid label,
+.car-param-group .row > label,
+label.form-label {
+  flex: 0 0 auto;
+  font-size: var(--fs-12);
+  font-weight: 450;
+  line-height: 1.4;
+  letter-spacing: .2px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="password"],
+input[type="file"],
+select,
+textarea {
+  font-family: inherit;
+  font-size: var(--fs-13);
+  color: var(--text);
+  background-color: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  transition: border-color .15s, box-shadow .15s;
+}
+input[type="text"],
+input[type="number"],
+input[type="password"],
+select { height: var(--ctl-h); padding: 0 10px; }
+select { padding-right: 30px; cursor: pointer; color-scheme: var(--control-scheme); }
+
+input::placeholder,
+textarea::placeholder { color: var(--muted-2); }
+
+input:hover:not(:disabled),
+select:hover:not(:disabled),
+textarea:hover:not(:disabled) { border-color: var(--border-strong); }
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--glow);
+}
+select option { color: var(--text); background-color: var(--select-menu-bg); }
+select option:disabled { color: var(--select-disabled-text); background-color: var(--select-disabled-bg); }
+
+button:disabled,
+select:disabled,
+input:disabled { opacity: .5; cursor: not-allowed; }
+
+:focus-visible { outline: 2px solid var(--border-hover); outline-offset: 1px; }
+
+.field-unit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+.field-unit input,
+.field-unit select { flex: 1; min-width: 0; max-width: none; width: 100%; }
+.unit,
+.field-unit .unit {
+  flex: none;
+  font-size: var(--fs-12);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.grp-t {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: .3px;
+  color: var(--muted);
+  margin: 0 0 var(--sp-2);
+}
+
+/* ========== 进度条 ==========
+   轨道从 .07 提到 .17：深色卡片上原来几乎看不见，0% 时整排像几根断线 */
+.bar,
+.core-bar {
+  position: relative;
+  height: var(--bar-h);
+  border-radius: var(--bar-r);
+  background: var(--track);
+  overflow: hidden;
+  box-shadow: inset 0 1px 3px var(--inset-shadow);
+}
+.bar > div,
+.bar > i,
+.core-bar > div,
+.core-bar > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  transition: width .45s ease;
+}
+.green  { background: linear-gradient(90deg, #2fb287, #4cd6ae); }
+.yellow { background: linear-gradient(90deg, #d99b1f, #edc94f); }
+.blue   { background: linear-gradient(90deg, #2f9fe0, #4fc3ee); }
+.indigo { background: linear-gradient(90deg, #7b86e8, #a58ff2); }
+.cyan   { background: linear-gradient(90deg, #1fb6c9, #45d6c6); }
+.red    { background: linear-gradient(90deg, #e3576b, #f07284); }
+
+/* ========== 状态文字 ========== */
+.card-status,
+.hint,
+.ip-cur,
+.codex-hint,
+.used {
+  font-size: var(--fs-12);
+  line-height: 1.5;
+  color: var(--muted);
+}
+.card-status.ok { color: var(--ok); }
+.card-status.warn { color: var(--warn); }
+.card-status.err { color: var(--danger); }
+.hint { padding: 6px 0; }
+
+.empty,
+.loading,
+.codex-empty {
+  display: block;
+  padding: 18px 12px;
+  font-size: var(--fs-12);
+  color: var(--muted-2);
+  text-align: center;
+}
+
+/* ========== 徽标 / 药丸 ========== */
+.codex-badge,
+.proxy-badge,
+.codex-plan,
+.if-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--btn-bg);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.codex-badge.ok,
+.codex-login-btn.ok,
+.proxy-badge.ok { color: var(--ok); border-color: var(--ok-border); }
+.codex-badge.warn,
+.codex-plan.warn,
+.codex-login-btn.warn,
+.proxy-badge.warn { color: var(--warn); border-color: var(--warn-border); }
+
+/* ========== 开关 ========== */
+.toggle {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+}
+.toggle input { display: none; }
+.toggle .slider {
+  position: absolute;
+  inset: 0;
+  background: var(--track);
+  border-radius: var(--r-pill);
+  transition: background .2s;
+}
+.toggle .slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  bottom: 3px;
+  border-radius: 50%;
+  background: var(--knob);
+  transition: transform .2s, background .2s;
+}
+.toggle input:checked + .slider { background: linear-gradient(135deg, #2a7d57, #35996a); }
+.toggle input:checked + .slider::before { transform: translateX(18px); background: #fff; }
+
+/* ========== 表格 ========== */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: transparent;
+  font-size: var(--fs-13);
+}
+th,
+td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+th {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--accent-weak);
+}
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: var(--accent-weak); }
+
+/* ========== 提示条 ========== */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: var(--sp-6);
+  transform: translateX(-50%) translateY(80px);
+  padding: 10px 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+  box-shadow: var(--shadow-lift);
+  color: var(--text);
+  font-size: var(--fs-13);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s, transform .25s;
+  z-index: 999;
+  max-width: 86vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast-ok { border-color: var(--ok-border); }
+.toast-err { border-color: var(--danger-border); }
+
+/* ========== 数字 ========== */
+.val,
+.temp,
+.card-status,
+.ip-cur,
+.used,
+.val-row,
+.core-freq,
+.net-val,
+.codex-meter-val,
+#datetime { font-variant-numeric: tabular-nums; }

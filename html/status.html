@@ -1,48 +1,59 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title data-i18n="系统状态">系统状态</title>
-<link rel="stylesheet" href="/css/common.css?v=2026110701">
-<link rel="stylesheet" href="/css/monitor.css?v=2026110701">
-<link rel="stylesheet" href="/css/status.css?v=2026110701">
-<script src="/js/theme.js?v=2026110701"></script>
-<script src="/js/i18n.js?v=2026110701"></script>
-<script src="/js/auth.js?v=2026110701"></script>
-<script src="/js/app.js?v=2026110701"></script>
+<link rel="stylesheet" href="/css/tokens.css?v=2026110702">
+<link rel="stylesheet" href="/css/layout.css?v=2026110702">
+<link rel="stylesheet" href="/css/components.css?v=2026110702">
+<link rel="stylesheet" href="/css/monitor.css?v=2026110702">
+<link rel="stylesheet" href="/css/status.css?v=2026110702">
+<script src="/js/theme.js?v=2026110702"></script>
+<script src="/js/i18n.js?v=2026110702"></script>
+<script src="/js/auth.js?v=2026110702"></script>
+<script src="/js/app.js?v=2026110702"></script>
 </head><body>
 <div class="top-bar">
-  <div class="tb-left"><h1>📈 <span data-i18n="系统状态">系统状态</span></h1></div>
+  <div class="tb-left"><h1><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3.5l2.5-7 4 14 2.5-7H21"/></svg> <span data-i18n="系统状态">系统状态</span></h1></div>
   <div class="tb-right">
     <span id="datetime"></span>
-    <a href="/" class="btn btn-back">📊 <span data-i18n="主界面">主界面</span></a>
-    <a href="/config" class="btn btn-back">⚙ <span data-i18n="系统配置">系统配置</span></a>
-    <a href="/logs" class="btn btn-back">📁 <span data-i18n="文件下载">文件下载</span></a>
+    <a href="/" class="btn btn-back"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6"/></svg> <span data-i18n="主界面">主界面</span></a>
+    <a href="/config" class="btn btn-back"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17.5 7H20M4 17h2.5M11 17h9"/><circle cx="15" cy="7" r="2.3"/><circle cx="6.5" cy="17" r="2.3"/></svg> <span data-i18n="系统配置">系统配置</span></a>
+    <a href="/logs" class="btn btn-back"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.4A1.9 1.9 0 0 1 4.9 5.5h3.8l2 2.6h8.4a1.9 1.9 0 0 1 1.9 1.9v6.6a1.9 1.9 0 0 1-1.9 1.9H4.9A1.9 1.9 0 0 1 3 16.6z"/></svg> <span data-i18n="文件下载">文件下载</span></a>
     <button id="langBtn" class="theme-btn" onclick="toggleLang()" data-i18n-title="切换语言">English</button>
     <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" data-i18n-title="切换主题"></button>
-    <a href="#" onclick="reboot()" class="pwr pwr-reboot">⏻ <span data-i18n="重启">重启</span></a>
-    <a href="#" onclick="shutdown()" class="pwr pwr-shutdown">⏼ <span data-i18n="关机">关机</span></a>
+    <a href="#" onclick="reboot()" class="pwr pwr-reboot"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.7-6"/><path d="M20 4.5V10h-5.5"/></svg> <span data-i18n="重启">重启</span></a>
+    <a href="#" onclick="shutdown()" class="pwr pwr-shutdown"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v7.5"/><path d="M7.6 6.6a7 7 0 1 0 8.8 0"/></svg> <span data-i18n="关机">关机</span></a>
   </div>
 </div>
 
 <div class="grid">
   <div class="status-page-grid">
     <div class="card status-card status-cpu"><h3>CPU <span class="cpu-temp" id="temp">-°C</span></h3>
-      <div class="core-bars" id="cpu_cores"></div>
+      <div class="status-body"><div class="core-bars" id="cpu_cores"></div></div>
     </div>
     <div class="card status-card">
-      <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
-      <div class="sec"><h4>RGA</h4><div class="core-bars" id="rga_cores"></div></div>
-    </div>
-    <div class="card status-card">
-      <div class="sec duo">
-        <div class="half"><h4><span data-i18n="内存">内存</span><b id="mem_val">--%</b></h4>
-        <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div></div>
-        <div class="used"><b id="mem_used">-</b> / <span id="mem_total">-</span></div></div>
-        <div class="half"><h4><span data-i18n="磁盘">磁盘</span><b id="disk_val">--%</b></h4>
-        <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div></div>
-        <div class="used"><b id="disk_used">-</b> / <span id="disk_total">-</span></div></div>
+      <h3><span data-i18n="加速器">加速器</span></h3>
+      <div class="status-body">
+        <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
+        <div class="sec"><h4>RGA</h4><div class="core-bars" id="rga_cores"></div></div>
       </div>
     </div>
-    <div class="card status-card"><h3 data-i18n="网络速度">网络速度</h3><div id="net_speed"></div></div>
+    <div class="card status-card">
+      <h3><span data-i18n="存储">存储</span></h3>
+      <div class="status-body">
+        <div class="sec duo">
+          <div class="half"><h4><span data-i18n="内存">内存</span><b id="mem_val">--%</b></h4>
+          <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div></div>
+          <div class="used"><b id="mem_used">-</b> / <span id="mem_total">-</span></div></div>
+          <div class="half"><h4><span data-i18n="磁盘">磁盘</span><b id="disk_val">--%</b></h4>
+          <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div></div>
+          <div class="used"><b id="disk_used">-</b> / <span id="disk_total">-</span></div></div>
+        </div>
+      </div>
+    </div>
+    <div class="card status-card">
+      <h3 data-i18n="网络速度">网络速度</h3>
+      <div class="status-body"><div id="net_speed"></div></div>
+    </div>
   </div>
 </div>
-<script src="/js/monitor.js?v=2026110701"></script>
+<script src="/js/monitor.js?v=2026110702"></script>
 </body></html>

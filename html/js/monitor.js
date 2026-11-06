@@ -480,8 +480,12 @@
            (withFreq ? '<div class="core-freq" id="' + id + '_freq' + i + '">-</div>' : '') + '</div>';
     var el = document.getElementById(id);
     el.innerHTML = h;
-    /* 列数随核数自适应：核少则单排大格，核多则自动换行（尺寸随数量变化） */
-    el.style.gridTemplateColumns = 'repeat(' + Math.min(names.length, 4) + ', minmax(0, 1fr))';
+    /* 列数随核数自适应，但每列有上限宽度：核少时不要把"核名 —— 百分比"
+       拉到整行两端，那样两者看起来像不相干的两个数据。
+       上限同时受容器宽度约束（min(100%, N*112px)），窄屏下自动收缩不溢出。 */
+    var cols = Math.min(names.length, 4);
+    el.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+    el.style.maxWidth = 'min(100%, ' + (cols * 112) + 'px)';
   }
 
   /* 逐核频率：后端 cpu_freqs 单位 MHz，-1/缺失表示读不到 */
@@ -686,9 +690,8 @@
     var stats = document.getElementById('video_stats');
     if (stats) {
       var d = window.getCarVideoDiagnostics();
-      stats.textContent = t('摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 端到端延迟 {delay} ms · 当前丢帧 {dropped}/s', {
+      stats.textContent = t('采集 {camera} FPS · 处理 {processing} ms · 端到端 {delay} ms · 丢帧 {dropped}/s', {
         camera: d.cameraFps ? Math.round(d.cameraFps) : '--', processing: Math.round(d.processingAgeMs),
-        received: Math.round(d.receivedFps),
         delay: d.latencyMs === null ? '--' : Math.round(d.latencyMs),
         dropped: Math.round(d.droppedFramesPerSecond)
       });

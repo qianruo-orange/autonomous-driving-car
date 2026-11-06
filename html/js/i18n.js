@@ -6,6 +6,9 @@
 (function () {
   var EN = {
     '目标已过期或丢失，请重新选择': 'Target expired or lost. Select it again',
+    '连接失败': 'Connection failed',
+    '查看详情': 'Show details',
+    '未知错误': 'Unknown error',
     '图像目标追踪': 'Image target tracking',
     '追踪目标': 'Track target',
     '点击画面中的识别框开始追踪': 'Click a detection box in the video to track it',
@@ -141,7 +144,7 @@
     '无线': 'Wireless',
     '已连接': 'Connected',
     '未连接': 'Disconnected',
-    '摄像头 {camera} FPS · 处理 {processing} ms · 接收 {received} FPS · 端到端延迟 {delay} ms · 当前丢帧 {dropped}/s': 'Camera {camera} FPS · Processing {processing} ms · Received {received} FPS · End-to-end latency {delay} ms · Dropped {dropped}/s',
+    '采集 {camera} FPS · 处理 {processing} ms · 端到端 {delay} ms · 丢帧 {dropped}/s': 'Capture {camera} FPS · Processing {processing} ms · End-to-end {delay} ms · Dropped {dropped}/s',
     '星期日': 'Sunday', '星期一': 'Monday', '星期二': 'Tuesday',
     '星期三': 'Wednesday', '星期四': 'Thursday', '星期五': 'Friday', '星期六': 'Saturday',
     '确定要重启设备吗？': 'Are you sure you want to reboot the device?',

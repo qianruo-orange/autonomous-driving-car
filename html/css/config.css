@@ -1,16 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* config.css — 配置页面样式 毛玻璃水滴风（主题变量化） */
-body{padding:30px}
-h1{font-size:24px;margin-bottom:0}
 /* 顶栏：左侧标题+功能按钮，右侧导航按钮 */
-.top-bar{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--card-border)}
-.top-bar .tb-left{display:flex;align-items:center;gap:12px}
+.tb-left{flex-wrap:wrap}
 .tb-left>.card-status:empty{display:none}
-.tb-right{display:flex;align-items:center;gap:6px}
-.tb-right .btn-back{text-decoration:none;display:inline-flex;align-items:center;gap:4px}
-.top-bar .theme-btn{position:static;margin-left:0;flex:none}
-.card{border-radius:18px;padding:20px;margin-bottom:16px;max-width:700px;transition:border-color .25s}
-.card h3{color:var(--accent);border-left:3px solid var(--section-mark,var(--accent));border-bottom:1px solid var(--card-border);padding-left:10px;padding-bottom:6px;display:flex;align-items:center;gap:8px}
+.card{max-width:760px;margin-bottom:var(--sp-4)}
 #camera_form{--section-mark:#a5b4fc}
 #card_yolo{--section-mark:#5bd5ae}
 #card_can{--section-mark:#e9bd63}
@@ -31,9 +24,6 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #can_feature_toggle[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
 #can_feature_toggle:disabled,#card_can button:disabled,#card_can select:disabled,#card_can input:disabled{opacity:.5;cursor:default}
 #card_can .can-dbc-link{margin:0 0 0 auto;padding:4px 14px;white-space:nowrap}
-.card-status{font-size:12px;white-space:nowrap;transition:opacity .3s}
-.card-status.ok{color:#4cc9a0}
-.card-status.err{color:#e0556a}
 #canSel{min-width:200px}
 .top{display:flex;align-items:center;gap:16px;margin-bottom:16px}
 .top h1{margin-bottom:0}
@@ -42,12 +32,12 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .top .nav a:hover{background:linear-gradient(135deg,rgba(94,194,240,.16),rgba(94,194,240,.08));border-color:var(--accent);box-shadow:0 4px 12px rgba(94,194,240,.15);transform:translateY(-1px)}
 .top .theme-btn{position:static;margin-left:16px;flex:none}
 .row{display:flex;align-items:center;margin:8px 0}
-.row label{width:150px;color:var(--muted);font-size:14px;margin-right:12px}
-.row input{flex:1;background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:5px 8px;border-radius:6px;max-width:180px;font-size:13px}
+.row>label{width:150px}
+.row>input{flex:1;max-width:180px}
 .row select{flex:1;max-width:180px;min-width:0}
-.ip-cur{color:var(--muted);font-size:12px;margin-top:6px}
+.ip-cur{margin-top:6px}
 .tip{color:var(--muted);font-size:12px;line-height:1.5;margin:6px 0 4px}
-.unit{color:var(--muted);font-size:12px;margin-left:4px;flex:none}
+
 .cfg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 16px;margin-bottom:4px}
 .cfg-grid .row{margin:0}
 .cfg-grid .row label{width:80px;min-width:80px}
@@ -65,7 +55,7 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .cfg-grid.yolo-basic{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px}
 .yolo-basic .row{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;min-width:0}
 .yolo-basic .row label,.yolo-upload .row label{width:auto;min-width:0;margin:0;font-size:13px}
-.yolo-basic .field-unit input{height:40px;padding:8px 12px;border-radius:8px;font-size:14px}
+.yolo-basic .field-unit input{height:var(--ctl-h)}
 .yolo-basic .field-unit input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .cfg-grid.yolo-upload{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px}
 .yolo-upload .row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 10px;align-items:center;min-width:0}
@@ -100,22 +90,17 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .car-param-group h4 button{margin:0}
 .row button{margin-left:8px;flex:none}
 #msg{padding:8px;margin:8px 0;border-radius:8px;display:none}
-#msg.ok{display:block;background:rgba(76,201,160,.08);border:1px solid rgba(76,201,160,.2);color:#4cc9a0}
-#msg.err{display:block;background:rgba(224,85,106,.08);border:1px solid rgba(224,85,106,.2);color:#e0556a}
-.toggle{position:relative;width:40px;height:22px;cursor:pointer;flex-shrink:0}
-.toggle input{display:none}
-.toggle .slider{position:absolute;inset:0;background:var(--track);border-radius:11px;transition:.2s}
-.toggle .slider:before{content:'';position:absolute;width:16px;height:16px;left:3px;bottom:3px;background:var(--knob);border-radius:50%;transition:.2s}
-.toggle input:checked+.slider{background:linear-gradient(135deg,#236e4a,#2d8a5c)}
-.toggle input:checked+.slider:before{transform:translateX(18px);background:#fff}
-.hint{display:none;color:var(--muted);font-size:13px;padding:6px 0}
+#msg.ok{display:block;background:var(--ok-weak);border:1px solid var(--ok-border);color:var(--ok)}
+#msg.err{display:block;background:var(--danger-weak);border:1px solid var(--danger-border);color:var(--danger)}
+.hint{display:none}
 .filters{margin-top:10px;padding-top:8px;border-top:1px solid var(--card-border)}
 .filters h4{font-size:12px;color:var(--muted);margin-bottom:6px;display:flex;align-items:center;gap:8px}
 .filters h4 span{flex:1}
 #fil{display:flex;flex-wrap:wrap;gap:6px}
 .filter-row{display:grid;grid-template-columns:96px 96px 24px;gap:6px;align-items:center}
 .filter-row input{width:100%;min-width:0;background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:4px 6px;border-radius:4px;font-size:12px;font-family:monospace}
-.filter-row .del-btn{background:#c0394e;color:#fff;border:none;width:24px;height:24px;border-radius:4px;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0}
+.filter-row .del-btn{background:transparent;border:1px solid var(--danger-border);color:var(--danger);width:26px;height:26px;border-radius:var(--r-sm);cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;padding:0}
+.del-btn:hover{background:var(--danger-weak)}
 .add-btn{background:linear-gradient(135deg,rgba(94,194,240,.06),rgba(94,194,240,.02));color:var(--muted);border:1px solid var(--card-border);padding:2px 10px;border-radius:6px;cursor:pointer;font-size:11px;margin-top:4px;transition:all .25s}
 .add-btn:hover{color:var(--accent);background:linear-gradient(135deg,rgba(94,194,240,.14),rgba(94,194,240,.06));border-color:var(--accent)}
 .can-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
@@ -130,8 +115,8 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .nt-input-group{display:flex;align-items:center;gap:8px;min-width:0}
 .nt-input-group input{flex:1;background:var(--input-bg);border:1px solid var(--card-border);color:var(--text);padding:6px 10px;border-radius:6px;font-size:13px;min-width:0}
 .nt-input-group select{flex:1;min-width:0}
-.nt-go{padding:6px 16px!important;font-size:13px!important;white-space:nowrap;min-width:60px;justify-content:center;transition:all .25s!important}
-.nt-go:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(94,194,240,.2)!important}
+.nt-go{min-width:62px}
+.nt-go:hover{box-shadow:0 4px 12px var(--glow)}
 .can-grid .card{max-width:none;min-width:0;width:100%;margin-bottom:0}
 .can-grid .card h3{min-height:38px;display:flex;align-items:center;gap:8px}
 @media(max-width:640px){
@@ -181,23 +166,6 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
   .net-field,.net-field.w4,.net-field.w6{grid-column:span 12}
 }
 
-/* CPU title single line */
-#card_cpufreq>h3{gap:8px}
-#card_cpufreq>h3>span:first-child{white-space:nowrap;flex:0 0 auto}
-#card_cpufreq>h3 .ip-cur{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0;font-size:11.5px;font-weight:400;color:var(--muted)}
-
-/* CPU title vertical centering */
-#card_cpufreq>h3{align-items:center}
-#card_cpufreq>h3>span:first-child{align-self:center;line-height:1.2}
-#card_cpufreq>h3 .ip-cur{align-self:center;line-height:1.2;padding-bottom:0}
-#card_cpufreq>h3 .card-save{align-self:center}
-
-/* CPU title optical centre line */
-#card_cpufreq>h3{display:flex;align-items:center;line-height:1.15;padding-bottom:6px}
-#card_cpufreq>h3>span{line-height:1.15;margin:0;padding:0}
-#card_cpufreq>h3>span:first-child{border-left:3px solid var(--section-mark,var(--accent));padding-left:10px;align-self:center}
-#card_cpufreq>h3 .ip-cur{align-self:center;line-height:1.15;padding-left:8px}
-#card_cpufreq>h3 .card-save{align-self:center;margin:0 0 0 auto}
-
-/* CPU title single bar */
+/* CPU 频率卡标题栏：左侧标题（无左边线，因为卡片自带分区色）+ 中间当前值 + 右侧保存 */
 #card_cpufreq>h3>span:first-child{border-left:0;padding-left:0}
+#card_cpufreq>h3 .ip-cur{padding-left:2px}

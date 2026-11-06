@@ -1,0 +1,188 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* layout.css — 页面骨架：重置、画布、顶栏、卡片、标题栏、图标。
+   这里只放"页面长什么样"的结构样式；控件的皮肤在 components.css。 */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  min-height: 100vh;
+  padding: var(--sp-5);
+  background: var(--bg);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC",
+               "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  font-size: var(--fs-13);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  transition: background .3s, color .3s;
+}
+
+h1 {
+  font-size: var(--fs-20);
+  font-weight: 650;
+  letter-spacing: .2px;
+  color: var(--text-strong);
+}
+
+a { color: var(--accent); text-decoration: none; transition: color .18s; }
+a:hover { color: var(--accent-hover); }
+
+/* ---- 图标 ----
+   统一 16px 线性图标，颜色继承文字，永远和文字同基线 */
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: -3px;
+}
+.icon-lg { width: 18px; height: 18px; }
+
+/* ---- 顶栏 ----
+   三段式：标题 | 页面级操作 | 导航/全局操作。中间段靠左，右段靠右。 */
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.tb-left,
+.tb-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.tb-left h1 { display: flex; align-items: center; gap: 10px; }
+.tb-right { margin-left: auto; justify-content: flex-end; }
+
+/* 顶栏内所有控件共用一套几何：38px 高、12px 圆角、不换行 */
+.top-bar .btn,
+.top-bar .icon-btn,
+.top-bar .theme-btn,
+.top-bar .pwr {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  height: var(--ctl-h);
+  margin: 0;
+  padding: 0 12px;
+  border-radius: var(--r-md);
+  font-family: inherit;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  vertical-align: middle;
+  position: static;
+}
+#datetime {
+  color: var(--muted);
+  font-size: var(--fs-13);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 卡片 ---- */
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: var(--sp-4);
+  box-shadow: var(--shadow), inset 0 1px 0 var(--card-highlight);
+  transition: border-color .18s;
+  min-width: 0;
+}
+.card:hover { border-color: var(--border-strong); }
+
+/* 卡片标题栏：左标题 + 中段度量/状态（可省略）+ 右操作 */
+.card > h3,
+.card > .card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--ctl-h);
+  margin-bottom: var(--sp-3);
+  padding-left: 10px;
+  border-left: 3px solid var(--section-mark, var(--accent));
+  border-radius: 0 4px 4px 0;
+  font-size: var(--fs-14);
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--text-strong);
+  flex-wrap: nowrap;
+}
+.card > h3 > span:first-child,
+.card > h3 > .title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+/* 标题里的次级信息：压到最小、可省略，绝不换行把标题撑高 */
+.card > h3 .card-status,
+.card > h3 .ip-cur,
+.card > h3 .codex-update-text,
+.card > h3 .nt-result {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--fs-12);
+  font-weight: 400;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+/* 标题栏右端的操作组 */
+.card > h3 > .card-save,
+.card > h3 > .codex-head-actions,
+.card > h3 > .proxy-head-actions,
+.card > h3 > .can-dbc-link { margin-left: auto; flex: 0 0 auto; }
+.card > h3 > .card-save + * { margin-left: 0; }
+
+.card h4 {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  letter-spacing: .2px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+/* ---- 页面骨架 ---- */
+/* 仪表盘类页面按视口高度铺满，不再让内容停在屏幕上半截 */
+.page-fill {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 2 * var(--sp-5) - 64px);
+}
+.page-fill > .grow { flex: 1 1 auto; min-height: 0; }
+
+/* 滚动条：深色下默认的白块很扎眼 */
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--r-pill);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: var(--border-hover); }
+
+@media (max-width: 720px) {
+  body { padding: var(--sp-3); }
+  .top-bar { gap: var(--sp-2); }
+  .tb-left { flex: 1 1 100%; }
+  .tb-right { width: 100%; justify-content: flex-start; }
+  h1 { font-size: var(--fs-16); }
+}

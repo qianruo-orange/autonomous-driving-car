@@ -7,7 +7,7 @@
  * 401 时提示输入账号密码并自动重试一次。
  *
  * 登录框为自绘模态框：用户名、密码同框输入，替代原生 prompt 的两步询问；
- * 样式复用 common.css 的主题变量，深浅色主题自适应。
+ * 样式复用 tokens.css 的主题变量，深浅色主题自适应。
  *
  * 并发去重：批量删除等场景会同时发出多个写请求，若都触发 401/无凭据，
  * 只弹一次登录框，其余请求等待同一登录流程完成后自动重试。 */
@@ -29,7 +29,7 @@
   var loginResolve = null;  /* 当前等待输入的 resolve（同时只开一个框） */
   var lastUser = 'root';    /* 记住上次输入的用户名，重试时预填 */
 
-  /* 注入一次模态框样式（沿用 common.css 变量，深浅色自适应） */
+  /* 注入一次模态框样式（沿用 tokens.css 变量，深浅色自适应） */
   function ensureLoginStyle() {
     if (document.getElementById('auth-box-style')) return;
     var s = document.createElement('style');

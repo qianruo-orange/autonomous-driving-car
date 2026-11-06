@@ -22,14 +22,55 @@
     return m ? m[1] : '';
   }
 
+  /* 底层异常（Python traceback / bridge stderr）不该整段糊在对话里。
+     取最后一行有效信息，剥掉时间戳、日志级别和 logger 名，当一行摘要；
+     全文收进可展开的 details。 */
+  function errorBrief(text) {
+    var lines = String(text || '').split(/\r?\n/)
+      .map(function (l) { return l.trim(); }).filter(Boolean);
+    var s = lines.length ? lines[lines.length - 1] : '';
+    s = s.replace(/^\d{4}-\d{2}-\d{2}T[0-9:.]+Z?\s*/, '');            /* 时间戳 */
+    s = s.replace(/^(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|CRITICAL|FATAL)\s+/i, '');
+    /* logger 名（codex_models_manager::manager: 之类）出现两次时也剥干净 */
+    var tag = /^[A-Za-z0-9_.:\[\]\/-]{1,60}:\s+/;
+    s = s.replace(tag, '').replace(tag, '');
+    return s.length > 96 ? s.slice(0, 93) + '…' : s;
+  }
+
   function bubble(row) {
     var wrap = document.createElement('div');
     var isUser = row.role === 'user';
-    wrap.className = 'codex-msg ' + (isUser ? 'user' : 'assistant') +
-      (!isUser && row.error ? ' error' : '');
+    var isErr = !isUser && !!row.error;
+    wrap.className = 'codex-msg ' + (isUser ? 'user' : 'assistant') + (isErr ? ' error' : '');
     var box = document.createElement('div');
-    box.className = 'codex-bubble';
-    box.textContent = String(row.content || '');
+    box.className = 'codex-bubble' + (isErr ? ' codex-error' : '');
+
+    if (isErr) {
+      var full = String(row.content || '');
+      var head = document.createElement('div');
+      head.className = 'codex-error-title';
+      head.textContent = t('连接失败');
+      var brief = document.createElement('div');
+      brief.className = 'codex-error-brief';
+      brief.textContent = errorBrief(full) || t('未知错误');
+      box.appendChild(head);
+      box.appendChild(brief);
+      /* 只有内容明显比摘要长时才给展开入口，短错误不啰嗦 */
+      if (full.trim().length > brief.textContent.length + 20) {
+        var more = document.createElement('details');
+        more.className = 'codex-error-more';
+        var sum = document.createElement('summary');
+        sum.textContent = t('查看详情');
+        var pre = document.createElement('pre');
+        pre.textContent = full;
+        more.appendChild(sum);
+        more.appendChild(pre);
+        box.appendChild(more);
+      }
+    } else {
+      box.textContent = String(row.content || '');
+    }
+
     var stamp = document.createElement('span');
     stamp.className = 'codex-meta';
     var bits = [shortTime(row.ts)];
