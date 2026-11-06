@@ -189,6 +189,14 @@ void http_codex_status(app_ctx_t *app, int fd, const char *method,
     reply_bridge(fd, "status", NULL, 0, NULL);
 }
 
+/* Read-only CLI version check; may take a few seconds over the board proxy. */
+void http_codex_update_check(app_ctx_t *app, int fd, const char *method,
+                             const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    reply_bridge(fd, "check-update", NULL, 0, NULL);
+}
+
 void http_codex_config_post(app_ctx_t *app, int fd, const char *method,
                             const char *uri, const char *req)
 {
@@ -203,15 +211,6 @@ void http_codex_login_device(app_ctx_t *app, int fd, const char *method,
 {
     (void)app; (void)method; (void)uri; (void)req;
     reply_bridge(fd, "login-device", NULL, 0, NULL);
-}
-
-void http_codex_login_apikey(app_ctx_t *app, int fd, const char *method,
-                             const char *uri, const char *req)
-{
-    (void)app; (void)method; (void)uri;
-    long len = 0;
-    const char *body = body_of(req, &len);
-    reply_bridge(fd, "login-apikey", body, len, NULL);
 }
 
 void http_codex_chat_post(app_ctx_t *app, int fd, const char *method,

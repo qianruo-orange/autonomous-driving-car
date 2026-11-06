@@ -162,6 +162,10 @@
     <span class="card-status" id="status_codex" role="status" aria-live="polite"></span>
   </h3>
   <p class="codex-hint" id="codex_cli_info"></p>
+  <div class="codex-update-row">
+    <button type="button" class="btn btn-back" id="codex_update_check" data-i18n="检查更新">检查更新</button>
+    <span class="codex-update-text" id="codex_update_result" role="status" aria-live="polite"></span>
+  </div>
   <div class="codex-panel">
     <h4 data-i18n="登录链接与验证码">登录链接与验证码</h4>
     <div class="codex-device-row">
@@ -175,18 +179,14 @@
     <p class="codex-hint" id="codex_device_hint"></p>
   </div>
   <div class="codex-panel">
-    <h4 data-i18n="API 密钥登录">API 密钥登录</h4>
+    <h4 data-i18n="运行参数">运行参数</h4>
     <div class="codex-grid">
-      <div class="codex-field"><label for="codex_api_key" data-i18n="API 密钥">API 密钥</label><input type="password" id="codex_api_key" autocomplete="off" placeholder="sk-..."></div>
-      <div class="codex-field"><label for="codex_base_url" data-i18n="接口地址（登录链接）">接口地址（登录链接）</label><input type="text" id="codex_base_url"></div>
-      <div class="codex-field"><label for="codex_wire_api" data-i18n="接口协议">接口协议</label><select id="codex_wire_api"><option value="responses">responses</option><option value="chat">chat</option></select></div>
       <div class="codex-field"><label for="codex_model" data-i18n="模型">模型</label><input type="text" id="codex_model" placeholder="(default)"></div>
       <div class="codex-field"><label for="codex_sandbox" data-i18n="沙箱模式">沙箱模式</label><select id="codex_sandbox"><option value="read-only" data-i18n="只读">只读</option><option value="workspace-write" data-i18n="工作区可写">工作区可写</option><option value="danger-full-access" data-i18n="完全访问（危险）">完全访问（危险）</option></select></div>
       <div class="codex-field"><label for="codex_workdir" data-i18n="工作目录">工作目录</label><input type="text" id="codex_workdir"></div>
     </div>
     <div class="codex-actions">
-      <button type="button" class="btn btn-save" id="codex_save_key" data-i18n="保存 API 密钥">保存 API 密钥</button>
-      <button type="button" class="btn btn-back" id="codex_save_cfg" data-i18n="保存设置">保存设置</button>
+      <button type="button" class="btn btn-save" id="codex_save_cfg" data-i18n="保存设置">保存设置</button>
       <button type="button" class="btn btn-back" id="codex_logout" data-i18n="退出登录">退出登录</button>
     </div>
   </div>

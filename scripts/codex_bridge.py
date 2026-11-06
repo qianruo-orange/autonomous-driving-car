@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
 
 ROOT = os.environ.get("CODEX_WEB_ROOT", "/opt/autonomous-driving-car")
@@ -39,12 +40,9 @@ DEFAULT_SETTINGS = {
     "model": "",
     "sandbox": "read-only",
     "workdir": ROOT,
-    "api_base_url": "https://api.openai.com/v1",
-    "wire_api": "responses",
     "cli_version": "",
 }
 SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
-WIRE_APIS = {"responses", "chat"}
 RECORD_NAME = re.compile(r"^chat_\d{8}\.jsonl$")
 DEVICE_URL = re.compile(r"https://[^\s/]*auth\.openai\.com[^\s]*|https://[^\s]+/device[^\s]*")
 DEVICE_CODE = re.compile(r"\b([A-Z0-9]{4,}-[A-Z0-9]{4,})\b")
@@ -104,18 +102,16 @@ def login_state():
 
 
 def auth_mode():
-    """Return 'apikey', 'chatgpt', 'unknown' or '' from CODEX_HOME/auth.json."""
+    """Only device-code (ChatGPT) credentials are accepted."""
     if not os.path.exists(AUTH):
         return ""
     a = read_json(AUTH, {})
-    mode = str(a.get("auth_mode", "") or "")
-    if mode:
-        return mode
-    if a.get("OPENAI_API_KEY"):
-        return "apikey"
-    if a.get("tokens"):
+    if a.get("tokens") or str(a.get("auth_mode", "")) == "chatgpt":
         return "chatgpt"
-    return "unknown"
+    # An old API-key blob is deliberately reported as signed out.
+    if a.get("OPENAI_API_KEY"):
+        return ""
+    return "unknown" if a else ""
 
 
 def cli_env(extra=None):
@@ -125,11 +121,6 @@ def cli_env(extra=None):
     env["NO_COLOR"] = "1"
     env["TERM"] = "dumb"
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin:/home/qianruo/.local/bin"
-    # A custom model provider declares env_key = OPENAI_API_KEY. The CLI stores
-    # the key in CODEX_HOME/auth.json, so expose it to the child process only.
-    key = read_json(AUTH, {}).get("OPENAI_API_KEY")
-    if key:
-        env["OPENAI_API_KEY"] = str(key)
     if extra:
         env.update(extra)
     return env
@@ -193,27 +184,17 @@ def result(out, value):
         pass
 
 
-def config_toml(s, provider=None):
-    """Write CODEX_HOME/config.toml.
+def config_toml(s):
+    """Write CODEX_HOME/config.toml for the built-in ChatGPT provider.
 
-    A custom [model_providers.web] is only enabled for API-key logins: it
-    declares env_key = OPENAI_API_KEY, which ChatGPT device-code credentials
-    never provide. Leaving it in place made `codex exec` fail with
-    "Missing environment variable: OPENAI_API_KEY" after a device login.
+    Device-code credentials are read from auth.json by the CLI itself; no
+    custom model provider or API key is ever configured here.
     """
-    mode = provider if provider is not None else auth_mode()
     lines = ["# Managed by the autonomous-driving-car web UI.",
              'approval_policy = "never"',
              'sandbox_mode = "%s"' % s["sandbox"]]
     if s.get("model"):
         lines.append('model = "%s"' % s["model"])
-    if mode == "apikey":
-        lines.insert(1, 'model_provider = "web"')
-        lines += ["", "[model_providers.web]",
-                  'name = "Web configured provider"',
-                  'base_url = "%s"' % s["api_base_url"],
-                  'env_key = "OPENAI_API_KEY"',
-                  'wire_api = "%s"' % s["wire_api"], ""]
     path = CONFIG_TOML + ".tmp"
     with open(path, "w", encoding="utf-8") as fp:
         fp.write("\n".join(lines))
@@ -245,7 +226,7 @@ def build_status():
         "auth_mode": mode or "none",
         "login": lg,
         "settings": {k: s.get(k, "") for k in
-                     ("model", "sandbox", "workdir", "api_base_url", "wire_api")},
+                     ("model", "sandbox", "workdir")},
         "busy": bool(st.get("busy")),
         "job": st.get("job", ""),
         "thread_id": st.get("thread_id", ""),
@@ -292,6 +273,86 @@ def cli_version(path):
         return ""
 
 
+NPM_ENDPOINTS = (
+    "https://registry.npmjs.org/@openai/codex/latest",
+    "https://registry.npmjs.org/-/package/@openai/codex/dist-tags",
+)
+UPDATE_CACHE = os.path.join(CX, "update_cache.json")
+SEMVER = re.compile(r"\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?")
+UPDATE_COMMAND = "codex update"
+
+
+def version_of(text):
+    m = SEMVER.search(text or "")
+    return m.group(0) if m else ""
+
+
+def version_key(text):
+    nums = [int(x) for x in re.findall(r"\d+", text or "")[:3]]
+    return tuple((nums + [0, 0, 0])[:3])
+
+
+def fetch_json(url, via, timeout=4):
+    """One short fetch attempt; return {} on any proxy/TLS failure."""
+    try:
+        if via == "urllib":
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return json.loads(resp.read(200000).decode("utf-8", "replace"))
+        p = subprocess.run(
+            ["curl", "-sS", "--max-time", str(timeout), "--connect-timeout", "3", url],
+            env=os.environ.copy(), capture_output=True, text=True, timeout=timeout + 1)
+        return json.loads(p.stdout or "{}")
+    except Exception:
+        return {}
+
+
+def npm_latest_version():
+    """Read the published version through the board's system proxy.
+
+    The proxy drops roughly half of the TLS handshakes, so try both npm
+    endpoints with both HTTP stacks before giving up.
+    """
+    attempts = [("urllib", NPM_ENDPOINTS[0]), ("curl", NPM_ENDPOINTS[1]),
+                ("urllib", NPM_ENDPOINTS[1]), ("curl", NPM_ENDPOINTS[0])]
+    for via, url in attempts:
+        data = fetch_json(url, via)
+        value = data.get("version") or data.get("latest") or ""
+        v = version_of(value if isinstance(value, str) else "")
+        if v:
+            return v
+    return ""
+
+
+def cmd_check_update(args):
+    """Read-only version check: never runs `codex update` by itself."""
+    s = settings()
+    cli = s.get("cli_path", "")
+    current = version_of(s.get("cli_version", "")) or version_of(cli_version(cli))
+    latest = npm_latest_version()
+    stale = False
+    if latest:
+        write_json(UPDATE_CACHE, {"latest": latest, "checked_at": int(time.time())})
+    else:
+        cache = read_json(UPDATE_CACHE, {})
+        latest = version_of(cache.get("latest", ""))
+        stale = bool(latest)
+    if not latest:
+        result(args.out, {"ok": False, "current": current, "latest": "",
+                          "cli_found": cli_available(cli),
+                          "update_available": False, "stale": False,
+                          "error": "Cannot reach npm registry (check the board proxy)"})
+        return
+    result(args.out, {
+        "ok": True, "current": current, "latest": latest,
+        "cli_found": cli_available(cli),
+        "update_available": bool(current) and version_key(latest) > version_key(current),
+        "stale": stale,
+        "source": "npm registry: @openai/codex",
+        "update_command": UPDATE_COMMAND,
+        "checked_at": int(time.time()),
+    })
+
+
 def cmd_status(args):
     result(args.out, build_status())
 
@@ -299,56 +360,19 @@ def cmd_status(args):
 def cmd_config(args):
     payload = json.loads(read_text(args.input) or "{}")
     s = settings()
-    for key in ("cli_path", "model", "sandbox", "workdir", "api_base_url", "wire_api"):
+    for key in ("cli_path", "model", "sandbox", "workdir"):
         if key in payload:
             value = str(payload[key])[:512].strip()
             if key == "sandbox" and value not in SANDBOXES:
                 value = "read-only"
-            if key == "wire_api" and value not in WIRE_APIS:
-                value = "responses"
             if key == "workdir" and not value.startswith(ROOT):
                 value = ROOT
-            if key == "api_base_url" and not value.startswith("https://"):
-                value = DEFAULT_SETTINGS["api_base_url"]
             s[key] = value
     if not s.get("cli_version") and cli_available(s.get("cli_path", "")):
         s["cli_version"] = cli_version(s["cli_path"])
     write_json(SETTINGS, s)
     config_toml(s)
     result(args.out, {"ok": True, "status": build_status()})
-
-
-def cmd_login_apikey(args):
-    payload = json.loads(read_text(args.input) or "{}")
-    key = str(payload.get("api_key", "")).strip()
-    if not key:
-        result(args.out, {"ok": False, "error": "empty API key"})
-        return
-    s = settings()
-    if payload.get("api_base_url"):
-        s["api_base_url"] = str(payload["api_base_url"]).strip()
-    if payload.get("model"):
-        s["model"] = str(payload["model"]).strip()
-    if payload.get("wire_api") in WIRE_APIS:
-        s["wire_api"] = payload["wire_api"]
-    write_json(SETTINGS, s)
-    config_toml(s, provider="")
-    try:
-        p = subprocess.run([s["cli_path"], "login", "--with-api-key"],
-                           input=key, env=cli_env(), capture_output=True,
-                           text=True, timeout=60, **drop_privileges_kwargs())
-        ok = p.returncode == 0
-        message = (p.stderr or p.stdout or "").strip()[-300:]
-        if not message:
-            message = "API key saved" if ok else "login failed"
-    except Exception as exc:
-        ok, message = False, str(exc)[:300]
-    config_toml(s)  # auth.json now exists: enable the custom provider for API keys
-    write_json(LOGIN, {"state": "success" if ok else "error", "url": "",
-                       "code": "", "message": message,
-                       "started_at": int(time.time()), "expires_at": 0})
-    result(args.out, {"ok": ok, "error": "" if ok else message,
-                      "status": build_status()})
 
 
 def device_login_worker(cli):
@@ -421,7 +445,7 @@ def device_login_worker(cli):
     if not s.get("cli_version"):
         s["cli_version"] = cli_version(cli)
         write_json(SETTINGS, s)
-    config_toml(s)  # ChatGPT login: keep the built-in provider, no API key needed
+    config_toml(s)  # device-code login uses the built-in provider
 
 
 def cmd_login_device(args):
@@ -430,7 +454,7 @@ def cmd_login_device(args):
     if not cli_available(cli):
         result(args.out, {"ok": False, "error": "Codex CLI not found"})
         return
-    config_toml(s, provider="")  # do not ask the device flow for an API key
+    config_toml(s)
     write_json(LOGIN, {"state": "starting", "url": "", "code": "",
                        "message": "", "started_at": int(time.time()),
                        "expires_at": int(time.time()) + 900})
@@ -598,7 +622,7 @@ def cmd_logout(args):
         os.unlink(AUTH)
     except OSError:
         pass
-    config_toml(settings())  # signed out: remove the API-key provider override
+    config_toml(settings())
     write_json(LOGIN, {"state": "idle", "url": "", "code": "", "message": "",
                        "started_at": 0, "expires_at": 0})
     write_state(thread_id="", last_error="")
@@ -688,8 +712,8 @@ def read_text(path):
 
 COMMANDS = {
     "status": cmd_status,
+    "check-update": cmd_check_update,
     "config": cmd_config,
-    "login-apikey": cmd_login_apikey,
     "login-device": cmd_login_device,
     "chat-start": cmd_chat_start,
     "reset": cmd_reset,

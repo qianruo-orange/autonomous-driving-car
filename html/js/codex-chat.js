@@ -94,8 +94,7 @@
     if (login.state === 'starting' || login.state === 'pending') {
       text = t('等待授权'); cls = 'warn';
     } else if (data.logged_in) {
-      text = t('已登录') + ' (' + (data.auth_mode === 'apikey' ? 'API Key' : 'ChatGPT') + ')';
-      cls = 'ok';
+      text = t('已登录'); cls = 'ok';
     } else {
       text = t('未登录');
     }

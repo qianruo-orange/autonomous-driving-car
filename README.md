@@ -247,10 +247,13 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 三者通过需要 root 认证的 `/api/codex/` 接口与 `bin/codex_bridge.py` 协作；C 层只拉起短命的
 Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模型。
 
-- **登录**：配置页「开始设备码登录」显示登录链接与一次性验证码（15 分钟）；也可直接填
-  `API 密钥`，并配置接口地址、接口协议、模型、沙箱模式与工作目录。设备码凭据与 API Key
-  使用两套不同的 `config.toml`，切换后不会再报
-  `Missing environment variable: OPENAI_API_KEY`。
+- **登录（仅设备码）**：配置页「开始设备码登录」显示登录链接与一次性验证码（15 分钟），
+  复制验证码后在浏览器完成授权。不再提供 API Key 登录；`config.toml` 只使用 Codex 内置的
+  ChatGPT provider，凭据由 CLI 自行从 `.codex/auth.json` 读取。「运行参数」仅保留模型、
+  沙箱模式与工作目录。
+- **检查更新**：配置页「检查更新」比对本地 `codex --version` 与 npm registry 上的
+  `@openai/codex` 最新版本，查询走整机代理。这是只读检查，不会执行 `codex update`；代理
+  偶发 TLS 失败时会重试多个端点，仍失败则显示上次成功检查的结果。
 - **凭据与记录分离**：`/opt/autonomous-driving-car/.codex/` 存 CLI 凭据（不会被文件打包
   下载），`recordings/codex/chat_YYYYMMDD.jsonl` 逐行存 `user` / `assistant` / `event` 记录。
 - **下载**：日志页列出每日记录，可单文件下载或打包导出（JSONL），也可一键清空；主页聊天框
@@ -261,8 +264,8 @@ Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模�
 
 > [!IMPORTANT]
 > 当前账号没有有效 token 或额度时，聊天会返回 `401 Incorrect API key` / 额度不足提示；
-> 代理只解决网络可达，不能替代凭据。LLM 规划（读取检测结果并参与控制）仍未实现，
-> 这里的 Codex 只是 Web 侧的 CLI 聊天桥接。
+> 请用设备码登录更新凭据；代理只解决网络可达，不能替代凭据。LLM 规划（读取检测结果并
+> 参与控制）仍未实现，这里的 Codex 只是 Web 侧的 CLI 聊天桥接。
 
 ### API 速查
 
@@ -283,7 +286,7 @@ Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模�
 | 控制 | `GET /api/follow`、`/api/tracking`、`/api/can/*`、`/api/ano`（公开）；对应 POST **R** | 跟随、跟踪、CAN 收发与 DBC、遥测 |
 | 系统管理 | `GET /api/reboot`、`/api/shutdown` **R** | 重启 / 关机 |
 | 网络代理 | `GET /api/proxy/config` **R**、`POST /api/proxy/config` **R**、`POST /api/proxy/test` **R** | 读取/保存整机代理配置、测试连通 |
-| Codex 对话 | `/api/codex/status`、`config`、`login/device`、`login/apikey`、`chat`、`reset`、`stop`、`logout`、`history`、`records`、`record`、`export`、`records/clear` **R** | 状态、登录、对话、交互记录与导出 |
+| Codex 对话 | `/api/codex/status`、`update/check`、`config`、`login/device`、`chat`、`reset`、`stop`、`logout`、`history`、`records`、`record`、`export`、`records/clear` **R** | 状态、版本检查、设备码登录、对话、交互记录与导出 |
 
 > [!TIP]
 > 两个容易踩坑的参数：`POST /api/rec/split` 的请求体必须是**当前录像文件名**（如 `video_20261106.mp4`），不匹配返回 409；所有打包下载的文件名都带 `%Y%m%d_%H%M%S` 时间戳（如 `config_pack_20261106_113425.tar.gz`、`autonomous-driving-car_files_20261106_113425.zip`），避免浏览器复用缓存里的旧包。
@@ -324,8 +327,8 @@ curl -s -u <用户>:<密码> http://127.0.0.1/api/logs
 | HTTP 503 | 已达 8 个源 IP 槽位上限，等待 30 s 过期或关闭其他客户端 |
 | 录像里框线断成虚线 | MPP 输入缓冲过早复用；当前实现已按帧龄回收，若复现先确认部署的是最新构建 |
 | 服务起不来 / FIFO 设置失败 | 检查 cgroup v2 的 `-.slice.d/90-autonomous-driving-car-rt.conf` 是否生效 |
-| Codex 返回 `401 Incorrect API key` 或提示额度不足 | 当前账号没有有效 token 或额度。在配置页填入有效 API Key 或完成设备码登录；代理只解决网络可达 |
-| 提示 `Missing environment variable: OPENAI_API_KEY` | 自定义接口需要 API Key；用「保存 API 密钥」写入，或改用设备码登录 |
+| Codex 返回 `401 Incorrect API key` 或提示额度不足 | 当前账号没有有效 token 或额度。重新完成设备码登录；代理只解决网络可达 |
+| 「检查更新」显示无法访问 npm registry | 代理链路偶发 TLS 失败；界面会自动重试多个端点并返回上次成功检查的结果，也可用「测试连通」确认代理 |
 | 代理端口可达但外网超时 | 用配置页「测试连通」看 TCP 与 HTTP 状态码；`401` 表示链路通、只是没带凭据 |
 | 保存代理后整机未生效 | 「保存配置」只写文件；点「保存并应用」或执行 `sudo systemctl reload proxy-client.service` |
 
@@ -730,11 +733,16 @@ interaction log. They share the root-authenticated `/api/codex/` endpoints and
 `bin/codex_bridge.py`. The C layer only spawns a short-lived Python process:
 long turns are detached by the bridge, so no HTTP worker waits for a model.
 
-- **Sign-in**: "Start device-code login" shows the sign-in link and one-time code
-  (valid 15 minutes); an `API key` can be entered directly together with base
-  URL, wire API, model, sandbox mode and working directory. Device-code and
-  API-key credentials use different `config.toml` layouts, so switching modes no
-  longer produces `Missing environment variable: OPENAI_API_KEY`.
+- **Sign-in (device code only)**: "Start device-code login" shows the sign-in
+  link and one-time code (valid 15 minutes); copy the code and authorise in a
+  browser. API-key sign-in is no longer offered and `config.toml` always uses the
+  built-in ChatGPT provider, whose credentials the CLI reads from
+  `.codex/auth.json`. "Runtime options" only holds model, sandbox and workdir.
+- **Check for updates**: the config page compares the local `codex --version`
+  with the latest `@openai/codex` release on the npm registry through the
+  board-wide proxy. This is read-only — it never runs `codex update`. The proxy
+  drops some TLS handshakes, so several endpoints are retried and the last
+  successful result is shown if they all fail.
 - **Credentials and records are separate**: `/opt/autonomous-driving-car/.codex/`
   holds CLI credentials (never included in file archives), while
   `recordings/codex/chat_YYYYMMDD.jsonl` stores one JSON object per line with
@@ -750,9 +758,10 @@ long turns are detached by the bridge, so no HTTP worker waits for a model.
 
 > [!IMPORTANT]
 > Without a valid token / quota, a turn returns `401 Incorrect API key` or an
-> out-of-credits message. The proxy only fixes reachability, not credentials.
-> LLM planning (reading detections and participating in control) is still not
-> implemented; this Codex integration is a web-side CLI chat bridge only.
+> out-of-credits message. Sign in again with the device-code flow; the proxy only
+> fixes reachability, not credentials. LLM planning (reading detections and
+> participating in control) is still not implemented; this Codex integration is a
+> web-side CLI chat bridge only.
 
 ### API reference
 
@@ -778,7 +787,7 @@ token instead. Full tables: [source/http/http.c](source/http/http.c) and
 | Control | `GET /api/follow`, `/api/tracking`, `/api/can/*`, `/api/ano` (public); matching POSTs **R** | Following, tracking, CAN and telemetry |
 | System | `GET /api/reboot`, `/api/shutdown` **R** | Reboot / power off |
 | Network proxy | `GET /api/proxy/config` **R**, `POST /api/proxy/config` **R**, `POST /api/proxy/test` **R** | Read/save board-wide proxy config, test connectivity |
-| Codex chat | `/api/codex/status`, `config`, `login/device`, `login/apikey`, `chat`, `reset`, `stop`, `logout`, `history`, `records`, `record`, `export`, `records/clear` **R** | Status, sign-in, chat, interaction records and export |
+| Codex chat | `/api/codex/status`, `update/check`, `config`, `login/device`, `chat`, `reset`, `stop`, `logout`, `history`, `records`, `record`, `export`, `records/clear` **R** | Status, version check, device-code sign-in, chat, interaction records and export |
 
 > [!TIP]
 > Two easy-to-miss details: `POST /api/rec/split` needs the **current recording
@@ -855,8 +864,8 @@ curl -s -u <user>:<password> http://127.0.0.1/api/logs
 | HTTP 503 | The 8 source-IP slots are full; wait 30 s for expiry or close another client |
 | Boxes look like dashed lines in the MP4 | MPP input buffers were recycled too early; current builds recycle by frame age — confirm the deployed binary is current |
 | Service fails to start / cannot set FIFO | Check that `-.slice.d/90-autonomous-driving-car-rt.conf` is active on cgroup v2 |
-| Codex returns `401 Incorrect API key` or out-of-credits | No valid token/quota on the account. Enter a working API key on `/config` or finish device-code login; the proxy only fixes reachability |
-| `Missing environment variable: OPENAI_API_KEY` | A custom provider needs an API key; save one with "Save API key" or switch to device-code login |
+| Codex returns `401 Incorrect API key` or out-of-credits | No valid token/quota on the account. Repeat the device-code sign-in; the proxy only fixes reachability |
+| "Check for updates" cannot reach the npm registry | The proxy drops some TLS handshakes; the UI retries several endpoints and falls back to the last successful result, or use "Test connection" |
 | Proxy port reachable but outbound requests time out | Use "Test connection" and read TCP/HTTP status; `401` means the path works but no credentials were supplied |
 | Proxy change did not take effect board-wide | "Save" only writes the file; use "Save and apply" or run `sudo systemctl reload proxy-client.service` |
 

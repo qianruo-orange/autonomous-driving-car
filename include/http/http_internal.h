@@ -83,9 +83,9 @@ void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *ur
 
 /* Web chat bridge to the local Codex CLI (source/http/http_api_codex.c). */
 void http_codex_status(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_update_check(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_config_post(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_login_device(app_ctx_t *, int, const char *, const char *, const char *);
-void http_codex_login_apikey(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_chat_post(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_reset(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_stop(app_ctx_t *, int, const char *, const char *, const char *);

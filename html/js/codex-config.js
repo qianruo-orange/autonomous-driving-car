@@ -10,9 +10,6 @@
   var deviceCode = el('codex_device_code');
   var deviceCopy = el('codex_device_copy');
   var deviceHint = el('codex_device_hint');
-  var apiKey = el('codex_api_key');
-  var baseUrl = el('codex_base_url');
-  var wireApi = el('codex_wire_api');
   var model = el('codex_model');
   var sandbox = el('codex_sandbox');
   var workdir = el('codex_workdir');
@@ -21,8 +18,6 @@
 
   function settingsPayload() {
     return {
-      api_base_url: baseUrl.value.trim(),
-      wire_api: wireApi.value,
       model: model.value.trim(),
       sandbox: sandbox.value,
       workdir: workdir.value.trim()
@@ -35,8 +30,7 @@
     if (login.state === 'starting' || login.state === 'pending') {
       text = t('等待浏览器授权'); cls = 'warn';
     } else if (data.logged_in) {
-      text = t('已登录') + ' (' + (data.auth_mode === 'apikey' ? 'API Key' : 'ChatGPT') + ')';
-      cls = 'ok';
+      text = t('已登录'); cls = 'ok';
     } else if (login.state === 'error') {
       text = t('登录失败'); cls = 'warn';
     } else {
@@ -46,8 +40,6 @@
     badge.className = 'codex-badge ' + cls;
 
     var s = data.settings || {};
-    if (document.activeElement !== baseUrl) baseUrl.value = s.api_base_url || '';
-    if (document.activeElement !== wireApi) wireApi.value = s.wire_api || 'responses';
     if (document.activeElement !== model) model.value = s.model || '';
     if (document.activeElement !== sandbox) sandbox.value = s.sandbox || 'read-only';
     if (document.activeElement !== workdir) workdir.value = s.workdir || '/opt/autonomous-driving-car';
@@ -66,9 +58,9 @@
     } else if (login.state === 'success') {
       setI18nText(deviceHint, '登录完成，可以回到主界面开始对话。');
     } else if (login.state === 'error') {
-      deviceHint.textContent = login.message || t('设备码登录失败，可改用 API Key 登录');
+      deviceHint.textContent = login.message || t('设备码登录失败，请重试');
     } else {
-      setI18nText(deviceHint, '也可直接使用 API Key 登录；登录链接与验证码由设备码流程生成。');
+      setI18nText(deviceHint, '点击开始设备码登录，然后打开链接并输入验证码完成授权。');
     }
     deviceStart.disabled = pending || login.state === 'starting' || login.state === 'pending';
   }
@@ -83,7 +75,7 @@
   }
 
   App.poll(load, {interval: 2000});
-  document.addEventListener('languagechange', function () { load(); });
+  document.addEventListener('languagechange', function () { load(); paintUpdate(); });
 
   deviceStart.addEventListener('click', async function () {
     pending = true; deviceStart.disabled = true;
@@ -124,24 +116,43 @@
     }
   });
 
-  el('codex_save_key').addEventListener('click', async function () {
-    var key = apiKey.value.trim();
-    if (!key) { App.status('codex', 'err', t('请输入 API 密钥')); return; }
-    var payload = settingsPayload();
-    payload.api_key = key;
-    try {
-      var response = await authFetch('/api/codex/login/apikey', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload)
-      });
-      var result = await response.json();
-      if (!result.ok) throw new Error(result.error || 'HTTP ' + response.status);
-      apiKey.value = '';
-      App.status('codex', 'ok', t('API 密钥已保存'));
-      await load();
-    } catch (error) {
-      App.status('codex', 'err', t('API 密钥保存失败') + ': ' + error.message);
+  var updateBtn = el('codex_update_check');
+  var updateResult = el('codex_update_result');
+  var updateState = null;
+
+  function paintUpdate() {
+    if (!updateState) return;
+    updateResult.className = 'codex-update-text' + (updateState.cls ? ' ' + updateState.cls : '');
+    if (updateState.mode === 'checking') {
+      updateResult.textContent = t('检查中…'); return;
     }
+    if (updateState.mode === 'error') {
+      updateResult.textContent = t('检查更新失败') + ': ' + updateState.error; return;
+    }
+    var d = updateState.data;
+    var txt = t('当前 {current} · 最新 {latest}',
+      {current: d.current || '—', latest: d.latest || '—'});
+    if (!d.cli_found) txt += ' · ' + t('未找到 Codex CLI');
+    else if (d.update_available) txt += ' · ' + t('有可用更新') + ' · ' + t('在板端执行 codex update 升级');
+    else txt += ' · ' + t('已是最新版本');
+    if (d.stale) txt += ' · ' + t('使用上次检查结果');
+    updateResult.textContent = txt;
+  }
+
+  updateBtn.addEventListener('click', async function () {
+    updateBtn.disabled = true;
+    updateState = {mode: 'checking', cls: ''}; paintUpdate();
+    try {
+      var data = await App.json('/api/codex/update/check',
+        {authenticated: true, timeout: 30000});
+      if (!data.ok) throw new Error(data.error || 'HTTP 500');
+      updateState = {mode: 'ok', data: data,
+        cls: data.update_available ? 'accent' : ''};
+    } catch (error) {
+      updateState = {mode: 'error', error: error.message, cls: 'err'};
+    }
+    paintUpdate();
+    updateBtn.disabled = false;
   });
 
   el('codex_logout').addEventListener('click', async function () {
