@@ -513,9 +513,11 @@
         cpuPct = dt > 0 ? Math.round(du * 100 / dt) : 0;
       }
       lastCpu = {user:d.cpu_user, sys:d.cpu_sys, idle:d.cpu_idle, total:d.cpu_total};
-      document.getElementById('cpu_val').textContent = cpuPct + '%';
+      /* 状态页不显示总负载：这些元素可能不存在，保持可选 */
+      var valEl = document.getElementById('cpu_val');
+      if (valEl) valEl.textContent = cpuPct + '%';
       var cb = document.getElementById('cpu_bar');
-      cb.style.width = cpuPct + '%'; cb.className = barColor(cpuPct);
+      if (cb) { cb.style.width = cpuPct + '%'; cb.className = barColor(cpuPct); }
 
       /* CPU 逐核（核数随平台自适应：真实核数来自后端 d.cpu_cores，不再写死 8 核） */
       if (d.cpu_cores) {
