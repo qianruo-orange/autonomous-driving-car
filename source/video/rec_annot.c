@@ -89,15 +89,52 @@ struct rec_annot {
     atomic_int   disabled;        /* 硬件不可用时置位，永不重试 */
 };
 
-/* Y 平面上的两种绘制值：纯白在白墙/白衬衫上几乎看不见，H.264 还会把 1~2 px
-   的细线压成断续的点，所以框一律画成"黑边 + 白线"，任何背景都能读出轮廓。 */
+/* 框/标签的取色：从调色板按类别索引取色。对同一类别全程恒定（视频里不闪、
+ * 也不给编码器制造无谓的色度变化），跨类别尽量岔开，观感就是"随机彩色"。
+ * 值是满量程 YUV（编码器 prep:range 用 JPEG 全量程），按 BT.601 从 RGB 换算。 */
+typedef struct {
+    unsigned char y, u, v;
+} annot_color_t;
+
+/* 文字的两档亮度（色度恒中性，靠 Y 出黑/白） */
 #define ANNOT_DARK   16
 #define ANNOT_LIGHT  235
 
+static const annot_color_t annot_palette[] = {
+    { 84, 114, 225},  /* 胭脂红 */
+    {158,  39, 197},  /* 橙 */
+    {205,  12, 163},  /* 黄 */
+    {127, 102,  38},  /* 绿 */
+    {133, 160,  33},  /* 青 */
+    { 91, 221,  85},  /* 蓝 */
+    {112, 209, 162},  /* 紫 */
+    {132, 155, 216},  /* 品红 */
+    {195,  52,  81},  /* 黄绿 */
+    { 98, 152,  58},  /* 水鸭 */
+    {111,  88, 177},  /* 棕 */
+    {184, 120, 179},  /* 粉 */
+};
+#define ANNOT_COLOR_N (int)(sizeof(annot_palette) / sizeof(annot_palette[0]))
+
+static const annot_color_t *annot_color(int cls)
+{
+    return &annot_palette[(unsigned)(cls > 0 ? cls : 0) % ANNOT_COLOR_N];
+}
+
+/* 文字用中性色度（u=v=128），才不会被标签底色染色；亮度按底色取反差色。 */
+#define ANNOT_TEXT_U 128
+#define ANNOT_TEXT_V 128
+static unsigned char annot_text_y(const annot_color_t *c)
+{
+    return c->y >= 140 ? ANNOT_DARK : ANNOT_LIGHT;
+}
+
 /* 画一个空心矩形。w 是图像宽度，stride 是缓冲行距（MPP 要求 16 对齐，可能与
-   w 不等）。两者混用就会出现"斜条纹/花屏"——每行错开 fixed 字节，越往下越斜。 */
-static void draw_rect(unsigned char *y, int w, int h, int stride,
-                      int x1, int y1, int x2, int y2, int thickness, unsigned char value)
+ * w 不等）。两者混用就会出现"斜条纹/花屏"——每行错开 fixed 字节，越往下越斜。
+ * Y 平面画线，UV 平面按 4:2:0 半分辨率再描一遍同区域，颜色才出得来。 */
+static void draw_rect(unsigned char *y, unsigned char *uv, int w, int h, int stride,
+                      int x1, int y1, int x2, int y2, int thickness,
+                      const annot_color_t *c)
 {
     if (x1 < 0) x1 = 0;
     if (y1 < 0) y1 = 0;
@@ -109,24 +146,46 @@ static void draw_rect(unsigned char *y, int w, int h, int stride,
         int yt = y1 + t, yb = y2 - t;
         if (yt > yb) break;
         size_t row = (size_t)yt * (size_t)stride;
-        memset(y + row + x1, value, (size_t)(x2 - x1 + 1));
+        memset(y + row + x1, c->y, (size_t)(x2 - x1 + 1));
         if (yb != yt) {
             row = (size_t)yb * (size_t)stride;
-            memset(y + row + x1, value, (size_t)(x2 - x1 + 1));
+            memset(y + row + x1, c->y, (size_t)(x2 - x1 + 1));
         }
         int xl = x1 + t, xr = x2 - t;
         if (xl > xr) break;
         for (int yy = yt; yy <= yb; yy++) {
             unsigned char *line = y + (size_t)yy * (size_t)stride;
-            line[xl] = value;
-            line[xr] = value;
+            line[xl] = c->y;
+            line[xr] = c->y;
+        }
+    }
+
+    /* 色度半分辨率：坐标/线宽折半，覆盖同一个环带 */
+    int cx1 = x1 >> 1, cy1 = y1 >> 1, cx2 = x2 >> 1, cy2 = y2 >> 1;
+    int ct = (thickness + 1) >> 1;
+    if (cx2 - cx1 < 1 || cy2 - cy1 < 1) return;
+    for (int t = 0; t < ct; t++) {
+        int yt = cy1 + t, yb = cy2 - t;
+        if (yt > yb) break;
+        unsigned char *row = uv + (size_t)yt * (size_t)stride;
+        for (int x = cx1; x <= cx2; x++) { row[x*2] = c->u; row[x*2+1] = c->v; }
+        if (yb != yt) {
+            row = uv + (size_t)yb * (size_t)stride;
+            for (int x = cx1; x <= cx2; x++) { row[x*2] = c->u; row[x*2+1] = c->v; }
+        }
+        int xl = cx1 + t, xr = cx2 - t;
+        if (xl > xr) break;
+        for (int yy = yt; yy <= yb; yy++) {
+            unsigned char *row2 = uv + (size_t)yy * (size_t)stride;
+            row2[xl*2] = c->u; row2[xl*2+1] = c->v;
+            row2[xr*2] = c->u; row2[xr*2+1] = c->v;
         }
     }
 }
 
-/* 标签：黑底白字的点阵条，贴在框左上角外侧；框贴顶时改放框内。 */
-static void draw_label(unsigned char *y, int w, int h, int stride,
-                       int bx1, int by1, const char *text)
+/* 标签：与框同色的底条 + 反差色点阵字，贴在框左上角外侧；框贴顶时改放框内。 */
+static void draw_label(unsigned char *y, unsigned char *uv, int w, int h, int stride,
+                       int bx1, int by1, const char *text, const annot_color_t *bar)
 {
     if (!text || !text[0]) return;
     size_t len = strlen(text);
@@ -142,8 +201,17 @@ static void draw_label(unsigned char *y, int w, int h, int stride,
     if (y0 + bar_h > h) y0 = h - bar_h;
     if (x0 < 0 || y0 < 0) return;
 
+    unsigned char text_y = annot_text_y(bar);
+
     for (int yy = y0; yy < y0 + bar_h; yy++)
-        memset(y + (size_t)yy * (size_t)stride + x0, ANNOT_DARK, (size_t)bar_w);
+        memset(y + (size_t)yy * (size_t)stride + x0, bar->y, (size_t)bar_w);
+    int cx0 = x0 >> 1, cy0 = y0 >> 1;
+    int ccols = ((x0 + bar_w - 1) >> 1) - cx0 + 1;
+    int crows = ((y0 + bar_h - 1) >> 1) - cy0 + 1;
+    for (int r = 0; r < crows; r++) {
+        unsigned char *row = uv + (size_t)(cy0 + r) * (size_t)stride;
+        for (int x = 0; x < ccols; x++) { row[(cx0 + x)*2] = bar->u; row[(cx0 + x)*2+1] = bar->v; }
+    }
 
     for (size_t i = 0; i < len; i++) {
         int code = (unsigned char)text[i];
@@ -154,22 +222,28 @@ static void draw_label(unsigned char *y, int w, int h, int stride,
             unsigned short bits = glyph[r];
             if (!bits) continue;
             unsigned char *line = y + (size_t)(y0 + 2 + r) * (size_t)stride;
+            unsigned char *uvline = uv + (size_t)((y0 + 2 + r) >> 1) * (size_t)stride;
             for (int c = 0; c < REC_FONT_W; c++)
-                if (bits & (1u << (REC_FONT_W - 1 - c))) line[gx + c] = ANNOT_LIGHT;
+                if (bits & (1u << (REC_FONT_W - 1 - c))) {
+                    int px = gx + c;
+                    line[px] = text_y;
+                    uvline[(px >> 1) * 2]     = ANNOT_TEXT_U;
+                    uvline[(px >> 1) * 2 + 1] = ANNOT_TEXT_V;
+                }
         }
     }
 }
 
-/* 画一个检测框：外层黑边压住背景，内层白线标出位置，再贴类别标签。 */
-static void draw_box_nv12(unsigned char *y, int w, int h, int stride,
+/* 画一个检测框：单一彩色描边（颜色按类别），左上角贴同色标签条。 */
+static void draw_box_nv12(unsigned char *y, unsigned char *uv, int w, int h, int stride,
                           const rec_annot_box_t *b, int thickness)
 {
     int x1 = (int)(b->x1 + 0.5f), y1 = (int)(b->y1 + 0.5f);
     int x2 = (int)(b->x2 + 0.5f), y2 = (int)(b->y2 + 0.5f);
     if (x2 - x1 < 2 || y2 - y1 < 2) return;
-    draw_rect(y, w, h, stride, x1, y1, x2, y2, thickness + 2, ANNOT_DARK);
-    draw_rect(y, w, h, stride, x1, y1, x2, y2, thickness, ANNOT_LIGHT);
-    draw_label(y, w, h, stride, x1 < 0 ? 0 : x1, y1 < 0 ? 0 : y1, b->label);
+    const annot_color_t *c = annot_color(b->cls);
+    draw_rect(y, uv, w, h, stride, x1, y1, x2, y2, thickness, c);
+    draw_label(y, uv, w, h, stride, x1 < 0 ? 0 : x1, y1 < 0 ? 0 : y1, b->label, c);
 }
 
 static int encoder_open(rec_annot_t *s)
@@ -358,7 +432,7 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     for (int y = 0; y < s->h / 2; y++)
         memcpy(dst_uv + (size_t)y * s->hor_stride, src_uv + (size_t)y * s->w, (size_t)s->w);
     for (int i = 0; i < f->count; i++)
-        draw_box_nv12(dst, s->w, s->h, s->hor_stride, &f->boxes[i], 3);
+        draw_box_nv12(dst, dst_uv, s->w, s->h, s->hor_stride, &f->boxes[i], 3);
     if (fd >= 0) {
         sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
         if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != 0) { /* 同上 */ }
