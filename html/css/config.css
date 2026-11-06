@@ -198,3 +198,6 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #card_cpufreq>h3>span:first-child{border-left:3px solid var(--section-mark,var(--accent));padding-left:10px;align-self:center}
 #card_cpufreq>h3 .ip-cur{align-self:center;line-height:1.15;padding-left:8px}
 #card_cpufreq>h3 .card-save{align-self:center;margin:0 0 0 auto}
+
+/* CPU title single bar */
+#card_cpufreq>h3>span:first-child{border-left:0;padding-left:0}
