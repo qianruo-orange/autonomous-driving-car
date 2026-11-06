@@ -627,6 +627,16 @@ static void http_video_client_closed(int fd);
  */
 void http_serve_file(int fd, const char *uri)
 {
+    /* 静态资源忽略查询串（?v=...）：前端用版本号做部署缓存失效 */
+    char base_uri[512];
+    size_t raw_len = strlen(uri);
+    if (raw_len >= sizeof(base_uri)) raw_len = sizeof(base_uri) - 1;
+    memcpy(base_uri, uri, raw_len);
+    base_uri[raw_len] = 0;
+    char *qmark = strchr(base_uri, '?');
+    if (qmark) *qmark = 0;
+    uri = base_uri;
+
     if (strstr(uri, "..")) { http_handle_404(fd, uri); return; }
 
     char path[512];
