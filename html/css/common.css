@@ -99,3 +99,6 @@ a:hover{color:var(--accent-hover)}
 .top-bar .tb-right{justify-content:flex-end}
 .top-bar .btn,.top-bar .theme-btn,.top-bar .pwr{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;gap:6px;height:38px;padding:0 12px;margin:0;border:1px solid var(--card-border2);border-radius:12px;font-family:inherit;font-size:13px;font-weight:600;line-height:1.2;white-space:nowrap;vertical-align:middle}
 .top-bar .theme-btn{position:static;min-width:38px}
+/* 主题/语言按钮一律留在顶栏内，避免 position:fixed 在窄窗口下压住导航按钮 */
+.top-bar .theme-btn,.top-bar .pwr{position:static;right:auto;top:auto;margin:0;flex:0 0 auto}
+
