@@ -41,7 +41,7 @@
       fillFrequency('cf_max',d.requested_max_freq,d.max_freq);
     }
     setI18nText(document.getElementById('cf_cur'),
-      '{policy} · CPU {cpus} · 当前 {current} MHz · 实际范围 {min}–{max} MHz · 设置范围 {requestedMin}–{requestedMax} MHz', {
+      '{policy} · CPU {cpus} · 当前 {current} MHz · 实际 {min}–{max} MHz · 设置 {requestedMin}–{requestedMax} MHz', {
         policy:d.id, cpus:d.related_cpus || '—', current:(d.cur_freq/1000).toFixed(0),
         min:(d.min_freq/1000).toFixed(0), max:(d.max_freq/1000).toFixed(0),
         requestedMin:((d.requested_min_freq || d.min_freq)/1000).toFixed(0),
