@@ -24,10 +24,10 @@
 
 | 上手 | 架构与实现 | 接口与参考 |
 | :--- | :--- | :--- |
-| [实测性能](#实测性能)<br>[快速开始](#快速开始)<br>[构建与部署](#构建与部署)<br>[依赖](#依赖) | [系统架构](#系统架构)<br>[感知流水线](#感知流水线)<br>[视觉跟踪与跟随](#视觉跟踪与跟随)<br>[实时调度与绑核](#实时调度与绑核) | [Web 界面](#web-界面)<br>[API 速查](#api-速查)<br>[录像与标注](#录像与标注)<br>[日志、结果与排障](#日志结果与排障) |
+| [实测性能](#实测性能)<br>[快速开始](#快速开始)<br>[构建与部署](#构建与部署)<br>[依赖](#依赖) | [系统架构](#系统架构)<br>[感知流水线](#感知流水线)<br>[视觉跟踪与跟随](#视觉跟踪与跟随)<br>[实时调度与绑核](#实时调度与绑核) | [Web 界面](#web-界面)<br>[网络代理](#网络代理)<br>[Codex 对话](#codex-对话)<br>[API 速查](#api-速查)<br>[录像与标注](#录像与标注)<br>[日志、结果与排障](#日志结果与排障) |
 | [配置与模型](#配置与模型)<br>[仓库结构](#仓库结构) | [通信注册](#通信注册)<br>[发展方向](#发展方向) | [许可证](#许可证)<br>[专题文档](docs/) |
 
-一个纯 C11 进程里的车载平台：相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、标注录像和浏览器管理界面跑在一起。源码全是 `.c`，不用 C++，也不需要 OpenCV。LLM 规划能力尚未实现。
+一个纯 C11 进程里的车载平台：相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、标注录像和浏览器管理界面跑在一起。源码全是 `.c`，不用 C++，也不需要 OpenCV。Web 界面另附「Codex CLI 对话」与「整机网络代理」配置；**LLM 规划（读取检测结果并参与控制）仍未实现**，Codex 对话只是聊天桥接。
 
 目标板固定为 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核、CPU 大小核分组和模型平台都按这颗 SoC 写死，不做设备能力自发现。
 
@@ -197,16 +197,72 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 
 | 页面 | 地址 | 功能 |
 | --- | --- | --- |
-| 主页 | `/` | 实时视频、框叠加、目标选择、资源监控（CPU / NPU / RGA） |
-| 系统配置 | `/config` | 相机、YOLO、CAN、CPU、跟随、Web IP、遥测 |
-| 行车日志 | `/logs` | 日志与结果浏览、视频回放、下载、清理 |
+| 主页 | `/` | 实时视频、框叠加、目标选择、资源监控（CPU / NPU / RGA）、底部 Codex 对话 |
+| 系统配置 | `/config` | 相机、YOLO、CAN、CPU、跟随、Web IP、遥测、网络代理、Codex CLI 登录 |
+| 行车日志 | `/logs` | 日志与结果浏览、视频回放、下载、清理、Codex 交互记录 |
 | DBC 查看 | `/dbc` | CAN 定义与解码信号 |
 
 主页 `/` 与 DBC 页用本地 Linux 账号做 HTTP Basic 认证；`/config`、`/logs` 页面以及所有写操作、日志/文件下载要求 `root` 或 `sudo` 组成员。部分只读状态接口完全公开。Web 访问按**源 IPv4 地址**分配槽位，最多 **8 个地址**（`HTTP_MAX_CLIENTS`）；同一地址的页面、API、视频和下载连接共用一个槽，可开多个标签页。槽位在最后一个连接关闭 30 秒后过期；连接未正常关闭导致计数卡住时，120 秒后按 stale 身份回收。超出槽位的地址收到 HTTP 503。
 
 资源卡片显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 占用率由应用对每次 `improcess` 调用计时，按 1 秒滑窗按核汇总。
 
+主页底部的聊天框、配置页的代理与登录卡片、日志页的交互记录列表分别见[网络代理](#网络代理)与[Codex 对话](#codex-对话)。
+
 主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq`（采集序号）和 `X-Ts`（采集时刻，板端单调时钟毫秒）：前者把画面与检测结果对齐，后者配合 `/api/video/stats` 换算端到端延迟。框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h` 和每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）；浏览器按帧序号对齐，若该帧没有推理结果，回退到六帧内最近的记录，再远则跳过。720p 单帧 60–110 KB，30 fps 不限额需要 18–26 Mbps；`mjpeg_max_kbps` 限制单客户端预算，socket 积压时丢弃整帧避免延迟累积。
+
+### 网络代理
+
+配置页的「网络代理」卡片管理**开发板整机**出网流量使用的代理，配置文件是
+`/etc/proxy-client.conf`（`proxy-client.service` 的 `EnvironmentFile`）。它与 Codex
+对话完全独立：不读取也不修改任何 Codex 设置。
+
+| 字段 | 含义 |
+| --- | --- |
+| `PROXY_HOST` | 代理主机 IP 或主机名（通常是电脑上代理软件的局域网地址） |
+| `PROXY_PORT` | 端口，1–65535 |
+| `PROXY_SCHEME` | `http` / `socks5` / `socks5h` |
+| `NO_PROXY` | 不走代理的地址列表，默认 `localhost,127.0.0.1,::1` |
+
+两个保存按钮的区别：
+
+- **保存配置**：只写回 `/etc/proxy-client.conf`，保留原有注释与其他行，并把旧文件备份到
+  `recordings/proxy-backups/`。不会立即改变整机流量。
+- **保存并应用**：写回后执行 `systemctl reload proxy-client.service`，由它重写
+  `/etc/environment`、`/etc/profile.d/proxy.sh`、
+  `/etc/systemd/system.conf.d/90-proxy-client.conf` 与 apt 代理设置。已有 shell 与服务
+  需重新加载环境才会使用新值。
+
+「测试连通」检查代理端口的 TCP 可达性，并用该代理请求
+`https://api.openai.com/v1/models`：返回 `401` 表示链路通、只是没带凭据；超时或 `000`
+表示代理不可达。systemd 沙箱只开放这一个文件可写
+（`ReadWritePaths=/etc/proxy-client.conf`），因此备份与临时输出都放在 `recordings/` 下。
+
+> [!WARNING]
+> 该配置作用于**整机**网络流量（apt、curl、各种 CLI 等），不是只给 Web 或 Codex 用；
+> 代理主机不可达会让板子访问外网失败。
+
+### Codex 对话
+
+主页底部是可与本机 `codex` CLI 对话的聊天框，配置页提供登录设置，行车日志页可下载完整交互记录。
+三者通过需要 root 认证的 `/api/codex/` 接口与 `bin/codex_bridge.py` 协作；C 层只拉起短命的
+Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模型。
+
+- **登录**：配置页「开始设备码登录」显示登录链接与一次性验证码（15 分钟）；也可直接填
+  `API 密钥`，并配置接口地址、接口协议、模型、沙箱模式与工作目录。设备码凭据与 API Key
+  使用两套不同的 `config.toml`，切换后不会再报
+  `Missing environment variable: OPENAI_API_KEY`。
+- **凭据与记录分离**：`/opt/autonomous-driving-car/.codex/` 存 CLI 凭据（不会被文件打包
+  下载），`recordings/codex/chat_YYYYMMDD.jsonl` 逐行存 `user` / `assistant` / `event` 记录。
+- **下载**：日志页列出每日记录，可单文件下载或打包导出（JSONL），也可一键清空；主页聊天框
+  的「下载记录」按钮直接导出全部。
+- **权限**：默认 `sandbox=read-only`，CLI 子进程降权到普通账号运行；
+  `danger-full-access` 等于把高权限 agent 暴露给通过网页认证的用户，请谨慎选择。
+- **多轮上下文**：目前由桥接脚本把最近 6 条消息拼进 prompt，尚未使用 `codex exec resume`。
+
+> [!IMPORTANT]
+> 当前账号没有有效 token 或额度时，聊天会返回 `401 Incorrect API key` / 额度不足提示；
+> 代理只解决网络可达，不能替代凭据。LLM 规划（读取检测结果并参与控制）仍未实现，
+> 这里的 Codex 只是 Web 侧的 CLI 聊天桥接。
 
 ### API 速查
 
@@ -226,6 +282,8 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 | 模型 | `POST /api/yolo/upload` **R** | 上传替换 `.rknn` 模型 |
 | 控制 | `GET /api/follow`、`/api/tracking`、`/api/can/*`、`/api/ano`（公开）；对应 POST **R** | 跟随、跟踪、CAN 收发与 DBC、遥测 |
 | 系统管理 | `GET /api/reboot`、`/api/shutdown` **R** | 重启 / 关机 |
+| 网络代理 | `GET /api/proxy/config` **R**、`POST /api/proxy/config` **R**、`POST /api/proxy/test` **R** | 读取/保存整机代理配置、测试连通 |
+| Codex 对话 | `/api/codex/status`、`config`、`login/device`、`login/apikey`、`chat`、`reset`、`stop`、`logout`、`history`、`records`、`record`、`export`、`records/clear` **R** | 状态、登录、对话、交互记录与导出 |
 
 > [!TIP]
 > 两个容易踩坑的参数：`POST /api/rec/split` 的请求体必须是**当前录像文件名**（如 `video_20261106.mp4`），不匹配返回 409；所有打包下载的文件名都带 `%Y%m%d_%H%M%S` 时间戳（如 `config_pack_20261106_113425.tar.gz`、`autonomous-driving-car_files_20261106_113425.zip`），避免浏览器复用缓存里的旧包。
@@ -266,6 +324,10 @@ curl -s -u <用户>:<密码> http://127.0.0.1/api/logs
 | HTTP 503 | 已达 8 个源 IP 槽位上限，等待 30 s 过期或关闭其他客户端 |
 | 录像里框线断成虚线 | MPP 输入缓冲过早复用；当前实现已按帧龄回收，若复现先确认部署的是最新构建 |
 | 服务起不来 / FIFO 设置失败 | 检查 cgroup v2 的 `-.slice.d/90-autonomous-driving-car-rt.conf` 是否生效 |
+| Codex 返回 `401 Incorrect API key` 或提示额度不足 | 当前账号没有有效 token 或额度。在配置页填入有效 API Key 或完成设备码登录；代理只解决网络可达 |
+| 提示 `Missing environment variable: OPENAI_API_KEY` | 自定义接口需要 API Key；用「保存 API 密钥」写入，或改用设备码登录 |
+| 代理端口可达但外网超时 | 用配置页「测试连通」看 TCP 与 HTTP 状态码；`401` 表示链路通、只是没带凭据 |
+| 保存代理后整机未生效 | 「保存配置」只写文件；点「保存并应用」或执行 `sudo systemctl reload proxy-client.service` |
 
 Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` 分析崩溃。
 
@@ -299,6 +361,10 @@ Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` �
 | `recordings/logs/` | 应用日志（一天一个文件） |
 | `recordings/videos/` | 标注 MP4 录像 |
 | `recordings/results/` | 每日推理结果 TXT |
+| `/etc/proxy-client.conf` | 整机网络代理配置（Web 界面可编辑） |
+| `recordings/proxy-backups/` | 代理配置保存前的备份 |
+| `recordings/codex/` | Codex 每日交互记录 JSONL |
+| `/opt/autonomous-driving-car/.codex/` | Codex CLI 凭据与设置（不打包进文件下载） |
 
 导出配置会把实际配置文件和模型打包成 `.tar.gz` 下载（解压后不超过 64 MiB，内部同步元数据除外）。模型不入库；生成链路见 [tools/model/README.md](tools/model/README.md)，量化历史见 [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md)。
 
@@ -319,6 +385,8 @@ Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` �
 
 视频相关模块：`video_stream.c` 采集与 MJPEG 分发，`frame_ring.c` 缓冲交接（只存 raw JPEG），`jpeg_decoder.c` libjpeg-turbo 软解与 NV12 dma-buf 环，`rga_preprocess.c` RGA 画布，`video_session.c` 录像会话与分段，`video_record.c` 画框与硬件编码线程，`rec_mp4.c` MP4 容器，`rec_font.h` 标签用的 16×24 点阵字库。
 
+Web 扩展模块：`http_api_codex.c` 与 `http_api_proxy.c` 是两套互不依赖的 HTTP 路由，分别拉起 `scripts/codex_bridge.py` 与 `scripts/proxy_config.py`（部署到 `bin/`）；前端对应 `html/js/codex-*.js` 与 `html/js/proxy-config.js`。
+
 `docs/` 专题：[应用实时调度](docs/REALTIME_SCHEDULING.md)、[延迟剖析](docs/LATENCY_PROFILE.md)、[帧流水线与模型校验](docs/FRAME_PIPELINE.md)、[CAN/TCP 通信流](docs/COMMUNICATION_FLOW.md)、[YOLO26n 量化](docs/YOLO26N_QUANTIZATION.md)、[代码审查](docs/CODE_REVIEW.md)、[功能验证报告](docs/FUNCTIONAL_TEST_REPORT.md)。
 
 ### 通信注册
@@ -327,7 +395,7 @@ Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` �
 
 ### 发展方向
 
-下一步是把 LLM 推理与 YOLO、常规运动控制并列集成。共享资源调度、控制时序和实时内核上的端到端延迟仍在评估；上文描述的实现是这项工作的基础。
+下一步是把 LLM 推理与 YOLO、常规运动控制并列集成。当前 Web 侧的 Codex 对话只是 CLI 聊天桥接，不读取检测结果、也不参与控制回路；共享资源调度、控制时序和实时内核上的端到端延迟仍在评估，上文描述的实现是这项工作的基础。
 
 ### 许可证
 
@@ -345,13 +413,15 @@ Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` �
 
 | Getting started | Architecture | Interfaces &amp; reference |
 | :--- | :--- | :--- |
-| [Measured performance](#measured-performance)<br>[Quick start](#quick-start)<br>[Build and deployment](#build-and-deployment)<br>[Requirements](#requirements) | [Architecture](#architecture)<br>[Perception pipeline](#perception-pipeline)<br>[Visual tracking and following](#visual-tracking-and-following)<br>[Real-time scheduling and affinity](#real-time-scheduling-and-affinity) | [Web interface](#web-interface)<br>[API reference](#api-reference)<br>[Recording and annotation](#recording-and-annotation)<br>[Logs, reports and troubleshooting](#logs-reports-and-troubleshooting) |
+| [Measured performance](#measured-performance)<br>[Quick start](#quick-start)<br>[Build and deployment](#build-and-deployment)<br>[Requirements](#requirements) | [Architecture](#architecture)<br>[Perception pipeline](#perception-pipeline)<br>[Visual tracking and following](#visual-tracking-and-following)<br>[Real-time scheduling and affinity](#real-time-scheduling-and-affinity) | [Web interface](#web-interface)<br>[Network proxy](#network-proxy)<br>[Codex chat](#codex-chat)<br>[API reference](#api-reference)<br>[Recording and annotation](#recording-and-annotation)<br>[Logs, reports and troubleshooting](#logs-reports-and-troubleshooting) |
 | [Configuration and models](#configuration-and-models)<br>[Repository layout](#repository-layout) | [Communication registration](#communication-registration)<br>[Development direction](#development-direction) | [License](#license)<br>[Topic docs](docs/) |
 
 A Linux vehicle platform where camera capture, RKNN YOLO26 inference, visual
 tracking, differential wheel control, CAN/CAN-FD, annotated recording and a web
 management UI run in one C11 process. All sources are `.c`; there is no C++ and
-no OpenCV. LLM planning is not implemented.
+no OpenCV. The web UI also offers a "Codex CLI chat" panel and a board-wide
+network proxy editor; **LLM planning (reading detections and taking part in
+control) is still not implemented** — the Codex panel is a chat bridge only.
 
 The target is fixed to the **Radxa ROCK 4D / RK3576**: NPU cores, RGA cores,
 big/little CPU split and model platform are hardcoded for that SoC rather than
@@ -585,9 +655,9 @@ Open `http://<board-ip>/`; HTTP listens on port **80**.
 
 | Page | Address | Operations |
 | --- | --- | --- |
-| Home | `/` | Live video, box overlay, target selection, resource monitor (CPU/NPU/RGA) |
-| System Configuration | `/config` | Camera, YOLO, CAN, CPU, following, web IP, telemetry |
-| Driving Logs | `/logs` | Log/report browsing, playback, downloads, cleanup |
+| Home | `/` | Live video, box overlay, target selection, resource monitor (CPU/NPU/RGA), Codex chat at the bottom |
+| System Configuration | `/config` | Camera, YOLO, CAN, CPU, following, web IP, telemetry, network proxy, Codex CLI sign-in |
+| Driving Logs | `/logs` | Log/report browsing, playback, downloads, cleanup, Codex interaction records |
 | DBC viewer | `/dbc` | CAN definitions and decoded signals |
 
 Home `/` and DBC accept a local Linux account over HTTP Basic auth; `/config`,
@@ -602,6 +672,10 @@ The resource card shows per-core CPU, **NPU**, **RGA** and memory/disk. NPU load
 comes from `/sys/kernel/debug/rknpu/load`; RGA load is measured in-process by
 timing every `improcess` call per core over a one-second window.
 
+The chat box on the home page, the proxy/sign-in cards on `/config` and the
+interaction-record list on `/logs` are described in
+[Network proxy](#network-proxy) and [Codex chat](#codex-chat).
+
 The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of
 the camera's own JPEG frames. Each part carries `X-Seq` (capture sequence) and
 `X-Ts` (capture time, board monotonic ms): the former aligns boxes with frames,
@@ -612,6 +686,73 @@ skipped a frame the browser falls back to the nearest record within six frames.
 At 720p each frame is 60–110 KB, so uncapped 30 fps needs 18–26 Mbps;
 `mjpeg_max_kbps` caps the per-client budget and whole frames are dropped when a
 socket backs up.
+
+### Network proxy
+
+The "Network proxy" card on `/config` manages the proxy used by the **whole
+board's** outbound traffic. Its config file is `/etc/proxy-client.conf`, the
+`EnvironmentFile` of `proxy-client.service`. It is completely independent of the
+Codex chat bridge: it neither reads nor changes any Codex setting.
+
+| Field | Meaning |
+| --- | --- |
+| `PROXY_HOST` | Proxy host IP or name (usually the LAN address of a PC proxy app) |
+| `PROXY_PORT` | Port, 1-65535 |
+| `PROXY_SCHEME` | `http` / `socks5` / `socks5h` |
+| `NO_PROXY` | Bypass list, default `localhost,127.0.0.1,::1` |
+
+The two save buttons differ:
+
+- **Save** only rewrites `/etc/proxy-client.conf`, preserving comments and
+  unrelated lines, and backs up the old file to `recordings/proxy-backups/`.
+  It does not change live traffic.
+- **Save and apply** additionally runs `systemctl reload proxy-client.service`,
+  which rewrites `/etc/environment`, `/etc/profile.d/proxy.sh`,
+  `/etc/systemd/system.conf.d/90-proxy-client.conf` and apt's proxy settings.
+  Existing shells and services need to reload their environment.
+
+**Test connection** checks TCP reachability of the proxy port and requests
+`https://api.openai.com/v1/models` through the proxy: `401` means the path works
+but no credentials were supplied; a timeout or `000` means the proxy is
+unreachable. The systemd sandbox exposes only this one file for writing
+(`ReadWritePaths=/etc/proxy-client.conf`), so backups and temporary output live
+under `recordings/`.
+
+> [!WARNING]
+> This changes networking for the **whole board** (apt, curl, CLIs, ...), not
+> just the web UI or Codex. An unreachable proxy host breaks outbound access.
+
+### Codex chat
+
+A chat box at the bottom of the home page talks to the local `codex` CLI; the
+config page holds sign-in settings and the logs page can download the full
+interaction log. They share the root-authenticated `/api/codex/` endpoints and
+`bin/codex_bridge.py`. The C layer only spawns a short-lived Python process:
+long turns are detached by the bridge, so no HTTP worker waits for a model.
+
+- **Sign-in**: "Start device-code login" shows the sign-in link and one-time code
+  (valid 15 minutes); an `API key` can be entered directly together with base
+  URL, wire API, model, sandbox mode and working directory. Device-code and
+  API-key credentials use different `config.toml` layouts, so switching modes no
+  longer produces `Missing environment variable: OPENAI_API_KEY`.
+- **Credentials and records are separate**: `/opt/autonomous-driving-car/.codex/`
+  holds CLI credentials (never included in file archives), while
+  `recordings/codex/chat_YYYYMMDD.jsonl` stores one JSON object per line with
+  `user` / `assistant` / `event` roles.
+- **Downloads**: the logs page lists daily records for single-file download,
+  packed JSONL export or clearing; the chat box has a "download log" button for
+  the full export.
+- **Privileges**: the default sandbox is `read-only` and CLI children drop to an
+  unprivileged account. `danger-full-access` exposes a high-privilege agent to
+  anyone who passes web authentication — choose it deliberately.
+- **Multi-turn context**: currently built by prepending the last six messages to
+  the prompt; `codex exec resume` is not used yet.
+
+> [!IMPORTANT]
+> Without a valid token / quota, a turn returns `401 Incorrect API key` or an
+> out-of-credits message. The proxy only fixes reachability, not credentials.
+> LLM planning (reading detections and participating in control) is still not
+> implemented; this Codex integration is a web-side CLI chat bridge only.
 
 ### API reference
 
@@ -636,6 +777,8 @@ token instead. Full tables: [source/http/http.c](source/http/http.c) and
 | Model | `POST /api/yolo/upload` **R** | Upload a replacement `.rknn` model |
 | Control | `GET /api/follow`, `/api/tracking`, `/api/can/*`, `/api/ano` (public); matching POSTs **R** | Following, tracking, CAN and telemetry |
 | System | `GET /api/reboot`, `/api/shutdown` **R** | Reboot / power off |
+| Network proxy | `GET /api/proxy/config` **R**, `POST /api/proxy/config` **R**, `POST /api/proxy/test` **R** | Read/save board-wide proxy config, test connectivity |
+| Codex chat | `/api/codex/status`, `config`, `login/device`, `login/apikey`, `chat`, `reset`, `stop`, `logout`, `history`, `records`, `record`, `export`, `records/clear` **R** | Status, sign-in, chat, interaction records and export |
 
 > [!TIP]
 > Two easy-to-miss details: `POST /api/rec/split` needs the **current recording
@@ -712,6 +855,10 @@ curl -s -u <user>:<password> http://127.0.0.1/api/logs
 | HTTP 503 | The 8 source-IP slots are full; wait 30 s for expiry or close another client |
 | Boxes look like dashed lines in the MP4 | MPP input buffers were recycled too early; current builds recycle by frame age — confirm the deployed binary is current |
 | Service fails to start / cannot set FIFO | Check that `-.slice.d/90-autonomous-driving-car-rt.conf` is active on cgroup v2 |
+| Codex returns `401 Incorrect API key` or out-of-credits | No valid token/quota on the account. Enter a working API key on `/config` or finish device-code login; the proxy only fixes reachability |
+| `Missing environment variable: OPENAI_API_KEY` | A custom provider needs an API key; save one with "Save API key" or switch to device-code login |
+| Proxy port reachable but outbound requests time out | Use "Test connection" and read TCP/HTTP status; `401` means the path works but no credentials were supplied |
+| Proxy change did not take effect board-wide | "Save" only writes the file; use "Save and apply" or run `sudo systemctl reload proxy-client.service` |
 
 Release builds keep debug information (`-O3 -DNDEBUG -g`) for `coredumpctl`.
 
@@ -756,6 +903,10 @@ Default `config/config.txt` keys (the board may override them):
 | `recordings/logs/` | Application logs, one file per day |
 | `recordings/videos/` | Annotated MP4 recordings |
 | `recordings/results/` | Daily inference TXT reports |
+| `/etc/proxy-client.conf` | Board-wide network proxy config (editable in the web UI) |
+| `recordings/proxy-backups/` | Backups taken before saving the proxy config |
+| `recordings/codex/` | Daily Codex interaction records in JSONL |
+| `/opt/autonomous-driving-car/.codex/` | Codex CLI credentials and settings (excluded from file archives) |
 
 **Export config** downloads the real configuration and model as `.tar.gz`
 (≤ 64 MiB uncompressed, internal metadata excluded). The model is not in Git;
@@ -784,6 +935,11 @@ ring, `rga_preprocess.c` RGA canvas, `video_session.c` recording sessions and
 segmentation, `video_record.c` box drawing and encoder thread, `rec_mp4.c` MP4
 container, `rec_font.h` 16x24 bitmap font for labels.
 
+Web extensions: `http_api_codex.c` and `http_api_proxy.c` are two independent
+HTTP route sets that spawn `scripts/codex_bridge.py` and
+`scripts/proxy_config.py` (installed under `bin/`); the browser side uses
+`html/js/codex-*.js` and `html/js/proxy-config.js`.
+
 Topic guides: [real-time scheduling](docs/REALTIME_SCHEDULING.md),
 [latency profile](docs/LATENCY_PROFILE.md),
 [frame pipeline and model checks](docs/FRAME_PIPELINE.md),
@@ -809,9 +965,10 @@ limits. Full paths, capacities and locking rules are in
 ### Development direction
 
 The next step is LLM inference alongside YOLO and conventional motion control.
-Shared-resource scheduling, control timing and end-to-end latency on the
-real-time kernel remain under evaluation; the implementation above is the
-foundation.
+The current web-side Codex chat is only a CLI bridge: it does not read
+detections and does not join the control loop. Shared-resource scheduling,
+control timing and end-to-end latency on the real-time kernel remain under
+evaluation; the implementation above is the foundation.
 
 ### License
 
