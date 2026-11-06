@@ -1,7 +1,9 @@
-# 模型转换与验证
+# 模型转换与验证（离线说明）
 
-本目录是 YOLO26n 从 checkpoint 到板端 `.rknn` 的完整离线链路。运行时代码只用 C
-（`source/yolo/`），这里的脚本都是**离线工具**，不参与板上运行。
+本目录记录 YOLO26n 从 checkpoint 到板端 `.rknn` 的离线链路。仓库里只保留**板端验证工具**
+（`dump_outputs.c`）；转换本身在固定容器内用官方工具链完成，不在本仓库里携带任何 Python
+源码——这是本工程「不含解释器依赖」的一部分，理由见
+[`docs/AGENT_HARDWARE.md`](../../docs/AGENT_HARDWARE.md) §6。
 
 ## 当前交付形态
 
@@ -19,66 +21,54 @@
 
 ```
 yolo26n.pt
-   │ export_onnx.py            导出 512 ONNX（84×5376 单张量）
+   │ 1. 导出 512 ONNX（84×5376 单张量）
    ▼
 yolo26n-512.onnx
-   │ build_rknn.py             截断双输出 + 框走 FP16
+   │ 2. 截断双输出 + 框走 FP16 + 类别转 NHWC
    ▼
 yolo26n-512-box16.rknn  ──►  config/yolo26.rknn  ──►  部署
 ```
 
-### 1. 准备数据集
+### 1. 为什么转换在容器里
 
-校准集（量化激活统计）与验证集（精度评测）必须用**同一套** letterbox 参数：
-
-```sh
-# 校准：每行一个图片路径（或 id<TAB>路径），输出 letterbox PNG + 路径列表
-python3 prepare_dataset.py calibration --images calib.txt --imgsz 512 --out work/letterbox512
-
-# 验证：TSV 为 id<TAB>图片<TAB>宽<TAB>高<TAB>标签路径
-python3 prepare_dataset.py validation --manifest validation.tsv --imgsz 512 \
-        --out work/v512-in --raw work/v512-raw
-```
-
-`validation` 会写 `work/v512-results.jsonl`，其中记录每张图的 `scale_x/scale_y/pad_x/pad_y`
-和原始输出路径，`evaluate.py` 用它把框逆映射回原图坐标。
-
-### 2. 导出 ONNX
+`rknn-toolkit2` 只提供 Python 包，且 2.3.2 与 2.5.0 的行为差异直接决定本模型能否转换成功
+（见下方约束表）。把它引入仓库等于引入一个必须与系统 Python 隔离的环境；固定镜像把这个问题
+关在容器里，仓库只需要记录**镜像标签、脚本版本与产物哈希**三件事：
 
 ```sh
-python3 export_onnx.py --weights yolo26n.pt --imgsz 512 --out work/yolo26n-512.onnx
+# 固定工具链镜像（标签与 python/convert.py 的 commit 一并记录在发布说明里）
+docker run --rm -it -v "$PWD:/work" -w /work \
+    rockchip/rknn-toolkit2:2.3.2-py38 bash
 ```
 
-输入尺寸必须在导出时确定：8400→5376 个锚点是图里的常量，事后改输入形状会破坏
-`Reshape`。
+容器内只做三件事：`load_onnx(outputs=['/model.23/Sigmoid_output_0','/model.23/Mul_2_output_0'])`
+截断成两路、`build(do_quantization=True, dataset=校准集)` 量化、`export_rknn()` 导出。
+完整参数、失败记录与逐步实验见 [`docs/YOLO26N_QUANTIZATION.md`](../../docs/YOLO26N_QUANTIZATION.md)。
 
-### 3. 量化成 RKNN
+### 2. 校准集与验证集
 
-```sh
-python3 build_rknn.py --onnx work/yolo26n-512.onnx --dataset work/letterbox512.txt \
-                      --imgsz 512 --out work/yolo26n-512-box16.rknn
+两者必须使用**同一套** letterbox 参数（512、114 灰边、等比缩放），否则量化统计与精度评测不在
+同一个坐标系里，mAP 会虚高。清单是纯文本，一行一张图：
+
+```text
+# calibration.txt / validation.tsv
+datasets/train/0001.jpg
+datasets/train/0002.jpg
 ```
 
-### 4. 板端 dump 原始输出
+验证集清单额外带 `id<TAB>宽<TAB>高<TAB>标签路径`，用于把框逆映射回原图坐标。
 
-`dump_outputs.c` 在板子上跑（要用板载 `librknnrt`）：
+### 3. 板端 dump 原始输出
+
+`dump_outputs.c` 在板子上编译（要链接板载 `librknnrt`）：
 
 ```sh
 gcc -O2 -o dump_outputs dump_outputs.c -I../../include/yolo -l:librknnrt.so
 ./dump_outputs yolo26n-512-box16.rknn work/v512-in work/v512-raw
 ```
 
-它把两路输出拼回训练侧的 84×A 布局（行 0–3 框、行 4–83 类别分），
-所以评测脚本不需要区分单输出/双输出。
-
-### 5. 评测
-
-```sh
-python3 evaluate.py validation.tsv work/baseline-raw work/v512-raw report.json
-```
-
-`baseline` 传现有模型的 raw 目录，`candidate` 传新模型的，脚本会打印两者 mAP 与
-一致性差异。
+它把两路输出拼回训练侧的 84×A 布局（行 0–3 框、行 4–83 类别分），所以评测脚本不需要区分
+单输出/双输出。dump 出来的 float32 张量就是精度比对的唯一依据，评测在仓库外进行。
 
 ## 关键约束（都踩过）
 
@@ -86,30 +76,25 @@ python3 evaluate.py validation.tsv work/baseline-raw work/v512-raw report.json
 |---|---|
 | toolkit 锁 2.3.2 | 2.5.0 在 `_p_fuse_exmatmul_add_mul_exsoftmax13_exmatmul_to_sdpa` 触发 `IndexError: list index out of range`，640/512、hybrid/official 全部复现 |
 | `proposal=False` | 该模型不支持 expand batch，proposal 会直接报错 |
-| step2 不能调 `config()` | 否则报 `config of 'step2' is inconsistent with 'step1'` |
+| step2 不能重设 config | 否则报 `config of 'step2' is inconsistent with 'step1'` |
 | 框必须 FP16 | 全 INT8 时框量化步长约 2.73 px（±1.4 px），mAP50-95 掉 2.45 个点；FP16 每帧仅多 33 KB，输出转换 0–1 ms |
 | 类别用 NHWC | NCHW 下逐锚点读 80 个分数要跨 5376 字节跳读，后处理 4 ms；改 NHWC 后 1 ms |
 | one2one 仍需 NMS | 关掉 NMS 在 conf≥0.60 时仍有 85.7% 重复框，mAP50 从 0.5238 掉到 0.3491 |
 
-改输出的布局（如类别转置成 NHWC）是在 ONNX 里加 `Transpose` 节点实现的，见
-`build_rknn.py` 的 `SCORES`/`BOXES` 常量；板端 `yolo_postprocess_two()` 会按张量
-维度自动识别 NCHW/NHWC。
+改输出布局（如类别转置成 NHWC）是在 ONNX 里加 `Transpose` 节点实现的；板端
+`yolo_postprocess_two()` 会按张量维度自动识别 NCHW/NHWC，两种布局都能跑，只有延迟不同。
 
 ## 目录内容
 
 | 文件 | 作用 |
 |---|---|
-| `export_onnx.py` | checkpoint → ONNX（尺寸可配） |
-| `build_rknn.py` | ONNX → RKNN（双输出 + FP16 框） |
-| `prepare_dataset.py` | 校准集 / 验证集 letterbox 与清单 |
-| `dump_outputs.c` | 板端 dump 原始输出（float32，84×A） |
-| `evaluate.py` | mAP 评测与一致性对比 |
-| `requirements.txt` | 依赖版本（含 toolkit 版本锁定） |
+| `dump_outputs.c` | 板端 dump 原始输出（float32，84×A），精度比对的输入 |
+| `README.md` | 本文：链路、约束、部署路径 |
 
 ## 部署
 
-模型不纳入 Git（约 7.9 MB）。板端路径是 `config/yolo26.rknn`，由
-`scripts/deploy.sh` 经 `scripts/model_sync.sh` 按哈希同步：
+模型不纳入 Git（约 7.9 MB）。板端路径是 `config/yolo26.rknn`，由 `scripts/deploy.sh` 经
+`scripts/model_sync.sh` 按哈希同步：
 
 ```sh
 # 板子上：替换模型后重启服务
@@ -119,6 +104,3 @@ systemctl restart autonomous-driving-car
 # 或者用仓库流程（会做哈希比对，避免覆盖前端上传的模型）
 bash scripts/deploy.sh -i
 ```
-
-模型的量化细节、精度演进与全部实验记录见
-[`docs/YOLO26N_QUANTIZATION.md`](../../docs/YOLO26N_QUANTIZATION.md)。

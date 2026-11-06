@@ -62,18 +62,17 @@
 
 配置为 `w8a8`、按通道权重量化、`normal` 校准算法、优化级别 3。先保留自动混合精度建议，再把检测头的敏感浮点张量与完整输出拼接链设为 FP16。强制头部张量 61 项，叠加自动建议与拼接链后，`custom_quantize_layers` 共 67 项。
 
-```python
-configuration = dict(
-    target_platform="rk3576",
-    mean_values=[[0, 0, 0]],
-    std_values=[[255, 255, 255]],
-    quantized_dtype="w8a8",
-    quantized_algorithm="normal",
-    quantized_method="channel",
-    float_dtype="float16",
-    optimization_level=3,
-)
-```
+对应的转换配置（工具链 API 的参数名与取值，逐项列出以便复核）：
+
+| 参数 | 取值 | 作用 |
+|---|---|---|
+| `target_platform` | `rk3576` | 目标 NPU 架构 |
+| `mean_values` / `std_values` | `[[0,0,0]]` / `[[255,255,255]]` | 归一化写进图，板端不再做浮点预处理 |
+| `quantized_dtype` | `w8a8` | 权重与激活都走 INT8 |
+| `quantized_algorithm` | `normal` | 校准算法（非 mmse / kl_divergence） |
+| `quantized_method` | `channel` | 按通道量化权重 |
+| `float_dtype` | `float16` | 浮点回退精度，供混合精度层使用 |
+| `optimization_level` | `3` | 图优化级别 |
 
 编译产物的实际参数统计如下。INT8 权重比例按权重元素数计算，不代表算子数、激活数或模型文件字节占比。
 
@@ -339,14 +338,15 @@ sudo systemctl restart autonomous-driving-car
 `rknn_model_zoo/examples/yolo26` 给出的步骤只有两步：
 
 ```shell
-# 1. YOLO 导出 ONNX
-pip install ultralytics
-yolo export model=yolo26n.pt format=onnx
+# 1. YOLO 导出 ONNX（在 ultralytics 镜像内）
+docker run --rm -v "$PWD:/work" -w /work ultralytics/ultralytics:latest     yolo export model=yolo26n.pt format=onnx imgsz=640
 
-# 2. RKNN 官方工具转换
-cd python
-python convert.py <onnx_model> rk3576 i8 <output_rknn_path>
+# 2. RKNN 官方工具转换（在固定 tag 的 toolkit 镜像内，调用官方示例脚本）
+docker run --rm -v "$PWD:/work" -w /work/python rockchip/rknn-toolkit2:2.3.2-py38     python convert.py /work/<onnx_model> rk3576 i8 /work/<output_rknn_path>
 ```
+
+工具链镜像固定为 `2.3.2`：脚本与本仓库同版本，产物哈希可复现；解释器与依赖都被关在镜像里，
+仓库本身不含任何 Python 源码。
 
 `convert.py` 内部只做三件事：`load_onnx(outputs=['/model.23/Sigmoid_output_0', '/model.23/Mul_2_output_0'])` 截断成两路，`build(do_quantization=True, dataset=...)` 量化，`export_rknn()` 导出。本次按原文执行（仅把 `DATASET_PATH` 指向本项目校准集），转换成功。
 
@@ -450,23 +450,18 @@ scale = 2.726881  →  每级 ≈ 2.73 像素，量化误差 ≈ ±1.4 px
 
 官方 `convert.py` 走的是 `rknn.build()`，没有按层指定精度的入口，因此该版本改用 hybrid 两步流程（工具链仍为 **2.3.2**，2.5.0 在本模型上会崩，见 15.7）：
 
-```python
-OUT = ['/model.23/Sigmoid_output_0', '/model.23/Mul_2_output_0']
+两步流程的每一步只做一件事，参数如下（工具链 2.3.2，容器内执行）：
 
-# step1：截断两支 + 生成量化配置
-rknn.config(mean_values=[[0,0,0]], std_values=[[255,255,255]], target_platform='rk3576')
-rknn.load_onnx(model='yolo26n.onnx', outputs=OUT)
-rknn.hybrid_quantization_step1(dataset=calibration_txt, proposal=False)
+| 步骤 | 操作 | 关键参数 |
+|---|---|---|
+| step1 | `config()` | `mean_values=[[0,0,0]]`、`std_values=[[255,255,255]]`、`target_platform='rk3576'` |
+| step1 | `load_onnx()` | `outputs=['/model.23/Sigmoid_output_0', '/model.23/Mul_2_output_0']`，截断成两路 |
+| step1 | `hybrid_quantization_step1()` | `dataset=校准集清单`、`proposal=False`，产出 `quantization.cfg` |
+| — | 编辑 `quantization.cfg` | `custom_quantize_layers` 增加 `/model.23/Mul_2_output_0` 与 `-rs` 两条，值均为 `float16` |
+| step2 | `hybrid_quantization_step2()` | `model_input`、`data_input`、`model_quantization_cfg` 三项分别指向 step1 的三个产物 |
+| step2 | `export_rknn()` | 输出 `yolo26n-box16.rknn` |
 
-# 修改生成的 quantization.cfg
-custom['/model.23/Mul_2_output_0']    = 'float16'
-custom['/model.23/Mul_2_output_0-rs'] = 'float16'
-cfg['custom_quantize_layers'] = custom
-
-# step2：按修改后的配置量化并导出
-rknn.hybrid_quantization_step2(model_input=..., data_input=..., model_quantization_cfg=cfg)
-rknn.export_rknn('yolo26n-box16.rknn')
-```
+`custom_quantize_layers` 合计 67 项：61 项强制头部张量、自动建议项与拼接链。
 
 `proposal=False` 是必要的：本模型的注意力结构在 `proposal=True` 时会触发 2.5.0 的融合 bug，2.3.2 下也可安全跳过。
 

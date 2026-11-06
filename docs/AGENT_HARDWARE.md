@@ -1,177 +1,259 @@
-# 智能体硬件能力层
+# 智能体的硬件能力层：看见与做到
 
-给多智能体一套**能真正落到执行器**的接口，同时保证任何一个模型出问题都不会让车继续动。
+本文描述外部智能体（语言模型、多智能体编排器）在这台车上**能看到什么**、**能做什么**，以及
+这两件事为什么必须走同一条能力凭证。文中数值均来自 RK3576 板上的实测。
 
-它不是 shell，也不是把 root 密码交给模型。它是一枚短期凭证 + 一组受限原语 + 一条带死手的执行通道，三者都在 C 里，不在提示词里。
-
-- 实现：`source/agent/agent_hw.c`（凭证、包络、审计）、`source/control/car_sport_ctrl.c`（`follow_agent_*`，执行与联锁）
-- 工具描述：`docs/agent-tools.json`（OpenAI function calling 格式）
-- 计划执行器：`scripts/agent_drive.py`
+实现：`source/agent/agent_hw.c`（凭证、包络、审计、执行入口）、`source/agent/agent_view.c`
+（观测与图像）、`source/control/car_sport_ctrl.c`（`follow_agent_*`，执行与联锁）、
+`tools/agent/adc_agent.c`（`bin/adc-agent`，模型侧的看与做）。
 
 ---
 
-## 1. 分层
-
-```mermaid
-flowchart LR
-    LLM["语言模型 / 多智能体<br/>秒级"] -->|"写计划 JSON"| EXE["agent_drive.py<br/>本地执行器 8 Hz"]
-    EXE -->|"POST /api/agent/motion<br/>v, steer, ttl_ms"| CAP["能力层<br/>凭证 · 包络 · 预算 · 审计"]
-    CAP -->|"follow_agent_cmd()"| CTRL["控制环<br/>50 ms tick · 轮速 PI"]
-    CTRL -->|"归一化 [-1,1]"| MOT["电机适配器"]
-    CTRL -->|"实测轮速"| FB["CAN 解码"]
-    FB --> CTRL
-    OPS["人（root）"] -->|"签发 / arm / 撤销"| CAP
-```
-
-关键点：**模型不产生 30 Hz 指令**。它产生计划，本地执行器把计划变成指令流。理由是算术：单次模型往返 2–10 s，0.3 m/s 下 3 s 就是 0.9 m 盲行；执行器与能力层的往返在本机实测中位数 2.4 ms。
-
-## 2. 凭证（authority）
-
-| 字段 | 含义 | 上限 |
-|---|---|---|
-| `scope` | `observe` / `motion`（motion 隐含 observe） | — |
-| `v_max` | 该凭证允许的最大线速度 | 0.30 m/s（硬上限） |
-| `steer_max` | 差速半差，单位与 `max_turn_delta` 一致 | 0.15 m/s（硬上限） |
-| `budget_m` | 本次授权可行驶的总里程 | 100 m（硬上限） |
-| `ttl_s` | 凭证有效期 | 3600 s |
-
-- 凭证是 32 个十六进制字符，取自 `/dev/urandom`；熵源不可用则拒绝签发，不做降级。
-- **只存在内存里**：服务重启即全部失效，磁盘上不留可复用的凭据。`persist=1` 是显式例外，写到 `config/agent.token`（0640 root:qianruo），供板上智能体进程读取，同样受 `ttl_s` 约束。
-- 同时最多 8 枚，满了淘汰最早到期的一枚。
-- `v_max` / `steer_max` / `budget_m` 在 C 侧再夹一次（`AGENT_V_CAP` 等），HTTP 层被绕过也无效。
-
-## 3. 状态机
-
-```mermaid
-stateDiagram-v2
-    [*] --> Idle
-    Idle --> Armed: root POST /api/agent/arm<br/>（要求 profile 已 enabled）
-    Armed --> Moving: POST /api/agent/motion
-    Moving --> Moving: 刷新租约（≤ 500 ms）
-    Moving --> Armed: POST /api/agent/stop<br/>（同时关闭 profile）
-    Moving --> Fault: 租约到期 / 联锁失败 / 里程用尽
-    Armed --> Idle: disarm / revoke
-    Fault --> Idle: root arm（清故障）
-    Fault --> Idle: revoke all（人）
-```
-
-`Fault` 是**锁存**的：控制环每 50 ms 调一次 `halt()`，视觉路径同样被挡住，直到人显式 `arm` 或 `revoke`。这一条是刻意的——任何异常之后，车必须停着等人。
-
-## 4. 端点
-
-| 方法与路径 | 认证 | 作用 |
-|---|---|---|
-| `POST /api/agent/token` | root Basic | 签发凭证，返回一次性的 token |
-| `POST /api/agent/arm` | root Basic | 把某枚凭证置为可执行；清除锁存故障 |
-| `POST /api/agent/revoke` | root Basic | 撤销一枚或全部；被撤凭证正 armed 时同时停机 |
-| `GET /api/agent/state` | root Basic | 全部凭证、计数、最后拒绝原因 |
-| `GET /api/agent/audit` | root Basic | 当日审计 JSONL 尾部（≤ 384 KB） |
-| `GET /api/agent/observe` | 凭证 | 车辆状态 + 自身包络 + 执行就绪位 |
-| `POST /api/agent/motion` | 凭证 | 提交 `v`、`steer`、`ttl_ms` |
-| `POST /api/agent/stop` | 凭证 | 停止并解除 armed（profile 一并关闭） |
-| `POST /api/agent/estop` | 凭证 | 强制停机，profile 置 0 并落盘 |
-| `POST /api/agent/disarm` | 凭证 | 解除 armed 并停止 |
-
-认证用 `X-Agent-Cap: <token>`（或 `Authorization: Bearer`），与 Basic 互不通用。智能体拿不到 root 密码，也过不了 root 门禁。
-
-## 5. 执行路径
-
-`tick()` 里只有一条执行链，切换的只是速度来源：
+## 1. 能力面只有两件事
 
 ```
-enabled==0            → halt("disabled")
-state==FAULT          → halt(<fault>)                  // 锁存
-state==ACTIVE         → agent_tick()                   // 本层
-detection 过期        → halt("stale_detection")        // 视觉路径
+                 ┌──────────────────────────────────────────┐
+   语言模型 /     │            adc-agent (C11)               │
+   多智能体  ────►│  see ──► observe + perception + JPEG     │
+   秒级决策       │  drive / plan ──► 8 Hz 原语脉冲          │
+                 └───────────────┬──────────────────────────┘
+                                 │ 能力凭证 X-Agent-Cap (32 hex)
+                                 ▼
+                 ┌──────────────────────────────────────────┐
+                 │  服务进程（root，systemd 沙箱内）          │
+                 │  ├─ 观测：NPU 结果队列 + 帧环（只读）      │
+                 │  └─ 执行：agent_tick → car_sport_ctrl     │
+                 └───────┬──────────────────────┬───────────┘
+                         │                      │
+                    RK3576 NPU             CAN / 电机适配器
 ```
 
-`agent_tick()` 依次检查：
+模型不接触摄像头驱动，也不接触 CAN。它拿到的是**一份带语义的观测**和**一条带租约的运动原语**，
+两次调用之间没有任何它可写的通道。这条边界不因为模型变强而放宽。
 
-| 条件 | 结果 |
+关于算术：单次模型往返 2–10 s，0.3 m/s 下 3 s 就是 0.9 m 盲行。所以模型不产生 30 Hz 指令，
+它产生计划；`adc-agent` 把计划变成 8 Hz 指令流，本机往返中位数 2.4 ms。
+
+---
+
+## 2. 观测通道：看见
+
+### 2.1 `GET /api/agent/observe`
+
+一次调用同时返回「车况」与「视野」。只读、无副作用、可任意频率调用。
+
+```json
+{
+  "ts_ms": 42917687,
+  "profile":   { "enabled": true,  "reason": "target_lost" },
+  "motion":    { "speed_target": 0.000, "steer_target": 0.000,
+                 "speed_actual": null,  "steer_actual": null, "wheel_feedback": false },
+  "agent":     { "armed": false, "state": "idle", "expires_in_ms": 0,
+                 "traveled_m": 0.00, "budget_m": 5.0, "fault": "" },
+  "actuation": { "motor_bound": false, "can_enabled": false, "ready": false },
+  "limits":    { "v_max": 0.150, "steer_max": 0.100, "budget_m": 5.0, "expires_in_ms": 599991 },
+  "perception": {
+    "available": true,
+    "frame_seq": 128, "width": 1280, "height": 720,
+    "age_ms": 754, "frames_behind": 9, "infer_age_ms": 146,
+    "objects_total": 0, "objects": [],
+    "nearest": null,
+    "tracking": { "active": false, "locked": true, "track_id": 0, "age_ms": 202 },
+    "summary": "clear road, 9 frame(s) behind"
+  }
+}
+```
+
+每个字段为什么存在：
+
+| 字段 | 为什么模型需要它 |
 |---|---|
-| 无租约 / `now > expiry` | `lease_expired`，锁存 |
-| 无电机适配器 | `adapter_not_connected`，锁存 |
-| 控制线程非 FIFO | `fifo_unavailable`，锁存 |
-| CAN 未使能 | `can_disabled`，锁存 |
-| 轮速反馈缺失（> 500 ms 宽限） | `stale_wheel_feedback`，锁存 |
-| 轮速反馈过期（> `timeout_ms`） | `stale_wheel_feedback`，锁存 |
-| 以上全过 | 差速混合 → 轮速 PI → `motor.send()` |
+| `profile.reason` | 回答「刚才为什么停」的唯一合法依据。没有它，模型只能编。 |
+| `actuation.ready` | 区分「指令被接受」与「指令能落地」。为 false 时车不会动，模型必须知道。 |
+| `frames_behind` | 采集序号减检测序号。推理掉队时画面已经开始骗人，这个差值是可量化的告警。 |
+| `age_ms` | 后处理完成到现在的毫秒数。超过 300 ms 的观测不该再用来判断「正前方有没有人」。 |
+| `objects[].lateral` | 归一化横向偏移 −0.5…+0.5（左负右正），比像素坐标更适合语言推理。 |
+| `objects[].range` | 由面积比映射的 `near/mid/far` 三级，代替并不存在的测距。 |
+| `objects[].in_path` | 下方中部且横向偏移小于 0.28 的启发式「在路径上」标记。 |
+| `summary` | 一句话版本，上下文预算紧张时使用。 |
 
-宽限期只为「解码器第一帧还没到」这一个场景存在：从命令被接受起 500 ms 内不判故障，超过即锁存。真实总线上电后通常 20–50 ms 就有第一帧。
+`objects` 最多 12 条，`objects_total` 是真实总数——剪枝是为了响应体大小可预期，不是为了好看。
+`GET /api/agent/perception` 只返回这一块，供不需要车况的轮次使用。
 
-**结束即关断**：`stop` / `disarm` / 撤销 / 故障，任一发生都会把 `follow.conf` 的 `enabled` 写成 0。原因是视觉路径与智能体路径共用执行器——如果只停指令而不关 profile，车会立刻转去追检测框。这个设计决定在 `follow_agent_cancel()` 里，注释写明。
+### 2.2 `GET /api/agent/frame`
 
-## 6. 审计
+相机原始 JPEG 逐字节透传，不解码、不重编码、不烧框：
 
-每行一个 JSON 对象，落在 `recordings/agent/audit-YYYYMMDD.jsonl`：
-
-```json
-{"ts":"2026-11-07T02:23:20","mono_ms":39468264,"tool":"motion",
- "actor":"bench:6808e5","args":"v=0.120 steer=0.000 ttl=400ms",
- "result":"ok","reason":""}
+```
+HTTP/1.1 200 OK
+Content-Type: image/jpeg
+Content-Length: 41520
+X-Frame-Seq: 303
+X-Frame-Width: 1280
+X-Frame-Height: 720
+X-Frame-Age-Ms: 94
 ```
 
-`result` 取 `ok` / `reject`；`reason` 复用控制层的停机语义字符串，不另造词表。签发、arm、撤销、stop、estop 全部记录。接受与拒绝都记——只记成功的审计在事故复盘中没用。
+- `?max_bytes=N`（1024…2097152）：超过即返回 `413`，默认上限 2 MiB。不让 4 MB 的帧顺着上行
+  链路去喂模型。
+- `?b64=1`：返回 `{"seq":…,"width":…,"height":…,"jpeg_b64":"…"}`，供只接受 JSON 的工具调用
+  一次拿到画面。实测 1280×720 单帧 41.5 KB，base64 后约 55 KB。
+- 只有 `FRAME_RING_FMT_MJPEG` 的槽位会被取出；YUYV 采集链路返回 `503`，而不是悄悄给一张坏图。
 
-## 7. 计划执行器
+帧与检测靠 `seq` 对齐：`frame` 给的是画面，`observe.perception.frame_seq` 给的是那帧的检测序号。
+两者相差 9~15 帧是常态（NPU 流水线深度），不是错误。
 
-```bash
-# 单段
-scripts/agent_drive.py --v 0.10 --steer 0.0 --ms 1500 --token $AGENT_CAP
+---
 
-# 多段计划（模型产出的就是这种文件）
-scripts/agent_drive.py plan.json --token $AGENT_CAP
-```
+## 3. 执行通道：做到
 
-```json
-{"segments": [
-  {"v": 0.10, "steer": 0.00, "ms": 700},
-  {"v": 0.08, "steer": 0.03, "ms": 700}
-]}
-```
+### 3.1 原语
 
-执行器做四件事：起飞前用 `/api/agent/observe` 校验整份计划的里程与包络（超限直接退出码 2，一个字节都不发）、按 8 Hz 刷新 500 ms 租约、任何一次拒绝立即停、`finally` 里必发 `stop`。
-
-退出码：`0` 完成，`2` 计划或状态被拒，`3` 运行中终止，`4` 传输失败。
-
-不在段内轮询 `observe`——这是实测踩出来的：一次慢响应把租约拖过期，控制环如实锁存 `lease_expired`，执行器反而以为车出了故障。段内只靠「指令被拒」这一条信号，因为它没有竞态。
-
-## 8. 验证矩阵
-
-2026-11-07 02:1x 在板上实测。执行器部分是 `-DADCBENCH` 构建（回环电机适配器，把命令原样当作实测轮速回灌，不驱动真实电机）；生产固件不含该代码，已核对二进制中无 `mock actuator` 字符串。
-
-| 用例 | 期望 | 实测 |
+| 原语 | 方法 | 语义 |
 |---|---|---|
-| 无凭证 `GET /api/agent/observe` | 401 | 401 |
-| 未 arm 就 `motion` | 403 | 403 `credential is not armed` |
-| profile 关闭时 `arm` | 409 | 409 `enable the follow profile first` |
-| `v` 超凭证包络（0.25 > 0.15） | 422 | 422 `outside this credential's envelope` |
-| 无电机时 `motion` | 接受后一 tick 锁存 | `adapter_not_connected`，profile 自动置 0 |
-| 停止刷新租约 1 s | `lease_expired` | `lease_expired`，`armed` 仍为 true 但 profile 已关 |
-| 0.30 m 预算跑满 | 拒绝并撤销 | 第 21 次 409 `distance budget exhausted`，已行 0.31 m |
-| 计划执行器跑完两段 | 12 条指令、0.126 m、退出 0 | 12 条、1.53 s、0.126 m、退出 0 |
-| 计划完成后的状态 | profile 关闭 | `enabled:false`，`armed:false` |
-| 超包络计划（v=0.6） | 不发一条指令 | 退出 2，`outside credential envelope 0..0.15` |
+| `motion` | `POST /api/agent/motion` | `v`、`steer`、`ttl_ms(100…500)`，是一次**租约**而非设置 |
+| `stop` | `POST /api/agent/stop` | 立即停车并解除武装 |
+| `estop` | `POST /api/agent/estop` | 强制停车、解除武装、把 profile 置 0 并落盘 |
+| `disarm` | `POST /api/agent/disarm` | 收回自己那条武装 |
 
-## 9. 上真机 checklist
+`motion` 的应答明确区分两种结局：
 
-按顺序，缺一项都不要 arm：
+```json
+{ "accepted": true, "state": "active", "v": 0.100, "steer": 0.020,
+  "expires_in_ms": 400, "traveled_m": 0.05, "budget_m": 5.0,
+  "reason": "agent_active", "actuation": "live" }
+```
 
-1. `ip link set can0 up type can bitrate 500000`，`ip -details link show can0` 确认 `ERROR-ACTIVE`。
-2. `config/car_motor_can.conf` 由 `car_motor_can.example.conf` 改成实际电机帧格式；`GET /api/follow` 的 `motor.configured` 与 `status.adapter` 都应为 true。
-3. 台架验证 `motor.stop()` 真的断电：断指令后轮子必须停，而不是保持上一次占空比。
-4. 起服务，`GET /api/agent/observe` 应报 `actuation.ready: true`。
-5. 签发最小凭证：`v_max=0.05`、`budget_m=0.3`，先跑 `--dry-run`，再跑一段 300 ms。
-6. 全程有人在急停旁。`estop` 是软件路径，物理断电仍是最后一道。
+`state=active` 但 `actuation=blocked` 意味着：指令合法、已被控制层接受，但没有电机适配器把它
+变成 PWM。这种「被接受但落不了地」的状态必须显式暴露，否则模型会以为车在走。
 
-## 10. 扩展一个新原语
+### 3.2 执行优先级
 
-以 `go(distance_m)` 为例：
+控制线程每 1 ms 判定一次，四级顺序不可交换：
 
-1. 在 `car_sport_ctrl.c` 增加一个受同样联锁保护的执行函数，不要新开执行路径——新路径意味着新的一套竞态。
-2. 硬上限写进 C，不写在 HTTP 层。
-3. 在 `agent_hw.c` 加路由处理器，作用域复用 `AGENT_SCOPE_MOTION`，参数校验后调上一步的函数。
-4. 在 `docs/agent-tools.json` 加工具描述，字段与 C 侧校验一一对应。
-5. 在本文 §8 加一行验收用例，写明期望的拒绝码。没有拒绝用例的原语不算完成。
+```
+agent enabled ──► FAULT 锁存 ──► AGENT 租约有效 ──► 视觉跟随
+```
 
-`turn(θ)` 与 `look_for(desc)` 仍缺硬件前提：前者需要偏航角来源（当前无 IMU 融合），后者需要开放词表检测（当前固定 80 类 COCO）。缺前提就不做，不拿近似值凑。
+- 能力层被 `follow_force_disable()` 关断后，任何残余租约都不生效；
+- 视觉跟随与智能体控制互斥，切换靠 profile 开关，而不是靠谁先发指令；
+- 租约到期（默认 500 ms）不等于 fault：车停、`reason=agent_idle`，模型可以继续发指令；
+  `motor_send_failed`、`stale_detection` 这类才是 fault，只能由人 `arm` 清除。
+
+---
+
+## 4. 凭证与包络
+
+| 项 | 值 | 谁决定 |
+|---|---|---|
+| 凭证 | 32 hex，`/dev/urandom`，仅内存态 | 人（root 签发） |
+| 作用域 | `observe` / `motion+observe` | 人 |
+| 速度上限 | `v_max ≤ 0.30 m/s`（硬上限） | 签发时定，控制层再夹一次 |
+| 转向上限 | `abs(steer) ≤ 0.15` | 同上 |
+| 租约 | `100 ≤ ttl_ms ≤ 500` | 协议固定 |
+| 指令间隔 | ≥ 40 ms（25 Hz 上限） | 协议固定 |
+| 里程预算 | 默认 20 m，硬上限 100 m | 签发时定 |
+| 生命周期 | 到期、撤销、服务重启即失效 | 系统 |
+
+凭证只存在内存里：服务重启后必须重新签发、重新 arm。这是刻意的——一个能跨重启存活的模型授权，
+等于一条没人看守的油门。
+
+---
+
+## 5. 工具：`adc-agent`
+
+`bin/adc-agent` 是给人（和模型）共用的 C11 命令行工具。它承担三件模型不该自己做的事：
+包络预检、8 Hz 脉冲、任何退出路径上的停车。
+
+```sh
+# 看
+adc-agent see --save /tmp/frame.jpg          # 观测 JSON + 当前帧
+adc-agent frame --b64                        # 只要画面（JSON 内嵌 base64）
+
+# 做
+adc-agent drive --v 0.10 --steer 0.0 --ms 1500
+adc-agent plan plan.json
+adc-agent stop | estop | release
+
+# 管理员（Basic 认证，需 sudo 组成员）
+adc-agent token --scope motion --v-max 0.15 --steer-max 0.10 --budget 20 --label nav
+adc-agent arm --token $AGENT_CAP
+adc-agent revoke --all
+adc-agent status | audit
+```
+
+计划文件只有一种 schema，解析器是手写的（约 80 行），为这一个结构引入 JSON 库不值得：
+
+```json
+{ "segments": [ { "v": 0.08, "steer": 0.00, "ms": 400 },
+                { "v": 0.05, "steer": 0.02, "ms": 300 } ] }
+```
+
+退出码是契约的一部分：
+
+| 码 | 含义 |
+|---|---|
+| 0 | 计划执行完毕 |
+| 2 | 发出第一条指令前被拒绝（包络、未武装、profile 关闭、执行器未就绪） |
+| 3 | 运行中被中止（服务端拒绝或收到信号），已发送 `stop` |
+| 4 | 传输失败，或缺少凭证 |
+
+`drive` 在**段内不轮询状态**：任何故障都会表现为「指令被拒」，而一次慢轮询自己就会把 500 ms
+租约饿死。这个取舍是被实测逼出来的，注释里写明了，避免后来者「优化」回去。
+
+---
+
+## 6. 为什么工程里没有 Python
+
+运行时曾经有一层 Python：Codex 对话桥、代理配置后端、计划执行器、模型转换工具。现在全部是
+C11 + POSIX shell，`git ls-files` 里没有任何 `.py`。
+
+| 原组件 | 现在 | 变化 |
+|---|---|---|
+| `scripts/codex_bridge.py`（1326 行） | `tools/codex/codex-bridge.c` → `bin/codex-bridge` | `ldd` 只依赖 libc；18 个子命令逐个与旧版对齐 |
+| `scripts/proxy_config.py`（275 行） | `source/http/http_api_proxy.c` 进程内实现 | HTTP 路径上不再有解释器与临时文件 |
+| `scripts/agent_drive.py`（198 行） | `tools/agent/adc_agent.c` → `bin/adc-agent` | 8 Hz 执行器，退出码语义不变 |
+| `tools/model/*.py` | 移除；见 `tools/model/README.md` | 转换在固定容器内完成，产物与哈希入库 |
+
+动机不是「讨厌 Python」，而是三条具体约束：
+
+1. **部署面**：`ProtectSystem=strict` 下多一个解释器就多一条要维护的可写路径和一个要打补丁的
+   运行时；C 二进制的失败模式只有「起不来」。
+2. **时延**：`drive` 每 125 ms 起一次进程。CPython 冷启动 30–40 ms，占掉租约的 8% 且带抖动；
+   C 版本在 2 ms 量级，不随环境变量与 `site-packages` 变化。
+3. **可审计**：`codex-bridge` 处理设备码登录与会话记录，`proxy_config` 改的是整机流量。这两件
+   事的状态机用 C 写出来是显式的 switch，用 Python 写出来是一组隐式异常路径。
+
+---
+
+## 7. 实测
+
+2026-11-07，RK3576 / 相机 1280×720 MJPEG / `follow` profile 在测试中开合一次：
+
+| 项 | 结果 |
+|---|---|
+| 签发凭证 | `200`，32 hex，`scope=motion+observe`，`v_max=0.15`，`budget=5.0` |
+| `observe` | `perception.available=true`，`frame_seq=128`，`age_ms=754`，`frames_behind=9` |
+| `frame` | `200 image/jpeg`，41520 B，`X-Frame-Seq: 303`，`X-Frame-Age-Ms: 94` |
+| 未武装时 `drive` | 退出码 2，`credential is not armed` |
+| `arm` | `200`，`armed=true`，`armed_token` 前缀 `0170f0` |
+| 武装后 `drive --dry-run` | 退出码 0，`plan_meters=0.050` |
+| 计划文件（2 段） | 退出码 0，`plan_meters=0.047` |
+| 包络外计划 `v=0.5` | 退出码 2，`segment 0: v=0.500 outside credential envelope 0..0.150` |
+| `stop` / `revoke` | `200`，`stops` 计数 +1，凭证撤销 |
+| `audit` | JSONL 逐条落地，含 `tool`、`actor`、`verdict`、`reason` |
+
+`actuation.ready` 全程为 `false`：`can0` 未起、电机映射未绑定。所以本轮验证的是「看见」与
+「被接受」，没有验证「车子真的动了」。这一点在 §8 列为未完成项，不当作通过。
+
+---
+
+## 8. 已知缺口
+
+| 缺口 | 影响 | 处理 |
+|---|---|---|
+| 无电机映射（`motor_bound=false`） | 指令被接受但不产生 PWM | 接真实 CAN 映射后做台架联调，是下一阶段前置条件 |
+| `range` 由面积比推导 | 远近变化时分级会跳变 | 不作测距使用，只作粗分类 |
+| 无偏航角来源 | 缺 `turn(θ)`、`go(d)` 的闭环 | 等 IMU 融合或轮速里程标定 |
+| `tracking.locked` 与 `active` 可同时为真 | 出现「锁定但未激活」的组合 | 语义是「有选中目标、当前帧未匹配」，已在 §2.1 注明 |
+| 10⁴ 次随机包络压力测试未做 | P3 验收缺口 | 见 README §6.8 |

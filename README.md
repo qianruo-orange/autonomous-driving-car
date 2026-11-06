@@ -42,7 +42,7 @@ flowchart LR
 
 ## 摘要
 
-本文描述一台差速小车的完整车载软件：V4L2 采集、JPEG 解码、RGA 预处理、RKNN 推理、目标关联、PID 跟随、CAN FD 输出、H.264 录像与 HTTP 控制台，全部编译为单一进程并由 systemd 托管。在 1280×720@30 输入下，实测端到端时延 p50 = 79 ms、p100 = 128 ms，NPU 单帧推理 9 ms，双核占用 13% / 11%。控制环以事件驱动方式跟随单一目标，具备四道执行联锁与六种停机语义。板上另有一个以非特权用户运行的语言智能体，通过只读接口与运行日志获取状态，不持有任何执行权限。本文同时给出把该智能体扩展为多智能体控车系统的目标架构、接口契约与分阶段验收判据。
+本文描述一台差速小车的完整车载软件：V4L2 采集、JPEG 解码、RGA 预处理、RKNN 推理、目标关联、PID 跟随、CAN FD 输出、H.264 录像与 HTTP 控制台，全部编译为单一进程并由 systemd 托管。在 1280×720@30 输入下，实测端到端时延 p50 = 79 ms、p100 = 128 ms，NPU 单帧推理 9 ms，双核占用 13% / 11%。控制环以事件驱动方式跟随单一目标，具备四道执行联锁与六种停机语义。板上另有一个以非特权用户运行的语言智能体：它凭一枚内存态能力凭证读取结构化感知与相机原始画面，并在人签发的速度包络与里程预算内提交运动原语；凭证必须由人 arm，500 ms 不续租即停，全工程不含任何 Python。本文同时给出把该智能体扩展为多智能体控车系统的目标架构、接口契约与分阶段验收判据。
 
 ## 1. 系统概览
 
@@ -226,9 +226,10 @@ u_R = clamp(Kp_w·(v_R − v̂_R) + Ki_w·∫(v_R − v̂_R)dt, −1, +1)
 
 因此它的写权限是**三个目录加一个配置文件**，不是整台机器；它的执行权限是**普通用户**，不是 root。这两条是设计约束，不是现状描述。
 
-### 5.2 可见面
+### 5.2 观测面：两套视图
 
-只读接口无需认证即可访问，这是刻意的：观测不构成风险。
+人对车是「无认证只读」，因为观测不构成执行风险；智能体对车是「凭证范围内可读，包含像素」。
+两者的区别不是权限大小，而是**同一份状态的不同投影**。
 
 | 接口 | 内容 |
 |---|---|
@@ -239,7 +240,19 @@ u_R = clamp(Kp_w·(v_R − v̂_R) + Ki_w·∫(v_R − v̂_R)dt, −1, +1)
 | `recordings/logs/*.log` | 按天切分的运行日志（含每 10 s 计时行） |
 | `recordings/results/` | 检测日报 |
 
-`status.reason` 是它回答「刚才为什么停」的唯一合法依据——这也是 §6 的 P1 验收项。
+智能体另有三条观测接口，只认能力凭证：
+
+| 接口 | 内容 |
+|---|---|
+| `GET /api/agent/observe` | 车况 + 本凭证包络 + `perception`（框、横向偏移、距离分级、跟踪、一句话摘要） |
+| `GET /api/agent/perception` | 只取 `perception` 块 |
+| `GET /api/agent/frame` | 相机原始 JPEG，带 `X-Frame-Seq` / `X-Frame-Age-Ms`；`?b64=1` 返回 base64 |
+
+让模型「看见」不等于把摄像头画面丢给它。`perception` 里三个字段决定了这份观测能不能被信任：
+`frames_behind`（采集序号减检测序号）说明推理是否掉队，`age_ms` 说明这张图是多久以前的，
+`actuation.ready` 说明此刻的指令能不能落到电机。缺了它们，模型只能描述一个想象中的世界。
+
+`status.reason` 仍是它回答「刚才为什么停」的唯一合法依据——这也是 §6 的 P1 验收项。
 
 ### 5.3 控制面
 
@@ -248,9 +261,11 @@ u_R = clamp(Kp_w·(v_R − v̂_R) + Ki_w·∫(v_R − v̂_R)dt, −1, +1)
 | 通道 | 认证 | 能做什么 |
 |---|---|---|
 | 人 | Basic + root | 改配置、`can/send`、重启、签发凭证、arm |
-| 智能体 | 能力凭证（32 hex，内存态） | 只读状态；提交受包络约束的运动原语 |
+| 智能体 | 能力凭证（32 hex，内存态） | 读状态与画面；提交受包络约束的运动原语 |
 
-智能体拿不到 root 密码，因此 `POST /api/follow`、`/api/can/send`、`/api/config`、`/api/reboot` 这些门禁它过不去。它能动的只有 §6.6 那条窄通道，而那条通道默认关闭：凭证要人签发、要人 arm、500 ms 不刷新就停。详见 [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md)。
+智能体拿不到 root 密码，因此 `POST /api/follow`、`/api/can/send`、`/api/config`、`/api/reboot` 这些门禁它过不去。它能动的只有 §6.6 那条窄通道，而那条通道默认关闭：凭证要人签发、要人 arm、500 ms 不刷新就停。
+
+「看见」与「做到」共用同一枚凭证，是这套设计的关键：如果读像素和执行器走两套授权，模型就会有两种身份，审计日志也就无法回答「是谁在看过之后让它动的」。命令侧的执行器是 `bin/adc-agent`（C11），它负责包络预检、8 Hz 脉冲和任何退出路径上的停车。详见 [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md)。
 
 ### 5.4 会话生命周期
 
@@ -309,7 +324,8 @@ flowchart TB
     classDef half fill:#fdf3e3,stroke:#d99b3a,color:#1f2937
     classDef todo fill:#f4f5f7,stroke:#9aa4b2,color:#1f2937
     class REF,EX done
-    class PER,SAF half
+    class SAF half
+    class PER done
     class IN,PL,MEM todo
 ```
 
@@ -318,7 +334,7 @@ flowchart TB
 | 角色 | 现状 | 输入 | 输出 | 时限 | 失效行为 |
 |---|---|---|---|---|---|
 | 反射控制 | 已有 | 单帧检测 + 轮速 | 左右轮归一化执行量 | 33 ms | 停机 |
-| 感知代理 | 半个（固定 80 类） | 视频流 | 结构化目标列表 + 身份 | 33–200 ms | 上报 `stale_detection` |
+| 感知代理 | 已有（固定 80 类，`perception` + `frame` 已对外开放） | 视频流 | 结构化目标列表 + 身份 + 原始画面 | 33–200 ms | 上报 `stale_detection` / `frames_behind` |
 | 记忆与定位 | 无 | 轮速、检测历史 | 对象身份、位姿、地标 | 1 s | 保守降级（丢失即忘） |
 | 驾驶代理 | 无 | 意图 + 世界状态 | 原语序列 | 0.5–2 s | 请求停机 |
 | 安全代理 | 半个（联锁 + 看门狗 + 能力层） | 全部动作请求 | 允许 / 拒绝 / 急停 | < 100 ms | 拒绝一切 |
@@ -341,7 +357,8 @@ flowchart TB
 
 | 原语 | 语义 | 现状 |
 |---|---|---|
-| `observe` | 读车辆状态、自身包络、执行就绪位 | 已实现 |
+| `see` | 读车辆状态、自身包络、执行就绪位、检测框与一句话摘要 | 已实现：`observe` / `perception` |
+| `frame` | 取当前相机画面（JPEG 或 base64） | 已实现：`/api/agent/frame` |
 | `drive(v, steer, ttl_ms)` | 带租约的差速运动 | 已实现 |
 | `stop` / `estop` | 停止 / 强制停机并关断 profile | 已实现 |
 | `go(d, v)` | 直线行进 d 米 | 缺里程计，`traveled_m` 目前由轮速目标积分得出，打滑未补偿 |
@@ -352,12 +369,13 @@ flowchart TB
 
 ### 6.6 工具契约（已实现）
 
-四个原语，function calling 描述在 [`docs/agent-tools.json`](docs/agent-tools.json)：
+五个原语，function calling 描述在 [`docs/agent-tools.json`](docs/agent-tools.json)：
 
 | 原语 | 包络 |
 |---|---|
-| `observe` | 只读 |
-| `drive(v, steer, ttl_ms)` | `v ≤ min(凭证 v_max, 0.30)`、`|steer| ≤ 0.15`、`100 ≤ ttl_ms ≤ 500` |
+| `see()` | 只读；返回车况、包络、`perception`（≤12 个框、横向偏移、距离分级、摘要） |
+| `frame(b64, max_bytes)` | 只读；原始 JPEG，默认上限 1 MiB，超过返回 `413` |
+| `drive(v, steer, ttl_ms)` | `v ≤ min(凭证 v_max, 0.30)`、`abs(steer) ≤ 0.15`、`100 ≤ ttl_ms ≤ 500` |
 | `stop` | 停止并解除武装，同时关闭 profile |
 | `estop` | 强制停机，profile 置 0 并落盘 |
 
@@ -377,7 +395,22 @@ HTTP 422  v or steer outside this credential's envelope
 
 `actuation` 区分「被接受」与「能落地」：没有电机适配器时指令照样被接受，但下一个 tick 会锁存 `adapter_not_connected` 并关闭 profile。这个字段让智能体知道自己是在开车还是在写日志。
 
-签发凭证、arm、撤销、读审计属于 operator，不在工具列表里——能给自己签发权限的模型等于没有受限。
+观测侧的返回同样是一份契约，不是一段自由文本：
+
+```jsonc
+"perception": {
+  "available": true, "frame_seq": 128, "age_ms": 754, "frames_behind": 9,
+  "objects": [ { "cls": 0, "name": "person", "conf": 0.87,
+                 "lateral": -0.06, "area_ratio": 0.0831, "range": "mid",
+                 "in_path": true } ],
+  "nearest": { "name": "person", "conf": 0.87, "lateral": -0.06, "range": "mid" },
+  "summary": "person centre, mid range, conf 0.87"
+}
+```
+
+模型侧的完整路径是 `adc-agent see` → `adc-agent plan` → `adc-agent stop`，三次调用之间没有它可写
+的通道。签发凭证、arm、撤销、读审计属于 operator，不在工具列表里——能给自己签发权限的模型
+等于没有受限。
 
 ### 6.7 四层防护
 
@@ -444,7 +477,7 @@ HTTP 422  v or steer outside this credential's envelope
 | [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | 量化流程与精度对比 |
 | [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | 功能测试记录 |
 | [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md) | 智能体硬件能力层：凭证、包络、租约、审计、验收矩阵 |
-| [docs/agent-tools.json](docs/agent-tools.json) | 四个原语的 function calling 描述 |
+| [docs/agent-tools.json](docs/agent-tools.json) | 五个原语的 function calling 描述 |
 
 ## 附录
 
@@ -458,6 +491,13 @@ sudo scripts/deploy.sh -i        # 安装至 /opt，注册并重启 systemd 单�
 
 浏览器访问 `http://<board>/`，使用系统账号通过 Basic 认证（`getpwnam` + `getspnam` + `crypt`，无独立用户库）。只读接口对局域网开放。
 
+构建产出三个可执行文件：`bin/autonomous-driving-car`（服务）、`bin/adc-agent`（智能体的看与做）、
+`bin/codex-bridge`（Codex CLI 桥接）。三者都是 C11，板上不需要任何解释器或第三方运行时：
+
+```bash
+git ls-files | grep -E '\.py$'     # 输出为空：工程内没有 Python
+```
+
 ### B. 仓库结构
 
 ```text
@@ -468,12 +508,15 @@ source/           C 实现，约 1.7 万行
   control/        跟踪 · PID · 跟随状态机 · CAN 适配
   can/            CAN FD 收发 · DBC 解析 · 电机映射
   http/           reactor · 路由 · 认证 · 各 API
-  agent/          智能体能力层：凭证 · 包络 · 预算 · 审计
+  agent/          智能体能力层：凭证 · 包络 · 预算 · 审计 · 观测/取帧
   tcp/            网络信息 · 遥测
 include/          与 source/ 同构
 html/             前端，无构建步骤：5 个页面 + 28 个 JS/CSS
 config/           运行配置、模型、标签、DBC、电机映射示例
-scripts/          构建、部署、同步、Codex 桥接、计划执行器 agent_drive.py
+scripts/          构建、部署、同步、模型校验（纯 shell，无解释器依赖）
+tools/agent/      adc-agent：看见（观测+取帧）与做到（8 Hz 计划执行）
+tools/codex/      codex-bridge：Codex CLI 的 C11 桥接（18 个子命令）
+tools/model/      模型转换与验证的离线说明（转换在固定容器内完成）
 docs/             设计文档与测试记录
 ```
 
@@ -527,7 +570,7 @@ recordings/codex/chat_YYYYMMDD.txt          # 智能体对话审计
 
 ## Abstract
 
-This document describes the complete on-vehicle software of a differential-drive robot: V4L2 capture, JPEG decode, RGA preprocessing, RKNN inference, target association, PID following, CAN FD output, H.264 recording and an HTTP console — compiled into a single process supervised by systemd. At 1280×720@30 the measured end-to-end latency is p50 = 79 ms and p100 = 128 ms; a single inference costs 9 ms and leaves the dual-core NPU at 13% / 11% utilisation. The control loop follows one target, guarded by four actuation interlocks and six halt semantics. A language agent runs as an unprivileged user, observes the vehicle through read-only APIs and logs, and holds no execution authority. The second half of this document specifies the target architecture, interface contracts and staged acceptance criteria for turning that agent into a multi-agent driving system.
+This document describes the complete on-vehicle software of a differential-drive robot: V4L2 capture, JPEG decode, RGA preprocessing, RKNN inference, target association, PID following, CAN FD output, H.264 recording and an HTTP console — compiled into a single process supervised by systemd. At 1280×720@30 the measured end-to-end latency is p50 = 79 ms and p100 = 128 ms; a single inference costs 9 ms and leaves the dual-core NPU at 13% / 11% utilisation. The control loop follows one target, guarded by four actuation interlocks and six halt semantics. A language agent runs as an unprivileged user: it reads structured perception and raw camera frames through an in-memory capability token, and submits motion primitives inside an operator-issued speed envelope and distance budget. The token must be armed by a human, the motion lease stops the vehicle 500 ms after the last refresh, and the token itself only ever lives in RAM. The entire tree is free of Python. The second half of this document specifies the target architecture, interface contracts and staged acceptance criteria for turning that agent into a multi-agent driving system.
 
 ## 1. System overview
 
@@ -705,9 +748,9 @@ The service runs as root because it configures interfaces, frequency governors a
 
 Its write surface is therefore **three directories and one config file**, not the machine, and its privilege level is **unprivileged**, not root. Both are design constraints, not descriptions of current luck.
 
-### 5.2 Observable surface
+### 5.2 Observable surface: two views
 
-Read-only endpoints require no authentication, deliberately: observation carries no actuation risk.
+Humans read the vehicle without authentication, because observation carries no actuation risk. The agent reads it inside a capability scope, pixels included. The difference is not the size of the privilege; it is **two projections of the same state**.
 
 | Endpoint | Content |
 |---|---|
@@ -718,7 +761,17 @@ Read-only endpoints require no authentication, deliberately: observation carries
 | `recordings/logs/*.log` | Daily logs, including the 10 s timing line |
 | `recordings/results/` | Daily detection reports |
 
-`status.reason` is the only legitimate source for answering "why did it stop", and that is exactly the P1 acceptance criterion in §6.8.
+The agent has three observation endpoints of its own, gated by the capability token:
+
+| Endpoint | Content |
+|---|---|
+| `GET /api/agent/observe` | Vehicle state + own envelope + `perception` (boxes, lateral offset, range class, tracking, one-line summary) |
+| `GET /api/agent/perception` | The `perception` block alone |
+| `GET /api/agent/frame` | Raw camera JPEG with `X-Frame-Seq` / `X-Frame-Age-Ms`; `?b64=1` returns base64 |
+
+Letting a model "see" is not the same as throwing camera frames at it. Three fields in `perception` decide whether the observation can be trusted: `frames_behind` (capture sequence minus detection sequence) says whether inference has fallen behind, `age_ms` says how old the picture is, and `actuation.ready` says whether a command issued now could reach the motors. Without them a model can only describe an imagined world.
+
+`status.reason` remains the only legitimate source for "why did it stop", which is the P1 acceptance criterion in §6.8.
 
 ### 5.3 Control plane
 
@@ -727,9 +780,11 @@ There are two control planes and they do not share credentials:
 | Channel | Authentication | What it can do |
 |---|---|---|
 | Human | Basic + root | Change settings, `can/send`, reboot, issue a capability, arm it |
-| Agent | Capability token (32 hex, in RAM) | Read state; submit motion primitives inside an envelope |
+| Agent | Capability token (32 hex, in RAM) | Read state and pixels; submit motion primitives inside an envelope |
 
-The agent never sees the root password, so `POST /api/follow`, `/api/can/send`, `/api/config` and `/api/reboot` remain out of reach. The only surface it can reach is the narrow channel in §6.6, and that channel is closed by default: a human issues the capability, a human arms it, and it stops after 500 ms without a refresh. See [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md).
+The agent never sees the root password, so `POST /api/follow`, `/api/can/send`, `/api/config` and `/api/reboot` remain out of reach. The only surface it can reach is the narrow channel in §6.6, and that channel is closed by default: a human issues the capability, a human arms it, and it stops after 500 ms without a refresh.
+
+Seeing and acting share one capability on purpose. Two separate grants would give the model two identities, and the audit log could no longer answer "who looked, and then made it move". The command side is `bin/adc-agent` (C11): envelope pre-flight, the 8 Hz pulse train, and an unconditional stop on every exit path. See [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md).
 
 ### 5.4 Session lifecycle
 
@@ -780,7 +835,8 @@ flowchart TB
     classDef half fill:#fdf3e3,stroke:#d99b3a,color:#1f2937
     classDef todo fill:#f4f5f7,stroke:#9aa4b2,color:#1f2937
     class REF,EX done
-    class PER,SAF half
+    class SAF half
+    class PER done
     class IN,PL,MEM todo
 ```
 
@@ -789,7 +845,7 @@ flowchart TB
 | Role | Status | Input | Output | Deadline | On failure |
 |---|---|---|---|---|---|
 | Reflex control | Exists | One frame + wheel speed | Normalised wheel commands | 33 ms | Stop |
-| Perception agent | Partial (fixed 80 classes) | Video stream | Structured targets + identity | 33–200 ms | Report `stale_detection` |
+| Perception agent | Present (fixed 80 classes; `perception` + `frame` are exposed) | Video stream | Structured targets + identity + raw frame | 33–200 ms | Report `stale_detection` / `frames_behind` |
 | Memory & localisation | Missing | Wheel speed, detection history | Identity, pose, landmarks | 1 s | Degrade conservatively |
 | Driving agent | Missing | Intent + world state | Primitive sequence | 0.5–2 s | Request stop |
 | Safety agent | Partial (interlocks, watchdog, capability layer) | Every action request | Allow / deny / e-stop | < 100 ms | Deny everything |
@@ -808,7 +864,8 @@ All three checks exist in `source/agent/agent_hw.c`: the allow-list is a fixed e
 
 | Primitive | Semantics | Status |
 |---|---|---|
-| `observe` | Read state, own envelope, actuation readiness | Implemented |
+| `see` | Read state, own envelope, actuation readiness, boxes and a one-line summary | Implemented: `observe` / `perception` |
+| `frame` | Fetch the current camera image (JPEG or base64) | Implemented: `/api/agent/frame` |
 | `drive(v, steer, ttl_ms)` | Leased differential motion | Implemented |
 | `stop` / `estop` | Stop / force stop and disable the profile | Implemented |
 | `go(d, v)` | Travel `d` metres | No odometry: `traveled_m` integrates wheel targets, slip uncompensated |
@@ -819,12 +876,13 @@ The last three are blocked by hardware, not by code volume. A `go` built on appr
 
 ### 6.6 Tool contract (implemented)
 
-Four primitives; the function-calling description is in [`docs/agent-tools.json`](docs/agent-tools.json):
+Five primitives; the function-calling description is in [`docs/agent-tools.json`](docs/agent-tools.json):
 
 | Primitive | Envelope |
 |---|---|
-| `observe` | Read-only |
-| `drive(v, steer, ttl_ms)` | `v <= min(capability v_max, 0.30)`, `|steer| <= 0.15`, `100 <= ttl_ms <= 500` |
+| `see()` | Read-only; vehicle state, envelope, `perception` (<=12 boxes, lateral offset, range class, summary) |
+| `frame(b64, max_bytes)` | Read-only; raw JPEG, default cap 1 MiB, `413` above it |
+| `drive(v, steer, ttl_ms)` | `v <= min(capability v_max, 0.30)`, `abs(steer) <= 0.15`, `100 <= ttl_ms <= 500` |
 | `stop` | Stop, disarm, and disable the profile |
 | `estop` | Force stop; profile written to disk as disabled |
 
@@ -844,7 +902,20 @@ HTTP 422  v or steer outside this credential's envelope
 
 `actuation` separates "accepted" from "able to land": with no motor adapter the command is still accepted, but the next tick latches `adapter_not_connected` and disables the profile. That field is how an agent knows whether it is driving or merely writing to a log.
 
-Issuing a capability, arming it, revoking it and reading the audit log belong to the operator and are deliberately absent from the tool list: a model that can mint its own authority is not constrained at all.
+The observation side is a contract too, not free text:
+
+```jsonc
+"perception": {
+  "available": true, "frame_seq": 128, "age_ms": 754, "frames_behind": 9,
+  "objects": [ { "cls": 0, "name": "person", "conf": 0.87,
+                 "lateral": -0.06, "area_ratio": 0.0831, "range": "mid",
+                 "in_path": true } ],
+  "nearest": { "name": "person", "conf": 0.87, "lateral": -0.06, "range": "mid" },
+  "summary": "person centre, mid range, conf 0.87"
+}
+```
+
+The full model-side path is `adc-agent see` -> `adc-agent plan` -> `adc-agent stop`, with no writable channel between the calls. Issuing a capability, arming it, revoking it and reading the audit log belong to the operator and are deliberately absent from the tool list: a model that can mint its own authority is not constrained at all.
 
 ### 6.7 Defence in depth
 
@@ -911,7 +982,7 @@ Single reading at 2026-11-07 01:50, after 10.4 hours of uptime:
 | [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | Quantisation flow and accuracy |
 | [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | Functional test record |
 | [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md) | Agent capability layer: credentials, envelope, lease, audit, acceptance matrix |
-| [docs/agent-tools.json](docs/agent-tools.json) | Function-calling description of the four primitives |
+| [docs/agent-tools.json](docs/agent-tools.json) | Function-calling description of the five primitives |
 
 ## Appendix
 
@@ -925,6 +996,12 @@ sudo scripts/deploy.sh -i        # install to /opt, register and restart the uni
 
 Open `http://<board>/`; Basic authentication is checked against system accounts (`getpwnam` + `getspnam` + `crypt`, no separate user store). Read-only endpoints are reachable from the LAN without credentials.
 
+The build produces three executables: `bin/autonomous-driving-car` (service), `bin/adc-agent` (the agent's eyes and hands) and `bin/codex-bridge` (Codex CLI bridge). All three are C11; the board needs no interpreter and no third-party runtime:
+
+```bash
+git ls-files | grep -E '\.py$'     # empty output: the tree contains no Python
+```
+
 ### B. Repository layout
 
 ```text
@@ -935,12 +1012,15 @@ source/           C implementation, ~17k lines
   control/        tracking · PID · follow state machine · CAN adapter
   can/            CAN FD transport · DBC decoding · motor mapping
   http/           reactor · routing · authentication · APIs
-  agent/          agent capability layer: credentials · envelope · budget · audit
+  agent/          agent capability layer: credentials · envelope · budget · audit · vision
   tcp/            network info · telemetry
 include/          mirrors source/
 html/             front end, no build step: 5 pages + 28 JS/CSS files
 config/           runtime config, model, labels, DBC, motor mapping example
-scripts/          build, deploy, sync, Codex bridge, agent_drive.py plan executor
+scripts/          build, deploy, sync, model checks (shell only, no interpreter dependency)
+tools/agent/      adc-agent: see (observe + frame) and act (8 Hz plan executor)
+tools/codex/      codex-bridge: C11 bridge to the Codex CLI (18 subcommands)
+tools/model/      offline model conversion notes (conversion happens in a pinned container)
 docs/             design documents and test records
 ```
 

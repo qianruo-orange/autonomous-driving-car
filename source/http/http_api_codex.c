@@ -158,7 +158,7 @@ static int json_str(const char *buf, const char *key, char *out, size_t size)
     return 0;
 }
 
-/* The bridge is Python: json.dump() emits "\"ok\": true" with a space. */
+/* The bridge emits "ok": true with a space after the colon (json.dump style). */
 static int json_ok(const char *buf)
 {
     const char *p = strstr(buf, "\"ok\":");
