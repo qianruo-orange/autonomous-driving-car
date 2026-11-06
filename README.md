@@ -147,7 +147,7 @@ flowchart LR
 
 **采集。** V4L2 MJPEG，1280×720，30 fps。设备通过稳定路径（`/dev/v4l/by-id/...`）打开，因为新增内置媒体驱动会改变 `/dev/videoN` 编号。
 
-**解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 单帧约 5 ms。解码已从采集线程里剥出来：2 个解码线程各持一个 libjpeg 实例并行工作，`SCHED_FIFO` 15 绑在大核组（cpu4-7，按 `cpu_capacity` 自动发现）。单线程软解只能到 25 fps，双线程跑满相机的 29 fps，采集线程只负责 claim 与投递。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
+**解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 单帧约 5 ms。解码已从采集线程里剥出来：2 个解码线程各持一个 libjpeg 实例并行工作，`SCHED_FIFO` 15 绑在大核组（RK3576 的 cpu4-7）。单线程软解只能到 25 fps，双线程跑满相机的 29 fps，采集线程只负责 claim 与投递。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
 
 **预处理。** RGA 一次调用完成 NV12 → RGB、等比缩放和居中放置到 512×512 画布，约 1 ms。114 灰边只在启动时填一次，之后每帧 RGA 只写中心区域。
 
@@ -524,8 +524,8 @@ renumber `/dev/videoN`.
 **Decode.** libjpeg-turbo decodes the JPEG into NV12 on the CPU (~5 ms per 720p
 frame) and writes it into a CMA dma-buf that RGA reads directly. Decoding was
 moved out of the capture thread into two threads, one libjpeg instance each,
-running `SCHED_FIFO` 15 on the big cores (cpu4-7, discovered from
-`cpu_capacity`): a single software decoder tops out at 25 fps, the pair
+running `SCHED_FIFO` 15 on the big cores (cpu4-7 on RK3576): a single
+software decoder tops out at 25 fps, the pair
 saturates the camera's 29 fps, and the capture thread only claims and submits.
 The on-SoC `rockchip-jpegd` (VDPU720) is not used: repeated decodes of the same
 frame do not agree — row 0 of every 8x8 block is exact while the remaining rows

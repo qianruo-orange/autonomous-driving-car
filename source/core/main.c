@@ -85,7 +85,7 @@ static const module_t g_modules[] = {
     /* 相机采集：周期 33 ms 的取流，绑大核与解码、推理同组。线程绝大部分时间
        阻塞在 DQBUF，唤醒后只做一次入环，单次运行 <1 ms。 */
     {"video",           video_stream_init,  video_stream_shutdown,  video_stream_task,  SCHED_FIFO,  15,       CPU_BIG},
-    /* 解码双线程（yolo 模块各开一个 libjpeg 实例）：与推理同用 heavy 组，
+    /* 解码双线程（yolo 模块各开一个 libjpeg 实例）：与推理同用大核组，
        把解码从采集线程里剥出来并行。 */
     {"decode",          NULL,               NULL,                   NULL,               SCHED_FIFO,  15,       CPU_BIG},
     /* YOLO 为必要模块：初始化失败即回滚启动。 */
