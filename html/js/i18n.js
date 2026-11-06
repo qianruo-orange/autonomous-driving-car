@@ -388,7 +388,6 @@
     "打包失败": "Could not pack records",
     "完整交互记录已开始下载": "Full interaction log download started",
     "发送": "Send",
-    "网络代理": "Network proxy",
     "网络代理与测试": "Network proxy & tests",
     "代理主机": "Proxy host",
     "端口": "Port",

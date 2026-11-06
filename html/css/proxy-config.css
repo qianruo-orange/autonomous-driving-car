@@ -1,22 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Standalone network proxy settings card on /config. */
-.proxy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:10px}
-.proxy-field{display:flex;flex-direction:column;gap:5px;min-width:0}
-.proxy-field label{font-size:12px;color:var(--muted)}
-.proxy-field input,.proxy-field select{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:9px;border:1px solid var(--card-border);background:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px}
-.proxy-field input:focus,.proxy-field select:focus{outline:none;border-color:var(--accent)}
+/* Network proxy settings inside the merged network card on /config.
+   Field layout itself lives in .net-grid (config.css). */
 .proxy-badge{font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--card-border);background:var(--btn-bg);color:var(--muted);margin-left:8px}
 .proxy-badge.ok{color:#0a0;border-color:#0a0}
 .proxy-badge.warn{color:#c60;border-color:#c60}
 /* Save / apply / reload sit at the right of the card title bar. */
-#card_proxy h3{flex-wrap:wrap}
 .proxy-head-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .proxy-head-actions .btn{margin:0;padding:4px 10px;font-size:12px;white-space:nowrap}
-.proxy-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-.proxy-actions .btn{margin:0}
 .proxy-status{display:block;margin:10px 0 0;font-size:12px;line-height:1.5;min-height:18px;white-space:normal;word-break:break-word}
 @media (max-width:720px){
-  .proxy-grid{grid-template-columns:1fr}
-  .proxy-actions .btn{flex:1 1 45%}
   .proxy-head-actions{margin-left:0;width:100%;justify-content:flex-start}
 }

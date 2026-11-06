@@ -207,7 +207,8 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 
 系统状态页（`/status`）显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘与网络速度。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 占用率由应用对每次 `improcess` 调用计时，按 1 秒滑窗按核汇总。
 
-主页右侧的聊天栏、配置页的网络与登录卡片、日志页的交互记录列表分别见[网络代理](#网络代理)与[Codex 对话](#codex-对话)。`/config` 底部两个卡片：网络代理与网络测试合并为一张卡片（左代理、右测试，占满整行），CPU 频率与 Codex CLI 配置一行左右并排；窗口窄于 960 px 时自动改为上下堆叠。
+主页右侧的聊天栏、配置页的网络与登录卡片、日志页的交互记录列表分别见[网络代理](#网络代理)与[Codex 对话](#codex-对话)。`/config` 底部两个卡片：网络代理与网络测试合并为一张卡片（占满整行，字段像 YOLO 卡片一样
+平铺成两行网格，无二级标题），CPU 频率与 Codex CLI 配置一行左右并排；窗口窄于 960 px 时自动改为上下堆叠。
 
 主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq`（采集序号）和 `X-Ts`（采集时刻，板端单调时钟毫秒）：前者把画面与检测结果对齐，后者配合 `/api/video/stats` 换算端到端延迟。框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h` 和每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）；浏览器按帧序号对齐，若该帧没有推理结果，回退到六帧内最近的记录，再远则跳过。720p 单帧 60–110 KB，30 fps 不限额需要 18–26 Mbps；`mjpeg_max_kbps` 限制单客户端预算，socket 积压时丢弃整帧避免延迟累积。
 
@@ -682,7 +683,8 @@ The chat column on the home page, the network/sign-in cards on `/config` and the
 interaction-record list on `/logs` are described in
 [Network proxy](#network-proxy) and [Codex chat](#codex-chat). At the bottom of
 `/config` there are two cards: network proxy and network tests merged into one
-card (proxy left, tests right, full width), and CPU frequency beside Codex CLI.
+full-width card (fields laid flat in a two-row grid like the YOLO card, no
+sub-headings), and CPU frequency beside Codex CLI.
 Below 960 px they stack vertically.
 
 The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of

@@ -4,7 +4,7 @@
 (function () {
   'use strict';
   function el(id) { return document.getElementById(id); }
-  var card = el('card_proxy');
+  var card = el('card_network');
   if (!card) return;
 
   var host = el('proxy_host');
