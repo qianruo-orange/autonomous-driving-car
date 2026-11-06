@@ -197,6 +197,30 @@ void http_codex_update_check(app_ctx_t *app, int fd, const char *method,
     reply_bridge(fd, "check-update", NULL, 0, NULL);
 }
 
+/* Runs `codex update`; the bridge blocks until the CLI finishes. */
+void http_codex_update_install(app_ctx_t *app, int fd, const char *method,
+                               const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    reply_bridge(fd, "update-install", NULL, 0, NULL);
+}
+
+/* Model catalog straight from the installed CLI (no hard-coded list). */
+void http_codex_models(app_ctx_t *app, int fd, const char *method,
+                       const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    reply_bridge(fd, "models", NULL, 0, NULL);
+}
+
+/* Plan, rolling-window usage and credits for the signed-in account. */
+void http_codex_quota(app_ctx_t *app, int fd, const char *method,
+                      const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    reply_bridge(fd, "quota", NULL, 0, NULL);
+}
+
 void http_codex_config_post(app_ctx_t *app, int fd, const char *method,
                             const char *uri, const char *req)
 {

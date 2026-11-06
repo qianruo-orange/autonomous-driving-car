@@ -387,6 +387,198 @@ def cmd_status(args):
     result(args.out, build_status())
 
 
+# ---------------------------------------------------------------------------
+# Model catalog, account quota and one-click CLI update.
+#
+# The CLI owns both facts, so the bridge asks it instead of hard-coding a list:
+#   * `codex debug models` prints the raw catalog the client ships with;
+#   * `codex app-server` speaks JSON-RPC and answers account/rateLimits/read.
+# Both calls are short-lived and run as the unprivileged account.
+# ---------------------------------------------------------------------------
+APP_SERVER_TIMEOUT = 20.0
+UPDATE_TIMEOUT = 600
+
+
+def _app_server_line(proc, deadline):
+    """Read one JSON-RPC line without blocking past the deadline."""
+    remaining = deadline - time.time()
+    if remaining <= 0:
+        return ""
+    ready, _, _ = select.select([proc.stdout], [], [], remaining)
+    if not ready:
+        return ""
+    return proc.stdout.readline()
+
+
+def app_server_call(method, params=None, timeout=APP_SERVER_TIMEOUT):
+    """One initialize + call round trip with `codex app-server` over stdio."""
+    s = settings()
+    cli = s.get("cli_path", "")
+    if not cli_available(cli):
+        raise RuntimeError("Codex CLI not found")
+    proc = subprocess.Popen(
+        [cli, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, bufsize=1, env=cli_env(),
+        **drop_privileges_kwargs())
+    deadline = time.time() + timeout
+    try:
+        def send(obj):
+            proc.stdin.write(json.dumps(obj) + "\n")
+            proc.stdin.flush()
+
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {"clientInfo": {"name": "autonomous-driving-car",
+                                        "title": "Board", "version": "1.0.0"}}})
+        while time.time() < deadline:
+            line = _app_server_line(proc, deadline)
+            if not line:
+                raise RuntimeError("app-server handshake timed out")
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") == 1:
+                if msg.get("error"):
+                    raise RuntimeError("app-server refused initialize")
+                break
+        send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        send({"jsonrpc": "2.0", "id": 2, "method": method,
+              "params": params or {}})
+        while time.time() < deadline:
+            line = _app_server_line(proc, deadline)
+            if not line:
+                raise RuntimeError("app-server did not answer " + method)
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("id") == 2:
+                if msg.get("error"):
+                    raise RuntimeError(str(msg.get("error"))[:200])
+                return msg.get("result") or {}
+        raise RuntimeError("app-server timed out on " + method)
+    finally:
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
+def cmd_models(args):
+    """Visible, API-capable models from the CLI's own catalog."""
+    s = settings()
+    cli = s.get("cli_path", "")
+    if not cli_available(cli):
+        result(args.out, {"ok": False, "models": [], "error": "Codex CLI not found"})
+        return
+    try:
+        p = subprocess.run([cli, "debug", "models"], env=cli_env(),
+                           capture_output=True, text=True, timeout=45,
+                           **drop_privileges_kwargs())
+    except Exception as exc:
+        result(args.out, {"ok": False, "models": [],
+                          "error": "%s: %s" % (type(exc).__name__, str(exc)[:160])})
+        return
+    try:
+        catalog = json.loads(p.stdout or "")
+    except ValueError:
+        result(args.out, {"ok": False, "models": [],
+                          "error": (p.stderr or "cannot parse model catalog").strip()[:200]})
+        return
+    models = []
+    for m in catalog.get("models") or []:
+        if not isinstance(m, dict):
+            continue
+        if str(m.get("visibility") or "list") != "list":
+            continue
+        if not m.get("supported_in_api", True):
+            continue
+        slug = str(m.get("slug") or "").strip()
+        if not slug:
+            continue
+        efforts = [str(level.get("effort"))
+                   for level in (m.get("supported_reasoning_levels") or [])
+                   if isinstance(level, dict) and level.get("effort")]
+        models.append({"slug": slug,
+                       "name": str(m.get("display_name") or slug),
+                       "default_effort": str(m.get("default_reasoning_level") or ""),
+                       "efforts": efforts})
+    result(args.out, {"ok": True, "models": models,
+                      "selected": s.get("model", ""),
+                      "source": "codex debug models"})
+
+
+def _window(value):
+    if not isinstance(value, dict):
+        return None
+    return {"used_percent": value.get("usedPercent"),
+            "window_minutes": value.get("windowDurationMins"),
+            "resets_at": value.get("resetsAt")}
+
+
+def cmd_quota(args):
+    """ChatGPT plan, rolling-window usage and remaining credits."""
+    if not auth_mode():
+        result(args.out, {"ok": False, "error": "not signed in", "signed_in": False})
+        return
+    try:
+        r = app_server_call("account/rateLimits/read", {})
+    except Exception as exc:
+        result(args.out, {"ok": False, "signed_in": True,
+                          "error": "%s: %s" % (type(exc).__name__, str(exc)[:160])})
+        return
+    limits = r.get("rateLimits") or {}
+    credits = limits.get("credits") or {}
+    result(args.out, {
+        "ok": True,
+        "signed_in": True,
+        "plan": str(limits.get("planType") or ""),
+        "allowed": bool(r.get("ordinaryUsageAllowed")),
+        "primary": _window(limits.get("primary")),
+        "secondary": _window(limits.get("secondary")),
+        "credits": {"has": bool(credits.get("hasCredits")),
+                    "unlimited": bool(credits.get("unlimited")),
+                    "balance": credits.get("balance")},
+        "reached": str(limits.get("rateLimitReachedType") or ""),
+        "reset_credits": (r.get("rateLimitResetCredits") or {}).get("availableCount", 0),
+        "fetched_at": int(time.time()),
+    })
+
+
+def cmd_update_install(args):
+    """Run `codex update` once and report the resulting version."""
+    s = settings()
+    cli = s.get("cli_path", "")
+    if not cli_available(cli):
+        result(args.out, {"ok": False, "error": "Codex CLI not found"})
+        return
+    before = version_of(s.get("cli_version", "")) or version_of(cli_version(cli))
+    try:
+        p = subprocess.run([cli, "update"], env=cli_env(), capture_output=True,
+                           text=True, timeout=UPDATE_TIMEOUT, cwd=CX,
+                           **drop_privileges_kwargs())
+        rc = p.returncode
+        output = ((p.stdout or "") + (p.stderr or "")).strip()[-4000:]
+    except subprocess.TimeoutExpired:
+        result(args.out, {"ok": False, "before": before, "version": before,
+                          "error": "codex update timed out"})
+        return
+    except Exception as exc:
+        result(args.out, {"ok": False, "before": before, "version": before,
+                          "error": "%s: %s" % (type(exc).__name__, str(exc)[:160])})
+        return
+    after_version = cli_version(cli)
+    latest = version_of(after_version) or before
+    if after_version:
+        s["cli_version"] = after_version
+        write_json(SETTINGS, s)
+    result(args.out, {"ok": rc == 0, "exit_code": rc, "before": before,
+                      "version": latest, "cli_version": after_version,
+                      "output": output,
+                      "update_command": UPDATE_COMMAND})
+
+
 def cmd_config(args):
     payload = json.loads(read_text(args.input) or "{}")
     s = settings()
@@ -745,6 +937,9 @@ def read_text(path):
 COMMANDS = {
     "status": cmd_status,
     "check-update": cmd_check_update,
+    "update-install": cmd_update_install,
+    "models": cmd_models,
+    "quota": cmd_quota,
     "config": cmd_config,
     "login-device": cmd_login_device,
     "chat-start": cmd_chat_start,
