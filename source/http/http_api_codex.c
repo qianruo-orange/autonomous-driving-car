@@ -291,6 +291,20 @@ void http_codex_records(app_ctx_t *app, int fd, const char *method,
     reply_bridge(fd, "records", NULL, 0, NULL);
 }
 
+
+/* Delete one interaction record (name comes from ?name=). */
+void http_codex_record_delete(app_ctx_t *app, int fd, const char *method,
+                              const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)req;
+    char name[128] = "";
+    if (!query_param(uri, "name", name, sizeof(name)) || !name[0]) {
+        http_err(fd, 400, "Bad Request", "missing record name");
+        return;
+    }
+    reply_bridge(fd, "records-delete", NULL, 0, name);
+}
+
 void http_codex_records_clear(app_ctx_t *app, int fd, const char *method,
                               const char *uri, const char *req)
 {

@@ -848,6 +848,7 @@ static void http_process_request(http_conn_t *c)
         { "/api/codex/history",       1, NULL,   http_codex_history,       http_check_auth_root },
         { "/api/codex/records",       0, NULL,   http_codex_records,       http_check_auth_root },
         { "/api/codex/records/clear", 0, "POST", http_codex_records_clear, http_check_auth_root },
+        { "/api/codex/delrecord",0, "POST", http_codex_record_delete, http_check_auth_root },
         { "/api/codex/record",        1, NULL,   http_codex_record,        http_check_auth_root },
         { "/api/codex/export",        0, NULL,   http_codex_export,        http_check_auth_root },
         { "/api/proxy/config",        0, NULL,   http_proxy_config,        http_check_auth_root },

@@ -15,6 +15,58 @@
     setI18nText(cell, key);
   }
 
+
+  function previewBox() {
+    var box = document.getElementById('codex_preview');
+    if (box) return box;
+    box = document.createElement('div');
+    box.id = 'codex_preview';
+    box.style.cssText = 'position:fixed;inset:0;z-index:1000;display:none;' +
+      'align-items:center;justify-content:center;background:rgba(4,8,20,.72);padding:24px';
+    box.innerHTML = '<div style="background:var(--card-bg);border:1px solid var(--card-border2);' +
+      'border-radius:16px;padding:16px;max-width:min(900px,92vw);max-height:84vh;display:flex;' +
+      'flex-direction:column;gap:10px"><div style="display:flex;justify-content:space-between;' +
+      'align-items:center;gap:12px"><b id="codex_preview_name" style="font-size:13px"></b>' +
+      '<button type="button" id="codex_preview_close" class="btn btn-back">关闭</button></div>' +
+      '<pre id="codex_preview_body" style="margin:0;overflow:auto;font-size:12px;line-height:1.6;' +
+      'white-space:pre-wrap;color:var(--text)"></pre></div>';
+    document.body.appendChild(box);
+    box.addEventListener('click', function (e) { if (e.target === box) box.style.display = 'none'; });
+    box.querySelector('#codex_preview_close').addEventListener('click', function () {
+      box.style.display = 'none';
+    });
+    return box;
+  }
+
+  async function preview(file) {
+    try {
+      var r = await authFetch('/api/codex/record?name=' + encodeURIComponent(file.name));
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var text = await r.text();
+      var box = previewBox();
+      box.querySelector('#codex_preview_name').textContent = file.name;
+      box.querySelector('#codex_preview_body').textContent = text.slice(0, 200000);
+      box.style.display = 'flex';
+    } catch (error) {
+      if (error.message !== 'auth cancelled') window.fileToast(t('预览失败'), false);
+    }
+  }
+
+  async function remove(file) {
+    if (!confirm(t('删除 {name}？此操作不可恢复。', {name: file.name}))) return;
+    try {
+      var r = await authFetch('/api/codex/delrecord?name=' + encodeURIComponent(file.name),
+                              {method: 'POST'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      var j = await r.json();
+      if (!j.ok) throw new Error(j.error || 'failed');
+      window.fileToast(t('已删除 {name}', {name: file.name}), true);
+      await load();
+    } catch (error) {
+      if (error.message !== 'auth cancelled') window.fileToast(t('删除失败'), false);
+    }
+  }
+
   async function load() {
     if (document.hidden || busy) return;
     busy = true;
@@ -51,6 +103,18 @@
           }
         });
         actions.appendChild(link);
+        var pv = document.createElement('button');
+        pv.type = 'button';
+        pv.className = 'dl';
+        setI18nText(pv, '预览');
+        pv.addEventListener('click', function () { preview(file); });
+        actions.appendChild(pv);
+        var del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'del';
+        setI18nText(del, '删除');
+        del.addEventListener('click', function () { remove(file); });
+        actions.appendChild(del);
       });
     } catch (error) {
       message('加载失败（需管理员权限）');

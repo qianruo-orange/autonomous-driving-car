@@ -97,6 +97,7 @@ void http_codex_logout(app_ctx_t *, int, const char *, const char *, const char 
 void http_codex_history(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_records(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_records_clear(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_record_delete(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_record(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_export(app_ctx_t *, int, const char *, const char *, const char *);
 

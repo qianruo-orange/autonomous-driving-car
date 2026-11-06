@@ -1248,6 +1248,21 @@ def cmd_record(args):
                       "size": os.path.getsize(path)})
 
 
+
+def cmd_records_delete(args):
+    """Delete one interaction record by name."""
+    name = os.path.basename(args.arg or "")
+    if not RECORD_NAME.match(name):
+        result(args.out, {"ok": False, "error": "invalid record name"})
+        return
+    path = os.path.join(REC, name)
+    try:
+        os.unlink(path)
+    except OSError as exc:
+        result(args.out, {"ok": False, "error": str(exc)[:160]})
+        return
+    result(args.out, {"ok": True, "deleted": name})
+
 def cmd_records_clear(args):
     removed = 0
     for path in glob.glob(os.path.join(REC, "chat_*.txt")):
@@ -1287,6 +1302,7 @@ COMMANDS = {
     "export": cmd_export,
     "record": cmd_record,
     "records-clear": cmd_records_clear,
+    "records-delete": cmd_records_delete,
 }
 
 
