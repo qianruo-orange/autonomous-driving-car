@@ -223,7 +223,7 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 ### 录像与可观测性
 
-录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/videos/` 下写 `annot_<日期>_<时间>.mp4`：推理路径解出的 NV12 在 Y 平面画上检测框，再交给 VEPU510 硬件编成 H.264。恒定 QP 18（FIXQP，不做码率控制），720p 实测约 **7.9 Mbps**，即 **3.5 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。
+录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/videos/` 下写 `video_<YYYYMMDD>.mp4`（同一天重开会顺次加 `_1`、`_2`，不覆盖已录内容）：推理路径解出的 NV12 在 Y 平面画上检测框，再交给 VEPU510 硬件编成 H.264。框是"黑边 + 白线"的双色轮廓，左上角贴一条黑底白字的标签，写类别名和置信度（`person 0.88`）——白墙、白衬衫上纯白细线几乎看不见。恒定 QP 18（FIXQP，不做码率控制），720p 实测约 **7.9 Mbps**，即 **3.5 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。编码输入用 12 个缓冲组成的环，按**帧龄**（保留 8 帧）回收：MPP 异步读输入缓冲，并把它当作后续 P 帧的参考帧，写完立刻复用会让框线在录像里退化成断续的虚线。
 
 分段只按**日期变化**触发：跨天时结束当前文件、在新日期目录下开始下一段，录像不中断。另有手动分段接口供前端调用。MP4 的样本偏移是 64 位的，单文件不受 4 GiB 限制。
 
@@ -646,13 +646,20 @@ whole frames are dropped so latency does not accumulate.
 ### Recording and observability
 
 Recording starts automatically and produces a **single MP4 with the detection
-boxes burned in**. Each session writes `annot_<date>_<time>.mp4` under
-`recordings/videos/`: the NV12 the inference path already decoded gets the
-boxes drawn into its luma plane, then the VEPU510 encodes it to H.264. Coding
+boxes burned in**. Each session writes `video_<YYYYMMDD>.mp4` under
+`recordings/videos/` (a same-day restart appends `_1`, `_2`, ... instead of
+overwriting): the NV12 the inference path already decoded gets the boxes drawn
+into its luma plane, then the VEPU510 encodes it to H.264. Boxes are drawn as a
+dark outline with a light inner line, and a black label bar with the class name
+and confidence (`person 0.88`) sits at the top-left corner - plain white lines
+are nearly invisible on white walls and shirts. Coding
 uses a constant QP of 18 (FIXQP, no rate control): measured about **7.9 Mbps**,
 or **3.5 GB/hour** at 720p, and the file plays in VLC, ffplay
 and the browser. No frame is decoded twice - the annotated file reuses the NV12
-from inference and costs one memory copy per frame.
+from inference and costs one memory copy per frame. Encoder input is a ring of
+12 buffers recycled by **frame age** (keep 8): MPP reads the buffers
+asynchronously and holds them as references for later P frames, so recycling a
+buffer right after `encode_put_frame()` shreds the overlay into dashes.
 
 Segments break on a **date change**: at midnight the current file is closed and
 the next one starts in the new day's directory without interrupting the
