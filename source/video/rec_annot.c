@@ -58,6 +58,7 @@ struct rec_annot {
     char dir[256], prefix[64];
     char name[128];               /* 会话开始就定好文件名，MP4 按名创建 */
     int w, h, fps, bitrate_kbps;
+    int hor_stride, ver_stride;   /* MPP 要求的 16 对齐行距/面距，与图像宽高区分 */
 
     rec_mp4_t *mp4;
 
@@ -74,7 +75,9 @@ struct rec_annot {
     atomic_int   disabled;        /* 硬件不可用时置位，永不重试 */
 };
 
-static void draw_box_nv12(unsigned char *y, int w, int h,
+/* 画框：w 是图像宽度，stride 是缓冲行距（MPP 要求 16 对齐，可能与 w 不等）。
+   两者混用就会出现“斜条纹/花屏”——每行错开 fixed 字节，越往下越斜。 */
+static void draw_box_nv12(unsigned char *y, int w, int h, int stride,
                           const rec_annot_box_t *b, int thickness)
 {
     int x1 = (int)(b->x1 + 0.5f), y1 = (int)(b->y1 + 0.5f);
@@ -87,15 +90,15 @@ static void draw_box_nv12(unsigned char *y, int w, int h,
     for (int t = 0; t < thickness; t++) {
         int yt = y1 + t, yb = y2 - t;
         if (yt < h && yb >= 0) {
-            memset(y + (size_t)yt * w + x1, 0xFF, (size_t)(x2 - x1 + 1));
-            memset(y + (size_t)yb * w + x1, 0xFF, (size_t)(x2 - x1 + 1));
+            memset(y + (size_t)yt * stride + x1, 0xFF, (size_t)(x2 - x1 + 1));
+            memset(y + (size_t)yb * stride + x1, 0xFF, (size_t)(x2 - x1 + 1));
         }
         int xl = x1 + t, xr = x2 - t;
         if (xl >= 0 && xr < w) {
             for (int yy = y1; yy <= y2; yy++)
                 if (yy >= 0 && yy < h) {
-                    y[(size_t)yy * w + xl] = 0xFF;
-                    y[(size_t)yy * w + xr] = 0xFF;
+                    y[(size_t)yy * stride + xl] = 0xFF;
+                    y[(size_t)yy * stride + xr] = 0xFF;
                 }
         }
     }
@@ -111,8 +114,8 @@ static int encoder_open(rec_annot_t *s)
     mpp_enc_cfg_set_s32(cfg, "codec:type", MPP_VIDEO_CodingAVC);
     mpp_enc_cfg_set_s32(cfg, "prep:width", s->w);
     mpp_enc_cfg_set_s32(cfg, "prep:height", s->h);
-    mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", s->w);
-    mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", s->h);
+    mpp_enc_cfg_set_s32(cfg, "prep:hor_stride", s->hor_stride);
+    mpp_enc_cfg_set_s32(cfg, "prep:ver_stride", s->ver_stride);
     mpp_enc_cfg_set_s32(cfg, "prep:format", MPP_FMT_YUV420SP);
     mpp_enc_cfg_set_s32(cfg, "prep:range", MPP_FRAME_RANGE_JPEG);
 
@@ -159,7 +162,8 @@ static int encoder_open(rec_annot_t *s)
     }
     if (mpp_buffer_group_get_internal(&s->grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) return -1;
     for (int i = 0; i < 4; i++)
-        if (mpp_buffer_get(s->grp, &s->buf[i], (size_t)s->w * s->h * 3 / 2) != MPP_OK)
+        if (mpp_buffer_get(s->grp, &s->buf[i],
+                           (size_t)s->hor_stride * s->ver_stride * 3 / 2) != MPP_OK)
             return -1;
     s->enc_ready = 1;
     return 0;
@@ -244,15 +248,23 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     MppBuffer frame_buf = s->buf[s->buf_next];
     s->buf_next = (s->buf_next + 1) % 4;
     unsigned char *dst = mpp_buffer_get_ptr(frame_buf);
-    memcpy(dst, f->nv12, (size_t)s->w * s->h * 3 / 2);
-    for (int i = 0; i < f->count; i++) draw_box_nv12(dst, s->w, s->h, &f->boxes[i], 3);
+    /* 源是紧凑 NV12（行距 = w），目标是 stride 行距的缓冲：逐行拷，不能整块 memcpy */
+    const unsigned char *src = f->nv12;
+    for (int y = 0; y < s->h; y++)
+        memcpy(dst + (size_t)y * s->hor_stride, src + (size_t)y * s->w, (size_t)s->w);
+    unsigned char *dst_uv = dst + (size_t)s->hor_stride * s->ver_stride;
+    const unsigned char *src_uv = src + (size_t)s->w * s->h;
+    for (int y = 0; y < s->h / 2; y++)
+        memcpy(dst_uv + (size_t)y * s->hor_stride, src_uv + (size_t)y * s->w, (size_t)s->w);
+    for (int i = 0; i < f->count; i++)
+        draw_box_nv12(dst, s->w, s->h, s->hor_stride, &f->boxes[i], 3);
 
     MppFrame out = NULL;
     if (mpp_frame_init(&out) != MPP_OK) return -1;
     mpp_frame_set_width(out, s->w);
     mpp_frame_set_height(out, s->h);
-    mpp_frame_set_hor_stride(out, s->w);
-    mpp_frame_set_ver_stride(out, s->h);
+    mpp_frame_set_hor_stride(out, s->hor_stride);
+    mpp_frame_set_ver_stride(out, s->ver_stride);
     mpp_frame_set_fmt(out, MPP_FMT_YUV420SP);
     mpp_frame_set_buffer(out, frame_buf);
     int rc = (s->enc_mpi->encode_put_frame(s->enc_ctx, out) == MPP_OK) ? 0 : -1;
@@ -332,6 +344,10 @@ rec_annot_t *rec_annot_start(const char *dir, const char *prefix, int w, int h, 
         if (name_out && name_size) snprintf(name_out, name_size, "%s", s->name);
     }
     s->w = w; s->h = h;
+    /* MPP 硬件编码器按 16 对齐取行距/面距。1280x720 恰好对齐时两者相等，
+       但换成 1280x714 这类尺寸就会错开，每行错位累加成斜条纹/花屏。 */
+    s->hor_stride = (w + 15) & ~15;
+    s->ver_stride = (h + 15) & ~15;
     s->fps = fps > 0 ? fps : 30;
     /* 码率不再决定画质（FIXQP），这个值只作为 MPP 内部记账用的名义值：
        H.264 的 bps 字段仍参与 bit_per_frame 计算，不能为 0 */
