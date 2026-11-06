@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 (function() {
-    /* 智能跟随卡片固定放在页面最下方：挂到最后一个 bottom-grid，跨两列 */
-    const grids = document.querySelectorAll('.bottom-grid');
-    const grid = grids.length ? grids[grids.length - 1]
-                              : document.querySelector('.can-grid');
+    /* 跟随卡片紧跟在 CPU 频率 / Codex 那一行之后（网络代理卡片已在它下面） */
+    const cpuCard = document.getElementById('card_cpufreq');
+    const grid = (cpuCard && cpuCard.parentNode)
+                 || document.querySelector('.can-grid');
     if (!grid) return;
     const card = document.createElement('form');
     card.className = 'card';
