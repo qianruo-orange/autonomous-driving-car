@@ -3,6 +3,8 @@
 <link rel="stylesheet" href="/css/common.css">
 <link rel="stylesheet" href="/css/config.css">
 <link rel="stylesheet" href="/css/camera.css">
+<link rel="stylesheet" href="/css/codex-chat.css">
+<link rel="stylesheet" href="/css/proxy-config.css">
 <script src="/js/theme.js"></script>
 <script src="/js/i18n.js"></script>
 <script src="/js/auth.js"></script>
@@ -127,10 +129,73 @@
 </div>
 
 </div>
+
+<section class="card" id="card_proxy" aria-labelledby="proxy_title">
+  <h3 id="proxy_title"><span data-i18n="网络代理">网络代理</span>
+    <span class="proxy-badge" id="proxy_service_badge">—</span>
+  </h3>
+  <p class="proxy-hint" id="proxy_path_hint"></p>
+  <div class="proxy-grid">
+    <div class="proxy-field"><label for="proxy_host" data-i18n="代理主机">代理主机</label><input type="text" id="proxy_host" placeholder="192.168.1.5" autocomplete="off"></div>
+    <div class="proxy-field"><label for="proxy_port" data-i18n="端口">端口</label><input type="number" id="proxy_port" min="1" max="65535" step="1"></div>
+    <div class="proxy-field"><label for="proxy_scheme" data-i18n="协议">协议</label><select id="proxy_scheme"><option value="http">http</option><option value="socks5">socks5</option><option value="socks5h">socks5h</option></select></div>
+    <div class="proxy-field"><label for="proxy_no_proxy" data-i18n="不走代理的地址">不走代理的地址</label><input type="text" id="proxy_no_proxy" autocomplete="off"></div>
+  </div>
+  <div class="proxy-summary">
+    <span class="proxy-line"><span data-i18n="当前代理地址">当前代理地址</span>: <code id="proxy_url">—</code></span>
+    <span class="proxy-line" id="proxy_system"></span>
+  </div>
+  <div class="proxy-actions">
+    <button type="button" class="btn btn-save" id="proxy_save" data-i18n="保存配置">保存配置</button>
+    <button type="button" class="btn btn-back" id="proxy_apply" data-i18n="保存并应用">保存并应用</button>
+    <button type="button" class="btn btn-back" id="proxy_test" data-i18n="测试连通">测试连通</button>
+    <button type="button" class="btn btn-back" id="proxy_reload" data-i18n="重新读取">重新读取</button>
+  </div>
+  <p class="card-status proxy-status" id="status_proxy" role="status" aria-live="polite"></p>
+  <details class="proxy-raw"><summary data-i18n="原始文件内容">原始文件内容</summary><pre id="proxy_raw_pre"></pre></details>
+</section>
+
+<section class="card" id="card_codex" aria-labelledby="codex_cfg_title">
+  <h3 id="codex_cfg_title"><span data-i18n="Codex CLI 配置">Codex CLI 配置</span>
+    <span class="codex-badge" id="codex_status_badge" data-i18n="未登录">未登录</span>
+    <span class="card-status" id="status_codex" role="status" aria-live="polite"></span>
+  </h3>
+  <p class="codex-hint" id="codex_cli_info"></p>
+  <div class="codex-panel">
+    <h4 data-i18n="登录链接与验证码">登录链接与验证码</h4>
+    <div class="codex-device-row">
+      <button type="button" class="btn btn-back" id="codex_device_start" data-i18n="开始设备码登录">开始设备码登录</button>
+      <a id="codex_device_link" class="codex-device-link" target="_blank" rel="noopener" data-i18n="请先点击开始登录">请先点击开始登录</a>
+    </div>
+    <div class="codex-device-row">
+      <span class="codex-device-code" id="codex_device_code">— — — —</span>
+      <button type="button" class="btn btn-back" id="codex_device_copy" data-i18n="复制验证码">复制验证码</button>
+    </div>
+    <p class="codex-hint" id="codex_device_hint"></p>
+  </div>
+  <div class="codex-panel">
+    <h4 data-i18n="API 密钥登录">API 密钥登录</h4>
+    <div class="codex-grid">
+      <div class="codex-field"><label for="codex_api_key" data-i18n="API 密钥">API 密钥</label><input type="password" id="codex_api_key" autocomplete="off" placeholder="sk-..."></div>
+      <div class="codex-field"><label for="codex_base_url" data-i18n="接口地址（登录链接）">接口地址（登录链接）</label><input type="text" id="codex_base_url"></div>
+      <div class="codex-field"><label for="codex_wire_api" data-i18n="接口协议">接口协议</label><select id="codex_wire_api"><option value="responses">responses</option><option value="chat">chat</option></select></div>
+      <div class="codex-field"><label for="codex_model" data-i18n="模型">模型</label><input type="text" id="codex_model" placeholder="(default)"></div>
+      <div class="codex-field"><label for="codex_sandbox" data-i18n="沙箱模式">沙箱模式</label><select id="codex_sandbox"><option value="read-only" data-i18n="只读">只读</option><option value="workspace-write" data-i18n="工作区可写">工作区可写</option><option value="danger-full-access" data-i18n="完全访问（危险）">完全访问（危险）</option></select></div>
+      <div class="codex-field"><label for="codex_workdir" data-i18n="工作目录">工作目录</label><input type="text" id="codex_workdir"></div>
+    </div>
+    <div class="codex-actions">
+      <button type="button" class="btn btn-save" id="codex_save_key" data-i18n="保存 API 密钥">保存 API 密钥</button>
+      <button type="button" class="btn btn-back" id="codex_save_cfg" data-i18n="保存设置">保存设置</button>
+      <button type="button" class="btn btn-back" id="codex_logout" data-i18n="退出登录">退出登录</button>
+    </div>
+  </div>
+</section>
 <div id="msg"></div>
 </div>
 
 <script src="/js/config.js"></script>
+<script src="/js/codex-config.js"></script>
+<script src="/js/proxy-config.js"></script>
 <script src="/js/cpu-frequency.js"></script>
 <script src="/js/network-tools.js"></script>
 <script src="/js/ano.js"></script>

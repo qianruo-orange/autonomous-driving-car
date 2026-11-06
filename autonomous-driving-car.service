@@ -20,8 +20,8 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 
 PrivateTmp=yes
 ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/opt/autonomous-driving-car/config /opt/autonomous-driving-car/recordings
+ProtectHome=read-only
+ReadWritePaths=/opt/autonomous-driving-car/config /opt/autonomous-driving-car/recordings /opt/autonomous-driving-car/.codex /etc/proxy-client.conf
 ReadOnlyPaths=/opt/autonomous-driving-car/html
 
 StandardOutput=journal

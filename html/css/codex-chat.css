@@ -1,0 +1,58 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* codex-chat.css — Codex chat card + shared Codex settings widgets.
+   Everything uses the theme variables from common.css, so light/dark follow
+   the global theme switch without extra JS. */
+.codex-chat{margin-top:16px;padding:16px 18px}
+.codex-chat-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.codex-chat-head h3{margin:0 0 0 0;min-width:0}
+.codex-chat-actions{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.codex-chat-actions .btn{margin:0}
+/* .btn is display:inline-flex, which beats the UA [hidden] rule; restore it
+   so the Stop button really disappears while no generation is running. */
+.codex-chat-actions .btn[hidden]{display:none}
+.codex-badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid var(--card-border);background:var(--btn-bg);color:var(--muted);white-space:nowrap}
+.codex-badge.ok{color:var(--name);border-color:var(--name)}
+.codex-badge.warn{color:#e0913a;border-color:#e0913a}
+.codex-chat-log{height:300px;min-height:180px;overflow-y:auto;overscroll-behavior:contain;padding:10px 6px;border:1px solid var(--card-border);border-radius:12px;background:var(--input-bg);scrollbar-width:thin}
+.codex-msg{display:flex;margin:8px 4px;gap:8px}
+.codex-msg.user{justify-content:flex-end}
+.codex-msg.assistant{justify-content:flex-start}
+.codex-bubble{max-width:78%;padding:9px 13px;border-radius:14px;white-space:pre-wrap;word-break:break-word;font-size:13px;line-height:1.55;box-shadow:var(--shadow)}
+.codex-msg.user .codex-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.codex-msg.assistant .codex-bubble{background:var(--card-bg);color:var(--text);border:1px solid var(--card-border);border-bottom-left-radius:4px}
+.codex-msg.assistant.error .codex-bubble{border-color:#c0394e;color:#e2768a}
+.codex-bubble .codex-meta{display:block;margin-top:6px;font-size:11px;opacity:.72}
+.codex-empty,.codex-divider{text-align:center;color:var(--muted);font-size:12px;padding:18px 8px}
+.codex-divider{border-top:1px dashed var(--card-border);margin:12px 0;padding:8px}
+.codex-typing{display:inline-flex;gap:4px;align-items:center}
+.codex-typing i{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:codex-blink 1.2s infinite}
+.codex-typing i:nth-child(2){animation-delay:.2s}
+.codex-typing i:nth-child(3){animation-delay:.4s}
+@keyframes codex-blink{0%,60%,100%{opacity:.25}30%{opacity:1}}
+.codex-chat-form{display:flex;gap:10px;align-items:stretch;margin-top:12px}
+.codex-chat-form textarea{flex:1;min-width:0;resize:vertical;min-height:52px;max-height:180px;padding:10px 12px;border-radius:10px;border:1px solid var(--card-border);background:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px;line-height:1.5}
+.codex-chat-form textarea:focus{outline:none;border-color:var(--accent)}
+.codex-chat-form .btn{min-width:88px;justify-content:center}
+.codex-chat-foot{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:8px;color:var(--muted);font-size:11px}
+.codex-chat-foot a{color:var(--accent);text-decoration:none}
+
+/* Shared settings widgets (config page) */
+.codex-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:10px}
+.codex-field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.codex-field label{font-size:12px;color:var(--muted)}
+.codex-field input,.codex-field select{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:9px;border:1px solid var(--card-border);background:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px}
+.codex-field input:focus,.codex-field select:focus{outline:none;border-color:var(--accent)}
+.codex-panel{border:1px solid var(--card-border);border-radius:12px;padding:12px;margin-top:12px;background:var(--btn-bg)}
+.codex-panel h4{margin:0 0 8px;font-size:13px;color:var(--accent)}
+.codex-device-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0}
+.codex-device-code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:22px;font-weight:700;letter-spacing:2px;color:var(--text-strong);padding:6px 12px;border:1px dashed var(--accent);border-radius:8px;background:var(--input-bg)}
+.codex-device-link{color:var(--accent);font-size:13px;word-break:break-all}
+.codex-hint{font-size:12px;color:var(--muted);line-height:1.5}
+.codex-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.codex-actions .btn{margin:0}
+@media (max-width:720px){
+  .codex-chat-actions{margin-left:0;width:100%}
+  .codex-chat-log{height:240px}
+  .codex-chat-form{flex-direction:column}
+  .codex-chat-form .btn{min-height:40px}
+}

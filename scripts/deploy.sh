@@ -185,6 +185,33 @@ do_install() {
     echo "[INSTALL] recordings/{logs,videos,results}/"
     mkdir -p "$DEPLOY_DIR/recordings/logs" "$DEPLOY_DIR/recordings/videos" "$DEPLOY_DIR/recordings/results"
 
+    echo "[INSTALL] Codex chat bridge"
+    mkdir -p "$DEPLOY_DIR/.codex/out" "$DEPLOY_DIR/.codex/inbox" \
+             "$DEPLOY_DIR/recordings/codex"
+    cp "$PROJECT_DIR/scripts/codex_bridge.py" "$DEPLOY_DIR/bin/codex_bridge.py"
+    chmod 755 "$DEPLOY_DIR/bin/codex_bridge.py"
+    if id -u qianruo >/dev/null 2>&1; then
+        chown -R qianruo:qianruo "$DEPLOY_DIR/.codex" "$DEPLOY_DIR/recordings/codex"
+    fi
+    chmod 700 "$DEPLOY_DIR/.codex"
+
+    echo "[INSTALL] network proxy editor"
+    mkdir -p "$DEPLOY_DIR/recordings/proxy-out" "$DEPLOY_DIR/recordings/proxy-backups"
+    cp "$PROJECT_DIR/scripts/proxy_config.py" "$DEPLOY_DIR/bin/proxy_config.py"
+    chmod 755 "$DEPLOY_DIR/bin/proxy_config.py"
+    if [ ! -f /etc/proxy-client.conf ]; then
+        cat > /etc/proxy-client.conf <<'PROXYEOF'
+# 开发板网络代理配置文件
+# 由 Web 配置界面「网络代理」管理；保存并应用后整机流量走此代理
+PROXY_HOST="127.0.0.1"
+PROXY_PORT="7890"
+PROXY_SCHEME="http"
+NO_PROXY="localhost,127.0.0.1,::1"
+PROXYEOF
+        chmod 644 /etc/proxy-client.conf
+        echo "[INSTALL] created default /etc/proxy-client.conf"
+    fi
+
     echo "[INSTALL] systemd service"
     cp "$SERVICE_SRC" /etc/systemd/system/"$SERVICE_NAME".service
     systemctl daemon-reload

@@ -817,6 +817,21 @@ static void http_process_request(http_conn_t *c)
         { "/api/rec/list",  0, NULL,  http_rec_handler,  NULL },
         { "/api/rec/pack",  0, NULL,  http_rec_handler,  http_check_auth_root },
         { "/recfile/",      1, NULL,  http_rec_handler,  http_check_auth_root },
+        { "/api/codex/status",        0, NULL,   http_codex_status,        http_check_auth_root },
+        { "/api/codex/config",        0, "POST", http_codex_config_post,   http_check_auth_root },
+        { "/api/codex/login/device",  0, "POST", http_codex_login_device,  http_check_auth_root },
+        { "/api/codex/login/apikey",  0, "POST", http_codex_login_apikey,  http_check_auth_root },
+        { "/api/codex/chat",          0, "POST", http_codex_chat_post,     http_check_auth_root },
+        { "/api/codex/reset",         0, "POST", http_codex_reset,         http_check_auth_root },
+        { "/api/codex/stop",          0, "POST", http_codex_stop,          http_check_auth_root },
+        { "/api/codex/logout",        0, "POST", http_codex_logout,        http_check_auth_root },
+        { "/api/codex/history",       1, NULL,   http_codex_history,       http_check_auth_root },
+        { "/api/codex/records",       0, NULL,   http_codex_records,       http_check_auth_root },
+        { "/api/codex/records/clear", 0, "POST", http_codex_records_clear, http_check_auth_root },
+        { "/api/codex/record",        1, NULL,   http_codex_record,        http_check_auth_root },
+        { "/api/codex/export",        0, NULL,   http_codex_export,        http_check_auth_root },
+        { "/api/proxy/config",        0, NULL,   http_proxy_config,        http_check_auth_root },
+        { "/api/proxy/test",          0, "POST", http_proxy_test,          http_check_auth_root },
     };
 
     for (int i = 0; i < (int)(sizeof(rt)/sizeof(rt[0])); i++) {

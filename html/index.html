@@ -3,6 +3,7 @@
 <link rel="stylesheet" href="/css/common.css">
 <link rel="stylesheet" href="/css/monitor.css">
 <link rel="stylesheet" href="/css/camera.css">
+<link rel="stylesheet" href="/css/codex-chat.css">
 <script src="/js/theme.js"></script>
 <script src="/js/i18n.js"></script>
 <script src="/js/auth.js"></script>
@@ -62,6 +63,28 @@
     </div>
   </div>
 </div>
+
+<section class="card codex-chat" id="codex_chat" aria-labelledby="codex_chat_title">
+  <div class="codex-chat-head">
+    <h3 id="codex_chat_title"><span data-i18n="Codex 对话">Codex 对话</span></h3>
+    <span class="codex-badge" id="codex_login_badge" data-i18n="未登录">未登录</span>
+    <span class="card-status" id="status_codex_chat" role="status" aria-live="polite"></span>
+    <div class="codex-chat-actions">
+      <button type="button" class="btn btn-back" id="codex_new_btn" data-i18n="新会话">新会话</button>
+      <button type="button" class="btn btn-back" id="codex_stop_btn" data-i18n="停止" hidden>停止</button>
+      <a href="/config#card_codex" class="btn btn-back" data-i18n="配置">配置</a>
+      <button type="button" class="btn btn-back" id="codex_download_btn" data-i18n="下载记录">下载记录</button>
+    </div>
+  </div>
+  <div class="codex-chat-log" id="codex_chat_log" role="log" aria-live="polite"></div>
+  <form class="codex-chat-form" id="codex_chat_form">
+    <textarea id="codex_chat_input" rows="2" data-i18n-ph="输入消息，Enter 发送，Shift+Enter 换行" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+    <button type="submit" class="btn btn-save" id="codex_send_btn" data-i18n="发送">发送</button>
+  </form>
+  <div class="codex-chat-foot"><span id="codex_chat_meta"></span></div>
+</section>
+
 <script src="/js/monitor.js"></script>
 <script src="/js/image-tracking.js"></script>
+<script src="/js/codex-chat.js"></script>
 </body></html>

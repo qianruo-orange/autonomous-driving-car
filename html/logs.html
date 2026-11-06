@@ -68,6 +68,21 @@
     <table><colgroup><col class="file-col-date"><col class="file-col-name"><col class="file-col-size"><col class="file-col-mtime"><col class="file-col-actions"></colgroup><thead><tr><th data-i18n="日期">日期</th><th data-i18n="文件名">文件名</th><th data-i18n="大小">大小</th><th data-i18n="修改时间">修改时间</th><th data-i18n="操作">操作</th></tr></thead><tbody id="rows_detection_reports"></tbody></table>
     </div>
   </section>
+
+  <section class="file-section" id="codex_panel" aria-labelledby="codex_title">
+    <div class="file-section-header">
+      <h2 id="codex_title">💬 <span data-i18n="Codex 交互记录">Codex 交互记录</span></h2>
+      <div class="file-actions">
+        <a href="/api/codex/export" class="btn btn-pack" id="pack_codex_btn">📦 <span data-i18n="打包下载">打包下载</span></a>
+        <button class="btn btn-pack btn-clear" id="clear_codex_btn">🗑 <span data-i18n="清空记录">清空记录</span></button>
+      </div>
+    </div>
+    <div class="tbl-wrap">
+      <table><colgroup><col class="file-col-date"><col class="file-col-name"><col class="file-col-size"><col class="file-col-mtime"><col class="file-col-actions"></colgroup>
+      <thead><tr><th data-i18n="日期">日期</th><th data-i18n="文件名">文件名</th><th data-i18n="大小">大小</th><th data-i18n="修改时间">修改时间</th><th data-i18n="操作">操作</th></tr></thead>
+      <tbody id="rows_codex"></tbody></table>
+    </div>
+  </section>
 </main>
 <div id="file_preview_overlay" class="file-preview-overlay" hidden>
   <section class="file-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="file_preview_title">
@@ -84,4 +99,5 @@
 <script src="/js/file-manager.js"></script>
 <script src="/js/logs.js"></script>
 <script src="/js/detections.js"></script>
+<script src="/js/codex-files.js"></script>
 </body></html>

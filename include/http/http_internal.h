@@ -81,4 +81,23 @@ void http_video_stats(app_ctx_t *app, int fd, const char *method, const char *ur
 void http_detections_live(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req_buf);
 
+/* Web chat bridge to the local Codex CLI (source/http/http_api_codex.c). */
+void http_codex_status(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_config_post(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_login_device(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_login_apikey(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_chat_post(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_reset(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_stop(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_logout(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_history(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_records(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_records_clear(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_record(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_export(app_ctx_t *, int, const char *, const char *, const char *);
+
+/* Board-wide network proxy settings (source/http/http_api_proxy.c). */
+void http_proxy_config(app_ctx_t *, int, const char *, const char *, const char *);
+void http_proxy_test(app_ctx_t *, int, const char *, const char *, const char *);
+
 #endif
