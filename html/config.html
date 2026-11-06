@@ -59,14 +59,14 @@
 </div>
 
 <div class="bottom-grid">
-<div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><span class="ip-cur" id="cf_cur">当前未读取</span><button type="button" class="btn btn-save card-save" data-action="cpu-save">💾 <span data-i18n="保存">保存</span></button></h3>
+<div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save card-save" data-action="cpu-save">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="cfg-grid vid2">
 <div class="row"><label data-i18n="CPU 策略组">CPU 策略组</label><select id="cf_policy"></select></div>
 <div class="row"><label data-i18n="调度策略">调度策略</label><select id="cf_gov"></select></div>
 <div class="row"><label for="cf_min" data-i18n="最低频率">最低频率</label><div class="field-unit"><select id="cf_min" aria-describedby="cf_min_unit"></select><span class="unit" id="cf_min_unit">MHz</span></div></div>
 <div class="row"><label for="cf_max" data-i18n="最高频率">最高频率</label><div class="field-unit"><select id="cf_max" aria-describedby="cf_max_unit"></select><span class="unit" id="cf_max_unit">MHz</span></div></div>
 </div>
-
+<div class="ip-cur" id="cf_cur" data-i18n="当前未读取">当前未读取</div>
 </div>
 <section class="card" id="card_codex" aria-labelledby="codex_cfg_title">
   <h3 id="codex_cfg_title"><span data-i18n="Codex CLI 配置">Codex CLI 配置</span>
