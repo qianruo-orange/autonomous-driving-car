@@ -191,8 +191,3 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #card_cpufreq>h3>span:first-child{align-self:center;line-height:1.2}
 #card_cpufreq>h3 .ip-cur{align-self:center;line-height:1.2;padding-bottom:0}
 #card_cpufreq>h3 .card-save{align-self:center}
-
-/* CPU title horizontally centred */
-#card_cpufreq>h3{position:relative;justify-content:center}
-#card_cpufreq>h3 .card-save{position:absolute;right:0;top:50%;transform:translateY(-50%);margin:0}
-#card_cpufreq>h3 .ip-cur{flex:0 1 auto;max-width:58%}
