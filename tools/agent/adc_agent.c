@@ -451,9 +451,13 @@ static int cmd_simple(const opts_t *o, const char *method, const char *path, con
     if (!resp) return 4;
     int code = http_call(o, method, path, form, resp, RESP_MAX);
     if (code < 0) { jprint("{\"error\":\"transport failure\"}"); free(resp); return 4; }
-    char esc[512];
-    json_escape(resp, esc, sizeof(esc));
-    jprint("{\"http\":%d,\"body\":\"%s\"}", code, esc);
+    if (code == 200) {
+        printf("%s\n", resp);
+    } else {
+        char esc[512];
+        json_escape(resp, esc, sizeof(esc));
+        jprint("{\"http\":%d,\"body\":\"%s\"}", code, esc);
+    }
     free(resp);
     return code == 200 ? 0 : 3;
 }
