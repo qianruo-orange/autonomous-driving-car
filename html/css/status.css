@@ -20,3 +20,7 @@
   .status-page-grid{grid-template-columns:minmax(0,1fr)}
   .status-cpu .core-bars{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
+
+/* memory and disk stacked */
+.status-page-grid .duo{flex-direction:column;gap:14px}
+.status-page-grid .duo>.half{width:100%}
