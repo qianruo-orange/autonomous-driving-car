@@ -397,6 +397,27 @@ def cmd_status(args):
 # ---------------------------------------------------------------------------
 APP_SERVER_TIMEOUT = 20.0
 UPDATE_TIMEOUT = 600
+MODELS_CACHE = os.path.join(CX, "models_cache.json")
+MODELS_TTL = 3600
+QUOTA_CACHE = os.path.join(CX, "quota_cache.json")
+QUOTA_TTL = 60
+
+
+def cache_read(path, ttl):
+    data = read_json(path, {})
+    if data and (time.time() - float(data.get("cached_at") or 0)) < ttl:
+        return data
+    return None
+
+
+def cache_write(path, value):
+    value = dict(value)
+    value["cached_at"] = int(time.time())
+    try:
+        write_json(path, value)
+    except OSError:
+        pass
+    return value
 
 
 def _app_server_line(proc, deadline):
@@ -466,8 +487,20 @@ def app_server_call(method, params=None, timeout=APP_SERVER_TIMEOUT):
 
 
 def cmd_models(args):
-    """Visible, API-capable models from the CLI's own catalog."""
+    """Visible, API-capable models from the CLI's own catalog.
+
+    `codex debug models` costs ~6 s on the board, and the config page asks for
+    it on every load, so the parsed catalog is cached for an hour.
+    """
     s = settings()
+    cached = cache_read(MODELS_CACHE, MODELS_TTL)
+    if cached and cached.get("models"):
+        payload = dict(cached)
+        payload.pop("cached_at", None)
+        payload["selected"] = s.get("model", "")
+        payload["cached"] = True
+        result(args.out, payload)
+        return
     cli = s.get("cli_path", "")
     if not cli_available(cli):
         result(args.out, {"ok": False, "models": [], "error": "Codex CLI not found"})
@@ -504,9 +537,11 @@ def cmd_models(args):
                        "name": str(m.get("display_name") or slug),
                        "default_effort": str(m.get("default_reasoning_level") or ""),
                        "efforts": efforts})
-    result(args.out, {"ok": True, "models": models,
-                      "selected": s.get("model", ""),
-                      "source": "codex debug models"})
+    payload = cache_write(MODELS_CACHE, {"ok": True, "models": models,
+                                         "source": "codex debug models"})
+    payload.pop("cached_at", None)
+    payload["selected"] = s.get("model", "")
+    result(args.out, payload)
 
 
 def _window(value):
@@ -518,19 +553,37 @@ def _window(value):
 
 
 def cmd_quota(args):
-    """ChatGPT plan, rolling-window usage and remaining credits."""
+    """ChatGPT plan, rolling-window usage and remaining credits.
+
+    Spawning `codex app-server` costs ~4 s, so a successful snapshot is reused
+    for a minute; the UI refreshes once a minute and always gets an answer.
+    """
     if not auth_mode():
         result(args.out, {"ok": False, "error": "not signed in", "signed_in": False})
+        return
+    cached = cache_read(QUOTA_CACHE, QUOTA_TTL)
+    if cached:
+        payload = dict(cached)
+        payload.pop("cached_at", None)
+        payload["cached"] = True
+        result(args.out, payload)
         return
     try:
         r = app_server_call("account/rateLimits/read", {})
     except Exception as exc:
+        stale = read_json(QUOTA_CACHE, {})
+        if stale:
+            stale.pop("cached_at", None)
+            stale["cached"] = True
+            stale["stale"] = True
+            result(args.out, stale)
+            return
         result(args.out, {"ok": False, "signed_in": True,
                           "error": "%s: %s" % (type(exc).__name__, str(exc)[:160])})
         return
     limits = r.get("rateLimits") or {}
     credits = limits.get("credits") or {}
-    result(args.out, {
+    payload = cache_write(QUOTA_CACHE, {
         "ok": True,
         "signed_in": True,
         "plan": str(limits.get("planType") or ""),
@@ -544,6 +597,59 @@ def cmd_quota(args):
         "reset_credits": (r.get("rateLimitResetCredits") or {}).get("availableCount", 0),
         "fetched_at": int(time.time()),
     })
+    payload.pop("cached_at", None)
+    result(args.out, payload)
+
+
+PROXY_CONF = "/etc/proxy-client.conf"
+
+
+def proxy_env():
+    """Proxy variables for child processes that fetch over the network.
+
+    The HTTP service is started by systemd, which does not read the board's
+    shell profile, so the web-managed proxy has to be applied explicitly.
+    """
+    env = {}
+    try:
+        with open(PROXY_CONF, "r", encoding="utf-8") as fp:
+            values = {}
+            for line in fp:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        return env
+    host = values.get("PROXY_HOST", "")
+    port = values.get("PROXY_PORT", "")
+    if not host or not port:
+        return env
+    scheme = values.get("PROXY_SCHEME", "http") or "http"
+    url = "%s://%s:%s" % (scheme, host, port)
+    env["http_proxy"] = env["HTTP_PROXY"] = url
+    env["https_proxy"] = env["HTTPS_PROXY"] = url
+    env["all_proxy"] = env["ALL_PROXY"] = url
+    no_proxy = values.get("NO_PROXY", "")
+    if no_proxy:
+        env["no_proxy"] = env["NO_PROXY"] = no_proxy
+    return env
+
+
+def update_env():
+    """Environment for `codex update`.
+
+    The updater locates the standalone install through HOME/CODEX_HOME, so it
+    must see the real account home (the chat runs keep using the isolated
+    CODEX_HOME). Proxy variables come from the web-managed proxy config.
+    """
+    env = cli_env()
+    env["HOME"] = "/home/qianruo"
+    env["CODEX_HOME"] = "/home/qianruo/.codex"
+    for key, value in proxy_env().items():
+        env.setdefault(key, value)
+    return env
 
 
 def cmd_update_install(args):
@@ -555,8 +661,8 @@ def cmd_update_install(args):
         return
     before = version_of(s.get("cli_version", "")) or version_of(cli_version(cli))
     try:
-        p = subprocess.run([cli, "update"], env=cli_env(), capture_output=True,
-                           text=True, timeout=UPDATE_TIMEOUT, cwd=CX,
+        p = subprocess.run([cli, "update"], env=update_env(), capture_output=True,
+                           text=True, timeout=UPDATE_TIMEOUT, cwd="/home/qianruo",
                            **drop_privileges_kwargs())
         rc = p.returncode
         output = ((p.stdout or "") + (p.stderr or "")).strip()[-4000:]

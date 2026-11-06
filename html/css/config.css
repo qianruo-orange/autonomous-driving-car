@@ -156,9 +156,10 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 /* Merged network card fills the whole row; fields lay flat like the YOLO card. */
 .bottom-grid #card_network{grid-column:1 / -1}
 .net-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px 16px;align-items:start;margin-top:12px}
-.net-field{grid-column:span 3;display:flex;flex-direction:column;gap:6px;min-width:0}
+/* 每行三列：代理主机/端口/协议，然后 不走代理/Ping/网速 */
+.net-field{grid-column:span 4;display:flex;flex-direction:column;gap:6px;min-width:0}
 .net-field.w4{grid-column:span 4}
-.net-field.w6{grid-column:span 6}
+.net-field.w6{grid-column:span 4}
 .net-field>label{font-size:12px;color:var(--muted)}
 .net-field>input,.net-field>select{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--card-border);background:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px}
 .net-field>input:focus,.net-field>select:focus{outline:none;border-color:var(--accent)}

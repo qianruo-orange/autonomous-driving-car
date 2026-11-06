@@ -645,8 +645,9 @@ void http_serve_file(int fd, const char *uri)
         return;
     }
 
-    /* no-cache：前端文件每次部署后立即可见，避免浏览器启发式缓存旧 JS/CSS */
-    http_serve_stream(fd, http_mime_type(path), "Cache-Control: no-cache\r\n", fp, size, NULL);
+    /* no-store：前端文件每次部署后必须立即生效，不能让浏览器（或 bfcache）
+       留着一份旧 JS/CSS，否则页面会出现新旧代码混着跑 */
+    http_serve_stream(fd, http_mime_type(path), "Cache-Control: no-store\r\n", fp, size, NULL);
 }
 
 /* 视频推流线程退出回调：关闭 fd 并归还连接计数 */

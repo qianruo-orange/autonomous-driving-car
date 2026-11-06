@@ -89,7 +89,8 @@
 
   async function loadModels() {
     try {
-      var data = await App.json('/api/codex/models', {authenticated: true, timeout: 45000});
+      /* 只读接口，沿用页面自带的 Basic 凭据，不触发管理员登录框 */
+      var data = await App.json('/api/codex/models', {timeout: 45000});
       if (!data.ok) throw new Error(data.error || 'HTTP 500');
       models = data.models || [];
       modelsLoaded = true;
@@ -111,8 +112,7 @@
   var quotaReset = el('codex_reset');
   var quotaStop = null;
 
-  function setMeter(barId, pctId, window) {
-    var bar = el(barId), pct = el(pctId);
+  function setMeter(barId, pctId, window) {    var bar = el(barId), pct = el(pctId);
     if (!bar || !pct) return;
     if (!window || typeof window.used_percent !== 'number') {
       bar.style.width = '0%'; bar.className = '';
@@ -133,6 +133,22 @@
                                         hour: '2-digit', minute: '2-digit'});
   }
 
+  function windowLabel(minutes) {
+    if (!minutes) return '';
+    if (minutes <= 360) return t('{hours} 小时', {hours: Math.round(minutes / 60)});
+    if (minutes >= 10080) return t('每周');
+    return t('{days} 天', {days: Math.round(minutes / 1440)});
+  }
+
+  /* 后端按 primary/secondary 返回，但两个窗口的语义随套餐变化；按窗口长度
+     分配标签，短窗口永远在左、长窗口在右，避免 5 小时与每周写反。 */
+  function splitWindows(data) {
+    var a = data.primary, b = data.secondary;
+    if (!a) return [null, b];
+    if (!b) return [a, null];
+    return (a.window_minutes || 0) <= (b.window_minutes || 0) ? [a, b] : [b, a];
+  }
+
   function paintQuota(data) {
     if (!quotaBox) return;
     if (!data || data.ok === false || !data.signed_in) {
@@ -143,12 +159,18 @@
     var plan = String(data.plan || '').toLowerCase();
     quotaPlan.textContent = plan ? plan.toUpperCase() : '—';
     quotaPlan.className = 'codex-plan' + (data.allowed ? '' : ' warn');
-    setMeter('codex_bar_5h', 'codex_pct_5h', data.primary);
-    setMeter('codex_bar_wk', 'codex_pct_wk', data.secondary);
+    var windows = splitWindows(data);
+    var short = windows[0], long = windows[1];
+    setMeter('codex_bar_5h', 'codex_pct_5h', short);
+    setMeter('codex_bar_wk', 'codex_pct_wk', long);
+    var label5 = el('codex_label_5h'), labelWk = el('codex_label_wk');
+    if (label5) label5.textContent = (short && windowLabel(short.window_minutes)) || t('短期额度');
+    if (labelWk) labelWk.textContent = (long && windowLabel(long.window_minutes)) || t('长期额度');
     var parts = [];
     if (!data.allowed) parts.push(t('额度已用尽'));
-    var reset = clockOf(data.secondary && data.secondary.resets_at);
-    if (reset) parts.push(t('每周额度 {time} 重置', {time: reset}));
+    var reset = clockOf(long && long.resets_at);
+    if (reset) parts.push(t('{label} {time} 重置', {
+      label: (long && windowLabel(long.window_minutes)) || t('额度'), time: reset}));
     if (data.credits && data.credits.has && data.credits.balance) {
       parts.push(t('余额 {balance}', {balance: data.credits.balance}));
     }
@@ -158,7 +180,9 @@
 
   async function loadQuota() {
     try {
-      paintQuota(await App.json('/api/codex/quota', {authenticated: true, timeout: 30000}));
+      /* 只读接口：浏览器自带的 Basic 凭据足够，不走 authFetch（避免每次加载弹
+         管理员登录框）。 */
+      paintQuota(await App.json('/api/codex/quota', {timeout: 45000}));
     } catch (error) {
       if (quotaBox) quotaBox.hidden = true;
     }
@@ -340,10 +364,11 @@
     }
     if (updateState.mode === 'installed') {
       var r = updateState.data;
+      var tail = String(r.output || '').trim().split('\n').pop().slice(0, 160);
       var done = r.ok
         ? t('已更新到 {version}', {version: r.version || '—'})
-        : t('安装失败') + (r.error ? ': ' + r.error : '');
-      updateResult.textContent = done + (r.ok ? '' : ' · ' + t('可查看板端日志重试'));
+        : t('安装失败') + (r.error ? ': ' + r.error : (tail ? ': ' + tail : ''));
+      updateResult.textContent = done;
       return;
     }
     var d = updateState.data;
