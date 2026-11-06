@@ -112,17 +112,19 @@
   var quotaReset = el('codex_reset');
   var quotaStop = null;
 
-  function setMeter(barId, pctId, window) {    var bar = el(barId), pct = el(pctId);
+  function setMeter(barId, pctId, window) {
+    var bar = el(barId), pct = el(pctId);
     if (!bar || !pct) return;
     if (!window || typeof window.used_percent !== 'number') {
       bar.style.width = '0%'; bar.className = '';
       pct.textContent = '—';
       return;
     }
-    var used = Math.max(0, Math.min(100, window.used_percent));
-    bar.style.width = used.toFixed(0) + '%';
-    bar.className = used >= 85 ? 'bad' : used >= 60 ? 'warn' : '';
-    pct.textContent = used.toFixed(0) + '%';
+    /* 显示剩余可用比例：满条=额度充足，余量少时变黄/红 */
+    var left = Math.max(0, Math.min(100, 100 - window.used_percent));
+    bar.style.width = left.toFixed(0) + '%';
+    bar.className = left <= 15 ? 'bad' : left <= 40 ? 'warn' : '';
+    pct.textContent = left.toFixed(0) + '%';
   }
 
   function clockOf(seconds) {
@@ -371,6 +373,10 @@
       updateResult.textContent = done;
       return;
     }
+    if (updateState.mode === 'started') {
+      updateResult.textContent = t('已在后台开始更新（约 190 MB，约 10 分钟以上）；完成后刷新页面查看版本');
+      return;
+    }
     var d = updateState.data;
     var txt = t('当前 {current} · 最新 {latest}',
       {current: d.current || '—', latest: d.latest || '—'});
@@ -404,10 +410,14 @@
     updateState = {mode: 'installing', cls: 'accent'}; paintUpdate();
     try {
       var data = await App.json('/api/codex/update/install',
-        {authenticated: true, method: 'POST', timeout: 600000});
-      updateState = {mode: 'installed', data: data || {}, cls: data && data.ok ? 'accent' : 'err'};
+        {authenticated: true, method: 'POST', timeout: 60000});
+      /* 板端会立刻返回：更新单元在后台下载（约 190 MB），不阻塞网页 */
+      updateState = data && data.started
+        ? {mode: 'started', data: data, cls: 'accent'}
+        : {mode: 'installed', data: data || {}, cls: data && data.ok ? 'accent' : 'err'};
       App.status('codex', data && data.ok ? 'ok' : 'err',
-        data && data.ok ? t('已更新到 {version}', {version: data.version || '—'}) : t('安装失败'));
+        data && data.started ? t('已在后台开始更新')
+                             : t('已更新到 {version}', {version: (data && data.version) || '—'}));
       await loadModels();
       await load();
     } catch (error) {

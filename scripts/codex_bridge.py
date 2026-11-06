@@ -652,14 +652,55 @@ def update_env():
     return env
 
 
+def start_update_outside_sandbox(cli):
+    """Start `codex update` in the host namespace and return immediately.
+
+    The HTTP service is hardened with ProtectSystem=strict and
+    ProtectHome=read-only, so a child process cannot write the new release into
+    ~/.codex/packages. systemd-run (the service runs as root) starts the updater
+    outside that sandbox. The release is ~190 MB and the board link is slow, so
+    the HTTP worker must not wait for it: the unit runs detached and the UI
+    reports progress on the next visit.
+    """
+    log_path = os.path.join(REC, "codex_update.log")
+    unit = "codex-update-%d" % int(time.time())
+    shell = "exec %s update > %s 2>&1" % (cli, log_path)
+    cmd = ["systemd-run", "--collect", "--quiet", "--unit", unit,
+           "--uid", "qianruo", "--gid", "qianruo",
+           "--setenv", "HOME=/home/qianruo",
+           "--setenv", "CODEX_HOME=/home/qianruo/.codex",
+           "--setenv", "PATH=/usr/local/bin:/usr/bin:/bin:/home/qianruo/.local/bin",
+           "--setenv", "TERM=dumb",
+           "--setenv", "NO_COLOR=1"]
+    for key, value in proxy_env().items():
+        cmd += ["--setenv", "%s=%s" % (key, value)]
+    cmd += ["/bin/sh", "-c", shell]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    return unit, p.returncode, (p.stdout or "") + (p.stderr or ""), log_path
+
+
 def cmd_update_install(args):
-    """Run `codex update` once and report the resulting version."""
+    """Start `codex update` in the background and report the current version."""
     s = settings()
     cli = s.get("cli_path", "")
     if not cli_available(cli):
         result(args.out, {"ok": False, "error": "Codex CLI not found"})
         return
     before = version_of(s.get("cli_version", "")) or version_of(cli_version(cli))
+    if os.geteuid() == 0 and shutil.which("systemd-run"):
+        try:
+            unit, rc, output, log_path = start_update_outside_sandbox(cli)
+        except Exception as exc:
+            result(args.out, {"ok": False, "before": before, "version": before,
+                              "error": "%s: %s" % (type(exc).__name__, str(exc)[:160])})
+            return
+        result(args.out, {"ok": rc == 0, "started": rc == 0, "before": before,
+                          "version": before, "unit": unit,
+                          "log": log_path,
+                          "output": output.strip()[-500:],
+                          "note": "update started in the background",
+                          "update_command": UPDATE_COMMAND})
+        return
     try:
         p = subprocess.run([cli, "update"], env=update_env(), capture_output=True,
                            text=True, timeout=UPDATE_TIMEOUT, cwd="/home/qianruo",
@@ -679,8 +720,10 @@ def cmd_update_install(args):
     if after_version:
         s["cli_version"] = after_version
         write_json(SETTINGS, s)
-    result(args.out, {"ok": rc == 0, "exit_code": rc, "before": before,
+    changed = bool(latest) and latest != before and version_key(latest) > version_key(before)
+    result(args.out, {"ok": rc == 0 and changed, "exit_code": rc, "before": before,
                       "version": latest, "cli_version": after_version,
+                      "changed": changed,
                       "output": output,
                       "update_command": UPDATE_COMMAND})
 
