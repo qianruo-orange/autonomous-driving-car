@@ -47,7 +47,7 @@ DEFAULT_SETTINGS = {
 # effort ("速率") come back as two dropdowns on the config page.
 FORCED_SANDBOX = "danger-full-access"
 EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
-RECORD_NAME = re.compile(r"^chat_\d{8}\.jsonl$")
+RECORD_NAME = re.compile(r"^chat_\d{8}\.txt$")
 DEVICE_URL_PAGE = re.compile(r"https://[^\s]*/device(?![A-Za-z])[^\s]*")
 DEVICE_URL_ANY = re.compile(r"https://[^\s/]*auth\.openai\.com[^\s]*")
 DEVICE_CODE = re.compile(r"\b([A-Z0-9]{4,}-[A-Z0-9]{4,})\b")
@@ -74,6 +74,14 @@ def now_iso():
 def ensure_dirs():
     for d in (CX, REC, OUT_DIR, INBOX):
         os.makedirs(d, exist_ok=True)
+    # 交互记录统一为 .txt：旧版本留下的 .jsonl 就地改名
+    for old in glob.glob(os.path.join(REC, "chat_*.jsonl")):
+        new = old[:-len(".jsonl")] + ".txt"
+        if not os.path.exists(new):
+            try:
+                os.rename(old, new)
+            except OSError:
+                pass
 
 
 def read_json(path, fallback):
@@ -169,7 +177,7 @@ def cli_available(path):
 
 def record_path(day=None):
     day = day or datetime.date.today().strftime("%Y%m%d")
-    return os.path.join(REC, "chat_%s.jsonl" % day)
+    return os.path.join(REC, "chat_%s.txt" % day)
 
 
 def append_record(entry):
@@ -181,7 +189,7 @@ def append_record(entry):
 
 
 def read_records(limit=80):
-    files = sorted(glob.glob(os.path.join(REC, "chat_*.jsonl")))[-2:]
+    files = sorted(glob.glob(os.path.join(REC, "chat_*.txt")))[-2:]
     rows = []
     for path in files:
         try:
@@ -245,7 +253,7 @@ def build_status():
         lg["message"] = ""
     messages = [r for r in read_records(400)
                 if r.get("role") in ("user", "assistant")][-60:]
-    files = glob.glob(os.path.join(REC, "chat_*.jsonl"))
+    files = glob.glob(os.path.join(REC, "chat_*.txt"))
     return {
         "ok": True,
         "cli_found": cli_available(s.get("cli_path", "")),
@@ -1120,7 +1128,7 @@ def cmd_history(args):
 
 def record_files():
     rows = []
-    for path in sorted(glob.glob(os.path.join(REC, "chat_*.jsonl")), reverse=True):
+    for path in sorted(glob.glob(os.path.join(REC, "chat_*.txt")), reverse=True):
         st = os.stat(path)
         name = os.path.basename(path)
         day = name[5:13]
@@ -1140,11 +1148,11 @@ def cmd_records(args):
 
 def cmd_export(args):
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    name = "codex_chat_%s.jsonl" % stamp
+    name = "codex_chat_%s.txt" % stamp
     path = os.path.join(REC, ".export_%s" % name)
     count = 0
     with open(path, "w", encoding="utf-8") as dst:
-        for src_path in sorted(glob.glob(os.path.join(REC, "chat_*.jsonl"))):
+        for src_path in sorted(glob.glob(os.path.join(REC, "chat_*.txt"))):
             with open(src_path, "r", encoding="utf-8") as src:
                 for line in src:
                     if line.strip():
@@ -1169,7 +1177,7 @@ def cmd_record(args):
 
 def cmd_records_clear(args):
     removed = 0
-    for path in glob.glob(os.path.join(REC, "chat_*.jsonl")):
+    for path in glob.glob(os.path.join(REC, "chat_*.txt")):
         try:
             os.unlink(path)
             removed += 1

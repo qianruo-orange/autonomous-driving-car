@@ -417,7 +417,7 @@
     "极高": "Extra high",
     "最大": "Max",
     "极限": "Ultra",
-    "Codex 交互记录": "Codex interaction records",
+    "Codex": "Codex",
     "清空记录": "Clear records",
     "暂无交互记录": "No interaction records",
     "确定清空全部 Codex 交互记录？此操作不可恢复。": "Delete all Codex interaction records? This cannot be undone.",
