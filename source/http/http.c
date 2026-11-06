@@ -34,6 +34,7 @@
 
 #include "http/http_internal.h"
 #include "http/http_client_limit.h"
+#include "agent/agent_hw.h"
 #include "yolo/yolo_events.h"
 #include "video/video_stream.h"
 #include "watchdog/watchdog.h"
@@ -853,6 +854,18 @@ static void http_process_request(http_conn_t *c)
         { "/api/codex/export",        0, NULL,   http_codex_export,        http_check_auth_root },
         { "/api/proxy/config",        0, NULL,   http_proxy_config,        http_check_auth_root },
         { "/api/proxy/test",          0, "POST", http_proxy_test,          http_check_auth_root },
+        /* 智能体能力层：凭证由 root 签发，动作由 root arm；
+           motion/observe/stop 只认凭证，不认 Basic，避免把 root 密码交给模型。 */
+        { "/api/agent/token",         0, "POST", http_agent_token,         http_check_auth_root },
+        { "/api/agent/revoke",        0, "POST", http_agent_revoke,        http_check_auth_root },
+        { "/api/agent/arm",           0, "POST", http_agent_arm,           http_check_auth_root },
+        { "/api/agent/state",         0, NULL,   http_agent_state,         http_check_auth_root },
+        { "/api/agent/audit",         0, NULL,   http_agent_audit,         http_check_auth_root },
+        { "/api/agent/observe",       0, "GET",  http_agent_observe,       NULL },
+        { "/api/agent/motion",        0, "POST", http_agent_motion,        NULL },
+        { "/api/agent/stop",          0, "POST", http_agent_stop,          NULL },
+        { "/api/agent/estop",         0, "POST", http_agent_estop,         NULL },
+        { "/api/agent/disarm",        0, "POST", http_agent_disarm,        NULL },
     };
 
     for (int i = 0; i < (int)(sizeof(rt)/sizeof(rt[0])); i++) {

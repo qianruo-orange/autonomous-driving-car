@@ -243,7 +243,14 @@ u_R = clamp(Kp_w·(v_R − v̂_R) + Ki_w·∫(v_R − v̂_R)dt, −1, +1)
 
 ### 5.3 控制面
 
-任何改变车辆状态或系统状态的请求都要求 Basic 认证且账号具备 root 权限：`POST /api/follow`、`POST /api/tracking`、`POST /api/can/send`、`POST /api/config`、`POST /api/reboot`。智能体没有凭据，无法通过这一层。
+控制面分两套，互不通用：
+
+| 通道 | 认证 | 能做什么 |
+|---|---|---|
+| 人 | Basic + root | 改配置、`can/send`、重启、签发凭证、arm |
+| 智能体 | 能力凭证（32 hex，内存态） | 只读状态；提交受包络约束的运动原语 |
+
+智能体拿不到 root 密码，因此 `POST /api/follow`、`/api/can/send`、`/api/config`、`/api/reboot` 这些门禁它过不去。它能动的只有 §6.6 那条窄通道，而那条通道默认关闭：凭证要人签发、要人 arm、500 ms 不刷新就停。详见 [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md)。
 
 ### 5.4 会话生命周期
 
@@ -301,9 +308,9 @@ flowchart TB
     classDef done fill:#e8f7ef,stroke:#3aa675,color:#1f2937
     classDef half fill:#fdf3e3,stroke:#d99b3a,color:#1f2937
     classDef todo fill:#f4f5f7,stroke:#9aa4b2,color:#1f2937
-    class REF done
+    class REF,EX done
     class PER,SAF half
-    class IN,PL,MEM,EX todo
+    class IN,PL,MEM todo
 ```
 
 <sub>图 2 / Figure 2 — 目标架构。绿色为已具备，黄色为部分具备，灰色为缺失。/ Target architecture: green exists, amber partial, grey missing.</sub>
@@ -314,7 +321,7 @@ flowchart TB
 | 感知代理 | 半个（固定 80 类） | 视频流 | 结构化目标列表 + 身份 | 33–200 ms | 上报 `stale_detection` |
 | 记忆与定位 | 无 | 轮速、检测历史 | 对象身份、位姿、地标 | 1 s | 保守降级（丢失即忘） |
 | 驾驶代理 | 无 | 意图 + 世界状态 | 原语序列 | 0.5–2 s | 请求停机 |
-| 安全代理 | 半个（联锁 + 看门狗） | 全部动作请求 | 允许 / 拒绝 / 急停 | < 100 ms | 拒绝一切 |
+| 安全代理 | 半个（联锁 + 看门狗 + 能力层） | 全部动作请求 | 允许 / 拒绝 / 急停 | < 100 ms | 拒绝一切 |
 
 ### 6.3 共享世界状态
 
@@ -328,42 +335,58 @@ flowchart TB
 
 模型输出是建议，执行器输出是电信号。这一条比任何提示词约束都可靠。
 
-### 6.5 缺失的运动原语
+这三件事已按此形态落地在 `source/agent/agent_hw.c`：白名单是固定端点表，包络是 C 侧硬上限（与凭证声明的上限再取小），时限是 100–500 ms 的租约。
 
-当前仅有 `follow`（视觉伺服）与 `setpoint`（定速，转向仍由视觉误差闭环）。要让语言指令可执行，至少需要：
+### 6.5 已有与缺失的原语
 
-| 原语 | 语义 | 缺失条件 |
+| 原语 | 语义 | 现状 |
 |---|---|---|
-| `go(d, v)` | 直线行进 d 米 | 轮速积分 + 打滑补偿（无里程计） |
-| `turn(θ)` | 转向 θ 度 | 偏航角来源（无 IMU 融合） |
-| `stop()` | 立即停止 | 已具备，需提升为硬件级 |
-| `look_for(desc)` | 按描述检索目标 | 开放词表检测（当前固定 80 类） |
+| `observe` | 读车辆状态、自身包络、执行就绪位 | 已实现 |
+| `drive(v, steer, ttl_ms)` | 带租约的差速运动 | 已实现 |
+| `stop` / `estop` | 停止 / 强制停机并关断 profile | 已实现 |
+| `go(d, v)` | 直线行进 d 米 | 缺里程计，`traveled_m` 目前由轮速目标积分得出，打滑未补偿 |
+| `turn(θ)` | 转向 θ 度 | 缺偏航角来源（无 IMU 融合） |
+| `look_for(desc)` | 按描述检索目标 | 缺开放词表检测（当前固定 80 类 COCO） |
 
-### 6.6 工具契约（设计稿，未实现）
+后三个缺的是硬件前提，不是代码量。用近似值凑出来的 `go` 只会在第 5 米暴露误差，不如不做。
+
+### 6.6 工具契约（已实现）
+
+四个原语，function calling 描述在 [`docs/agent-tools.json`](docs/agent-tools.json)：
+
+| 原语 | 包络 |
+|---|---|
+| `observe` | 只读 |
+| `drive(v, steer, ttl_ms)` | `v ≤ min(凭证 v_max, 0.30)`、`|steer| ≤ 0.15`、`100 ≤ ttl_ms ≤ 500` |
+| `stop` | 停止并解除武装，同时关闭 profile |
+| `estop` | 强制停机，profile 置 0 并落盘 |
 
 ```jsonc
 // 请求
-{ "action": "go", "distance_m": 1.5, "speed": 0.25,
-  "lease_ms": 3000, "intent": "接近门口", "confidence": 0.82 }
+POST /api/agent/motion    X-Agent-Cap: 3f9c…
+v=0.10&steer=0.02&ttl_ms=400
 
 // 应答
-{ "accepted": false,
-  "reason": "envelope",
-  "detail": "distance_m > 2.0",
-  "state": { "seq": 90021, "age_ms": 79, "can_enabled": false,
-             "target_lost_ms": 320, "halt": "stale_wheel_feedback" } }
+{ "accepted": true, "state": "active", "v": 0.100, "steer": 0.020,
+  "expires_in_ms": 400, "traveled_m": 0.05, "budget_m": 0.5,
+  "reason": "agent_active", "actuation": "live" }
+
+// 拒绝（包络外）
+HTTP 422  v or steer outside this credential's envelope
 ```
 
-应答必须结构化且包含 `state`：上层据此重规划，而不是重试。`halt` 字段直接复用 §3.3 的停机语义。
+`actuation` 区分「被接受」与「能落地」：没有电机适配器时指令照样被接受，但下一个 tick 会锁存 `adapter_not_connected` 并关闭 profile。这个字段让智能体知道自己是在开车还是在写日志。
+
+签发凭证、arm、撤销、读审计属于 operator，不在工具列表里——能给自己签发权限的模型等于没有受限。
 
 ### 6.7 四层防护
 
 | 层 | 机制 | 现状 |
 |---|---|---|
-| 参数包络 | C 侧范围校验 + `clamp` | 已有，需扩展到原语 |
-| 执行隔离 | 模型只提交请求，不触达 CAN | 部分（无请求通道） |
-| 独立急停 | 不依赖 Linux 的心跳检测，100–200 ms | 缺失（当前秒级） |
-| 人在环 | 按住才动、松手即停 | 缺失 |
+| 参数包络 | C 侧硬上限，独立于调用方 | 已实现：凭证与控制层各夹一次 |
+| 执行隔离 | 模型只提交请求，不触达 CAN | 已实现：能力层 → `follow_agent_cmd` |
+| 独立急停 | 不依赖 Linux 心跳 | 部分：500 ms 租约 + 软件 `estop`；物理断电仍靠人 |
+| 人在环 | 按住才动、松手即停 | 部分：每轮需人 arm，里程预算封顶 100 m |
 
 第二层与第三层的顺序不能颠倒：在执行通道存在之前引入语言控制，等于把秒级延迟直接接到电机上。
 
@@ -373,7 +396,7 @@ flowchart TB
 |---|---|---|
 | P1 | 观测代理（现状） | 被问「为什么停」时必须引用 `status.reason`；100 次问答零编造 |
 | P2 | 语义目标选择 | 20 次指令 ≥ 16 次选中正确目标；误选后 300 ms 内停机 |
-| P3 | 三原语 + 执行器 | 包络外参数 100% 拒绝（≥ 10⁴ 次随机请求）；急停端到端 < 100 ms |
+| P3 | 三原语 + 执行器 | 包络外参数 100% 拒绝（≥ 10⁴ 次随机请求）；急停端到端 < 100 ms —— 原语与包络已交付，实测见 [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md) §8；10⁴ 次随机请求的压力测试未做 |
 | P4 | 里程计与短程导航 | 5 m 直线终点误差 < 20 cm（v ≤ 0.3 m/s）；超差即记录为失败 |
 | P5 | 监督式自主 | 注入 100 次幻觉目标，安全代理拦截率 100% |
 
@@ -401,7 +424,7 @@ flowchart TB
 
 ## 8. 限制与未验证项
 
-- **执行器未闭环**：电机适配器未配置，`motor.configured = false`，控制输出不落 CAN。
+- **执行器未闭环**：电机适配器未配置，`motor.configured = false`，控制输出不落 CAN。智能体通道的端到端行为是在 `-DADCBENCH` 回环适配器上验证的，不是真实电机。
 - **无里程计**：轮速反馈可用，位姿不可用，无法执行绝对位移指令。
 - **目标身份短时**：关联在 800 ms 无匹配后过期，目标离开画面再返回不保持身份。
 - **语义容量固定**：80 类 COCO，无法响应开放词表描述。
@@ -420,6 +443,8 @@ flowchart TB
 | [docs/COMMUNICATION_FLOW.md](docs/COMMUNICATION_FLOW.md) | 模块间通信与事件流 |
 | [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | 量化流程与精度对比 |
 | [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | 功能测试记录 |
+| [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md) | 智能体硬件能力层：凭证、包络、租约、审计、验收矩阵 |
+| [docs/agent-tools.json](docs/agent-tools.json) | 四个原语的 function calling 描述 |
 
 ## 附录
 
@@ -443,11 +468,12 @@ source/           C 实现，约 1.7 万行
   control/        跟踪 · PID · 跟随状态机 · CAN 适配
   can/            CAN FD 收发 · DBC 解析 · 电机映射
   http/           reactor · 路由 · 认证 · 各 API
+  agent/          智能体能力层：凭证 · 包络 · 预算 · 审计
   tcp/            网络信息 · 遥测
 include/          与 source/ 同构
 html/             前端，无构建步骤：5 个页面 + 28 个 JS/CSS
 config/           运行配置、模型、标签、DBC、电机映射示例
-scripts/          构建、部署、同步、Codex 桥接
+scripts/          构建、部署、同步、Codex 桥接、计划执行器 agent_drive.py
 docs/             设计文档与测试记录
 ```
 
@@ -696,7 +722,14 @@ Read-only endpoints require no authentication, deliberately: observation carries
 
 ### 5.3 Control plane
 
-Every request that changes vehicle or system state requires Basic authentication with a root-capable account: `POST /api/follow`, `POST /api/tracking`, `POST /api/can/send`, `POST /api/config`, `POST /api/reboot`. The agent holds no credentials and cannot cross this boundary.
+There are two control planes and they do not share credentials:
+
+| Channel | Authentication | What it can do |
+|---|---|---|
+| Human | Basic + root | Change settings, `can/send`, reboot, issue a capability, arm it |
+| Agent | Capability token (32 hex, in RAM) | Read state; submit motion primitives inside an envelope |
+
+The agent never sees the root password, so `POST /api/follow`, `/api/can/send`, `/api/config` and `/api/reboot` remain out of reach. The only surface it can reach is the narrow channel in §6.6, and that channel is closed by default: a human issues the capability, a human arms it, and it stops after 500 ms without a refresh. See [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md).
 
 ### 5.4 Session lifecycle
 
@@ -746,9 +779,9 @@ flowchart TB
     classDef done fill:#e8f7ef,stroke:#3aa675,color:#1f2937
     classDef half fill:#fdf3e3,stroke:#d99b3a,color:#1f2937
     classDef todo fill:#f4f5f7,stroke:#9aa4b2,color:#1f2937
-    class REF done
+    class REF,EX done
     class PER,SAF half
-    class IN,PL,MEM,EX todo
+    class IN,PL,MEM todo
 ```
 
 <sub>Figure 2 — Target architecture: green exists, amber partial, grey missing.</sub>
@@ -759,7 +792,7 @@ flowchart TB
 | Perception agent | Partial (fixed 80 classes) | Video stream | Structured targets + identity | 33–200 ms | Report `stale_detection` |
 | Memory & localisation | Missing | Wheel speed, detection history | Identity, pose, landmarks | 1 s | Degrade conservatively |
 | Driving agent | Missing | Intent + world state | Primitive sequence | 0.5–2 s | Request stop |
-| Safety agent | Partial (interlocks + watchdog) | Every action request | Allow / deny / e-stop | < 100 ms | Deny everything |
+| Safety agent | Partial (interlocks, watchdog, capability layer) | Every action request | Allow / deny / e-stop | < 100 ms | Deny everything |
 
 ### 6.3 Shared world state
 
@@ -769,44 +802,60 @@ The classic multi-agent failure is each agent keeping its own world model and th
 
 Arbitration lives on the execution side, not in the models. Every agent action is a **request** into one actuator that performs three checks: allow-list (defined primitives only), envelope (speed, duration, region) and lease (stop on expiry). Models may disagree; the actuator does not negotiate. Model output is an opinion; actuator output is a voltage.
 
-### 6.5 Missing motion primitives
+All three checks exist in `source/agent/agent_hw.c`: the allow-list is a fixed endpoint table, the envelope is a hard cap in C (intersected with the capability's own limits), and the lease is 100–500 ms.
 
-Only `follow` (visual servo) and `setpoint` (fixed speed, steering still closed on visual error) exist today.
+### 6.5 Implemented and missing primitives
 
-| Primitive | Semantics | Blocker |
+| Primitive | Semantics | Status |
 |---|---|---|
-| `go(d, v)` | Travel `d` metres | Wheel-speed integration and slip compensation (no odometry) |
-| `turn(θ)` | Rotate `θ` degrees | Yaw source (no IMU fusion) |
-| `stop()` | Stop immediately | Exists, must become hardware-level |
-| `look_for(desc)` | Retrieve a target by description | Open-vocabulary detection (currently 80 fixed classes) |
+| `observe` | Read state, own envelope, actuation readiness | Implemented |
+| `drive(v, steer, ttl_ms)` | Leased differential motion | Implemented |
+| `stop` / `estop` | Stop / force stop and disable the profile | Implemented |
+| `go(d, v)` | Travel `d` metres | No odometry: `traveled_m` integrates wheel targets, slip uncompensated |
+| `turn(θ)` | Rotate `θ` degrees | No yaw source (no IMU fusion) |
+| `look_for(desc)` | Retrieve a target by description | No open-vocabulary detection (80 fixed COCO classes) |
 
-### 6.6 Tool contract (design draft, unimplemented)
+The last three are blocked by hardware, not by code volume. A `go` built on approximations only reveals its error at the fifth metre.
+
+### 6.6 Tool contract (implemented)
+
+Four primitives; the function-calling description is in [`docs/agent-tools.json`](docs/agent-tools.json):
+
+| Primitive | Envelope |
+|---|---|
+| `observe` | Read-only |
+| `drive(v, steer, ttl_ms)` | `v <= min(capability v_max, 0.30)`, `|steer| <= 0.15`, `100 <= ttl_ms <= 500` |
+| `stop` | Stop, disarm, and disable the profile |
+| `estop` | Force stop; profile written to disk as disabled |
 
 ```jsonc
 // request
-{ "action": "go", "distance_m": 1.5, "speed": 0.25,
-  "lease_ms": 3000, "intent": "approach the door", "confidence": 0.82 }
+POST /api/agent/motion    X-Agent-Cap: 3f9c…
+v=0.10&steer=0.02&ttl_ms=400
 
 // response
-{ "accepted": false,
-  "reason": "envelope",
-  "detail": "distance_m > 2.0",
-  "state": { "seq": 90021, "age_ms": 79, "can_enabled": false,
-             "target_lost_ms": 320, "halt": "stale_wheel_feedback" } }
+{ "accepted": true, "state": "active", "v": 0.100, "steer": 0.020,
+  "expires_in_ms": 400, "traveled_m": 0.05, "budget_m": 0.5,
+  "reason": "agent_active", "actuation": "live" }
+
+// refused (outside the envelope)
+HTTP 422  v or steer outside this credential's envelope
 ```
 
-The response must be structured and must carry `state`, so the planner can re-plan instead of retrying. The `halt` field reuses the vocabulary from §3.3.
+`actuation` separates "accepted" from "able to land": with no motor adapter the command is still accepted, but the next tick latches `adapter_not_connected` and disables the profile. That field is how an agent knows whether it is driving or merely writing to a log.
+
+Issuing a capability, arming it, revoking it and reading the audit log belong to the operator and are deliberately absent from the tool list: a model that can mint its own authority is not constrained at all.
 
 ### 6.7 Defence in depth
 
 | Layer | Mechanism | Status |
 |---|---|---|
-| Parameter envelope | Range validation + `clamp` in C | Exists, must extend to primitives |
-| Execution isolation | Models submit requests, never touch CAN | Partial (no request path yet) |
-| Independent e-stop | Heartbeat not mediated by Linux, 100–200 ms | Missing (currently seconds) |
-| Human in the loop | Hold-to-drive, release-to-stop | Missing |
+| Parameter envelope | Hard caps in C, independent of the caller | Implemented: capability and control layer each clamp |
+| Execution isolation | Models submit requests, never touch CAN | Implemented: capability layer → `follow_agent_cmd` |
+| Independent e-stop | Heartbeat not mediated by Linux | Partial: 500 ms lease plus software `estop`; physical power cut still needs a human |
+| Human in the loop | Hold-to-drive, release-to-stop | Partial: every episode needs a human arm, distance capped at 100 m |
 
-The order of the second and third layers cannot be swapped: introducing language control before an execution path exists would connect a multi-second latency directly to the motors.
+The order of the second and third layers cannot be swapped: introducing language control before an execution path exists would connect a multi-second latency directly to the motors. That ordering is why §6.6 was built before any planner.
 
 ### 6.8 Staged acceptance
 
@@ -814,7 +863,7 @@ The order of the second and third layers cannot be swapped: introducing language
 |---|---|---|
 | P1 | Observation agent (today) | Asked "why did it stop", must cite `status.reason`; zero fabrications in 100 queries |
 | P2 | Semantic target selection | ≥ 16 of 20 commands select the intended target; stop within 300 ms of a wrong pick |
-| P3 | Three primitives + actuator | 100% rejection of out-of-envelope parameters (≥ 10⁴ random requests); e-stop < 100 ms end-to-end |
+| P3 | Three primitives + actuator | 100% rejection of out-of-envelope parameters (≥ 10⁴ random requests); e-stop < 100 ms end-to-end — primitives and envelope delivered, results in [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md) §8; the 10⁴-request fuzz run is not done |
 | P4 | Odometry and short-range navigation | 5 m straight-line terminal error < 20 cm at v ≤ 0.3 m/s; anything worse is recorded as a failure |
 | P5 | Supervised autonomy | 100 injected hallucinated targets, 100% intercepted by the safety agent |
 
@@ -842,7 +891,7 @@ Single reading at 2026-11-07 01:50, after 10.4 hours of uptime:
 
 ## 8. Limitations and unverified items
 
-- **Actuator not closed-loop**: motor adapter unconfigured, `motor.configured = false`, control output never reaches CAN.
+- **Actuator not closed-loop**: motor adapter unconfigured, `motor.configured = false`, control output never reaches CAN. The agent channel was verified end to end against a `-DADCBENCH` loop-back adapter, not a real motor.
 - **No odometry**: wheel speed is available, pose is not; absolute displacement commands are impossible.
 - **Short-lived identity**: association expires after 800 ms without a match; a target leaving and re-entering the frame is not recognised.
 - **Fixed semantic capacity**: 80 COCO classes; open-vocabulary descriptions are not supported.
@@ -861,6 +910,8 @@ Single reading at 2026-11-07 01:50, after 10.4 hours of uptime:
 | [docs/COMMUNICATION_FLOW.md](docs/COMMUNICATION_FLOW.md) | Inter-module communication and events |
 | [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | Quantisation flow and accuracy |
 | [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | Functional test record |
+| [docs/AGENT_HARDWARE.md](docs/AGENT_HARDWARE.md) | Agent capability layer: credentials, envelope, lease, audit, acceptance matrix |
+| [docs/agent-tools.json](docs/agent-tools.json) | Function-calling description of the four primitives |
 
 ## Appendix
 
@@ -884,11 +935,12 @@ source/           C implementation, ~17k lines
   control/        tracking · PID · follow state machine · CAN adapter
   can/            CAN FD transport · DBC decoding · motor mapping
   http/           reactor · routing · authentication · APIs
+  agent/          agent capability layer: credentials · envelope · budget · audit
   tcp/            network info · telemetry
 include/          mirrors source/
 html/             front end, no build step: 5 pages + 28 JS/CSS files
 config/           runtime config, model, labels, DBC, motor mapping example
-scripts/          build, deploy, sync, Codex bridge
+scripts/          build, deploy, sync, Codex bridge, agent_drive.py plan executor
 docs/             design documents and test records
 ```
 

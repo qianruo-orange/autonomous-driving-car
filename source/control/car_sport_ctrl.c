@@ -44,6 +44,16 @@ static const char *keys[N] = {"enabled",        "class_id",       "max_speed",
                               "setpoint",       "reference_area", "wheel_integral_limit"};
 static const double defaults[N] = {0,    0, .3, .15, .04, 300, .4, 0,   0, .15, 0,
                                    .003, 1, .1, 0,   .5,  .5,  0,  .15, 0, 1};
+/* Hard caps for the external agent source. These are deliberately tighter than
+ * the profile limits a human can set from the UI, and are enforced here rather
+ * than in the HTTP layer so that a compromised caller cannot widen them. */
+#define AGENT_V_CAP      0.30  /* m/s */
+#define AGENT_STEER_CAP  0.15  /* half differential, m/s */
+#define AGENT_TTL_MIN_MS 100u
+#define AGENT_TTL_MAX_MS 500u
+/* How long a fresh command may wait for the decoder's first wheel frame
+ * before the missing feedback is treated as an actuator fault. */
+#define AGENT_FEEDBACK_GRACE_MS 500ull
 static struct {
     pthread_mutex_t lock, feedback_lock, save_lock;
     pthread_cond_t changed;
@@ -59,6 +69,14 @@ static struct {
     yolo_event_meta_t frame;
     follow_pid_t pid[4];
     const char *reason;
+    /* External agent source: a leased velocity/steering command that replaces
+     * the vision path for as long as it stays fresh. */
+    struct {
+        int state;
+        double v, steer, traveled_m;
+        unsigned long long expiry_ms, accepted_ms, accepted;
+        char fault[32];
+    } ag;
 } g;
 static unsigned long long now_ms(void)
 {
@@ -66,6 +84,28 @@ static unsigned long long now_ms(void)
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (unsigned long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
+#ifdef ADCBENCH
+/* Loop-back actuator for the bench build only. A real CAN decoder publishes
+ * measured wheel speeds continuously; this mock republishes its last command
+ * on every control tick so the freshness interlock behaves the same. */
+static double bench_left, bench_right;
+static int bench_send(app_ctx_t *app, double left, double right)
+{
+    (void)app;
+    bench_left = left;
+    bench_right = right;
+    return 0;
+}
+static int bench_stop(app_ctx_t *app)
+{
+    (void)app;
+    bench_left = bench_right = 0;
+    return 0;
+}
+static const follow_motor_ops_t g_bench_motor = {bench_send, bench_stop};
+static void bench_publish(void) { (void)follow_feedback(bench_left, bench_right, now_ms()); }
+#endif
+
 static int valid(const double *v)
 {
     for (int i = 0; i < N; i++)
@@ -140,14 +180,119 @@ static void stop_wheels(const char *reason)
     if (stop_motor_if_needed() < 0)
         g.reason = "motor_stop_failed";
 }
+/* A fault in the agent source is latched, not transient: the profile is
+ * switched off so that neither the agent nor the vision path can resume
+ * motion until an operator clears it explicitly. */
+static void agent_latch(const char *why)
+{
+    g.ag.state = AGENT_MOTION_FAULT;
+    g.ag.expiry_ms = 0;
+    g.cfg[ENABLED] = 0;
+    snprintf(g.ag.fault, sizeof(g.ag.fault), "%s", why);
+    halt(why);
+}
+/* External agent source: same actuator chain as the vision path, but the
+ * left/right setpoints come from a bounded command instead of a detection. */
+static void agent_tick(unsigned long long now, int can_enabled)
+{
+    double left, right;
+    unsigned long long stamp;
+#ifdef ADCBENCH
+    can_enabled = 1; /* bench build: the mock adapter replaces the CAN transport */
+#endif
+    pthread_mutex_lock(&g.feedback_lock);
+    left = g.measured_left;
+    right = g.measured_right;
+    stamp = g.feedback_ms;
+    pthread_mutex_unlock(&g.feedback_lock);
+
+    /* Preview stays visible even when blocked, so a bench run without a motor
+     * can still show what would have been commanded. */
+    follow_mix(g.ag.v, g.ag.steer, g.cfg[SPEED], &g.left_target, &g.right_target);
+
+    if (!g.ag.expiry_ms || now > g.ag.expiry_ms) {
+        stop_wheels("lease_expired");
+        agent_latch("lease_expired");
+        return;
+    }
+    /* Transport-level preconditions first: they do not depend on feedback, so a
+     * caller that keeps refreshing the lease must not be able to skip them. */
+    const char *hard = !g.motor.send ? "adapter_not_connected"
+                       : !g.fifo      ? "fifo_unavailable"
+                       : !can_enabled ? "can_disabled"
+                                      : NULL;
+    if (hard) {
+        stop_wheels(hard);
+        agent_latch(hard);
+        return;
+    }
+    if (!stamp) {
+        /* The decoder has not produced its first frame yet. Hold, do not latch:
+         * a real bus needs a few milliseconds before the first wheel frame. */
+        if (now - g.ag.accepted_ms < AGENT_FEEDBACK_GRACE_MS) {
+            stop_wheels("awaiting_feedback");
+            return;
+        }
+        stop_wheels("stale_wheel_feedback");
+        agent_latch("stale_wheel_feedback");
+        return;
+    }
+    if (now >= stamp && now - stamp > (unsigned long long)g.cfg[TIMEOUT]) {
+        stop_wheels("stale_wheel_feedback");
+        agent_latch("stale_wheel_feedback");
+        return;
+    }
+    double dt = g.previous_ms && now > g.previous_ms ? (now - g.previous_ms) / 1000.0 : 0;
+    if (dt <= 0 || dt > .5) {
+        /* First iteration after a command, or a stalled worker. Keep the
+         * setpoints but do not integrate a bogus dt into the wheel loops. */
+        g.previous_ms = now;
+        if (g.motor_running)
+            stop_wheels("priming");
+        return;
+    }
+    g.previous_ms = now;
+    follow_gains_t wheel_pi = {g.cfg[WP], g.cfg[WI], 0};
+    g.left_output = follow_pid_step_limited(&g.pid[2], wheel_pi, g.left_target - left, dt, 1,
+                                            g.cfg[WHEEL_I_LIMIT]);
+    g.right_output = follow_pid_step_limited(&g.pid[3], wheel_pi, g.right_target - right, dt, 1,
+                                             g.cfg[WHEEL_I_LIMIT]);
+    g.stop_required = 1;
+    if (g.motor.send(g.app, g.left_output, g.right_output) < 0) {
+        halt("motor_send_failed");
+        agent_latch("motor_send_failed");
+        return;
+    }
+    g.motor_running = 1;
+    g.stop_required = 0;
+    g.reason = "agent_active";
+    g.ag.traveled_m += (fabs(g.left_target) + fabs(g.right_target)) * .5 * dt;
+}
 static void tick(unsigned long long now, int can_enabled)
 {
+#ifdef ADCBENCH
+    bench_publish();
+#endif
     if (!g.app->running) {
         halt("shutdown");
         return;
     }
     if (!g.cfg[ENABLED]) {
+        /* The UI stop switch also retires an outstanding agent command. */
+        if (g.ag.state == AGENT_MOTION_ACTIVE) {
+            g.ag.state = AGENT_MOTION_IDLE;
+            g.ag.expiry_ms = 0;
+        }
         halt("disabled");
+        return;
+    }
+    if (g.ag.state == AGENT_MOTION_FAULT) {
+        /* Latched until an operator resets it; blocks both sources. */
+        halt(g.ag.fault[0] ? g.ag.fault : "agent_fault");
+        return;
+    }
+    if (g.ag.state == AGENT_MOTION_ACTIVE) {
+        agent_tick(now, can_enabled);
         return;
     }
     if (!g.frame.capture_monotonic_ms || now < g.frame.capture_monotonic_ms ||
@@ -317,6 +462,133 @@ void follow_invalidate_feedback(void)
     pthread_mutex_unlock(&g.feedback_lock);
 }
 
+int follow_agent_cmd(double v, double steer, unsigned ttl_ms)
+{
+    if (!atomic_load(&g.ready))
+        return -1;
+    if (!isfinite(v) || !isfinite(steer) || v < 0 || v > AGENT_V_CAP || fabs(steer) > AGENT_STEER_CAP ||
+        ttl_ms < AGENT_TTL_MIN_MS || ttl_ms > AGENT_TTL_MAX_MS)
+        return -2;
+    pthread_mutex_lock(&g.lock);
+    if (!g.cfg[ENABLED] || g.ag.state == AGENT_MOTION_FAULT) {
+        pthread_mutex_unlock(&g.lock);
+        return -3;
+    }
+    unsigned long long now = now_ms();
+    g.ag.v = v;
+    g.ag.steer = steer;
+    g.ag.expiry_ms = now + ttl_ms;
+    g.ag.accepted_ms = now;
+    g.ag.state = AGENT_MOTION_ACTIVE;
+    g.ag.accepted++;
+    /* Start the wheel loops from rest instead of integrating the gap since the
+     * previous source last ran; agent_tick consumes the zero dt itself. */
+    if (!g.previous_ms)
+        g.previous_ms = now;
+    pthread_cond_signal(&g.changed);
+    pthread_mutex_unlock(&g.lock);
+    return 0;
+}
+
+void follow_agent_cancel(void)
+{
+    if (!atomic_load(&g.ready))
+        return;
+    /* Ending agent motion must never hand control back to the vision path:
+     * an enabled profile would otherwise resume chasing a target the moment
+     * the agent stops talking. The profile is disabled and the operator has
+     * to re-enable it explicitly. */
+    (void)follow_force_disable("agent_stopped");
+    pthread_mutex_lock(&g.lock);
+    g.ag.state = AGENT_MOTION_IDLE;
+    g.ag.expiry_ms = 0;
+    g.ag.v = g.ag.steer = 0;
+    g.stop_required = 1;
+    pthread_mutex_unlock(&g.lock);
+}
+
+void follow_agent_reset(void)
+{
+    if (!atomic_load(&g.ready))
+        return;
+    pthread_mutex_lock(&g.lock);
+    g.ag.state = AGENT_MOTION_IDLE;
+    g.ag.expiry_ms = 0;
+    g.ag.v = g.ag.steer = 0;
+    g.ag.traveled_m = 0;
+    g.ag.accepted = 0;
+    g.ag.fault[0] = 0;
+    g.stop_required = 1;
+    halt("agent_idle");
+    pthread_mutex_unlock(&g.lock);
+}
+
+int follow_agent_snapshot(agent_motion_t *out)
+{
+    if (!out || !atomic_load(&g.ready) || pthread_mutex_trylock(&g.lock))
+        return -1;
+    unsigned long long now = now_ms();
+    *out = (agent_motion_t){.state = g.ag.state,
+                            .v = g.ag.v,
+                            .steer = g.ag.steer,
+                            .traveled_m = g.ag.traveled_m,
+                            .accepted = g.ag.accepted,
+                            .enabled = g.cfg[ENABLED] != 0,
+                            .motor_bound = g.motor.send != NULL};
+    snprintf(out->fault, sizeof(out->fault), "%s", g.ag.fault);
+    snprintf(out->reason, sizeof(out->reason), "%s", g.reason ? g.reason : "");
+    out->expires_in_ms = g.ag.expiry_ms && g.ag.expiry_ms > now ? g.ag.expiry_ms - now : 0;
+    pthread_mutex_unlock(&g.lock);
+    if (g.app && g.app->cfg) {
+        pthread_mutex_lock(&g.app->can_mutex);
+        out->can_enabled = g.app->cfg->args.can_enabled;
+        pthread_mutex_unlock(&g.app->can_mutex);
+    }
+    int transport = out->can_enabled;
+#ifdef ADCBENCH
+    transport = 1; /* the mock adapter stands in for the CAN transport */
+#endif
+    out->actuation_ready = out->motor_bound && out->enabled && g.fifo && transport;
+    return 0;
+}
+
+int follow_profile_enabled(void)
+{
+    if (!atomic_load(&g.ready))
+        return 0;
+    return g.cfg[ENABLED] != 0;
+}
+
+int follow_force_disable(const char *reason)
+{
+    if (!atomic_load(&g.ready))
+        return -1;
+    /* Same lock order as the settings endpoint: save_lock, then lock. */
+    pthread_mutex_lock(&g.save_lock);
+    pthread_mutex_lock(&g.lock);
+    g.cfg[ENABLED] = 0;
+    g.ag.state = AGENT_MOTION_IDLE;
+    g.ag.expiry_ms = 0;
+    g.stop_required = 1;
+    halt(reason ? reason : "disabled");
+    double values[N];
+    memcpy(values, g.cfg, sizeof(values));
+    pthread_mutex_unlock(&g.lock);
+    /* Persist the disable so that a service restart cannot bring the profile
+     * back up enabled with a stale credential still valid. */
+    FILE *f = fopen("config/follow.conf.tmp", "w");
+    int failed = !f;
+    if (f) {
+        for (int i = 1; i < N; i++)
+            if (fprintf(f, "%s %.9g\n", keys[i], values[i]) < 0) failed = 1;
+        if (fclose(f)) failed = 1;
+    }
+    if (failed || rename("config/follow.conf.tmp", "config/follow.conf"))
+        remove("config/follow.conf.tmp");
+    pthread_mutex_unlock(&g.save_lock);
+    return 0;
+}
+
 int follow_telemetry_snapshot(follow_telemetry_t *out)
 {
     if (!out || !atomic_load(&g.ready) || pthread_mutex_trylock(&g.lock))
@@ -410,6 +682,7 @@ int follow_init(void *app)
         fclose(f);
     }
     reset();
+    memset(&g.ag, 0, sizeof(g.ag));
     g.motor = (follow_motor_ops_t){0};
     g.motor_running = g.stop_required = 0;
     g.running = 1;
@@ -417,6 +690,16 @@ int follow_init(void *app)
     /* The profile remains disabled unless explicitly configured. Binding occurs
      * before the controller worker starts; the FIFO interlock stays mandatory. */
     (void)can_motor_init(g.app);
+#ifdef ADCBENCH
+    /* Test-only build (-DADCBENCH): a loop-back actuator that echoes the
+     * commanded wheel speeds as measured feedback. It exists so the agent
+     * capability layer can be exercised end to end without a motor, and is
+     * never compiled into the deployed binary. */
+    if (!g.motor.send) {
+        follow_bind_motor(&g_bench_motor);
+    }
+    LOG_INFO("car control: ADCBENCH build, mock actuator bound");
+#endif
     return 0;
 }
 void follow_destroy(void *app)

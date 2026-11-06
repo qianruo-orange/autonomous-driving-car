@@ -1,0 +1,102 @@
+{
+  "$comment": "Tool contract for the on-board agent capability layer. Only the four tools below are exposed to a model. Issuing a credential, arming it, revoking it and reading the audit log stay with the operator (root Basic) and are deliberately absent: a model that can mint its own authority is not sandboxed.",
+  "transport": {
+    "base": "http://127.0.0.1",
+    "auth": "header X-Agent-Cap: <32 hex> (issued by POST /api/agent/token)",
+    "content_type": "application/x-www-form-urlencoded"
+  },
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "observe",
+        "description": "Read the vehicle state before acting, and after any surprise. Returns speed/steer targets and measured values, whether wheel feedback is fresh, the latched fault if any, whether actuation is currently possible, and this credential's own envelope. Call this before proposing a plan; do not invent state.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      "http": { "method": "GET", "path": "/api/agent/observe" }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "drive",
+        "description": "Publish one bounded motion primitive: drive at v m/s with differential steer for ttl_ms. The command is a lease, not a setting: it expires after ttl_ms unless refreshed, and an expired lease stops the vehicle and latches a fault that only an operator can clear. Prefer producing a plan for scripts/agent_drive.py over calling this directly in a loop.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "v": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 0.3,
+              "description": "Forward speed in m/s. Also limited by the credential's v_max, which is usually lower."
+            },
+            "steer": {
+              "type": "number",
+              "minimum": -0.15,
+              "maximum": 0.15,
+              "description": "Half the left/right wheel-speed difference in m/s, positive = left wheel faster = turn right. Yaw rate is approximately 2*steer / wheel_track."
+            },
+            "ttl_ms": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 500,
+              "description": "Lease duration. 500 is the maximum; 300-500 is the sensible range at 5-8 Hz."
+            }
+          },
+          "required": ["v", "steer", "ttl_ms"],
+          "additionalProperties": false
+        }
+      },
+      "http": { "method": "POST", "path": "/api/agent/motion" },
+      "returns": {
+        "accepted": "boolean",
+        "state": "active|fault|idle",
+        "traveled_m": "number, metres consumed against the credential budget",
+        "actuation": "live|blocked; blocked means the command was accepted but an interlock refused it"
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "stop",
+        "description": "End motion and retire the arming. The follow profile is switched off as well, so the vehicle cannot fall back to chasing a detected target. Use this at the end of every plan and whenever the situation is unclear.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      "http": { "method": "POST", "path": "/api/agent/stop" }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "estop",
+        "description": "Emergency stop. Disarms, stops, and forces the follow profile off on disk so a service restart cannot bring it back. Use when the vehicle is doing something you did not intend; a human must re-enable before anything moves again.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      "http": { "method": "POST", "path": "/api/agent/estop" }
+    }
+  ],
+  "error_codes": {
+    "401": "missing or invalid credential",
+    "403": "credential not armed, or missing scope",
+    "409": "profile disabled, fault latched, or distance budget exhausted",
+    "422": "argument outside the credential envelope or outside the control-layer hard cap",
+    "429": "more than 25 commands per second on one credential"
+  },
+  "operator_only": [
+    "POST /api/agent/token",
+    "POST /api/agent/arm",
+    "POST /api/agent/revoke",
+    "GET /api/agent/state",
+    "GET /api/agent/audit"
+  ]
+}

@@ -26,6 +26,7 @@
 #include "video/video_session.h"
 #include "yolo/rknn_yolo.h"
 #include "control/car_sport_ctrl.h"
+#include "agent/agent_hw.h"
 #include "telemetry/ano.h"
 
 typedef struct {
@@ -81,6 +82,9 @@ static const module_t g_modules[] = {
     {"http",            http_server_start,  http_server_stop,       http_server_task,   SCHED_FIFO,   5,       CPU_LITTLE},
     {"http_worker",     NULL,               NULL,                   NULL,               SCHED_FIFO,   1,       CPU_LITTLE},
     {"car_sport_ctrl",  follow_init,        follow_destroy,         follow_task,        SCHED_FIFO,  20,       CPU_LITTLE},
+    /* 智能体能力层：只持有凭证表与审计，不创建线程；必须排在控制层之后，
+       因为 disarm/estop 需要调用控制层的停机接口。 */
+    {"agent_hw",        agent_hw_init,      agent_hw_destroy,       NULL,               -1,           0,       CPU_INHERIT},
     {"ano",             ano_init,           ano_destroy,            NULL,               -1,           0,       CPU_INHERIT},
     /* 相机采集：周期 33 ms 的取流，绑大核与解码、推理同组。线程绝大部分时间
        阻塞在 DQBUF，唤醒后只做一次入环，单次运行 <1 ms。 */
