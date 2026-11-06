@@ -652,6 +652,22 @@ def update_env():
     return env
 
 
+def running_update_unit():
+    """Name of an already running update unit, if any (never run two at once)."""
+    try:
+        p = subprocess.run(["systemctl", "list-units", "--all", "--no-legend",
+                            "--plain", "codex-update-*.service"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    for line in (p.stdout or "").splitlines():
+        parts = line.split()
+        # systemctl columns: UNIT LOAD ACTIVE SUB DESCRIPTION
+        if len(parts) >= 4 and parts[0].startswith("codex-update-") and parts[3] == "running":
+            return parts[0]
+    return ""
+
+
 def start_update_outside_sandbox(cli):
     """Start `codex update` in the host namespace and return immediately.
 
@@ -688,6 +704,14 @@ def cmd_update_install(args):
         return
     before = version_of(s.get("cli_version", "")) or version_of(cli_version(cli))
     if os.geteuid() == 0 and shutil.which("systemd-run"):
+        existing = running_update_unit()
+        if existing:
+            result(args.out, {"ok": True, "started": True, "before": before,
+                              "version": before, "unit": existing,
+                              "log": os.path.join(REC, "codex_update.log"),
+                              "note": "an update is already running",
+                              "update_command": UPDATE_COMMAND})
+            return
         try:
             unit, rc, output, log_path = start_update_outside_sandbox(cli)
         except Exception as exc:
