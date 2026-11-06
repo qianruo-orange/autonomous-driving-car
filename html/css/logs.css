@@ -50,7 +50,7 @@ tr.row-active td{background:rgba(30,111,212,.08)}
 tr.row-active td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
 /* 轻量提示 */
 @media(max-width:540px){
-  body{padding:12px}
+  /* body 内外边距由 layout.css 统一管（含底部标签栏留白），这里不再覆盖 */
   h1{font-size:18px}
   th,td{padding:6px 8px;font-size:11px}
   .btn{padding:6px 10px;font-size:12px}

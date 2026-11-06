@@ -328,5 +328,17 @@ a:hover { color: var(--accent-hover); }
 
   /* 手机上内容按自然高度堆叠，别再用视口高度去撑 */
   .grid { min-height: 0; }
+
+  /* 卡片标题栏：窄屏允许换行。原来 flex-wrap:nowrap 时，标题 + 状态 + 操作组
+     挤不下会让整张卡片按 min-content 撑宽，页面就出现横向滚动、右侧被切掉。 */
+  .card > h3,
+  .card > .card-head { flex-wrap: wrap; }
+  .card > h3 > .proxy-head-actions,
+  .card > h3 > .codex-head-actions {
+    flex: 1 1 100%;
+    min-width: 0;
+    margin-left: 0;
+    justify-content: flex-start;
+  }
 }
 
