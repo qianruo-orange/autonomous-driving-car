@@ -178,3 +178,16 @@ label.form-label{
   letter-spacing:.2px;white-space:nowrap}
 /* 单位后缀与标签同色同号 */
 .unit,.field-unit .unit{font-size:11.5px;color:var(--muted)}
+
+/* ===== label size force ===== */
+/* 页面级 config.css / monitor.css 在 common.css 之后加载，同权重会覆盖这里，
+   所以标签统一值用 !important 兜住 */
+.row>label,
+.net-field>label,
+.codex-run-field>label,
+.cfg-grid label,
+.car-param-group .row>label,
+label.form-label{
+  font-size:12px!important;font-weight:400!important;color:var(--muted)!important;
+  line-height:1.4!important;letter-spacing:.2px!important}
+.unit,.field-unit .unit{font-size:11.5px!important;color:var(--muted)!important}
