@@ -450,7 +450,7 @@ static int encode_frame(video_record_t *s, annot_frame_t *f)
     mpp_frame_deinit(&out);
     if (rc) return -1;
     drain_packets(s);
-    /* 分段交给 video_rec：这里直接换名会截断同名文件，而且外部不知道名字变了 */
+    /* 分段交给 video_session：这里直接换名会截断同名文件，而且外部不知道名字变了 */
     return 0;
 }
 

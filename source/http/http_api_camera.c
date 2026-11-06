@@ -10,7 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "http/http_internal.h"
-#include "video/video_rec.h"
+#include "video/video_session.h"
 #include "video/jpeg_decoder.h"
 #include "yolo/rknn_yolo.h"
 
@@ -66,8 +66,8 @@ static void camera_send_status(app_ctx_t *app, int client, int device)
     camera_control_t focus = camera_read_control(device, V4L2_CID_FOCUS_ABSOLUTE);
     unsigned long long decoded, errors;
     jpeg_decoder_stats(&decoded, &errors);
-    video_rec_status_t recording;
-    video_rec_status(&recording);
+    video_session_status_t recording;
+    video_session_status(&recording);
     char json[1024];
     int n = snprintf(json, sizeof(json),
         "{\"device\":\"%s\",\"focus_auto\":{\"supported\":%s,\"value\":%d,\"min\":%d,\"max\":%d,\"step\":%d,\"read_only\":%s,\"active\":%s},"

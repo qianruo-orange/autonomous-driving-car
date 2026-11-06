@@ -23,7 +23,7 @@
 #include "core/thread.h"
 #include "core/cpu_affinity.h"
 #include "video/video_stream.h"
-#include "video/video_rec.h"
+#include "video/video_session.h"
 #include "yolo/rknn_yolo.h"
 #include "control/car_sport_ctrl.h"
 #include "telemetry/ano.h"
@@ -94,7 +94,7 @@ static const module_t g_modules[] = {
     {"yolo_render",     NULL,               NULL,                   NULL,               SCHED_FIFO,  10,       CPU_BIG},
     {"yolo_report",     NULL,               NULL,                   NULL,               SCHED_FIFO,   1,       CPU_LITTLE},
     {"watchdog",        watchdog_init,      NULL,                   watchdog_task,      SCHED_FIFO,  30,       CPU_LITTLE},
-    {"rec",             video_rec_init,     video_rec_destroy,      video_rec_task,     SCHED_FIFO,  10,       CPU_BIG},
+    {"rec",             video_session_init,     video_session_destroy,      video_session_task,     SCHED_FIFO,  10,       CPU_BIG},
     {"signal",          signal_setup,       NULL,                   NULL,               -1,           0,       CPU_INHERIT},
 };
 #define MOD_COUNT (sizeof(g_modules) / sizeof(g_modules[0]))

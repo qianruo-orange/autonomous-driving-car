@@ -300,7 +300,7 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | `tools/model/` | 离线模型链路：ONNX 导出、RKNN 量化、数据集准备、原始输出 dump、mAP 评测 |
 | `docs/` | 架构、延迟、量化、实时调度等文档 |
 
-视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`rga_preprocess.c` 负责 RGA 画布，`video_rec.c` 负责录像会话与分段，`video_record.c` 负责画框与硬件编码线程，`rec_mp4.c` 负责 MP4 容器。
+视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`rga_preprocess.c` 负责 RGA 画布，`video_session.c` 负责录像会话与分段，`video_record.c` 负责画框与硬件编码线程，`rec_mp4.c` 负责 MP4 容器。
 
 ### 依赖
 
@@ -763,7 +763,7 @@ locking rules are in [communication flow](docs/COMMUNICATION_FLOW.md).
 
 Video modules: `video_stream.c` owns capture and MJPEG fan-out,
 `frame_ring.c` owns buffer handoff, `rga_preprocess.c` owns the RGA canvas,
-`video_rec.c` owns recording sessions and segmentation, `video_record.c` owns the
+`video_session.c` owns recording sessions and segmentation, `video_record.c` owns the
 box-drawing and hardware encoder thread, and `rec_mp4.c` owns the MP4 container.
 
 ### Requirements

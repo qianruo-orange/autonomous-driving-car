@@ -6,7 +6,7 @@
 #include "http/http_internal.h"
 #include "can/can_socket.h"
 #include "video/video_stream.h"
-#include "video/video_rec.h"
+#include "video/video_session.h"
 #include "watchdog/watchdog.h"
 #include "tcp/net_ip.h"
 #include "yolo/rknn_yolo.h"
@@ -409,7 +409,7 @@ void http_config_post(app_ctx_t *app, int fd, const char *method, const char *ur
        before capture changes, otherwise every frame at the new dimensions is
        rejected by the old encoder and reported as an inference stall. */
     if (vid_changed & (APPLY_VIDEO_CAPTURE))
-        video_rec_cycle_session();
+        video_session_cycle();
     if (vid_changed & APPLY_VIDEO_CAPTURE) video_stream_restart();
     /* YOLO 参数变更后热重载推理池（停旧池 → 重读配置重建），无需重启服务 */
     if (yolo_changed) rknn_yolo_reload();

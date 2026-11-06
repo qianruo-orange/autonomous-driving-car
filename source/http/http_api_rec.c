@@ -16,7 +16,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include "http/http_internal.h"
-#include "video/video_rec.h"
+#include "video/video_session.h"
 
 #define REC_DIR PATH_VIDEOS
 
@@ -36,10 +36,10 @@ static int rec_file_valid(const char *name)
 /* 状态 JSON */
 static void serve_rec_status(int fd)
 {
-    video_rec_status_t st;
+    video_session_status_t st;
     char json[768];
     int off;
-    video_rec_status(&st);
+    video_session_status(&st);
     off = snprintf(json, sizeof(json),
         "{\"recording\":%d,\"file\":\"%s\",\"start_ms\":%llu,"
         "\"frames\":%llu,\"bytes\":%llu,\"fps\":%.1f,"
@@ -143,7 +143,7 @@ static void serve_rec_delete(int fd, const char *req)
     }
     int root = open(REC_DIR, O_RDONLY|O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
     if (root < 0) { http_err(fd, 404, "Not Found", NULL); return; }
-    int removed = video_rec_delete_file(root, name);
+    int removed = video_session_delete_file(root, name);
     int error = errno;
     close(root);
     errno = error;
@@ -163,7 +163,7 @@ static void serve_rec_clear(int fd)
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.') continue;
         if (!rec_file_valid(de->d_name)) continue;   /* 跳过打包临时文件等 */
-        int removed = video_rec_delete_file(dirfd(dir), de->d_name);
+        int removed = video_session_delete_file(dirfd(dir), de->d_name);
         if (!removed) del++;
         else if (removed < 0) failed = 1;
     }
@@ -184,13 +184,13 @@ void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *ur
         serve_rec_list(fd);
     } else if (strcmp(uri, "/api/rec/start") == 0) {
         if (strcmp(method, "POST") != 0) { http_err(fd, 405, "Method Not Allowed", NULL); return; }
-        if (video_rec_start() != 0)
+        if (video_session_start() != 0)
             http_err(fd, 409, "Conflict", "already recording");
         else
             http_ok_text(fd, "started");
     } else if (strcmp(uri, "/api/rec/stop") == 0) {
         if (strcmp(method, "POST") != 0) { http_err(fd, 405, "Method Not Allowed", NULL); return; }
-        if (video_rec_stop() != 0)
+        if (video_session_stop() != 0)
             http_err(fd, 409, "Conflict", "not recording");
         else
             http_ok_text(fd, "stopped");
@@ -201,7 +201,7 @@ void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *ur
             http_err(fd, 400, "Bad Request", "expected recording filename required");
             return;
         }
-        int rc = video_rec_split(file);
+        int rc = video_session_split(file);
         if (rc != 0) http_err(fd, 409, "Conflict", rc == -2 ? "recording changed" : "not recording or split pending");
         else http_ok_text(fd, "split queued");
     } else if (strcmp(uri, "/api/rec/pack") == 0) {

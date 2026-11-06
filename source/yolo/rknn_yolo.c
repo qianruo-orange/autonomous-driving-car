@@ -68,7 +68,7 @@
 #include "video/frame_ring.h"
 #include "video/jpeg_decoder.h"
 #include "video/rga_preprocess.h"
-#include "video/video_rec.h"
+#include "video/video_session.h"
 
 /* 标注录像的 NV12 暂存：解码器出队瞬间拷进来，之后读的就是这份，
    不再依赖可能已被复用的解码器缓冲。__thread 保证每 worker 独立。 */
@@ -679,7 +679,7 @@ static void *yolo_worker_task(void *arg)
                 boxes[i].cls = det->cls;
                 snprintf(boxes[i].label, sizeof(boxes[i].label), "%s %.2f", name, (double)det->conf);
             }
-            video_video_record_frame(job.annot_nv12, job.w, job.h, boxes, n);
+            video_session_annot_frame(job.annot_nv12, job.w, job.h, boxes, n);
         }
         free(job.annot_nv12);
         job.annot_nv12 = NULL;
@@ -734,7 +734,7 @@ static void *yolo_worker_task(void *arg)
    严格按 seq 顺序消费会因 worker 乱序完成而等待缺口（实测卡顿 100~700ms）。
    改为消费结果队列中最新完成结果：渲染 seq 严格递增（绝不回退，画面不抖动），
    被跳过的旧结果条目直接丢弃（纯元数据，无资源）；EMA 平滑本身即可容忍帧间小跳跃。
-   画框后的 RGB 转换为 NV12，随后由硬件编码器发布视频。 */
+   标注录像复用解码出的 NV12：画框后直接交给 MPP 编码为 H.264/MP4。 */
 
 /* Move ownership out of the slot before unlocking. Camera quiesce may clear
  * every slot while rendering; it must never recycle an in-flight RGB buffer. */

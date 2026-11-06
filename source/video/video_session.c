@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
- * video_rec.c — 录像会话管理：把带框的 H.264 写进 MP4。
+ * video_session.c — 录像会话管理：把带框的 H.264 写进 MP4。
  *
  * 链路：V4L2 原始 JPEG → NV12 → 画框 → H.264 → MP4（详见 video/video_record.c）。
  *   本文件只负责"什么时候开一段、写到哪个文件、什么时候切段"，一帧的编解码
@@ -9,7 +9,7 @@
  * 线程模型：main 模块表 "rec" 线程，空闲时 100ms 轮询喂狗；
  *   默认自动录制：任务启动即开始，文件平铺在 recordings/videos/，
  *   一天一个 video_YYYYMMDD.mp4，跨过零点自动收尾并续录新一天的文件；
- *   HTTP 线程可下发 video_rec_start/stop 手动控制，手动停止后不再自动续录。
+ *   HTTP 线程可下发 video_session_start/stop 手动控制，手动停止后不再自动续录。
  *
  * 录像不依赖 YOLO：没有检测框的帧同样入队（recordings 里只有一份 MP4，
  * 框按帧画在 Y 平面上）。
@@ -30,7 +30,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#include "video/video_rec.h"
+#include "video/video_session.h"
 #include "video/video_record.h"
 #include "video/video_stream.h"
 #include "video/frame_ring.h"
@@ -73,7 +73,7 @@ static struct {
  * If both locks are needed, acquire files_lock before g_rec.lock. */
 static pthread_mutex_t g_rec_files_lock = PTHREAD_MUTEX_INITIALIZER;
 
-int video_rec_delete_file(int directory_fd, const char *name)
+int video_session_delete_file(int directory_fd, const char *name)
 {
     size_t length = name ? strlen(name) : 0;
     if (length < 10 || length >= 256 || strchr(name, '/') || strstr(name, "..") ||
@@ -237,7 +237,7 @@ static int rec_free_bytes(unsigned long long *out)
 
 /* ---- 录制线程 ---- */
 
-void *video_rec_task(void *arg)
+void *video_session_task(void *arg)
 {
     app_ctx_t *app = (app_ctx_t *)arg;
     (void)pthread_setname_np(pthread_self(), "rec");
@@ -483,7 +483,7 @@ void *video_rec_task(void *arg)
 
 /* ---- 对外 API（HTTP Reactor 线程调用） ---- */
 
-int video_rec_start(void)
+int video_session_start(void)
 {
     pthread_mutex_lock(&g_rec.lock);
     if (g_rec.recording) {
@@ -496,7 +496,7 @@ int video_rec_start(void)
     return 0;
 }
 
-int video_rec_stop(void)
+int video_session_stop(void)
 {
     pthread_mutex_lock(&g_rec.lock);
     if (!g_rec.recording) {
@@ -512,7 +512,7 @@ int video_rec_stop(void)
     return 0;
 }
 
-int video_rec_split(const char *expected_file)
+int video_session_split(const char *expected_file)
 {
     pthread_mutex_lock(&g_rec.lock);
     int result = 0;
@@ -529,7 +529,7 @@ int video_rec_split(const char *expected_file)
     return result;
 }
 
-void video_rec_cycle_session(void)
+void video_session_cycle(void)
 {
     /* 直接清 recording 而不下发 REC_CMD_STOP：STOP 会同时关掉 auto_rec（视为
        用户手动停录），而这里只想让当前段收尾——录制线程随即按新配置续录下一段。
@@ -539,7 +539,7 @@ void video_rec_cycle_session(void)
     pthread_mutex_unlock(&g_rec.lock);
 }
 
-int video_rec_status(video_rec_status_t *out)
+int video_session_status(video_session_status_t *out)
 {
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
@@ -582,7 +582,7 @@ static void rec_mkdirs(const char *dir)
     (void)mkdir(path, 0755);
 }
 
-int video_rec_init(void *arg)
+int video_session_init(void *arg)
 {
     (void)arg;
     memset(&g_rec, 0, sizeof(g_rec));
@@ -592,7 +592,7 @@ int video_rec_init(void *arg)
     return 0;
 }
 
-void video_rec_destroy(void *arg)
+void video_session_destroy(void *arg)
 {
     (void)arg;
     /* 停止录制并等待线程退出（录制循环 ≤1 帧间隔退出，finalize 同步完成） */
@@ -603,7 +603,7 @@ void video_rec_destroy(void *arg)
     pthread_mutex_destroy(&g_rec.lock);
 }
 
-void video_video_record_frame(const void *nv12, int w, int h,
+void video_session_annot_frame(const void *nv12, int w, int h,
                            const video_record_box_t *boxes, int count)
 {
     if (!nv12 || !boxes) return;

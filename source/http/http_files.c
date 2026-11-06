@@ -3,7 +3,7 @@
 /* Bounded file workers: previews, native MP4 ranges, whole-page pack/clear. */
 #define _GNU_SOURCE
 #include "http/http_internal.h"
-#include "video/video_rec.h"
+#include "video/video_session.h"
 #include "yolo/yolo_events.h"
 #include <dirent.h>
 #include <errno.h>
@@ -111,7 +111,7 @@ static uint32_t file_be32(const unsigned char *s)
  * the recorder's lifecycle guard and does not require a valid container. */
 static int file_mp4_closed(int fd,const char *relative)
 {
-    video_rec_status_t status={0};video_rec_status(&status);
+    video_session_status_t status={0};video_session_status(&status);
     if(status.file[0] && !strcmp(status.file,relative))return 0;
     struct stat st;if(fstat(fd,&st)||st.st_size<16)return 0;
     off_t offset=0;int moov=0,ftyp=0;
@@ -376,7 +376,7 @@ static int file_walk(const char *root,const char *stage,const char *category,int
             close(source);
             /* Incomplete orphan MP4s are deletable too. Only the recorder
                knows whether a path is open, being published or finalized. */
-            int removed = kind==1 ? video_rec_delete_file(rootfd,relative) : unlinkat(rootfd,relative,0);
+            int removed = kind==1 ? video_session_delete_file(rootfd,relative) : unlinkat(rootfd,relative,0);
             if(removed<0){if(errno==ENOENT)continue;result=-1;break;}
             if(!removed)(*count)++;
             continue;
