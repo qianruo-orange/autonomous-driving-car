@@ -363,7 +363,7 @@ static int yolo_decode_start(void)
         }
         g_decode.created = i + 1;
     }
-    LOG_INFO("decode: %d libjpeg worker threads on the decode pair", YOLO_DECODE_THREADS);
+    LOG_INFO("decode: %d libjpeg worker threads on the big cores", YOLO_DECODE_THREADS);
     return 0;
 }
 

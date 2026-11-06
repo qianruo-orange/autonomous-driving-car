@@ -16,7 +16,7 @@
 相机 MJPEG → libjpeg-turbo 软解（NV12 dma-buf）→ RGA（色彩转换 + letterbox）→ NPU → C 后处理
 ```
 
-分工明确：libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12（720p 单帧约 5 ms，两个解码线程各持一个 libjpeg 实例、绑在大核前两核上并行），RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 另承担后处理与结果分发。端到端 80 ms，整机 CPU 占用约 4 %。
+分工明确：libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12（720p 单帧约 5 ms，两个解码线程各持一个 libjpeg 实例、绑在大核上并行），RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 另承担后处理与结果分发。端到端 80 ms，整机 CPU 占用约 4 %。
 
 直播保持传感器原始画质：`/video/mjpeg` 直接转发相机 MJPEG 字节，检测框由浏览器 canvas 按帧序号叠加。录像走另一条路——推理解出的 NV12 画上框后由 VEPU510 硬件编成 H.264，保存为 MP4。
 
@@ -147,7 +147,7 @@ flowchart LR
 
 **采集。** V4L2 MJPEG，1280×720，30 fps。设备通过稳定路径（`/dev/v4l/by-id/...`）打开，因为新增内置媒体驱动会改变 `/dev/videoN` 编号。
 
-**解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 单帧约 5 ms。解码已从采集线程里剥出来：2 个解码线程各持一个 libjpeg 实例并行工作，`SCHED_FIFO` 15 绑在大核前两核（cpu4、5，按 `cpu_capacity` 自动发现）。单线程软解只能到 25 fps，双线程跑满相机的 29 fps，采集线程只负责 claim 与投递。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
+**解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 单帧约 5 ms。解码已从采集线程里剥出来：2 个解码线程各持一个 libjpeg 实例并行工作，`SCHED_FIFO` 15 绑在大核组（cpu4-7，按 `cpu_capacity` 自动发现）。单线程软解只能到 25 fps，双线程跑满相机的 29 fps，采集线程只负责 claim 与投递。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
 
 **预处理。** RGA 一次调用完成 NV12 → RGB、等比缩放和居中放置到 512×512 画布，约 1 ms。114 灰边只在启动时填一次，之后每帧 RGA 只写中心区域。
 
@@ -370,8 +370,8 @@ camera MJPEG → libjpeg-turbo decode (NV12 dma-buf) → RGA (CSC + letterbox) �
 libjpeg-turbo turns the JPEG into NV12 on the CPU (~5 ms per 720p frame), RGA
 does colour conversion and scaling in one pass, the NPU emits the detection
 tensors, and the CPU handles postprocessing and result dispatch. Decoding runs
-on two threads, each with its own libjpeg instance, pinned to the first two big
-cores. End to end this is 80 ms at about 4 % whole-system CPU load.
+on two threads, each with its own libjpeg instance, pinned to the big cores.
+End to end this is 80 ms at about 4 % whole-system CPU load.
 
 The live view keeps the sensor's own quality: `/video/mjpeg` forwards the
 camera's MJPEG bytes and the browser canvas overlays the boxes, aligned by frame
@@ -524,8 +524,8 @@ renumber `/dev/videoN`.
 **Decode.** libjpeg-turbo decodes the JPEG into NV12 on the CPU (~5 ms per 720p
 frame) and writes it into a CMA dma-buf that RGA reads directly. Decoding was
 moved out of the capture thread into two threads, one libjpeg instance each,
-running `SCHED_FIFO` 15 on the first two big cores (cpu4 and cpu5, discovered
-from `cpu_capacity`): a single software decoder tops out at 25 fps, the pair
+running `SCHED_FIFO` 15 on the big cores (cpu4-7, discovered from
+`cpu_capacity`): a single software decoder tops out at 25 fps, the pair
 saturates the camera's 29 fps, and the capture thread only claims and submits.
 The on-SoC `rockchip-jpegd` (VDPU720) is not used: repeated decodes of the same
 frame do not agree — row 0 of every 8x8 block is exact while the remaining rows
