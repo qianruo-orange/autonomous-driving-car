@@ -1,10 +1,31 @@
-# Autonomous Driving Car
+<div align="center">
 
-**中文** | [English](#english-documentation)
+<h1>Autonomous Driving Car</h1>
+
+<p><strong>C11 &middot; RK3576 &middot; RKNN YOLO26 &middot; RGA / MPP</strong></p>
+
+<p>
+<a href="#依赖"><img src="https://img.shields.io/badge/C-11-3A6EA5?style=flat-square" alt="C11" /></a>
+<a href="#依赖"><img src="https://img.shields.io/badge/platform-RK3576-E8792B?style=flat-square" alt="RK3576" /></a>
+<a href="#感知流水线"><img src="https://img.shields.io/badge/inference-RKNN%20YOLO26n-2E8B57?style=flat-square" alt="RKNN YOLO26n" /></a>
+<a href="#实时调度与绑核"><img src="https://img.shields.io/badge/scheduling-FIFO-6C5CE7?style=flat-square" alt="SCHED FIFO" /></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-586069?style=flat-square" alt="GPL-3.0-or-later" /></a>
+</p>
+
+<p><strong>中文</strong> &middot; <a href="#english-documentation">English</a></p>
+
+</div>
 
 ---
 
 ## 中文文档
+
+**文档导航**
+
+| 上手 | 架构与实现 | 接口与参考 |
+| :--- | :--- | :--- |
+| [实测性能](#实测性能)<br>[快速开始](#快速开始)<br>[构建与部署](#构建与部署)<br>[依赖](#依赖) | [系统架构](#系统架构)<br>[感知流水线](#感知流水线)<br>[视觉跟踪与跟随](#视觉跟踪与跟随)<br>[实时调度与绑核](#实时调度与绑核) | [Web 界面](#web-界面)<br>[API 速查](#api-速查)<br>[录像与标注](#录像与标注)<br>[日志、结果与排障](#日志结果与排障) |
+| [配置与模型](#配置与模型)<br>[仓库结构](#仓库结构) | [通信注册](#通信注册)<br>[发展方向](#发展方向) | [许可证](#许可证)<br>[专题文档](docs/) |
 
 一个纯 C11 进程里的车载平台：相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、标注录像和浏览器管理界面跑在一起。源码全是 `.c`，不用 C++，也不需要 OpenCV。LLM 规划能力尚未实现。
 
@@ -47,6 +68,9 @@ curl -s http://127.0.0.1/api/rec/status
 
 浏览器打开 `http://<板子IP>/` 进入管理界面。前置条件是带 Rockchip NPU / RGA / MPP 驱动的内核、[用户态依赖](#依赖)和准备好的模型；详见[构建与部署](#构建与部署)。
 
+> [!IMPORTANT]
+> 模型 `config/yolo26.rknn`（512×512、两路输出）与 `config/coco.names` **不入库**，首次构建前需自行准备。
+
 ### 构建与部署
 
 | 命令 | 作用 |
@@ -60,7 +84,8 @@ curl -s http://127.0.0.1/api/rec/status
 
 构建产物是 `bin/autonomous-driving-car`。部署会把可执行文件、`html/`、`config/` 装到 `/opt/autonomous-driving-car`，创建 `recordings/{logs,videos,results}/`，安装仓库根的 [autonomous-driving-car.service](autonomous-driving-car.service) 并启动服务。
 
-systemd 单元以 `WorkingDirectory=/opt/autonomous-driving-car` 运行，开启 `PrivateTmp=yes` 与 `ProtectSystem=strict`，只把 `config/` 和 `recordings/` 列为可写路径——需要落盘的临时文件必须放在 `recordings/` 下，不能写 `/tmp`。
+> [!WARNING]
+> systemd 单元以 `WorkingDirectory=/opt/autonomous-driving-car` 运行，开启 `PrivateTmp=yes` 与 `ProtectSystem=strict`，只把 `config/` 和 `recordings/` 列为可写路径——需要落盘的临时文件必须放在 `recordings/` 下，不能写 `/tmp`。
 
 在 cgroup v2 系统上，部署会写入 `/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf`，允许服务组内创建 FIFO 实时线程；该配置生效期间整个层级的 CPU 配额与权重不可用，卸载时保留，全局 RT 预算不变。
 
@@ -202,7 +227,8 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 | 控制 | `GET /api/follow`、`/api/tracking`、`/api/can/*`、`/api/ano`（公开）；对应 POST **R** | 跟随、跟踪、CAN 收发与 DBC、遥测 |
 | 系统管理 | `GET /api/reboot`、`/api/shutdown` **R** | 重启 / 关机 |
 
-两个容易踩坑的参数：`POST /api/rec/split` 的请求体必须是**当前录像文件名**（如 `video_20261106.mp4`），不匹配返回 409；所有打包下载的文件名都带 `%Y%m%d_%H%M%S` 时间戳（如 `config_pack_20261106_113425.tar.gz`、`autonomous-driving-car_files_20261106_113425.zip`），避免浏览器复用缓存里的旧包。
+> [!TIP]
+> 两个容易踩坑的参数：`POST /api/rec/split` 的请求体必须是**当前录像文件名**（如 `video_20261106.mp4`），不匹配返回 409；所有打包下载的文件名都带 `%Y%m%d_%H%M%S` 时间戳（如 `config_pack_20261106_113425.tar.gz`、`autonomous-driving-car_files_20261106_113425.zip`），避免浏览器复用缓存里的旧包。
 
 ### 录像与标注
 
@@ -216,7 +242,10 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 
 ### 日志、结果与排障
 
-日志目录 `recordings/logs/` 一级平铺，一天一个文件：`log_info_YYYYmmdd.log` 与 `log_err_YYYYmmdd.log`，按天追加；超过 10 MB 时当天文件轮转为 `.1`。**通过页面清空或删除日志文件后，下一次写日志会自动重建同名文件，无需重启服务**（写入前检查句柄的 `st_nlink`，目录被删也会补建）。每日 TXT 结果 `recordings/results/result_YYYYMMDD.txt` 记录所有完成的推理，包括没有目标的帧：采集时间、帧序号、图像尺寸、可用的镜头位置、目标序号/类别/置信度与原图坐标；写入在推理线程之外批量进行。
+日志目录 `recordings/logs/` 一级平铺，一天一个文件：`log_info_YYYYmmdd.log` 与 `log_err_YYYYmmdd.log`，按天追加；超过 10 MB 时当天文件轮转为 `.1`。每日 TXT 结果 `recordings/results/result_YYYYMMDD.txt` 记录所有完成的推理，包括没有目标的帧：采集时间、帧序号、图像尺寸、可用的镜头位置、目标序号/类别/置信度与原图坐标；写入在推理线程之外批量进行。
+
+> [!NOTE]
+> **通过页面清空或删除日志文件后，下一次写日志会自动重建同名文件，无需重启服务**（写入前检查句柄的 `st_nlink`，目录被删也会补建）。
 
 `GET /api/video/stats` 的字段可用来区分相机问题和推理滞后：`produce_seq`、`display_seq`、`displayed_frames`、`capture_fps`、`capture_dropped`、`driver_dropped`、`capture_stall_ms`、`infer_dropped`、`render_skipped`、`raw_pinned`、`processing_age_ms`、`processing_age_max_ms`、`processing_age_max_at_ms`、`now_ms`。`GET /api/rec/status` 给出 `recording`、`file`、`start_ms`、`frames`、`bytes`、`fps`、`split_pending`、`split_error`、`skipped_cadence`、`skipped_size`、`io_error`、`free_mb`。
 
@@ -260,7 +289,8 @@ Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` �
 | `yolo_interval_ms` | `10` | 推理取帧间隔 |
 | `yolo_threads` | `4` | **不决定**推理线程数 |
 
-几项容易误读：静态模型以 `.rknn` 的实际输入为准（当前 `yolo26.rknn` 是 **512×512**，即使配置写 `640`）；`yolo_threads` 被忽略，推理 worker 固定等于 NPU 核数（2），解码线程固定 2；`yolo_conf` / `yolo_nms` 是百分比整数而不是小数。
+> [!WARNING]
+> 几项容易误读：静态模型以 `.rknn` 的实际输入为准（当前 `yolo26.rknn` 是 **512×512**，即使配置写 `640`）；`yolo_threads` 被忽略，推理 worker 固定等于 NPU 核数（2），解码线程固定 2；`yolo_conf` / `yolo_nms` 是百分比整数而不是小数。
 
 | 路径 | 用途 |
 | --- | --- |
@@ -303,9 +333,20 @@ Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` �
 
 [GPL-3.0-or-later](LICENSE)。
 
+[返回目录](#中文文档) &middot; [English](#english-documentation)
+
 ---
 
 ## English documentation
+
+[中文](#中文文档) &middot; **English**
+
+**On this page**
+
+| Getting started | Architecture | Interfaces &amp; reference |
+| :--- | :--- | :--- |
+| [Measured performance](#measured-performance)<br>[Quick start](#quick-start)<br>[Build and deployment](#build-and-deployment)<br>[Requirements](#requirements) | [Architecture](#architecture)<br>[Perception pipeline](#perception-pipeline)<br>[Visual tracking and following](#visual-tracking-and-following)<br>[Real-time scheduling and affinity](#real-time-scheduling-and-affinity) | [Web interface](#web-interface)<br>[API reference](#api-reference)<br>[Recording and annotation](#recording-and-annotation)<br>[Logs, reports and troubleshooting](#logs-reports-and-troubleshooting) |
+| [Configuration and models](#configuration-and-models)<br>[Repository layout](#repository-layout) | [Communication registration](#communication-registration)<br>[Development direction](#development-direction) | [License](#license)<br>[Topic docs](docs/) |
 
 A Linux vehicle platform where camera capture, RKNN YOLO26 inference, visual
 tracking, differential wheel control, CAN/CAN-FD, annotated recording and a web
@@ -360,6 +401,9 @@ Open `http://<board-ip>/` for the web UI. Prerequisites: a kernel with the
 Rockchip NPU / RGA / MPP drivers, the [userspace libraries](#requirements) and a
 prepared model. See [Build and deployment](#build-and-deployment).
 
+> [!IMPORTANT]
+> `config/yolo26.rknn` (512x512, two outputs) and `config/coco.names` are **not in Git**; provide them before the first build.
+
 ### Build and deployment
 
 | Command | Action |
@@ -376,10 +420,11 @@ The build produces `bin/autonomous-driving-car`. Deployment installs the binary,
 `recordings/{logs,videos,results}/`, installs the top-level
 [autonomous-driving-car.service](autonomous-driving-car.service) and starts it.
 
-The unit runs with `WorkingDirectory=/opt/autonomous-driving-car`,
-`PrivateTmp=yes` and `ProtectSystem=strict`; only `config/` and `recordings/`
-are writable. Anything that needs a temporary file must write under
-`recordings/`, not `/tmp`.
+> [!WARNING]
+> The unit runs with `WorkingDirectory=/opt/autonomous-driving-car`,
+> `PrivateTmp=yes` and `ProtectSystem=strict`; only `config/` and `recordings/`
+> are writable. Anything that needs a temporary file must write under
+> `recordings/`, not `/tmp`.
 
 On cgroup v2 systems deployment writes
 `/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf` so FIFO
@@ -592,12 +637,13 @@ token instead. Full tables: [source/http/http.c](source/http/http.c) and
 | Control | `GET /api/follow`, `/api/tracking`, `/api/can/*`, `/api/ano` (public); matching POSTs **R** | Following, tracking, CAN and telemetry |
 | System | `GET /api/reboot`, `/api/shutdown` **R** | Reboot / power off |
 
-Two easy-to-miss details: `POST /api/rec/split` needs the **current recording
-filename** as its request body (for example `video_20261106.mp4`); a mismatch
-returns 409. Every packed download carries a `%Y%m%d_%H%M%S` timestamp (for
-example `config_pack_20261106_113425.tar.gz` or
-`autonomous-driving-car_files_20261106_113425.zip`) so browsers cannot reuse a
-cached copy.
+> [!TIP]
+> Two easy-to-miss details: `POST /api/rec/split` needs the **current recording
+> filename** as its request body (for example `video_20261106.mp4`); a mismatch
+> returns 409. Every packed download carries a `%Y%m%d_%H%M%S` timestamp (for
+> example `config_pack_20261106_113425.tar.gz` or
+> `autonomous-driving-car_files_20261106_113425.zip`) so browsers cannot reuse a
+> cached copy.
 
 ### Recording and annotation
 
@@ -631,13 +677,15 @@ shows raw bytes plus a client-side overlay.
 
 `recordings/logs/` is flat with one file per channel per day:
 `log_info_YYYYmmdd.log` and `log_err_YYYYmmdd.log`, appended across restarts; a
-channel over 10 MB rotates to `.1`. **After the UI clears or deletes a log
-file, the next log line recreates it — no restart needed** (the writer checks
-`st_nlink` before each write and also rebuilds a removed log directory). Daily
-TXT reports `recordings/results/result_YYYYMMDD.txt` record every completed
+channel over 10 MB rotates to `.1`.
+Daily TXT reports `recordings/results/result_YYYYMMDD.txt` record every completed
 inference, including frames with no detections: capture time, sequence,
 dimensions, lens position when available, target index/class/confidence and
 original-image coordinates. Writers batch records off the inference threads.
+
+> [!NOTE]
+> **After the UI clears or deletes a log file, the next log line recreates it — no restart needed** (the writer checks `st_nlink` before each write
+> and also rebuilds a removed log directory).
 
 `GET /api/video/stats` separates camera problems from inference lag:
 `produce_seq`, `display_seq`, `displayed_frames`, `capture_fps`,
@@ -694,11 +742,12 @@ Default `config/config.txt` keys (the board may override them):
 | `yolo_interval_ms` | `10` | Inference pickup interval |
 | `yolo_threads` | `4` | **Does not** size the inference pool |
 
-Common misreadings: a static model uses its real input size (the current
-`yolo26.rknn` is **512x512** even though the config says `640`);
-`yolo_threads` is ignored — inference workers are fixed to the NPU core count
-(2) and decode threads to 2; `yolo_conf` / `yolo_nms` are percentages, not
-fractions.
+> [!WARNING]
+> Common misreadings: a static model uses its real input size (the current
+> `yolo26.rknn` is **512x512** even though the config says `640`);
+> `yolo_threads` is ignored — inference workers are fixed to the NPU core count
+> (2) and decode threads to 2; `yolo_conf` / `yolo_nms` are percentages, not
+> fractions.
 
 | Path | Purpose |
 | --- | --- |
@@ -767,3 +816,5 @@ foundation.
 ### License
 
 [GPL-3.0-or-later](LICENSE).
+
+[Back to index](#english-documentation) &middot; [中文](#中文文档)
