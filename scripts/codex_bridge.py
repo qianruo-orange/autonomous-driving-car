@@ -82,6 +82,37 @@ def ensure_dirs():
                 os.rename(old, new)
             except OSError:
                 pass
+    migrate_records()
+
+
+def migrate_records():
+    """Rewrite records written in the old JSON-lines format as readable text."""
+    for path in glob.glob(os.path.join(REC, "chat_*.txt")):
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                first = fp.readline().strip()
+            if not first.startswith("{"):
+                continue
+            entries = []
+            with open(path, "r", encoding="utf-8") as fp:
+                for line in fp:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if entry.get("role") in ("user", "assistant"):
+                        entries.append(entry)
+        except OSError:
+            continue
+        text = "\n\n".join(format_record(e) for e in entries)
+        try:
+            with open(path, "w", encoding="utf-8") as fp:
+                fp.write(text + ("\n" if text else ""))
+        except OSError:
+            pass
 
 
 def read_json(path, fallback):
@@ -180,30 +211,72 @@ def record_path(day=None):
     return os.path.join(REC, "chat_%s.txt" % day)
 
 
+REC_LINE = re.compile(r"^(\d{2}:\d{2}:\d{2})\s+(你|Codex|错误)[：:]\s?(.*)$")
+
+
+def _rec_stamp(entry):
+    ts = str(entry.get("ts") or "")
+    try:
+        return datetime.datetime.fromisoformat(ts).strftime("%H:%M:%S")
+    except ValueError:
+        return datetime.datetime.now().strftime("%H:%M:%S")
+
+
+def format_record(entry):
+    """One human-readable line: `23:18:38 你：你好`."""
+    role = entry.get("role")
+    stamp = _rec_stamp(entry)
+    if role == "user":
+        return "%s 你：%s" % (stamp, entry.get("content", ""))
+    if entry.get("ok") is False:
+        return "%s 错误：%s" % (stamp, entry.get("content") or entry.get("error") or "")
+    return "%s Codex：%s" % (stamp, entry.get("content", ""))
+
+
 def append_record(entry):
     ensure_dirs()
+    if entry.get("role") == "event":
+        return                      # 事件行只用于调试，不写进可读记录
     entry.setdefault("ts", now_iso())
-    with open(record_path(), "a", encoding="utf-8") as fp:
-        fp.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    path = record_path()
+    try:
+        empty = os.path.getsize(path) == 0
+    except OSError:
+        empty = True
+    with open(path, "a", encoding="utf-8") as fp:
+        if not empty:
+            fp.write("\n")
+        fp.write(format_record(entry) + "\n")
         fp.flush()
 
 
 def read_records(limit=80):
-    files = sorted(glob.glob(os.path.join(REC, "chat_*.txt")))[-2:]
+    """Parse the readable transcript back into role/content rows."""
     rows = []
-    for path in files:
+    for path in sorted(glob.glob(os.path.join(REC, "chat_*.txt")))[-2:]:
+        cur = None
         try:
             with open(path, "r", encoding="utf-8") as fp:
                 for line in fp:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rows.append(json.loads(line))
-                    except ValueError:
-                        continue
+                    line = line.rstrip("\n")
+                    m = REC_LINE.match(line)
+                    if m:
+                        if cur:
+                            rows.append(cur)
+                        head, body = m.group(2), m.group(3)
+                        if head == "你":
+                            cur = {"role": "user", "content": body, "ts": m.group(1), "ok": True}
+                        elif head == "错误":
+                            cur = {"role": "assistant", "content": body,
+                                   "ts": m.group(1), "ok": False, "error": body}
+                        else:
+                            cur = {"role": "assistant", "content": body, "ts": m.group(1), "ok": True}
+                    elif cur is not None:
+                        cur["content"] += "\n" + line
         except OSError:
             continue
+        if cur:
+            rows.append(cur)
     return rows[-limit:]
 
 
