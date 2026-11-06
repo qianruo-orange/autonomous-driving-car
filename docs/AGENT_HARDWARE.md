@@ -55,11 +55,11 @@
   "perception": {
     "available": true,
     "frame_seq": 128, "width": 1280, "height": 720,
-    "age_ms": 754, "frames_behind": 9, "infer_age_ms": 146,
+    "age_ms": 151, "frames_behind": 1, "infer_age_ms": 146,
     "objects_total": 0, "objects": [],
     "nearest": null,
     "tracking": { "active": false, "locked": true, "track_id": 0, "age_ms": 202 },
-    "summary": "clear road, 9 frame(s) behind"
+    "summary": "clear road, 1 frame behind"
   }
 }
 ```
@@ -70,7 +70,7 @@
 |---|---|
 | `profile.reason` | 回答「刚才为什么停」的唯一合法依据。没有它，模型只能编。 |
 | `actuation.ready` | 区分「指令被接受」与「指令能落地」。为 false 时车不会动，模型必须知道。 |
-| `frames_behind` | 采集序号减检测序号。推理掉队时画面已经开始骗人，这个差值是可量化的告警。 |
+| `frames_behind` | 采集序号减检测序号。推理掉队时画面已经开始骗人，这个差值是可量化的告警。它与 `infer_age_ms` 必须自洽（10 fps 下 1 帧 ≈ 100 ms），两者矛盾说明取错了快照。 |
 | `age_ms` | 后处理完成到现在的毫秒数。超过 300 ms 的观测不该再用来判断「正前方有没有人」。 |
 | `objects[].lateral` | 归一化横向偏移 −0.5…+0.5（左负右正），比像素坐标更适合语言推理。 |
 | `objects[].range` | 由面积比映射的 `near/mid/far` 三级，代替并不存在的测距。 |
@@ -112,7 +112,8 @@ X-Frame-Age-Ms: 94
 | 原语 | 方法 | 语义 |
 |---|---|---|
 | `motion` | `POST /api/agent/motion` | `v`、`steer`、`ttl_ms(100…500)`，是一次**租约**而非设置 |
-| `stop` | `POST /api/agent/stop` | 立即停车并解除武装 |
+| `stop` | `POST /api/agent/stop` | 立即停车、解除武装并关闭 profile |
+| `release` | `POST /api/agent/release` | 只放弃租约，保留 profile（计划正常结束后由执行器调用） |
 | `estop` | `POST /api/agent/estop` | 强制停车、解除武装、把 profile 置 0 并落盘 |
 | `disarm` | `POST /api/agent/disarm` | 收回自己那条武装 |
 
@@ -233,7 +234,7 @@ C11 + POSIX shell，`git ls-files` 里没有任何 `.py`。
 | 项 | 结果 |
 |---|---|
 | 签发凭证 | `200`，32 hex，`scope=motion+observe`，`v_max=0.15`，`budget=5.0` |
-| `observe` | `perception.available=true`，`frame_seq=128`，`age_ms=754`，`frames_behind=9` |
+| `observe` | `perception.available=true`，`frame_seq=128`，`age_ms=151`，`frames_behind=1` |
 | `frame` | `200 image/jpeg`，41520 B，`X-Frame-Seq: 303`，`X-Frame-Age-Ms: 94` |
 | 未武装时 `drive` | 退出码 2，`credential is not armed` |
 | `arm` | `200`，`armed=true`，`armed_token` 前缀 `0170f0` |

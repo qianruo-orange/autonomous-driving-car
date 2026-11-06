@@ -399,7 +399,7 @@ HTTP 422  v or steer outside this credential's envelope
 
 ```jsonc
 "perception": {
-  "available": true, "frame_seq": 128, "age_ms": 754, "frames_behind": 9,
+  "available": true, "frame_seq": 128, "age_ms": 151, "frames_behind": 1,
   "objects": [ { "cls": 0, "name": "person", "conf": 0.87,
                  "lateral": -0.06, "area_ratio": 0.0831, "range": "mid",
                  "in_path": true } ],
@@ -408,8 +408,13 @@ HTTP 422  v or steer outside this credential's envelope
 }
 ```
 
+`frames_behind` 与 `infer_age_ms` 必须自洽：10 fps 的相机下落后一帧约等于 100 ms，所以「落后 9 帧
+却只有 146 ms」只可能是取错了快照。这两个数的一致性本身就是一条可回归的断言，而不是文档里的
+装饰。
+
 模型侧的完整路径是 `adc-agent see` → `adc-agent plan` → `adc-agent stop`，三次调用之间没有它可写
-的通道。签发凭证、arm、撤销、读审计属于 operator，不在工具列表里——能给自己签发权限的模型
+的通道。`stop` 会关掉 profile；一条计划正常跑完走的是 `release`，它只放弃租约，操作员的开关
+保持原样，下一段计划才能直接接上。签发凭证、arm、撤销、读审计属于 operator，不在工具列表里——能给自己签发权限的模型
 等于没有受限。
 
 ### 6.7 四层防护
@@ -906,7 +911,7 @@ The observation side is a contract too, not free text:
 
 ```jsonc
 "perception": {
-  "available": true, "frame_seq": 128, "age_ms": 754, "frames_behind": 9,
+  "available": true, "frame_seq": 128, "age_ms": 151, "frames_behind": 1,
   "objects": [ { "cls": 0, "name": "person", "conf": 0.87,
                  "lateral": -0.06, "area_ratio": 0.0831, "range": "mid",
                  "in_path": true } ],
@@ -915,7 +920,9 @@ The observation side is a contract too, not free text:
 }
 ```
 
-The full model-side path is `adc-agent see` -> `adc-agent plan` -> `adc-agent stop`, with no writable channel between the calls. Issuing a capability, arming it, revoking it and reading the audit log belong to the operator and are deliberately absent from the tool list: a model that can mint its own authority is not constrained at all.
+`frames_behind` and `infer_age_ms` must agree: at 10 fps one frame is about 100 ms, so "9 frames behind, 146 ms old" can only mean the wrong snapshot was read. Their consistency is a regression assertion, not documentation decoration.
+
+The full model-side path is `adc-agent see` -> `adc-agent plan` -> `adc-agent stop`, with no writable channel between the calls. `stop` disables the profile; a plan that finishes normally calls `release`, which only gives up the lease so the operator's switch stays as it was and the next plan can continue. Issuing a capability, arming it, revoking it and reading the audit log belong to the operator and are deliberately absent from the tool list: a model that can mint its own authority is not constrained at all.
 
 ### 6.7 Defence in depth
 

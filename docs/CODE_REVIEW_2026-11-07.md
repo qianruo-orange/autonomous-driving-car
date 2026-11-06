@@ -10,6 +10,40 @@
 结论：**3 个 P1**，其中 1 个可远程打崩整个服务（上一轮已提，未修），1 个让智能体看到的画面系统性
 滞后约 1 秒并谎报自己的落后程度，1 个让整机 HTTP 单线程被阻塞接口卡死并顺势把车锁进故障态。
 
+> **本文档记录的是审查当时的代码状态（`7d3711b`）。** 表中三个 P1 与全部 P2 已在下节
+> 「修复状态」所列的提交里关闭，并逐条在板端回归；正文保留原样，便于对照「问题是怎么被发现、
+> 怎么被证实的」。
+
+---
+
+## 修复状态（提交 `40b302c`，板端已部署并回归）
+
+| 条目 | 状态 | 验证方式与结果 |
+|---|---|---|
+| **P1-1** 感知快照取最旧 | **已修** | 新增 `rknn_yolo_latest()`。板端实测 `perception.frame_seq` 与真正最新检测相差 0–2 帧，`frames_behind` 1–2，与 `infer_age_ms=146` 自洽（修前 11 / 9 / 11）。 |
+| **P1-2** 阻塞接口卡死事件循环 | **已修** | `proxy/test` 改为提交 + 轮询（worker 执行，curl 3/5 s，tcp 1.5 s，`systemctl --no-block`）。实测 POST 返回 161 ms，运行期间 `/api/follow` 21 ms（修前 2562 ms），第二次 POST 立即 429。 |
+| **P1-2 附** 租约过期即锁存 FAULT | **已修** | 新增 `AGENT_LEASE_GRACE_MS=1500`：过期后第一帧就停车，但不锁存。台架固件实测：过期 0.2 s / 0.65 s 仍 `active`、`fault` 为空，1.5 s 后 `fault=lease_expired`；宽限内续租 200 直接回到 `active`，无需重新 arm。 |
+| **P1-3** 录像列表 `(size_t)-1` → `memcpy` 巨长 | **已修** | `conn_append` 全部改成减法判断；构造失败返回 500，列表按缓冲上限截断并带 `total`/`truncated`。板端塞 1103 个文件实测：返回 `total=1024, truncated=true`、61074→65479 字节的合法 JSON，服务 `active`、其余接口 200。修前此处必段错误。 |
+| P2-1 审计 8 Hz open/close | **已修** | 句柄常开、跨天切换、64 行或 1 s flush；`mkdir` 移到 init。 |
+| P2-2 只读凭证能 stop | **已修** | `stop`/`disarm` 要求 MOTION，`estop` 保留 OBSERVE 并在审计里记 scope。实测只读凭证 `stop` 401、`estop` 200。 |
+| P2-3 `persist` 落到 `config/agent.token` | **已修** | 移到 `recordings/agent/token`（已被 `.gitignore` 覆盖），`adc-agent` 在 `$AGENT_CAP` 为空时读取。 |
+| P2-4 `stop` 与 `release` 同义 | **已修** | 新增 `POST /api/agent/release`，`follow_agent_cancel(int disable_profile)` 分流。实测 release 后 `enabled=1`，stop 后 `enabled=0`；`drive` 正常结束改调 release，连续两次 dry-run 均 rc=0。 |
+| P2-5 降权失败静默以 root 继续 | **已修** | 三个调用点全部在失败时 `_exit(127)`（exec 路径把 errno 写回父进程），并加了 `setuid(0)` 反查。 |
+| P2-6 `write_atomic` 跟随软链 | **已修** | 加 `O_NOFOLLOW` 与路径长度检查。 |
+| P2-7 `snprintf` 累加下溢 | **已修** | 新增 `sadd()`（proxy）与 `jadd()`+`CAT()`（agent_hw），全部按「只在完整写入时前进偏移」处理；`observe` 的 13 处链式拼接一并换掉。 |
+| P2-8 `frame --b64` 静默截断 | **已修** | 按 `max_bytes*4/3` 定容；`http_call` 截断返回 -2 并报错，不再输出半截 JSON。 |
+| P2-9 `record_name_ok` 越界读 | **已修** | 先校验 `strlen(name)==17`。 |
+| P2-10 `motion` 的 503 | **已修** | 快照重试 3 次（每次 1 ms），仍失败才 503 且文案改为 `controller busy; retry`。 |
+| 上轮 P1-2 DBC 负起始位 | **已修** | `parse_signal` 拒绝 `start<0 / len<=0 / len>64 / start+len>512`，`dbc_decode_raw` 再兜一道。 |
+| P3 `observe` 路由 `pre=0` | **已修** | 改为前缀匹配，带 `?` 参数不再 404。 |
+
+未修（保留原判断）：P3 余下的形参命名、`s.rejected` 锁外更新、`reply_config` 的 GET 路径未校验、
+`follow_mix` 的预览复用。这些不影响本轮机能，且改动面大于收益。
+
+**回归脚本**：`/tmp/verify.sh`、`/tmp/verify2.sh`、`/tmp/lease3.sh`（板端临时脚本，未入库）。
+台架验证用 `cmake -DCMAKE_C_FLAGS=-DADCBENCH` 构建到 `/tmp/bench`，以 `systemd-run --unit=adc-bench`
+临时起在 80 端口，测完停掉并重建生产固件（`grep -ac "mock actuator"` 回到 0）。
+
 ---
 
 ## P1-1 感知快照取的是「最旧的 8 条检测」而不是最新一条
