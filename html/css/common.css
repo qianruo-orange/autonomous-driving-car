@@ -165,3 +165,16 @@ input:focus-visible,select:focus-visible,button:focus-visible{
   .card{padding:14px}
   .card>h3{margin-bottom:10px}
 }
+
+/* ===== unified form labels ===== */
+.row>label,
+.net-field>label,
+.codex-run-field>label,
+.cfg-grid label,
+.car-param-group .row>label,
+.half>h4,
+label.form-label{
+  font-size:12px;font-weight:400;line-height:1.4;color:var(--muted);
+  letter-spacing:.2px;white-space:nowrap}
+/* 单位后缀与标签同色同号 */
+.unit,.field-unit .unit{font-size:11.5px;color:var(--muted)}
