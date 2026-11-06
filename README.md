@@ -1,3 +1,5 @@
+<a id="top"></a>
+
 <div align="center">
 
 <img src="docs/img/banner.svg" width="100%" alt="Autonomous Driving Car">
