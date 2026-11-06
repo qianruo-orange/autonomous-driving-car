@@ -51,6 +51,8 @@ static int log_mkpath(const char *dir)
    继续追加同名文件，不再因为时间戳不同而散成一堆小文件。 */
 static void open_log_channel(int is_error)
 {
+    /* 日志目录也可能被 Web 清空/外部删掉，重建时逐级补回来 */
+    log_mkpath(g_log.dir);
     FILE **fpp = is_error ? &g_log.fp_error : &g_log.fp_info;
     char *active_path = is_error ? g_log.error_path : g_log.info_path;
     if (*fpp && *fpp != stderr) fclose(*fpp);
@@ -87,6 +89,18 @@ static void rotate_check(int is_error)
     fclose(*fpp);
     *fpp = NULL;
     if (rename(path, backup) != 0) { open_log_channel(is_error); return; }
+    open_log_channel(is_error);
+}
+
+/* Web 的「清空日志」/单文件删除会 unlink 当天文件，但本进程仍持有那个
+ * 已无目录项的 inode：后续日志会写进一个目录里看不见的文件，直到服务
+ * 重启才恢复。每次写日志前检查句柄是否仍链接在目录里，被删则重建。 */
+static void ensure_channel_alive(int is_error)
+{
+    FILE **fpp = is_error ? &g_log.fp_error : &g_log.fp_info;
+    if (!*fpp || *fpp == stderr) { open_log_channel(is_error); return; }
+    struct stat st;
+    if (fstat(fileno(*fpp), &st) == 0 && st.st_nlink > 0) return;
     open_log_channel(is_error);
 }
 
@@ -169,6 +183,7 @@ static void log_msg(FILE *fp, const char *file, int line,
 void _log_info(const char *file, int line, const char *fmt, ...)
 {
     pthread_mutex_lock(&g_log.mutex); ensure_date();
+    ensure_channel_alive(0);
     rotate_check(0);
     va_list ap; va_start(ap, fmt);
     log_msg(g_log.fp_info, file, line, "INFO", fmt, ap);
@@ -179,6 +194,7 @@ void _log_info(const char *file, int line, const char *fmt, ...)
 void _log_error(const char *file, int line, const char *fmt, ...)
 {
     pthread_mutex_lock(&g_log.mutex); ensure_date();
+    ensure_channel_alive(1);
     rotate_check(1);
     va_list ap; va_start(ap, fmt);
     log_msg(g_log.fp_error, file, line, "ERROR", fmt, ap);

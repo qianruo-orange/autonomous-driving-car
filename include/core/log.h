@@ -6,10 +6,11 @@
  * 初始化日志系统。
  * @param arg  app_ctx_t 上下文；未配置日志目录时使用 PATH_LOGS。
  *
- * Info/error logs include their creation timestamp and millisecond precision:
- *   dir/YYYYMMDD/log_info_YYYYMMDD_HHMMSS_mmm.log
- *   dir/YYYYMMDD/log_error_YYYYMMDD_HHMMSS_mmm.log
- * A collision suffix preserves files created within the same millisecond.
+ * 日志目录一级平铺，一天一个文件，按天追加：
+ *   dir/log_info_YYYYmmdd.log
+ *   dir/log_err_YYYYmmdd.log
+ * 超过 10MB 时当天文件轮转为 .1；文件被 Web 清空/删除后，下一次写日志
+ * 会重新创建同名文件，无需重启服务。
  */
 int log_init(void *arg);
 
