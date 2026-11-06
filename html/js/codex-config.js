@@ -335,7 +335,22 @@
     var code = deviceCode.textContent.trim();
     if (!code || code.indexOf('—') >= 0) return;
     try {
-      await navigator.clipboard.writeText(code);
+      /* 板子是 http://192.168.1.7，非安全上下文下没有 navigator.clipboard，
+         退回到 textarea + execCommand 这条老路 */
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(code);
+      } else {
+        var box = document.createElement('textarea');
+        box.value = code;
+        box.setAttribute('readonly', '');
+        box.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+        document.body.appendChild(box);
+        box.select();
+        box.setSelectionRange(0, box.value.length);
+        var copied = document.execCommand('copy');
+        box.remove();
+        if (!copied) throw new Error('copy blocked');
+      }
       App.status('codex', 'ok', t('验证码已复制'));
     } catch (error) {
       App.status('codex', 'err', t('复制失败'));
