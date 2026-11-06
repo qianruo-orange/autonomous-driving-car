@@ -29,14 +29,7 @@
 </div>
 
 <div id="f">
-<div class="can-grid can-disabled">
-  <form class="card" id="camera_form">
-    <h3><span data-i18n="视频采集">视频采集</span><span id="camera_status" class="card-status" role="status" aria-live="polite"></span><button class="btn btn-save card-save" type="submit" id="camera_save">💾 <span data-i18n="保存">保存</span></button></h3>
-    <div class="camera-fields">
-      <div class="row"><label for="camera_device" data-i18n="相机设备">相机设备</label><select id="camera_device"></select></div>
-      <div class="row"><label for="camera_mode" data-i18n="分辨率与帧率">分辨率与帧率</label><div class="field-unit"><select id="camera_mode" aria-describedby="camera_mode_unit"></select><span class="unit" id="camera_mode_unit">FPS</span></div></div>
-    </div>
-  </form>
+<div class="bottom-grid">
 <div class="card" id="card_yolo"><h3><span data-i18n="YOLO 检测">YOLO 检测</span><span class="card-status" id="status_yolo"></span><button type="button" class="btn btn-save card-save" onclick="saveYolo()">💾 <span data-i18n="保存">保存</span></button></h3>
 <div class="yolo-split">
 <div class="yolo-col">
@@ -63,32 +56,7 @@
 </div>
 </div>
 </div>
-
-<div class="card" id="card_can" hidden><h3><select id="canSel" onchange="onCanSel()"></select> <span id="st"></span> <label class="toggle"><input type="checkbox" id="tg" onchange="toggleCan(this.checked)"><span class="slider"></span></label><span class="card-status" id="status_can"></span><a href="/dbc" class="btn btn-back can-dbc-link"><span data-i18n="DBC解析">DBC解析</span></a><button type="button" class="btn btn-save card-save" onclick="saveCan()">💾 <span data-i18n="保存">保存</span></button></h3>
-<div id="cfg">
-<div class="cfg-grid can-basic">
-<div class="row"><label for="br" data-i18n="波特率">波特率</label><div class="field-unit"><input name="br" id="br" type="number" aria-describedby="br_unit"><span class="unit" id="br_unit">bps</span></div></div>
-<div class="row"><label data-i18n="DBC 文件">DBC 文件</label><input type="file" id="dbc" accept=".dbc" hidden><button type="button" class="add-btn" data-file-picker="dbc" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="dbc" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadDbc()" data-i18n="上传">上传</button></div>
-<div class="row"><label>CAN FD</label><select name="fd" id="fd" onchange="chkFd()"><option value="on">on</option><option value="off">off</option></select></div>
-<div class="row" id="dbr"><label for="db" data-i18n="FD波特率">FD波特率</label><div class="field-unit"><input name="db" id="db" type="number" aria-describedby="db_unit"><span class="unit" id="db_unit">bps</span></div></div>
 </div>
-<div class="filters">
-<h4><span data-i18n="CAN-ID 过滤器">CAN-ID 过滤器</span><button type="button" class="add-btn" onclick="addFilter()" data-i18n="+ 添加">+ 添加</button></h4>
-<div id="fil"></div>
-</div>
-</div><div class="hint" id="hint" data-i18n="接口已关闭，开启后可配置">接口已关闭，开启后可配置</div></div>
-
-<div class="card" id="card_net"><h3><span data-i18n="Web与匿名助手设置">Web与匿名助手设置</span><span class="card-status" id="status_net"></span><button type="button" class="btn btn-save card-save" id="network_save" disabled onclick="saveNet()">💾 <span data-i18n="保存">保存</span></button></h3>
-<div class="cfg-grid net2">
-<div class="row"><label data-i18n="Web网卡">Web网卡</label><select name="bind" id="bind"><option value="" data-i18n="选择网卡">选择网卡</option></select></div>
-<div class="row"><label data-i18n="IP 模式">IP 模式</label><select id="ip_mode" onchange="chkIpMode()"><option value="" data-i18n="关闭（不管理）">关闭（不管理）</option><option value="static" data-i18n="静态">静态</option><option value="dhcp">DHCP</option></select></div>
-<div class="row" id="ip_a_row"><label data-i18n="IP 地址">IP 地址</label><input id="ip_a" type="text" placeholder="192.168.1.100"></div>
-<div class="row" id="ip_m_row"><label data-i18n="子网掩码">子网掩码</label><input id="ip_m" type="text" placeholder="255.255.255.0"></div>
-<div class="row" id="ip_g_row"><label data-i18n="网关">网关</label><input id="ip_g" type="text" placeholder="192.168.1.1"></div>
-</div>
-</div>
-</div>
-
 
 <div class="bottom-grid">
 <div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save card-save" data-action="cpu-save">💾 <span data-i18n="保存">保存</span></button></h3>
@@ -158,6 +126,42 @@
   </div>
 </section>
 </div>
+
+<div class="can-grid can-disabled">
+  <form class="card" id="camera_form">
+    <h3><span data-i18n="视频采集">视频采集</span><span id="camera_status" class="card-status" role="status" aria-live="polite"></span><button class="btn btn-save card-save" type="submit" id="camera_save">💾 <span data-i18n="保存">保存</span></button></h3>
+    <div class="camera-fields">
+      <div class="row"><label for="camera_device" data-i18n="相机设备">相机设备</label><select id="camera_device"></select></div>
+      <div class="row"><label for="camera_mode" data-i18n="分辨率与帧率">分辨率与帧率</label><div class="field-unit"><select id="camera_mode" aria-describedby="camera_mode_unit"></select><span class="unit" id="camera_mode_unit">FPS</span></div></div>
+    </div>
+  </form>
+<div class="card" id="card_can" hidden><h3><select id="canSel" onchange="onCanSel()"></select> <span id="st"></span> <label class="toggle"><input type="checkbox" id="tg" onchange="toggleCan(this.checked)"><span class="slider"></span></label><span class="card-status" id="status_can"></span><a href="/dbc" class="btn btn-back can-dbc-link"><span data-i18n="DBC解析">DBC解析</span></a><button type="button" class="btn btn-save card-save" onclick="saveCan()">💾 <span data-i18n="保存">保存</span></button></h3>
+<div id="cfg">
+<div class="cfg-grid can-basic">
+<div class="row"><label for="br" data-i18n="波特率">波特率</label><div class="field-unit"><input name="br" id="br" type="number" aria-describedby="br_unit"><span class="unit" id="br_unit">bps</span></div></div>
+<div class="row"><label data-i18n="DBC 文件">DBC 文件</label><input type="file" id="dbc" accept=".dbc" hidden><button type="button" class="add-btn" data-file-picker="dbc" data-i18n="选择文件">选择文件</button><span class="unit" data-file-name="dbc" data-i18n="未选择文件" style="flex:1;overflow-wrap:anywhere">未选择文件</span><button type="button" class="add-btn" onclick="uploadDbc()" data-i18n="上传">上传</button></div>
+<div class="row"><label>CAN FD</label><select name="fd" id="fd" onchange="chkFd()"><option value="on">on</option><option value="off">off</option></select></div>
+<div class="row" id="dbr"><label for="db" data-i18n="FD波特率">FD波特率</label><div class="field-unit"><input name="db" id="db" type="number" aria-describedby="db_unit"><span class="unit" id="db_unit">bps</span></div></div>
+</div>
+<div class="filters">
+<h4><span data-i18n="CAN-ID 过滤器">CAN-ID 过滤器</span><button type="button" class="add-btn" onclick="addFilter()" data-i18n="+ 添加">+ 添加</button></h4>
+<div id="fil"></div>
+</div>
+</div><div class="hint" id="hint" data-i18n="接口已关闭，开启后可配置">接口已关闭，开启后可配置</div></div>
+
+<div class="card" id="card_net"><h3><span data-i18n="Web与匿名助手设置">Web与匿名助手设置</span><span class="card-status" id="status_net"></span><button type="button" class="btn btn-save card-save" id="network_save" disabled onclick="saveNet()">💾 <span data-i18n="保存">保存</span></button></h3>
+<div class="cfg-grid net2">
+<div class="row"><label data-i18n="Web网卡">Web网卡</label><select name="bind" id="bind"><option value="" data-i18n="选择网卡">选择网卡</option></select></div>
+<div class="row"><label data-i18n="IP 模式">IP 模式</label><select id="ip_mode" onchange="chkIpMode()"><option value="" data-i18n="关闭（不管理）">关闭（不管理）</option><option value="static" data-i18n="静态">静态</option><option value="dhcp">DHCP</option></select></div>
+<div class="row" id="ip_a_row"><label data-i18n="IP 地址">IP 地址</label><input id="ip_a" type="text" placeholder="192.168.1.100"></div>
+<div class="row" id="ip_m_row"><label data-i18n="子网掩码">子网掩码</label><input id="ip_m" type="text" placeholder="255.255.255.0"></div>
+<div class="row" id="ip_g_row"><label data-i18n="网关">网关</label><input id="ip_g" type="text" placeholder="192.168.1.1"></div>
+</div>
+</div>
+</div>
+
+
+
 <div class="bottom-grid">
 <section class="card" id="card_network" aria-labelledby="network_title">
   <h3 id="network_title"><span data-i18n="网络代理与测试">网络代理与测试</span>
