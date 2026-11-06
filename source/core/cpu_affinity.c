@@ -13,7 +13,7 @@
 #define CPU_AFFINITY_ROOT "/sys/devices/system/cpu"
 
 static pthread_once_t affinity_once = PTHREAD_ONCE_INIT;
-static cpu_set_t heavy_set, light_set, all_set;
+static cpu_set_t heavy_set, light_set;
 static int affinity_ready, affinity_error;
 
 /* Only initially permitted CPUs participate. Do not infer core numbers from
@@ -95,7 +95,6 @@ static void initialize_affinity(void)
         return;
     }
     const char *source = detect_groups(CPU_AFFINITY_ROOT, &allowed, &heavy_set, &light_set);
-    all_set = allowed;
     affinity_ready = 1;
     char heavy[4096], light[4096];
     describe_set(&heavy_set, heavy, sizeof(heavy));
@@ -113,11 +112,11 @@ int cpu_affinity_init(void)
 
 int cpu_affinity_get(cpu_group_t group, cpu_set_t *set)
 {
-    if (!set || (group != CPU_LITTLE && group != CPU_BIG && group != CPU_ALL)) {
+    if (!set || (group != CPU_LITTLE && group != CPU_BIG)) {
         errno = EINVAL;
         return -1;
     }
     if (cpu_affinity_init()) return -1;
-    *set = group == CPU_BIG ? heavy_set : group == CPU_LITTLE ? light_set : all_set;
+    *set = group == CPU_BIG ? heavy_set : light_set;
     return 0;
 }

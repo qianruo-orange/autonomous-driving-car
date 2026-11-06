@@ -10,9 +10,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
-#include <stdint.h>
 #include <stdlib.h>
-#include <sys/syscall.h>
 
 #include "core/config.h"
 #include "can/can_socket.h"
@@ -30,36 +28,6 @@
 #include "control/car_sport_ctrl.h"
 #include "telemetry/ano.h"
 
-/* SCHED_DEADLINE 支持：glibc 的 pthread_attr_setschedpolicy() 不接受该策略，
- * 必须在线程创建后用 sched_setattr() 切换。准入控制失败（EBUSY）、参数非法或
- * 内核不支持时回退 FIFO，回退优先级取表中的 priority，保证线程总能起来。 */
-#ifndef SCHED_DEADLINE
-#define SCHED_DEADLINE 6
-#endif
-#ifndef SYS_sched_setattr
-#define SYS_sched_setattr 274
-#endif
-
-/* uapi 的 struct sched_attr（SCHED_ATTR_SIZE_VER0 = 48） */
-struct app_sched_attr {
-    uint32_t size;
-    uint32_t sched_policy;
-    uint64_t sched_flags;
-    int32_t  sched_nice;
-    uint32_t sched_priority;
-    uint64_t sched_runtime;
-    uint64_t sched_deadline;
-    uint64_t sched_period;
-};
-
-typedef struct {
-    void *(*task)(void *);
-    void *arg;
-    const char *name;
-    int fallback_priority;
-    uint64_t runtime_us, deadline_us, period_us;
-} deadline_start_t;
-
 typedef struct {
     const char *name;
     int (*init)(void *);
@@ -67,8 +35,6 @@ typedef struct {
     void *(*task)(void *);
     int policy, priority;
     cpu_group_t cpus;
-    /* 仅当 dl_period_us > 0 时生效：runtime/deadline/period，单位微秒 */
-    uint64_t dl_runtime_us, dl_deadline_us, dl_period_us;
 } module_t;
 
 static void sig_handler(int sig);
@@ -102,7 +68,7 @@ static int context_init(void *arg)
 /* 同表管理生命周期、调度策略、优先级和 CPU 分组。policy=-1 表示无线程；
  * 内部线程配置行由所属模块创建。各模块自行注册/注销看门狗。 */
 static const module_t g_modules[] = {
-    /* name             init                dtor                    task                policy       priority  cpus       dl_runtime dl_deadline dl_period (us) */
+    /* name             init                dtor                    task                policy       priority  cpus */
     {"context",         context_init,       NULL,                   NULL,               -1,           0,       CPU_INHERIT},
     {"log",             log_init,           log_close,              NULL,               -1,           0,       CPU_INHERIT},
     {"config",          config_init,        config_cleanup,         NULL,               -1,           0,       CPU_INHERIT},
@@ -116,13 +82,11 @@ static const module_t g_modules[] = {
     {"http_worker",     NULL,               NULL,                   NULL,               SCHED_FIFO,   1,       CPU_LITTLE},
     {"car_sport_ctrl",  follow_init,        follow_destroy,         follow_task,        SCHED_FIFO,  20,       CPU_LITTLE},
     {"ano",             ano_init,           ano_destroy,            NULL,               -1,           0,       CPU_INHERIT},
-    /* SCHED_DEADLINE 要求亲和性覆盖整个 root domain，故用 CPU_ALL；绑核与
-       deadline 在内核里互斥（__check_sched_dl_overflow 直接返回 EPERM）。 */
-    {"video",           video_stream_init,  video_stream_shutdown,  video_stream_task,  SCHED_FIFO,  15,       CPU_ALL,    2000,      34000,       34000},
+    /* 相机采集：周期 33 ms 的取流，绑大核与解码、推理同组。线程绝大部分时间
+       阻塞在 DQBUF，唤醒后只做一次入环，单次运行 <1 ms。 */
+    {"video",           video_stream_init,  video_stream_shutdown,  video_stream_task,  SCHED_FIFO,  15,       CPU_BIG},
     /* 解码双线程（yolo 模块各开一个 libjpeg 实例）：与推理同用 heavy 组，
-       把解码从采集线程里剥出来并行。本内核 DL 与绑核互斥（实测先绑后 DL 得
-       EPERM、先 DL 后绑得 EBUSY、cpuset 收窄同样 EPERM），所以这里用 FIFO，
-       回退优先级即最终生效优先级。 */
+       把解码从采集线程里剥出来并行。 */
     {"decode",          NULL,               NULL,                   NULL,               SCHED_FIFO,  15,       CPU_BIG},
     /* YOLO 为必要模块：初始化失败即回滚启动。 */
     {"yolo",            rknn_yolo_init,     rknn_yolo_destroy,      rknn_yolo_task,     SCHED_FIFO,  10,       CPU_BIG},
@@ -134,38 +98,6 @@ static const module_t g_modules[] = {
     {"signal",          signal_setup,       NULL,                   NULL,               -1,           0,       CPU_INHERIT},
 };
 #define MOD_COUNT (sizeof(g_modules) / sizeof(g_modules[0]))
-
-static int sched_set_deadline(pid_t tid, const deadline_start_t *d)
-{
-    struct app_sched_attr a;
-    memset(&a, 0, sizeof(a));
-    a.size = sizeof(a);
-    a.sched_policy = SCHED_DEADLINE;
-    a.sched_runtime = d->runtime_us * 1000ull;
-    a.sched_deadline = d->deadline_us * 1000ull;
-    a.sched_period = d->period_us * 1000ull;
-    return (int)syscall(SYS_sched_setattr, tid, &a, 0);
-}
-
-static void *deadline_trampoline(void *p)
-{
-    deadline_start_t d = *(const deadline_start_t *)p;
-    free(p);
-
-    if (sched_set_deadline((pid_t)syscall(SYS_gettid), &d) == 0) {
-        LOG_INFO("%s: SCHED_DEADLINE runtime=%llu deadline=%llu period=%llu us", d.name,
-                 (unsigned long long)d.runtime_us, (unsigned long long)d.deadline_us,
-                 (unsigned long long)d.period_us);
-    } else {
-        /* 准入控制拒绝或内核不支持：退回 FIFO，绝不让线程起不来 */
-        LOG_ERROR("%s: SCHED_DEADLINE rejected (%s), falling back to FIFO %d", d.name,
-                  strerror(errno), d.fallback_priority);
-        struct sched_param sp = {.sched_priority = d.fallback_priority};
-        if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp))
-            LOG_ERROR("%s: FIFO fallback failed: %s", d.name, strerror(errno));
-    }
-    return d.task(d.arg);
-}
 
 static const module_t *thread_config(const char *name)
 {
@@ -180,7 +112,6 @@ int app_thread_create(pthread_t *thread, const char *name,
     if (!thread || !name || !task || (detached != 0 && detached != 1)) return EINVAL;
     const module_t *m = thread_config(name);
     if (!m) return EINVAL;
-    int deadline = m->dl_period_us > 0 && m->dl_runtime_us > 0 && m->dl_deadline_us > 0;
     struct sched_param param = {.sched_priority = m->priority};
     pthread_attr_t attributes;
     int rc = pthread_attr_init(&attributes);
@@ -194,27 +125,7 @@ int app_thread_create(pthread_t *thread, const char *name,
         rc = cpu_affinity_get(m->cpus, &cpus) < 0 ? errno
              : pthread_attr_setaffinity_np(&attributes, sizeof(cpus), &cpus);
     }
-    if (!rc) {
-        if (!deadline) {
-            rc = pthread_create(thread, &attributes, task, argument);
-        } else {
-            /* 先用表里的 FIFO 参数创建（可用的回退状态），进线程后切 deadline */
-            deadline_start_t *d = malloc(sizeof(*d));
-            if (!d) {
-                rc = ENOMEM;
-            } else {
-                d->task = task;
-                d->arg = argument;
-                d->name = name;
-                d->fallback_priority = m->priority;
-                d->runtime_us = m->dl_runtime_us;
-                d->deadline_us = m->dl_deadline_us;
-                d->period_us = m->dl_period_us;
-                rc = pthread_create(thread, &attributes, deadline_trampoline, d);
-                if (rc) free(d);
-            }
-        }
-    }
+    if (!rc) rc = pthread_create(thread, &attributes, task, argument);
     pthread_attr_destroy(&attributes);
     if (rc) LOG_ERROR("create thread '%s' failed: %s", name, strerror(rc));
     return rc;

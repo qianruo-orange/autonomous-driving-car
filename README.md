@@ -344,7 +344,7 @@ sudo bash scripts/deploy.sh -i    # 安装并启动
 构建产物是 `bin/autonomous-driving-car`；部署会把可执行文件、前端、模型和配置装到 `/opt/autonomous-driving-car`，安装 systemd 单元并启动服务。平台固定为 RK3576。
 
 在 cgroup v2 系统上，部署会写入
-`/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf`，使服务组内允许 FIFO 与 deadline 线程。该配置生效期间 CPU 配额与权重在整个层级不可用；卸载时保留，全局 RT 预算不变。
+`/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf`，使服务组内允许 FIFO 实时线程。该配置生效期间 CPU 配额与权重在整个层级不可用；卸载时保留，全局 RT 预算不变。
 
 ### 发展方向
 
@@ -812,8 +812,8 @@ frontend, model and configuration under `/opt/autonomous-driving-car`, installs
 the systemd unit and starts the service. The platform is fixed to RK3576.
 
 On cgroup v2 systems, deployment installs
-`/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf` so FIFO and
-deadline threads are permitted inside service groups. CPU quotas and weights are
+`/etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf` so FIFO real-time
+threads are permitted inside service groups. CPU quotas and weights are
 unavailable across the hierarchy while that setting is active; it is retained on
 uninstall and the global RT budget is unchanged.
 
