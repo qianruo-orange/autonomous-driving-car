@@ -86,17 +86,29 @@
 <div class="row" id="ip_g_row"><label data-i18n="网关">网关</label><input id="ip_g" type="text" placeholder="192.168.1.1"></div>
 </div>
 </div>
-
-<div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" data-action="cpu-save">💾 <span data-i18n="保存">保存</span></button></h3>
-<div class="cfg-grid vid2">
-<div class="row"><label data-i18n="CPU 策略组">CPU 策略组</label><select id="cf_policy"></select></div>
-<div class="row"><label data-i18n="调度策略">调度策略</label><select id="cf_gov"></select></div>
-<div class="row"><label for="cf_min" data-i18n="最低频率">最低频率</label><div class="field-unit"><select id="cf_min" aria-describedby="cf_min_unit"></select><span class="unit" id="cf_min_unit">MHz</span></div></div>
-<div class="row"><label for="cf_max" data-i18n="最高频率">最高频率</label><div class="field-unit"><select id="cf_max" aria-describedby="cf_max_unit"></select><span class="unit" id="cf_max_unit">MHz</span></div></div>
-</div>
-<div class="ip-cur" id="cf_cur" data-i18n="当前未读取">当前未读取</div>
 </div>
 
+<div class="bottom-grid">
+<section class="card" id="card_proxy" aria-labelledby="proxy_title">
+  <h3 id="proxy_title"><span data-i18n="网络代理">网络代理</span>
+    <span class="proxy-badge" id="proxy_service_badge">—</span>
+    <span class="proxy-head-actions">
+      <button type="button" class="btn btn-save" id="proxy_save" data-i18n="保存配置">保存配置</button>
+      <button type="button" class="btn btn-back" id="proxy_apply" data-i18n="保存并应用">保存并应用</button>
+      <button type="button" class="btn btn-back" id="proxy_reload" data-i18n="重新读取">重新读取</button>
+    </span>
+  </h3>
+  <div class="proxy-grid">
+    <div class="proxy-field"><label for="proxy_host" data-i18n="代理主机">代理主机</label><input type="text" id="proxy_host" placeholder="192.168.1.5" autocomplete="off"></div>
+    <div class="proxy-field"><label for="proxy_port" data-i18n="端口">端口</label><input type="number" id="proxy_port" min="1" max="65535" step="1"></div>
+    <div class="proxy-field"><label for="proxy_scheme" data-i18n="协议">协议</label><select id="proxy_scheme"><option value="http">http</option><option value="socks5">socks5</option><option value="socks5h">socks5h</option></select></div>
+    <div class="proxy-field"><label for="proxy_no_proxy" data-i18n="不走代理的地址">不走代理的地址</label><input type="text" id="proxy_no_proxy" autocomplete="off"></div>
+  </div>
+  <div class="proxy-actions">
+    <button type="button" class="btn btn-back" id="proxy_test" data-i18n="测试连通">测试连通</button>
+  </div>
+  <p class="card-status proxy-status" id="status_proxy" role="status" aria-live="polite"></p>
+</section>
 <div class="card" id="card_nettest"><h3><span data-i18n="网络测试">网络测试</span><span class="card-status" id="status_nettest"></span><span class="nt-result" id="nt_ping_result"></span><span class="nt-result" id="nt_speed_result"></span><span class="nt-result" id="nt_reach_result"></span></h3>
 <div class="nt-section">
 <div class="nt-row">
@@ -127,35 +139,18 @@
 </div>
 </div>
 </div>
-
 </div>
 
 <div class="bottom-grid">
-<section class="card" id="card_proxy" aria-labelledby="proxy_title">
-  <h3 id="proxy_title"><span data-i18n="网络代理">网络代理</span>
-    <span class="proxy-badge" id="proxy_service_badge">—</span>
-  </h3>
-  <p class="proxy-hint" id="proxy_path_hint"></p>
-  <div class="proxy-grid">
-    <div class="proxy-field"><label for="proxy_host" data-i18n="代理主机">代理主机</label><input type="text" id="proxy_host" placeholder="192.168.1.5" autocomplete="off"></div>
-    <div class="proxy-field"><label for="proxy_port" data-i18n="端口">端口</label><input type="number" id="proxy_port" min="1" max="65535" step="1"></div>
-    <div class="proxy-field"><label for="proxy_scheme" data-i18n="协议">协议</label><select id="proxy_scheme"><option value="http">http</option><option value="socks5">socks5</option><option value="socks5h">socks5h</option></select></div>
-    <div class="proxy-field"><label for="proxy_no_proxy" data-i18n="不走代理的地址">不走代理的地址</label><input type="text" id="proxy_no_proxy" autocomplete="off"></div>
-  </div>
-  <div class="proxy-summary">
-    <span class="proxy-line"><span data-i18n="当前代理地址">当前代理地址</span>: <code id="proxy_url">—</code></span>
-    <span class="proxy-line" id="proxy_system"></span>
-  </div>
-  <div class="proxy-actions">
-    <button type="button" class="btn btn-save" id="proxy_save" data-i18n="保存配置">保存配置</button>
-    <button type="button" class="btn btn-back" id="proxy_apply" data-i18n="保存并应用">保存并应用</button>
-    <button type="button" class="btn btn-back" id="proxy_test" data-i18n="测试连通">测试连通</button>
-    <button type="button" class="btn btn-back" id="proxy_reload" data-i18n="重新读取">重新读取</button>
-  </div>
-  <p class="card-status proxy-status" id="status_proxy" role="status" aria-live="polite"></p>
-  <details class="proxy-raw"><summary data-i18n="原始文件内容">原始文件内容</summary><pre id="proxy_raw_pre"></pre></details>
-</section>
-
+<div class="card" id="card_cpufreq"><h3><span data-i18n="CPU 频率">CPU 频率</span><span class="card-status" id="status_cpufreq"></span><button type="button" class="btn btn-save" style="margin-left:auto;padding:4px 14px" data-action="cpu-save">💾 <span data-i18n="保存">保存</span></button></h3>
+<div class="cfg-grid vid2">
+<div class="row"><label data-i18n="CPU 策略组">CPU 策略组</label><select id="cf_policy"></select></div>
+<div class="row"><label data-i18n="调度策略">调度策略</label><select id="cf_gov"></select></div>
+<div class="row"><label for="cf_min" data-i18n="最低频率">最低频率</label><div class="field-unit"><select id="cf_min" aria-describedby="cf_min_unit"></select><span class="unit" id="cf_min_unit">MHz</span></div></div>
+<div class="row"><label for="cf_max" data-i18n="最高频率">最高频率</label><div class="field-unit"><select id="cf_max" aria-describedby="cf_max_unit"></select><span class="unit" id="cf_max_unit">MHz</span></div></div>
+</div>
+<div class="ip-cur" id="cf_cur" data-i18n="当前未读取">当前未读取</div>
+</div>
 <section class="card" id="card_codex" aria-labelledby="codex_cfg_title">
   <h3 id="codex_cfg_title"><span data-i18n="Codex CLI 配置">Codex CLI 配置</span>
     <span class="codex-badge" id="codex_status_badge" data-i18n="未登录">未登录</span>

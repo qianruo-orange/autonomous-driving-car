@@ -11,25 +11,14 @@
   var port = el('proxy_port');
   var scheme = el('proxy_scheme');
   var bypass = el('proxy_no_proxy');
-  var pathHint = el('proxy_path_hint');
-  var urlText = el('proxy_url');
-  var systemText = el('proxy_system');
   var badge = el('proxy_service_badge');
   var status = el('status_proxy');
-  var rawPre = el('proxy_raw_pre');
   var pending = false;
 
   function setStatus(text, kind) {
     if (status) {
       status.textContent = text;
       status.className = 'card-status proxy-status' + (kind ? ' ' + kind : '');
-    }
-  }
-
-  function preview() {
-    if (urlText) {
-      urlText.textContent = scheme.value + '://' +
-        (host.value.trim() || '—') + ':' + (port.value.trim() || '—');
     }
   }
 
@@ -53,23 +42,11 @@
     if (document.activeElement !== port) port.value = c.PROXY_PORT || '';
     if (document.activeElement !== scheme) scheme.value = c.PROXY_SCHEME || 'http';
     if (document.activeElement !== bypass) bypass.value = c.NO_PROXY || '';
-    preview();
-    if (pathHint) {
-      pathHint.textContent = t('配置文件') + ': ' + (data.path || '') +
-        ' · ' + t('影响整机网络流量（保存并应用后生效）');
-    }
-    if (systemText) {
-      var s = data.system || {};
-      systemText.textContent = t('系统环境变量') + ': HTTP_PROXY=' +
-        (s.HTTP_PROXY || t('未配置')) + ' · NO_PROXY=' +
-        (s.NO_PROXY || t('未配置'));
-    }
     if (badge) {
       var act = data.service || 'unknown';
       badge.textContent = t('服务状态') + ': ' + act;
       badge.className = 'proxy-badge ' + (act === 'active' ? 'ok' : 'warn');
     }
-    if (rawPre) rawPre.textContent = data.raw || t('配置文件不存在');
     setStatus(data.exists ? '' : t('配置文件不存在'), data.exists ? '' : 'warn');
   }
 
@@ -130,10 +107,6 @@
     }
   }
 
-  [host, port, scheme, bypass].forEach(function (node) {
-    if (node) node.addEventListener('input', preview);
-    if (node) node.addEventListener('change', preview);
-  });
   var bSave = el('proxy_save');
   var bApply = el('proxy_apply');
   var bTest = el('proxy_test');

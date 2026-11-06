@@ -404,7 +404,7 @@
     "协议": "Protocol",
     "不走代理的地址": "Bypass list",
     "当前代理地址": "Effective proxy URL",
-    "保存配置": "Save",
+    "保存配置": "Save config",
     "保存并应用": "Save and apply",
     "测试连通": "Test connection",
     "重新读取": "Reload",

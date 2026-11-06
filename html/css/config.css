@@ -123,11 +123,8 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #card_can{grid-column:1 / -1;grid-row:2}
 #card_net{grid-column:1;grid-row:3}
 #camera_form{grid-column:2;grid-row:3}
-#card_cpufreq{grid-column:1;grid-row:4}
-#card_nettest{grid-column:2;grid-row:4}
 @media(min-width:641px){
   .can-grid.can-disabled #card_net,.can-grid.can-disabled #camera_form{grid-row:2}
-  .can-grid.can-disabled #card_cpufreq,.can-grid.can-disabled #card_nettest{grid-row:3}
 }
 /* 网络测试卡片 */
 .nt-section{display:grid;grid-template-columns:100px 1fr auto;gap:10px 12px;align-items:center;margin-top:8px}
@@ -147,7 +144,7 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 .can-grid .card h3{min-height:38px;display:flex;align-items:center;gap:8px}
 @media(max-width:640px){
   .can-grid{grid-template-columns:minmax(0,1fr)}
-  #card_can,#card_net,#camera_form,#card_cpufreq,#card_nettest{grid-column:1;grid-row:auto}
+  #card_can,#card_net,#camera_form{grid-column:1;grid-row:auto}
   body{padding:12px}
   .top{flex-wrap:wrap;gap:8px}
   .top h1{font-size:20px}
@@ -162,9 +159,11 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
   .nt-input-group{min-width:0}
   .card{padding:14px}
 }
-/* Network proxy and Codex CLI cards share one row on wide screens. */
+/* Two paired rows: proxy + network test, CPU frequency + Codex CLI. */
 .bottom-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;margin-bottom:16px}
 .bottom-grid>.card{max-width:none;min-width:0;width:100%;margin-bottom:0}
+.bottom-grid #card_nettest h3{flex-wrap:wrap}
+.bottom-grid .nt-result{white-space:normal;overflow-wrap:anywhere}
 @media(max-width:960px){
   .bottom-grid{grid-template-columns:minmax(0,1fr)}
 }

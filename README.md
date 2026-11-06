@@ -206,7 +206,7 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 
 资源卡片显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 占用率由应用对每次 `improcess` 调用计时，按 1 秒滑窗按核汇总。
 
-主页底部的聊天框、配置页的代理与登录卡片、日志页的交互记录列表分别见[网络代理](#网络代理)与[Codex 对话](#codex-对话)。
+主页底部的聊天框、配置页的代理与登录卡片、日志页的交互记录列表分别见[网络代理](#网络代理)与[Codex 对话](#codex-对话)。`/config` 底部四个卡片两两成对并排：网络代理与网络测试一行，CPU 频率与 Codex CLI 配置一行；窗口窄于 960 px 时自动改为上下堆叠。
 
 主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq`（采集序号）和 `X-Ts`（采集时刻，板端单调时钟毫秒）：前者把画面与检测结果对齐，后者配合 `/api/video/stats` 换算端到端延迟。框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h` 和每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）；浏览器按帧序号对齐，若该帧没有推理结果，回退到六帧内最近的记录，再远则跳过。720p 单帧 60–110 KB，30 fps 不限额需要 18–26 Mbps；`mjpeg_max_kbps` 限制单客户端预算，socket 积压时丢弃整帧避免延迟累积。
 
@@ -222,6 +222,8 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 | `PROXY_PORT` | 端口，1–65535 |
 | `PROXY_SCHEME` | `http` / `socks5` / `socks5h` |
 | `NO_PROXY` | 不走代理的地址列表，默认 `localhost,127.0.0.1,::1` |
+
+界面只呈现这四个输入框与「测试连通」按钮，当前代理地址和端口直接由输入框显示；「保存配置」「保存并应用」「重新读取」放在卡片标题栏右侧，不再显示配置文件路径、系统环境变量或原始文件内容。
 
 两个保存按钮的区别：
 
@@ -677,7 +679,9 @@ timing every `improcess` call per core over a one-second window.
 
 The chat box on the home page, the proxy/sign-in cards on `/config` and the
 interaction-record list on `/logs` are described in
-[Network proxy](#network-proxy) and [Codex chat](#codex-chat).
+[Network proxy](#network-proxy) and [Codex chat](#codex-chat). At the bottom of
+`/config` the cards are paired into two rows: network proxy beside network test,
+CPU frequency beside Codex CLI. Below 960 px they stack vertically.
 
 The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of
 the camera's own JPEG frames. Each part carries `X-Seq` (capture sequence) and
@@ -703,6 +707,11 @@ Codex chat bridge: it neither reads nor changes any Codex setting.
 | `PROXY_PORT` | Port, 1-65535 |
 | `PROXY_SCHEME` | `http` / `socks5` / `socks5h` |
 | `NO_PROXY` | Bypass list, default `localhost,127.0.0.1,::1` |
+
+The card shows only these four inputs plus "Test connection"; the current proxy
+address and port are read straight from the inputs. "Save config", "Save and
+apply" and "Reload" sit on the right of the card title bar. The config-file path,
+system environment variables and raw file contents are not shown in the UI.
 
 The two save buttons differ:
 
