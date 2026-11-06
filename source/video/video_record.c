@@ -596,15 +596,6 @@ void video_record_stop(video_record_t *s)
     free(s);
 }
 
-void video_record_stats(const video_record_t *s, unsigned long long *frames,
-                     unsigned long long *dropped, unsigned *last_ms)
-{
-    if (!s) return;
-    if (frames) *frames = atomic_load(&s->frames);
-    if (dropped) *dropped = atomic_load(&s->dropped);
-    if (last_ms) *last_ms = atomic_load(&s->last_ms);
-}
-
 unsigned long long video_record_frames(const video_record_t *s)
 {
     return s ? (unsigned long long)atomic_load(&s->frames) : 0;
@@ -613,9 +604,4 @@ unsigned long long video_record_frames(const video_record_t *s)
 unsigned long long video_record_bytes(const video_record_t *s)
 {
     return s ? (unsigned long long)atomic_load(&s->bytes_total) : 0;
-}
-
-int video_record_active(const video_record_t *s)
-{
-    return s && s->mp4;
 }

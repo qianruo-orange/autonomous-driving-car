@@ -42,9 +42,6 @@ int yolo_events_due(int count, unsigned long long monotonic_ms);
  * The writer appends daily TXT blocks every second or 64 KiB; downloads copy a
  * stable prefix without regenerating the day. */
 int yolo_events_submit_meta(const yolo_event_meta_t *meta);
-/* Compatibility entry point. Image arguments are ignored; no photo is saved. */
-int yolo_events_submit(const unsigned char *jpeg, size_t jpeg_len,
-                       const yolo_event_meta_t *meta);
 /* Call before waiting for inference producers to exit. Healthy writes still
  * accept their last results; persistent storage failure releases blocked
  * producers after bounded retries so shutdown cannot deadlock. */

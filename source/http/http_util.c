@@ -75,22 +75,6 @@ int http_url_decode(const char *src, char *dst, size_t dst_size)
     return url_decode_n(src, (size_t)-1, dst, dst_size);
 }
 
-int http_split_relative(const char *rel, char *directory, size_t directory_size,
-                        char *name, size_t name_size)
-{
-    if (!rel || !*rel || !directory || !name || !directory_size || !name_size || strstr(rel, ".."))
-        return -1;
-    const char *slash = strchr(rel, '/');
-    size_t length = slash ? (size_t)(slash - rel) : 0;
-    if (!slash || !length || length >= directory_size || !slash[1] ||
-        strlen(slash + 1) >= name_size || strchr(slash + 1, '/'))
-        return -1;
-    memcpy(directory, rel, length);
-    directory[length] = '\0';
-    safe_strncpy(name, name_size, slash + 1);
-    return *name ? 0 : -1;
-}
-
 const char *http_body_start(const char *req)
 {
     if (!req) return "";

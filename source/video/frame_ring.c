@@ -60,26 +60,6 @@ void frame_ring_signal(frame_ring_t *r)
     frame_ring_unlock(r);
 }
 
-/* ---- 缓冲池 ---- */
-
-static pool_item_t **pool_head(frame_ring_t *r, int which)
-{
-    (void)which;   /* 仅剩 RGB 一个阶段缓冲池 */
-    return &r->pool_rgb;
-}
-
-void frame_ring_buf_put_locked(frame_ring_t *r, int which,
-                               unsigned char *buf, size_t cap)
-{
-    if (!buf) return;
-    pool_item_t *it = (pool_item_t *)malloc(sizeof(*it));
-    if (!it) { free(buf); return; }   /* 池节点分配失败兜底：直接释放，防泄漏 */
-    it->buf = buf;
-    it->cap = cap;
-    it->next = *pool_head(r, which);
-    *pool_head(r, which) = it;
-}
-
 /* ---- 释放与维护 ---- */
 
 static void release_raw_locked(frame_ring_t *r, frame_slot_t *s)
@@ -97,10 +77,9 @@ static void release_raw_locked(frame_ring_t *r, frame_slot_t *s)
     s->raw_vbuf_index = -1;
 }
 
-/* 统一维护各阶段缓冲释放（遍历 32 槽，每帧若干次，开销可忽略）：
- *   raw  非最新钉住（原始流客户端锁内拷贝最新帧） + 无锁外读引用 +
- *        消费完成（YOLO 激活时等 infer_done）
- *   rgb  worker 结果入槽后，seq 已越过最新渲染即回池（含跳帧与迟到 worker） */
+/* 统一维护 raw 缓冲释放（遍历 32 槽，每帧若干次，开销可忽略）：
+ * 非最新钉住（直播客户端锁内拷贝最新帧） + 无锁外读引用 +
+ * 消费完成（YOLO 激活时等 infer_done） */
 static void frame_ring_maintain_locked(frame_ring_t *r)
 {
     for (int i = 0; i < FRAME_RING_N; i++) {
@@ -111,11 +90,6 @@ static void frame_ring_maintain_locked(frame_ring_t *r)
             int consumed = r->yolo_active ? s->infer_done : 1;
             if (consumed) release_raw_locked(r, s);
         }
-        if (s->rgb.buf && s->rgb_done && s->seq <= r->display_seq) {
-            frame_ring_buf_put_locked(r, FRAME_RING_POOL_RGB, s->rgb.buf, s->rgb.cap);
-            s->rgb.buf = NULL;
-            s->rgb.len = s->rgb.cap = 0;
-        }
     }
 }
 
@@ -125,8 +99,8 @@ frame_slot_t *frame_ring_produce_slot_locked(frame_ring_t *r)
 {
     frame_ring_maintain_locked(r);
     frame_slot_t *s = slot_of(r, r->produce_seq + 1);
-    /* 各阶段缓冲必须全部释放（消费完成），否则本槽不可复用 → 丢帧 */
-    if (s->raw_present || s->rgb.buf || s->raw_claims)
+    /* raw 必须已释放且无 claim，否则本槽不可复用 → 丢帧 */
+    if (s->raw_present || s->raw_claims)
         return NULL;
     memset(s, 0, sizeof(*s));
     s->seq = r->produce_seq + 1;
@@ -179,7 +153,6 @@ void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decod
 
 void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
 {
-    s->display_done = 1;
     r->displayed_frames++;
     if (s->capture_ms) {
         r->processing_age_ms = ring_now_ms() - s->capture_ms;
@@ -192,7 +165,7 @@ void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s)
     if (s->seq > r->display_seq + 1 && s->seq > r->display_seq)
         r->render_skipped += s->seq - r->display_seq - 1;
     r->display_seq = s->seq;
-    frame_ring_maintain_locked(r);     /* 释放被跳过槽的 rgb 与旧 jpeg */
+    frame_ring_maintain_locked(r);     /* 释放旧 jpeg */
 }
 
 /* ---- 原始帧探测（录像会话开始前） ---- */
@@ -284,13 +257,12 @@ void frame_ring_quiesce_begin(frame_ring_t *r)
 }
 
 /* 清空槽：mmap 指针直接摘除（STREAMOFF 后驱动自收，不能 QBUF），
-   非 mmap raw 释放，阶段缓冲回池。seq 保持单调不重置（须持锁） */
+   非 mmap raw 释放。seq 保持单调不重置（须持锁） */
 static void quiesce_clear_all_locked(frame_ring_t *r)
 {
     for (int i = 0; i < FRAME_RING_N; i++) {
         frame_slot_t *s = &r->slots[i];
         if (s->raw_present && !s->raw_is_mmap) free(s->raw.buf);
-        if (s->rgb.buf)  frame_ring_buf_put_locked(r, FRAME_RING_POOL_RGB,  s->rgb.buf,  s->rgb.cap);
         memset(s, 0, sizeof(*s));
     }
     r->quiescing = 0;
@@ -344,6 +316,5 @@ void frame_ring_stats(frame_ring_t *r, frame_ring_stats_t *out)
     out->render_skipped   = r->render_skipped;
     for (int i = 0; i < FRAME_RING_N; i++)
         if (r->slots[i].raw_present) out->raw_pinned++;
-    for (pool_item_t *it = r->pool_rgb; it; it = it->next) out->pool_rgb++;
     frame_ring_unlock(r);
 }

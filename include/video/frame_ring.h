@@ -6,33 +6,26 @@
 #include <pthread.h>
 
 /**
- * video/frame_ring.h — 视频帧环形队列：采集/推理/显示三阶段零拷贝。
+ * video/frame_ring.h — 采集帧环形队列。
  *
- * 32 个槽位描述符 + 阶段指针（raw/rgb）。各阶段只移动缓冲指针，
- * 缓冲本身在阶段间传递、游标越过后回池复用：
- *   采集(video worker)  V4L2 mmap 指针直接入槽，延迟 QBUF（真正零拷贝）
- *   推理(yolo_task)       claims++ 后锁外解码槽内 raw → 池内 rgb（job 持有）；
- *                       claim 随任务移交 worker（任务在途期间槽位被钉住不可复用）
- *   推理(worker)        resize 读 job rgb，推理结果（名称+坐标）入结果队列，
- *                       rgb 写槽置 rgb_done，unclaim
- *   显示(composer)      消费结果队列最新结果，按 seq 取最新 rgb_done 槽原地画框，
- *                       置 display_done（标注帧仅用于检测报告，不再进编码器）
- *   HTTP 推流            锁内拷贝最新 raw（相机原生 JPEG，逐字节透传）
+ * 32 个槽位，每个槽只持有相机原始 JPEG（V4L2 mmap 指针或拷贝）及帧元信息。
+ * 解码出的 NV12 dma-buf 属于解码器私有环，RGA 的 RGB888 画布属于推理侧，
+ * 两者都不进帧环；检测结果走独立的结果队列。
  *
- * 槽位回收（采集复用条件）：raw/rgb 两个缓冲全部释放。
- * 释放规则在 frame_ring_maintain_locked 统一维护（各提交点触发，遍历 32 槽开销可忽略）：
- *   raw  → QBUF(mmap)/free：非最新帧(raw 客户端钉最新) && claims==0 &&
- *          (yolo_active ? infer_done : 1)
- *   rgb  → 池：seq <= 最新已渲染 seq（含被跳过的槽）
+ * 数据流：采集线程把 DQBUF 得到的缓冲入槽并发布 CAPTURED；yolo_task 按 seq
+ *   claim 槽后在锁外把 raw 交给解码线程（claim 期间槽不可复用）；worker 推理
+ *   完成置 result_done 并 unclaim；渲染线程按 seq 提交 display，推进
+ *   display_seq、记录端到端延迟；HTTP 直播锁内拷贝最新 raw 逐字节透传。
  *
- * 并发：单一互斥锁 + 按采集主题发布的条件变量；订阅者用帧序号判断新消息。
- * 发布时立即唤醒该主题的所有订阅者，无轮询间隔，也不复制帧数据。
- * 锁内：标志/指针交接/池/客户端拷贝（~百 µs）、
- * QBUF 回调（ioctl ~µs）；锁外：JPEG 解码、NPU 推理、渲染。
- * 锁序约束：不得在持有本锁时获取其他模块锁（q_lock/slot_mutex 等）。
+ * 槽位复用条件：非最新帧（直播客户端钉住最新帧）、无 claim、raw 已释放。
+ * 释放规则集中在 frame_ring_maintain_locked，各提交点触发（遍历 32 槽开销可忽略）。
+ *
+ * 并发：单一互斥锁 + 按主题发布的条件变量；订阅者用帧序号判断新消息，发布
+ * 即唤醒，不轮询、不复制帧数据。锁内只做指针交接与计数，锁外做解码与推理。
+ * 锁序约束：不得在持有本锁时获取其他模块锁。
  *
  * 相机重启：quiesce_begin → quiesce_wait（等 claims 归零，上限 1s）→
- * STREAMOFF/munmap → 重新初始化。seq 单调递增永不重置（u64，~190 亿年无回绕）。
+ * STREAMOFF/munmap → 重新初始化。seq 单调递增永不重置（u64）。
  */
 
 #define FRAME_RING_N 32
@@ -42,25 +35,16 @@
 #define FRAME_RING_FMT_MJPEG 0
 #define FRAME_RING_FMT_YUYV  1
 
-/* 缓冲池编号（frame_ring_buf_take/put 的 which 参数） */
-#define FRAME_RING_POOL_RGB  0
-
 typedef enum {
     FRAME_TOPIC_CAPTURED,
     FRAME_TOPIC_COUNT
 } frame_topic_t;
 
-/* 阶段缓冲：槽位只持有指针；cap 记录实际分配容量（回池复用时 len 可小于 cap） */
+/* 采集缓冲：槽位只持有指针；cap 记录实际分配容量 */
 typedef struct {
     unsigned char *buf;   /* NULL = 该阶段尚未产生或已被消费 */
     size_t len, cap;
 } ring_buf_t;
-
-typedef struct pool_item {
-    struct pool_item *next;
-    unsigned char *buf;
-    size_t cap;
-} pool_item_t;
 
 typedef struct {
     unsigned long long seq;   /* 帧绝对序号（u64 单调递增，永不回绕） */
@@ -85,18 +69,14 @@ typedef struct {
     int raw_claims;           /* 锁外引用 raw 的计数（yolo_task 解码至 worker 写槽全程/退让期间） */
 
     /* ---- 推理阶段 ---- */
-    ring_buf_t rgb;           /* JPEG/YUYV 解码 RGB24（池内缓冲） */
-    int infer_done;           /* yolo_task 解码完成（raw 可释放） */
-    int rgb_done;             /* worker 解码 rgb 写入完成（可渲染）；检测结果经结果队列传递 */
-
-    /* ---- 显示阶段 ---- */
-    int display_done;         /* composer 渲染完成（标注帧仅供检测报告） */
+    int infer_done;           /* 解码/推理已结束（raw 可释放） */
+    int result_done;          /* 该帧结果就绪，渲染线程可提交 display */
 } frame_slot_t;
 
 typedef struct frame_ring {
     frame_slot_t slots[FRAME_RING_N];
     unsigned long long produce_seq;   /* 最新已发布 seq（0 = 尚无帧） */
-    unsigned long long display_seq;   /* 最新已渲染 seq（maintain 释放 rgb 用） */
+    unsigned long long display_seq;   /* 最新已提交 display 的 seq */
     unsigned long long displayed_frames;
     unsigned long long processing_age_ms, processing_age_max_ms;
     /* 产生 processing_age_max_ms 那一刻的单调时钟，用于和日志时间戳对时 */
@@ -104,7 +84,7 @@ typedef struct frame_ring {
     unsigned capture_fps_num, capture_fps_den;
 
     /* 运行模式（消费者侧在锁内更新，维护释放规则用） */
-    int yolo_active;            /* YOLO 池运行中（停用时 infer_done 不再推进） */
+    int yolo_active;            /* YOLO 池运行中（停用时 raw 不等 infer_done 即可释放） */
     int quiescing;            /* 相机重启退让：禁止新 claim，等待 claims 归零 */
 
     /* 丢帧/停摆计数器（暴露 /api/video/stats 与定期日志） */
@@ -113,9 +93,6 @@ typedef struct frame_ring {
     unsigned long long capture_stall_ms;  /* 驱动缓冲全被占用时的等待累计 */
     unsigned long long infer_dropped;     /* 解码失败/槽已释放跳过 */
     unsigned long long render_skipped;    /* 最新结果优先被跳过的帧 */
-
-    /* 阶段缓冲池（spare 列表，跨帧复用免 malloc churn） */
-    pool_item_t *pool_rgb;
 
     pthread_mutex_t lock;
     pthread_cond_t published[FRAME_TOPIC_COUNT];
@@ -144,7 +121,6 @@ typedef struct {
     unsigned long long capture_dropped, driver_dropped, capture_stall_ms;
     unsigned long long infer_dropped, render_skipped;
     int raw_pinned;            /* 当前被 raw 占用的槽数 */
-    int pool_rgb;              /* 池内缓冲个数 */
 } frame_ring_stats_t;
 
 /* ---- 生命周期 ---- */
@@ -173,10 +149,8 @@ frame_slot_t *frame_ring_infer_claim_locked(frame_ring_t *r, unsigned long long 
 /* 解码完成：claims--，infer_done=1。decode_ok=0 时额外 infer_dropped++ */
 void frame_ring_infer_unclaim_locked(frame_ring_t *r, frame_slot_t *s, int decode_ok);
 
-/* ---- 显示（composer） ---- */
-/* 取 seq > next_seq 的最新 rgb_done 槽（最新结果优先）；无则 NULL。
-   调用方持锁拷贝 res、取出 rgb 指针并 take 池缓冲，解锁后渲染，再 commit */
-/* 渲染完成：display_done=1，释放被跳过槽与旧槽的 rgb */
+/* ---- 显示（渲染线程） ---- */
+/* 结果提交：推进 display_seq、累计端到端延迟与跳帧计数 */
 void frame_ring_display_commit_locked(frame_ring_t *r, frame_slot_t *s);
 
 /* 最新 raw 槽（仅供录像会话开始前的分辨率探测/帧率实测锁内拷贝读取） */
@@ -194,19 +168,14 @@ int frame_ring_wait(frame_subscription_t *sub, unsigned long long last_seq, int 
 /* 临时订阅的兼容接口（按 CAPTURED 主题等待新采集帧） */
 int frame_ring_wait_new(frame_ring_t *r, unsigned long long last_seq, int timeout_ms);
 
-/* ---- 缓冲池（须持锁） ---- */
-/* 取容量 >= min_cap 的池内缓冲（不足时 malloc），回写 ring_buf_t（cap 为实际容量） */
-/* 归还缓冲（cap 为实际分配容量，来自 take 或槽内 ring_buf_t.cap） */
-void frame_ring_buf_put_locked(frame_ring_t *r, int which, unsigned char *buf, size_t cap);
-
 /* ---- 相机重启退让 ---- */
 void frame_ring_quiesce_begin(frame_ring_t *r);
 /* 等待所有 claims 归零后清空槽（mmap 指针直接摘除不回调——STREAMOFF 后驱动自收，
-   非 mmap raw free，阶段缓冲回池），复位完成标志，解除 quiescing。
+   非 mmap raw free），复位完成标志，解除 quiescing。
    成功 0，超时 -1（调用方记 ERROR 后仍须执行 STREAMOFF/munmap） */
 int frame_ring_quiesce_wait(frame_ring_t *r, int timeout_ms);
 /* 超时兜底：mmap 已 unmap 后 claims 仍不归零（推理线程卡死）时强制清空槽并
-   解除 quiescing。迟到写槽因 seq 不匹配走调用方防御分支（rgb 回池），
+   解除 quiescing。迟到写槽因 seq 不匹配走调用方防御分支，
    迟到 unclaim 有计数守卫，均无副作用 */
 void frame_ring_quiesce_force_clear(frame_ring_t *r);
 

@@ -8,7 +8,7 @@
 /**
  * video/video_record.h —— 带检测框的标注录像（H.264/MP4）。
  *
- * 取推理路径已经解出的 NV12 dma-buf（零额外解码），在 Y/UV 平面画彩色框，
+ * 取推理路径已经解出的 NV12 内存副本（零额外解码），在 Y/UV 平面画彩色框，
  * 交给 MPP 硬件编码（恒定 QP，不做码率控制），再封装成 MP4。这是录像的
  * 唯一产物，没有并行的第二路文件。
  *
@@ -39,15 +39,8 @@ int video_record_push(video_record_t *s, const void *nv12, int w, int h,
 /* 停止线程、冲刷编码器、收尾 MP4 并释放。 */
 void video_record_stop(video_record_t *s);
 
-/* 统计：已编码帧、丢弃帧、最近一帧编码耗时（ms） */
-void video_record_stats(const video_record_t *s, unsigned long long *frames,
-                     unsigned long long *dropped, unsigned *last_ms);
-
 /* 会话统计：已编码帧数与累计字节数（供 /api/rec/status）。 */
 unsigned long long video_record_frames(const video_record_t *s);
 unsigned long long video_record_bytes(const video_record_t *s);
-
-/* 当前文件是否已打开（会话启动后第一帧才会真正建文件）。 */
-int video_record_active(const video_record_t *s);
 
 #endif /* VIDEO_RECORD_H */

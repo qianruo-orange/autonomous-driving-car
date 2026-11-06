@@ -238,25 +238,11 @@ int yolo_postprocess(const float *const *out_buf, const rknn_tensor_attr *attrs,
     return yolo_nms_finish(cand, ncand, dets, max_dets, nms);
 }
 
-/* ---------------- YOLO26 one2one 双输出（无 NMS） ---------------- */
+/* ---------------- YOLO26 one2one 双输出 ---------------- */
 
 static float yolo_deq_i8(int8_t q, int32_t zp, float scale)
 {
     return ((float)q - (float)zp) * scale;
-}
-
-
-static int best_class_of(const int8_t *sp, int sc_nchw, int nc, int A, int i,
-                         int32_t zp, float scale)
-{
-    int cls = 0;
-    float top = -1.0f;
-    for (int j = 0; j < nc; ++j) {
-        float v = yolo_deq_i8(sp[sc_nchw ? (size_t)j * (size_t)A + (size_t)i
-                                        : (size_t)i * (size_t)nc + (size_t)j], zp, scale);
-        if (v > top) { top = v; cls = j; }
-    }
-    return cls;
 }
 
 int yolo_postprocess_two(const void *scores_buf, const rknn_tensor_attr *sa,

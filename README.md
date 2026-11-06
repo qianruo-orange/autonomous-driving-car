@@ -227,7 +227,7 @@ Web 访问按**源 IPv4 地址**分配槽位，最多 **8 个地址**（`HTTP_MA
 
 录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/videos/` 下写 `video_<YYYYMMDD>.mp4`（同一天重开会顺次加 `_1`、`_2`，不覆盖已录内容）：推理路径解出的 NV12 在 Y/UV 两个平面上画上检测框，再交给 VEPU510 硬件编成 H.264。框是单一彩色的 3 px 描边，颜色按类别从 12 色调色板里取（同类恒定、跨类岔开），左上角贴一条同色标签条，写类别名和置信度（`person 0.88`），字色按底色亮度自动选黑/白。彩色描边在白墙、白衬衫上也能看清，而且只占一条 3 px 色带，色度开销很小。恒定 QP 18（FIXQP，不做码率控制），720p 实测约 **7.9 Mbps**，即 **3.5 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。编码输入用 12 个缓冲组成的环，按**帧龄**（保留 8 帧）回收：MPP 异步读输入缓冲，并把它当作后续 P 帧的参考帧，写完立刻复用会让框线在录像里退化成断续的虚线。
 
-自动分段只按**日期变化**触发：跨天时收尾当前文件（写入 moov），在**同一目录** `recordings/videos/` 下按新日期命名续录，录像不中断；另有手动分段接口 `POST /api/rec/split` 供前端调用。MP4 的样本偏移是 64 位的（`co64`），单文件不受 4 GiB 限制。
+自动分段只按**日期变化**触发：跨天时收尾当前文件（写入 moov），在**同一目录** `recordings/videos/` 下按新日期命名续录，录像不中断；另有手动分段接口 `POST /api/rec/split` 供前端调用：需要 root 级 Basic Auth，请求体是当前录像文件名（如 `video_20261106.mp4`），与当前会话文件名不符时返回 409。MP4 的样本偏移是 64 位的（`co64`），单文件不受 4 GiB 限制。
 
 录像从不等待推理，所以模型卡住或重载不会中断录像。检测框只画进 MP4；浏览器画面仍是原始字节加前端叠加层。
 
@@ -696,7 +696,7 @@ buffer right after `encode_put_frame()` shreds the overlay into dashes.
 Automatic segments break on a **date change**: at midnight the current file is
 finalised (moov written) and recording continues in the **same directory**,
 `recordings/videos/`, with the new date in the filename. `POST /api/rec/split`
-provides a manual split for the UI. MP4 sample offsets are 64-bit (`co64`), so a
+provides a manual split for the UI: it requires root-level Basic Auth and takes the current recording filename (for example `video_20261106.mp4`) as the request body; a name that no longer matches the active session returns 409. MP4 sample offsets are 64-bit (`co64`), so a
 single file is not limited to 4 GiB.
 
 Recording never waits on inference, so a stalled or reloading model does not

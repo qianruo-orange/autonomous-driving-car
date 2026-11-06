@@ -66,11 +66,6 @@ static void box_end(FILE *fp, long pos)
     fseek(fp, here, SEEK_SET);
 }
 
-static uint32_t read_be32(const unsigned char *p)
-{
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
 /* 遍历 Annex-B：回调每段 NAL（不含起始码） */
 static void scan_nals(const unsigned char *buf, size_t len,
                       void (*cb)(void *, const unsigned char *, size_t), void *ctx)
@@ -283,33 +278,6 @@ rec_mp4_t *rec_mp4_create_named(const char *dir, const char *name, int w, int h,
     return s;
 }
 
-rec_mp4_t *rec_mp4_create(const char *dir, const char *prefix, int w, int h, int fps,
-                          char *name_out, size_t name_size)
-{
-    if (!dir || !prefix || w <= 0 || h <= 0) return NULL;
-    rec_mp4_t *s = calloc(1, sizeof(*s));
-    if (!s) return NULL;
-    s->w = w; s->h = h;
-    s->fps = fps > 0 ? fps : 30;
-
-    char when[32];
-    time_t now = time(NULL);
-    struct tm tm;
-    localtime_r(&now, &tm);
-    strftime(when, sizeof(when), "%Y%m%d_%H%M%S", &tm);
-    snprintf(s->path, sizeof(s->path), "%s/%s_%s.mp4", dir, prefix, when);
-    if (name_out && name_size) snprintf(name_out, name_size, "%s_%s.mp4", prefix, when);
-
-    s->fp = fopen(s->path, "wb");
-    if (!s->fp) {
-        LOG_ERROR("rec_mp4: 打开 %s 失败: %s", s->path, strerror(errno));
-        free(s);
-        return NULL;
-    }
-    LOG_INFO("rec_mp4: 标注录像 %s（H.264/MP4）", s->path);
-    return s;
-}
-
 static int start_mdat(rec_mp4_t *s)
 {
     write_ftyp(s->fp);
@@ -385,6 +353,3 @@ int rec_mp4_close(rec_mp4_t *s)
     free(s);
     return rc;
 }
-
-uint32_t rec_mp4_frames(const rec_mp4_t *s) { return s ? s->frames : 0; }
-uint64_t rec_mp4_bytes(const rec_mp4_t *s) { return s ? s->bytes : 0; }

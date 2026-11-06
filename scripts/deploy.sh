@@ -156,7 +156,7 @@ do_install() {
         return 1
     fi
 
-    # 清理旧 WebRTC 边车（mediamtx + fifo pusher）：直播已改回 fMP4/MSE 直供，
+    # 清理旧 WebRTC 边车（mediamtx + fifo pusher）：直播是 multipart MJPEG 直供，
     # 不再需要外部 RTSP 中转。从旧版本升级时留着会白占 VPU/内存并抢 8554/8889 端口
     for u in mediamtx rockchip-smart-gateway-webrtc; do
         if [ -f /etc/systemd/system/"$u".service ]; then

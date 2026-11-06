@@ -653,13 +653,6 @@ int yolo_events_submit_meta(const yolo_event_meta_t *meta)
     return 0;
 }
 
-/* Source compatibility only: no image bytes are copied or saved. */
-int yolo_events_submit(const unsigned char *jpeg, size_t len, const yolo_event_meta_t *meta)
-{
-    (void)jpeg; (void)len;
-    return yolo_events_submit_meta(meta);
-}
-
 void yolo_events_prepare_stop(void)
 {
     pthread_mutex_lock(&events.lock);

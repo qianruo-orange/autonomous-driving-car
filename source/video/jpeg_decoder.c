@@ -248,16 +248,6 @@ int jpeg_decoder_nv12(jpeg_decoder_t *d, const unsigned char *jpeg, size_t lengt
         d->nv12_next = (d->nv12_next + 1) % NV12_RING;
         rc = sw_decode_nv12(d, jpeg, length, w, h, slot->va);
     }
-    if (!rc && getenv("SAME_FRAME_DUMP")) {
-        static int n;
-        if (n < 1) {
-            n++;
-            FILE *jf = fopen("/tmp/same.jpg", "wb");
-            if (jf) { fwrite(jpeg, 1, length, jf); fclose(jf); }
-            FILE *nf = fopen("/tmp/same.nv12", "wb");
-            if (nf) { fwrite(slot->va, 1, (size_t)w * h * 3 / 2, nf); fclose(nf); }
-        }
-    }
     if (!rc && copy_to) memcpy(copy_to, slot->va, (size_t)w * h * 3 / 2);
     if (!rc) {
         *nv12_fd = slot->fd;

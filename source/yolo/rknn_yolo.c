@@ -1,40 +1,35 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
-
-
-
  * rknn_yolo.c — RKNN + YOLO26 检测主模块：模型管理 + 多线程推理池 + 按序渲染。
  *
- * 数据流（yolo_task 采集线程 + 自适应推理 worker + 1 渲染 composer）：
- *   yolo_task:  事件驱动等新帧（环条件变量，2s 超时仅用于退出检查）→ 按序
- *             claim 槽 raw（零拷贝引用 V4L2 mmap）→ 锁外解码 RGB24 进池缓冲 →
- *             投递任务队列。claim 随任务移交 worker：任务在途期间槽位被
- *             claims 钉住，不会被采集复用/退让清空
- *   worker i: 出队 → 双线性缩放 → NPU 推理（独立 context，按实际 NPU 核数轮流绑定）→
- *             检测后处理（NMS）→ rgb 写槽 → unclaim；
- *             框、类别和置信度按值入结果队列
- *   composer: 事件驱动消费结果队列，排空只留最新（seq 严格递增，绝不回退；
- *             旧结果条目直接丢弃）→ 运动学跟踪 → 显示 EMA → rgb 原地画框 →
- *             标注帧只用于检测报告，不再重编码（display_done=1，display_seq 推进）；
- *             渲染节拍 ~30fps
+ * 数据流：
+ *   yolo_task   事件驱动等新帧 → 按序 claim 帧环槽里的相机原始 JPEG →
+ *               投递解码队列（claim 随任务移交，槽位在途期间不会被复用）
+ *   decode ×2   libjpeg-turbo 软解为 NV12 dma-buf（解码器私有 8 槽环），
+ *               另拷一份 NV12 给标注录像；标注帧不经过本模块的渲染路径
+ *   worker ×2   RGA 一趟完成 NV12→RGB888 + letterbox 写入 CMA 画布 →
+ *               RKNN 推理（独立 context，按 NPU 核轮流绑定）→ 后处理
+ *               （类内贪心 NMS）→ 框/类别/置信度按值入结果队列，
+ *               置 result_done 并 unclaim
+ *   render      事件驱动消费结果队列（排空只留最新，seq 严格递增不回退）→
+ *               运动学跟踪 / EMA / 快照 → 提交 display（推进 display_seq、
+ *               记录端到端延迟）。检测框由浏览器 canvas 叠加，服务端不烧框。
  *
- * 帧数据全部走视频帧环形队列（video/frame_ring.h）：采集 raw（V4L2 mmap）、
- * 解码 rgb 等阶段缓冲只在槽位间移动指针，零拷贝。
- * 直播与录像直接取相机原始 JPEG，不经过本模块的标注帧。
- *
- * 渲染 seq 单调不回退，画面不会抖动/闪烁；被跳过的旧结果直接回池。
+ * 帧环（video/frame_ring.h）只持有相机原始 JPEG 与帧元信息；NV12 dma-buf、
+ * RGA 画布和检测结果都不进帧环。直播直接透传相机原始 JPEG；标注录像复用
+ * 解码出的 NV12 拷贝，画框后交给 MPP 编码。
  *
  * 热重载：rknn_yolo_reload() 停止推理池（pool_running=0 → 线程退出/join，
- * 在途任务 rgb 回池 + 摘除槽 claim）→ 释放模型与 context → 重读配置
- * （yolo_model/yolo_names/yolo_conf/yolo_nms；并发度按帧率和实测耗时自动调整）
- * → 重建池。由前端上传模型/标签文件与 YOLO 参数保存触发。
+ * 在途任务释放 NV12 拷贝并摘除槽 claim）→ 释放模型与 context → 重读配置
+ * （yolo_model/yolo_names/yolo_conf/yolo_nms）→ 重建池。由前端上传模型/标签
+ * 文件与 YOLO 参数保存触发。
  *
  * 必要流程：YOLO 推理不可停用。无模型 / NPU 驱动未加载 / 推理失败 → 直接报错：
  * 启动路径整体失败退出；运行期热重载失败由 HTTP 接口报告 saved_reload_failed。
  *
- * 后处理已拆分为独立模块（yolo_postprocess），图像预处理在 RGA 上完成（video/rga_preprocess），
- * 本文件仅保留：模型生命周期、推理线程池、任务队列、结果队列、
- * 环形队列槽消费、快照与对外 API。
+ * 后处理已拆分为独立模块（yolo_postprocess），图像预处理在 RGA 上完成
+ * （video/rga_preprocess）；本文件保留模型生命周期、线程池、任务/结果队列、
+ * 帧环槽消费、快照与对外 API。
  */
 
 #define _GNU_SOURCE
@@ -76,14 +71,12 @@
 #define YOLO_MAX_WORKERS 2     /* RK3576：NPU 双核，一核一个线程 */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
 #define YOLO_MAX_INFLIGHT 2    /* 在途上限（帧）：解码并行后不压深度会让延迟累积到 ~170 ms */
-#define YOLO_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，composer 消费渲染 */
+#define YOLO_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，render 消费渲染 */
 #define YOLO_HIST_N      16    /* 最近结果环形缓冲深度（供前端按 seq 对齐叠框） */
 
-/* 推理任务：解码后的 RGB 帧（池内缓冲，由消费它的 worker 写槽/回池）。
-   槽 claim 随任务移交：yolo_task claim 后不摘除，worker 写槽时一并 unclaim */
+/* 推理任务：解码结果以 NV12 dma-buf 交给 RGA，标注录像另持一份 NV12 堆拷贝。
+   槽 claim 随任务移交：yolo_task claim 后不摘除，worker 完成推理时一并 unclaim */
 typedef struct {
-    unsigned char    *rgb;
-    size_t            rgb_cap;
     int               nv12_fd;   /* >=0：RGA 路径，解码器 NV12 dma-buf（rgb 为 NULL） */
     unsigned char    *annot_nv12; /* 标注录像：解码时拷好的一整帧 NV12 */
     int               w, h;
@@ -132,7 +125,7 @@ static struct {
     pthread_cond_t  q_not_empty;
     pthread_cond_t  q_not_full;
 
-    /* 有界结果队列（worker 生产推理结果 / composer 消费渲染） */
+    /* 有界结果队列（worker 生产推理结果 / render 消费渲染） */
     yolo_result_t results[YOLO_RESULT_CAP];
     int            r_head, r_tail, r_count;
     pthread_mutex_t r_lock;
@@ -146,7 +139,7 @@ static struct {
     unsigned long long next_seq;             /* 渲染游标：下一个待渲染 seq（环 seq 单调，0 起步，
                                                跨 reload 保留不重复渲染） */
 
-    /* EMA 平滑状态（仅 composer 线程访问） */
+    /* EMA 平滑状态（仅 render 线程访问） */
     yolo_result_t   prev;
 
     /* 类别名表（yolo_names 文件，缺失回退内置 COCO 80） */
@@ -155,7 +148,7 @@ static struct {
 
     unsigned long long last_seq;             /* 采集游标：最近已解码/消费的帧 seq */
 
-    /* 快照：composer 按序写入，仅当新 seq 大于当前时更新 */
+    /* 快照：render 按序写入，仅当新 seq 大于当前时更新 */
     pthread_mutex_t result_mutex;
     yolo_result_t   result;
 
@@ -205,8 +198,8 @@ static int yolo_inflight_locked(frame_ring_t *r)
     return n;
 }
 
-/* 任务作废（停池/推理失败/队列拒绝）：摘除槽 claim（raw 恢复可释放）
-   并把 rgb 归还池。解码已成功，作废不计 infer_dropped */
+/* 任务作废（停池/推理失败/队列拒绝）：摘除槽 claim（raw 恢复可释放）。
+   解码已成功，作废不计 infer_dropped */
 static void yolo_job_abandon(const yolo_job_t *job)
 {
     frame_ring_t *ring = yolo_ring();
@@ -215,8 +208,6 @@ static void yolo_job_abandon(const yolo_job_t *job)
     frame_slot_t *s = yolo_slot(ring, job->seq);
     if (s->seq == job->seq && s->raw_claims > 0)
         frame_ring_infer_unclaim_locked(ring, s, 1);
-    if (job->rgb)
-        frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, job->rgb, job->rgb_cap);
     frame_ring_unlock(ring);
 }
 
@@ -410,10 +401,8 @@ static int yolo_queue_pop(yolo_job_t *job, int worker_index)
         return -1;
     }
     *job = g_yolo.jobs[g_yolo.q_head];
-    /* 所有权（rgb 池缓冲、annot_nv12 堆缓冲）已移交给 worker：槽位必须两个都
-       清掉。只清 rgb 的话，被弹出还没被复写的槽位会在停池清理时按陈旧指针
-       再 free 一次——停止服务时的 "double free or corruption" 就是这个。 */
-    g_yolo.jobs[g_yolo.q_head].rgb = NULL;
+    /* annot_nv12 堆缓冲的所有权已移交给 worker：槽位必须清掉，否则被弹出
+       还没被复写的槽位会在停池清理时按陈旧指针再 free 一次。 */
     g_yolo.jobs[g_yolo.q_head].annot_nv12 = NULL;
     g_yolo.q_head = (g_yolo.q_head + 1) % YOLO_QUEUE_CAP;
     g_yolo.q_count--;
@@ -422,7 +411,7 @@ static int yolo_queue_pop(yolo_job_t *job, int worker_index)
     return 0;
 }
 
-/* ---- 推理结果队列（worker 生产 / composer 消费）---- */
+/* ---- 推理结果队列（worker 生产 / render 消费）---- */
 
 static int yolo_result_push(const yolo_result_t *item)
 {
@@ -496,7 +485,7 @@ static int yolo_result_pop_latest(yolo_result_t *item, int timeout_ms)
     return 0;
 }
 
-/* ---- 结果快照（composer 按序更新，单调递增） ---- */
+/* ---- 结果快照（render 按序更新，单调递增） ---- */
 
 static void snap_result(const yolo_result_t *res)
 {
@@ -677,7 +666,9 @@ static void *yolo_worker_task(void *arg)
                 boxes[i].y2 = det->y2;
                 boxes[i].conf = det->conf;
                 boxes[i].cls = det->cls;
-                snprintf(boxes[i].label, sizeof(boxes[i].label), "%s %.2f", name, (double)det->conf);
+                /* 自定义类别名可能很长；限制前缀，保证 " 0.00" 与 NUL 始终放得下 */
+                snprintf(boxes[i].label, sizeof(boxes[i].label), "%.16s %.2f",
+                         name, (double)det->conf);
             }
             video_session_annot_frame(job.annot_nv12, job.w, job.h, boxes, n);
         }
@@ -701,25 +692,16 @@ static void *yolo_worker_task(void *arg)
             }
         }
 
-        /* 停池竞态：推理期间 pool_running 被清 → 作废任务（不写槽，
-           避免停池后槽内滞留 rgb 阻碍该槽复用） */
+        /* 停池竞态：推理期间 pool_running 被清 → 作废任务，不写槽 */
         if (!g_yolo.running || !g_yolo.pool_running) { yolo_job_discard(&job); continue; }
 
-        /* rgb 写槽（claim 钉住槽位：任务在途期间不会被复用/清空，
-           故 s->seq == job.seq 必然成立；防御分支防退让强制清空的迟到写） */
+        /* 标记结果就绪（claim 钉住槽位，故 seq 必然匹配；相机退让强制清空时
+           校验失败，槽已经不在，无需再处理） */
         frame_ring_lock(ring);
         frame_slot_t *s = yolo_slot(ring, job.seq);
         if (s->seq == job.seq && s->raw_claims > 0) {
-            s->rgb.buf  = job.rgb;
-            s->rgb.cap  = job.rgb_cap;
-            s->rgb.len  = job.rgb ? (size_t)job.w * job.h * 3 : 0;
-            s->rgb_done = 1;   /* 结果就绪；RGA 路径下 rgb 为空，渲染只用 w/h */
+            s->result_done = 1;
             frame_ring_infer_unclaim_locked(ring, s, 1);
-        } else {
-            if (job.rgb)
-                frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, job.rgb, job.rgb_cap);
-            if (s->seq == job.seq && s->raw_claims > 0)
-                frame_ring_infer_unclaim_locked(ring, s, 1);
         }
         frame_ring_unlock(ring);
 
@@ -729,26 +711,22 @@ static void *yolo_worker_task(void *arg)
     return NULL;
 }
 
-/* ---- 渲染 composer：结果队列最新结果优先（seq 单调不回退）+ ~30fps 节拍 ----
+/* ---- 渲染线程：结果队列最新结果优先（seq 单调不回退）+ ~30fps 节拍 ----
 
    严格按 seq 顺序消费会因 worker 乱序完成而等待缺口（实测卡顿 100~700ms）。
    改为消费结果队列中最新完成结果：渲染 seq 严格递增（绝不回退，画面不抖动），
    被跳过的旧结果条目直接丢弃（纯元数据，无资源）；EMA 平滑本身即可容忍帧间小跳跃。
    标注录像复用解码出的 NV12：画框后直接交给 MPP 编码为 H.264/MP4。 */
 
-/* Move ownership out of the slot before unlocking. Camera quiesce may clear
- * every slot while rendering; it must never recycle an in-flight RGB buffer. */
-static int yolo_render_take_rgb_locked(frame_ring_t *ring, unsigned long long seq,
-                                      ring_buf_t *rgb, int *w, int *h)
+/* 渲染只需要帧尺寸：检测框由浏览器 canvas 绘制，服务端不生成图像。 */
+static int yolo_render_take_meta_locked(frame_ring_t *ring, unsigned long long seq,
+                                       int *w, int *h)
 {
     frame_slot_t *slot = yolo_slot(ring, seq);
-    if (ring->quiescing || slot->seq != seq || !slot->rgb_done)
+    if (ring->quiescing || slot->seq != seq || !slot->result_done)
         return -1;
-    /* RGA 路径不产生 RGB：渲染只需要帧尺寸（检测框由浏览器 canvas 绘制） */
     *w = slot->w;
     *h = slot->h;
-    *rgb = slot->rgb;
-    memset(&slot->rgb, 0, sizeof(slot->rgb));
     return 0;
 }
 
@@ -824,12 +802,10 @@ static void *yolo_render_task(void *arg)
 
         unsigned long long seq = item.seq;
         int w = 0, h = 0;
-        ring_buf_t rgbb = { 0 };
         frame_ring_lock(ring);
-        /* Rendering owns RGB until it explicitly returns the buffer below.
-           The slot may be cleared or reused during a camera restart. */
+        /* 相机重启可能在渲染期间清空槽位：提交 display 前须重新校验 seq。 */
         frame_slot_t *s = yolo_slot(ring, seq);
-        if (yolo_render_take_rgb_locked(ring, seq, &rgbb, &w, &h) != 0) {
+        if (yolo_render_take_meta_locked(ring, seq, &w, &h) != 0) {
             frame_ring_unlock(ring);
             continue;
         }
@@ -852,11 +828,9 @@ static void *yolo_render_task(void *arg)
         snap_result(&disp);
 
         frame_ring_lock(ring);
-        /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，否则缓冲回池 */
-        if (!ring->quiescing && s->seq == seq && s->rgb_done)
+        /* 槽可能已被退让清空（相机重启）：校验 seq 后提交，记录端到端延迟 */
+        if (!ring->quiescing && s->seq == seq && s->result_done)
             frame_ring_display_commit_locked(ring, s);
-        if (rgbb.buf)
-            frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, rgbb.buf, rgbb.cap);
         frame_ring_unlock(ring);
 
         /* 交接开销：后处理完成 → 本次显示提交；以及解码结束 → 显示提交 */
@@ -1059,11 +1033,10 @@ static void yolo_stop_pool(void)
     /* The producer may still be decoding a claimed raw frame. Let it return
        that frame before resetting queues and the shared sequence cursor. */
     pthread_mutex_lock(&g_producer_mutex);
-    /* 释放队列中未被消费的任务（已消费槽位 rgb 已置 NULL） */
+    /* 释放队列中未被消费的任务（已消费槽位 annot_nv12 已置 NULL） */
     for (int i = 0; i < YOLO_QUEUE_CAP; i++) {
-        if (g_yolo.jobs[i].rgb || g_yolo.jobs[i].annot_nv12) {
+        if (g_yolo.jobs[i].annot_nv12) {
             yolo_job_t job = g_yolo.jobs[i];
-            g_yolo.jobs[i].rgb = NULL;
             g_yolo.jobs[i].annot_nv12 = NULL;
             yolo_job_discard(&job);
         }

@@ -429,10 +429,10 @@ void *video_stream_task(void *arg)
                 frame_ring_stats(&vs->ring, &st);
                 LOG_INFO("video_stream: ring 60s — produce %llu, capture_dropped %llu, "
                          "driver_dropped %llu, stall %llums, infer_dropped %llu, "
-                         "render_skipped %llu, raw_pinned %d, pool rgb %d",
+                         "render_skipped %llu, raw_pinned %d",
                          st.produce_seq, st.capture_dropped, st.driver_dropped,
                          st.capture_stall_ms, st.infer_dropped, st.render_skipped,
-                         st.raw_pinned, st.pool_rgb);
+                         st.raw_pinned);
             }
             if (ret == 0) continue;
             if (!(out.events & EPOLLIN)) continue;
