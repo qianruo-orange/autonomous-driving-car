@@ -85,27 +85,17 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/system | head -c 120
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'primaryColor':'#12203a','primaryTextColor':'#cdd9e8','primaryBorderColor':'#5ec2f0','lineColor':'#5e7ea0','secondaryColor':'#1a2a44','tertiaryColor':'#0f1a2e','fontFamily':'Segoe UI, Helvetica, Arial, sans-serif'}}}%%
 flowchart LR
-    subgraph 采集层
-        CAM(UVC 摄像头) --> CAP(capture 线程<br/>V4L2 mmap)
-    end
-    subgraph 加速层
-        CAP -->|DMA-BUF| RGA(RGA 预处理<br/>缩放/裁切/格式转换)
-        RGA --> POOL(NPU 推理池<br/>4 worker)
-        POOL --> DET(检测结果<br/>bbox + score + cls)
-    end
-    subgraph 输出层
-        CAP -->|NV12| MPP(MPP 硬编<br/>MJPEG 720p30)
-        MPP --> HTTP(HTTP 服务<br/>multipart 推流)
-        DET --> OVL(前端 canvas 叠加)
-        HTTP --> BROWSER(浏览器)
-        OVL --> BROWSER
-    end
-    subgraph 控制层
-        DET --> TRK(跟踪器<br/>按 seq 对齐)
-        TRK --> PID(跟随 PID)
-        PID --> CAN(CAN FD 发送)
-        CAN --> MOTOR(左右轮电机)
-    end
+    CAM(摄像头) --> CAP(采集线程)
+    CAP -->|DMA-BUF| RGA(RGA 预处理) --> POOL(NPU 推理池) --> DET(检测结果)
+    CAP -->|NV12| MPP(MPP 编码) --> HTTP(HTTP 推流) --> BR(浏览器)
+    DET --> OVL(前端叠加) --> BR
+    DET --> TRK(跟踪器) --> PID(跟随 PID) --> CAN(CAN FD) --> MOTOR(电机)
+    classDef a fill:#12203a,stroke:#5ec2f0,color:#cdd9e8
+    classDef b fill:#1b1b3a,stroke:#8f7cf0,color:#cdd9e8
+    classDef c fill:#10241c,stroke:#4cc9a0,color:#cdd9e8
+    class CAM,CAP,MPP,HTTP,BR a
+    class RGA,POOL,DET,OVL b
+    class TRK,PID,CAN,MOTOR c
 ```
 
 **关键设计：采集序号 `seq`**
