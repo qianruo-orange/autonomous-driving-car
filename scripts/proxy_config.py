@@ -151,6 +151,22 @@ def apply_service():
         return False, str(exc)[:300]
 
 
+def service_enabled():
+    """The web switch is the unit state: stop runs ExecStop, which clears the
+    proxy files from /etc/environment, /etc/profile.d and systemd."""
+    return service_active() == "active"
+
+
+def set_service_enabled(enabled):
+    action = "restart" if enabled else "stop"
+    try:
+        p = subprocess.run(["systemctl", action, SERVICE],
+                           capture_output=True, text=True, timeout=60)
+        return p.returncode == 0, (p.stderr or p.stdout or "").strip()[:300]
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)[:300]
+
+
 def system_environment():
     """Values proxy-client.service applied to the whole board."""
     wanted = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")
@@ -170,6 +186,7 @@ def cmd_get(args):
         "config": cfg, "url": proxy_url(cfg), "raw": original[:8192],
         "system": system_environment(),
         "service": service_active(),
+        "enabled": service_enabled(),
     })
 
 
@@ -187,12 +204,17 @@ def cmd_set(args):
         result(args.out, {"ok": False,
                           "error": "cannot write %s: %s" % (CONF, exc)})
         return
+    # Missing "enabled" keeps whatever the switch currently shows, so saving
+    # the fields never silently turns the proxy on or off.
+    enabled = payload.get("enabled")
+    enabled = service_enabled() if enabled is None else bool(enabled)
     applied, apply_error = False, ""
-    if payload.get("apply"):
-        applied, apply_error = apply_service()
+    if payload.get("apply") or enabled != service_enabled():
+        applied, apply_error = set_service_enabled(enabled)
     result(args.out, {"ok": True, "config": cfg, "url": proxy_url(cfg),
                       "backup": backup, "applied": applied,
-                      "apply_error": apply_error, "service": service_active()})
+                      "apply_error": apply_error, "service": service_active(),
+                      "enabled": service_enabled()})
 
 
 def cmd_test(args):

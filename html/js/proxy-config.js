@@ -11,6 +11,7 @@
   var port = el('proxy_port');
   var scheme = el('proxy_scheme');
   var bypass = el('proxy_no_proxy');
+  var switchBox = el('proxy_enabled');
   var badge = el('proxy_service_badge');
   var status = el('status_proxy');
   var pending = false;
@@ -28,6 +29,7 @@
       PROXY_PORT: port.value.trim(),
       PROXY_SCHEME: scheme.value,
       NO_PROXY: bypass.value.trim(),
+      enabled: switchBox ? switchBox.checked : true,
       apply: !!apply
     };
   }
@@ -42,6 +44,7 @@
     if (document.activeElement !== port) port.value = c.PROXY_PORT || '';
     if (document.activeElement !== scheme) scheme.value = c.PROXY_SCHEME || 'http';
     if (document.activeElement !== bypass) bypass.value = c.NO_PROXY || '';
+    if (switchBox) switchBox.checked = !!data.enabled;
     if (badge) {
       var act = data.service || 'unknown';
       badge.textContent = t('服务状态') + ': ' + act;
@@ -76,8 +79,11 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(payload(true))
       });
-      setStatus(j.applied ? t('已保存并应用') : t('已保存，但应用失败') + ': ' + (j.apply_error || ''),
-        j.applied ? 'ok' : 'warn');
+      setStatus(j.enabled === false
+        ? t('代理已关闭，流量直连')
+        : (j.applied ? t('已保存并应用')
+                     : t('已保存，但应用失败') + ': ' + (j.apply_error || '')),
+        j.enabled === false || j.applied ? 'ok' : 'warn');
       await load();
     } catch (e) {
       setStatus(t('保存失败') + ': ' + e.message, 'warn');
@@ -88,5 +94,6 @@
 
   var bSave = el('proxy_save');
   if (bSave) bSave.addEventListener('click', save);
+  if (switchBox) switchBox.addEventListener('change', function () { save(); });
   load();
 })();

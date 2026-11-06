@@ -391,6 +391,8 @@
     "有可用更新，点击安装更新": "Update available — click Install update",
     "额度已用尽": "Quota exhausted",
     "可用额度": "Available quota",
+    "代理开关": "Proxy switch",
+    "代理已关闭，流量直连": "Proxy off, traffic goes direct",
     "每周额度 {time} 重置": "Weekly quota resets {time}",
     "{label} {time} 重置": "{label} resets {time}",
     "{hours} 小时": "{hours} hours",
