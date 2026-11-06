@@ -1,148 +1,298 @@
-<a id="top"></a>
-
 <div align="center">
 
-<img src="docs/img/hero.png" width="100%" alt="实时画面：YOLO 检测框、采集帧率与端到端延迟">
+<img src="docs/img/hero.png" width="100%" alt="实时画面：检测框、采集帧率与端到端延迟">
 
 </div>
 
 # autonomous-driving-car
 
-**一辆自己看路的小车。从摄像头到电机的整条链路跑在一个 C 进程里，端到端 79 ms。车上还坐着一个能听懂人话的智能体——它现在只能看，还不能开。**
+**Radxa ROCK 4D（RK3576）上的视觉循迹小车。相机到电机的整条链路在一个 C 进程内完成，实测端到端时延 79 ms；板载一个语言智能体，当前仅有观测权限。**
+
+**A vision-guided differential-drive vehicle on Radxa ROCK 4D (RK3576). The whole camera-to-motor path runs inside one C process at a measured 79 ms end-to-end latency. An on-board language agent has observation rights only.**
+
+[中文](#中文) · [English](#english)
+
+```mermaid
+flowchart LR
+    CAM["USB UVC<br/>1280x720 @30"] --> DEC["JPEG decode<br/>2 threads · 4 ms"]
+    DEC --> RGA["RGA<br/>CSC + letterbox · 1-2 ms"]
+    RGA --> NPU["NPU x2<br/>YOLO26n INT8 · 9 ms"]
+    NPU --> POST["Post-process<br/>conf 0.50 · NMS 0.45 · 1 ms"]
+    POST --> TRK["Tracking<br/>assoc · 800 ms TTL"]
+    TRK --> PID["Follow PID<br/>30 Hz · 4 interlocks"]
+    PID --> CAN["CAN FD"]
+    CAN --> MOT["Differential drive"]
+    CAM --> ENC["MPP H.264<br/>recording"]
+    POST --> OVL["Browser overlay<br/>canvas"]
+    TRK --> API["/api/detections/live"]
+
+    classDef hw fill:#f3ecff,stroke:#8f7cf0,color:#1f2937
+    classDef soft fill:#e8f7ef,stroke:#3aa675,color:#1f2937
+    classDef io fill:#e8f1fb,stroke:#5b8def,color:#1f2937
+    class CAM,RGA,NPU,CAN,MOT hw
+    class DEC,POST,TRK,PID soft
+    class ENC,OVL,API io
+```
+
+<sub>图 1 / Figure 1 — 数据通路与时延预算。标注为该阶段实测耗时，非端到端累加。/ Data path and latency budget; stage timings are measured individually, not additive.</sub>
 
 ---
 
-2026 年 11 月，这辆车跑在 Radxa ROCK 4D 上：RK3576，八核，6 GB 内存，一块 6 TOPS 的 NPU，一颗 USB 摄像头，一条 CAN FD 接到差速底盘。
+<a id="中文"></a>
 
-摄像头到轮子之间的每一段都在同一个进程里：V4L2 抓 MJPEG，双线程软解成 NV12，RGA 做色彩转换和 letterbox，NPU 双核跑 YOLO26n，跟踪器维持对象身份，PID 算出左右轮目标，MPP 同时编 H.264 存档，一个 reactor 喂着网页和推流。没有框架，没有节点间序列化，没有 ROS。
+## 摘要
 
-这个选择不太"正统"，但对一辆 720p30 的小车是对的：整条链路只有八个环节，每个环节的时限都是确定的；框架带来的进程边界和数据拷贝，比它省下的胶水代码贵得多。这里换来的是一份共享内存、一条 FIFO 优先级的控制线程，和一个 79 ms 的确定性上界。
+本文描述一台差速小车的完整车载软件：V4L2 采集、JPEG 解码、RGA 预处理、RKNN 推理、目标关联、PID 跟随、CAN FD 输出、H.264 录像与 HTTP 控制台，全部编译为单一进程并由 systemd 托管。在 1280×720@30 输入下，实测端到端时延 p50 = 79 ms、p100 = 128 ms，NPU 单帧推理 9 ms，双核占用 13% / 11%。控制环以事件驱动方式跟随单一目标，具备四道执行联锁与六种停机语义。板上另有一个以非特权用户运行的语言智能体，通过只读接口与运行日志获取状态，不持有任何执行权限。本文同时给出把该智能体扩展为多智能体控车系统的目标架构、接口契约与分阶段验收判据。
 
-当前的实情是：**感知闭环是活的，控制闭环在等电机。** 电机的 CAN 适配器没有配置（`adapter: false`），所以控制律每帧都在算，算出来的左右轮目标却没发出去。车上的智能体也只接了"看"的那一半。这两件事之后怎么接，是这份文档后半部分的主题。
+## 1. 系统概览
 
-## 先说怎么跑起来
+### 1.1 硬件与软件栈
+
+| 项 | 规格 |
+|---|---|
+| 计算平台 | Radxa ROCK 4D，Rockchip RK3576 |
+| CPU | 4× Cortex-A72 @ 2.208 GHz + 4× Cortex-A53 @ 2.016 GHz |
+| NPU | 6 TOPS INT8，2 个核心 |
+| 内存 | 6 GB |
+| 内核 | 7.4.0-rc1-npu-rt-full，`CONFIG_PREEMPT_RT=y`，`CONFIG_HZ=1000` |
+| 工具链 | gcc 14.2.0（Debian 14.2.0-19），CMake |
+| 推理运行时 | RKNN Runtime 2.5.0（`74ea630ce8`，2026-09-30） |
+| 媒体栈 | V4L2 / libjpeg-turbo / RGA（2 核）/ Rockchip MPP |
+| 相机 | USB UVC，MJPEG 1280×720@30 |
+| 总线 | CAN FD（SocketCAN），当前 `can_enabled off` |
+| 模型 | YOLO26n，INT8 量化，80 类 COCO |
+| 进程形态 | 单进程、多线程，systemd `Type=notify`，`WatchdogSec=10` |
+
+### 1.2 设计取舍
+
+整条链路只有八个环节，每个环节的时限可枚举。引入进程边界意味着每帧至少一次序列化与一次上下文切换，而这两项开销在 33.3 ms 的帧周期里占比可观，收益（模块隔离）在一台单车、单摄像头的系统上并不成立。因此这里选择的是一份共享内存、一条固定优先级的线程集合、以及 O(1) 的帧句柄传递。
+
+代价同样明确：没有进程隔离，一个越界写会带走整个系统。对应的补偿是编译期加固、帧环的显式生命周期，以及看门狗在 3 s 内发现线程停摆。
+
+### 1.3 当前状态
+
+| 能力 | 状态 |
+|---|---|
+| 采集 → 推理 → 跟踪 → 可视化 | 可用，连续运行 |
+| 跟随控制律 | 可用，处于预览态（电机适配器未配置） |
+| CAN FD 收发与 DBC 解析 | 代码就绪，总线未接入 |
+| 录像与回放 | 可用 |
+| 语言智能体 | 可用，只读 |
+
+## 2. 时延预算
+
+### 2.1 测量方法
+
+`processing_age_ms` 定义为「一帧曝光结束」到「该帧连同检测结果被绘制到浏览器」的单调时钟差，由采集端打点、渲染端结算，跨线程传递使用帧序号而非指针。这是唯一被当作端到端指标的字段；分段耗时仅用于定位。
+
+复现：
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j8          # 板上编译约 40 秒
-sudo scripts/deploy.sh -i        # 装到 /opt，注册 systemd 并重启
+curl -s -u <user>:<pass> http://<board>/api/video/stats   # processing_age_ms / _max_ms
+curl -s -u <user>:<pass> http://<board>/api/system        # NPU、RGA、温度
 ```
 
-打开 `http://<板子IP>/`，浏览器会弹 Basic 认证。服务直接查系统账号（`getpwnam` + `getspnam` + `crypt`），没有独立的账号库，用户名密码就是板子的登录账号。只读页面不需要登录，写操作需要。
+### 2.2 分段实测
 
-依赖 `librknnrt` 2.5.x、`rockchip_mpp`、RGA、`libjpeg-turbo`。模型在 `config/yolo26.rknn`，网页上可以直接换。
-
-## 它此刻看到的世界
-
-<div align="center">
-
-<img src="docs/img/ui-main.png" width="100%" alt="主界面：实时画面与智能体对话面板">
-
-<sub>左边是实时画面，右边是那个会说话的乘客。底部一行是这套系统里最诚实的数字：采集 30.000 FPS，处理 79 ms。画面中的人像已整体马赛克处理。</sub>
-
-</div>
-
-框不是烧在视频流里的。服务只推纯净的 MJPEG，检测结果走 `/api/detections/live` 单独下发，浏览器用 canvas 画上去。这样录像存下来的是原始画面——代价是事后想回看"当时模型到底看到了什么"，得拿录像重新跑一遍推理。
-
-底部那个"处理"报的是 `processing_age_ms`：从这一帧曝光结束，到它带着检测结果画到屏幕上。它不是推理耗时（推理只要 9 ms），是整条链路加上排队的时间。数字变大，说明中间有环节堵了，而不是模型变慢了。
-
-## 一帧的八十毫秒
-
-服务每十秒往日志里打一行分段耗时。这是刚才真实的一行：
+服务每 10 s 输出一行分段计时（同一帧的字段分布在不同线程，**不可直接相加**）：
 
 ```text
 yolo timing ms: capture_to_decode=46 deliver_to_decode=14 decode=4 queue=50 resize=2 run=9 post=1
 yolo handoff ms: post_to_display=0 decode_to_display=48 samples=261
 ```
 
-读这行日志有个前提：各段是在不同线程里分别计时的，不能直接相加。比如 `queue` 那 50 ms 是这一帧排队等前面腾出在途名额的工夫，而 `capture_to_decode` 的 46 ms 里已经含了一次 33 ms 的帧间隔。唯一可信的总账是 `processing_age_ms`。
+| 阶段 | 实测 | 说明 |
+|---|---|---|
+| 相机 → 解码完成 | 46 ms | 含一次 33.3 ms 的帧间隔与 USB 等时传输 |
+| JPEG 解码 | 4 ms | 双线程，输出 NV12 dma-buf |
+| 在途排队 | ~50 ms | 受在途上限约束，非算力不足 |
+| RGA 预处理 | 1–2 ms | CSC + letterbox 合并为一次硬件任务 |
+| NPU 推理 | 9 ms | INT8，单帧单次 |
+| 后处理 | 1 ms | 阈值 0.50、NMS 0.45、类内去重 |
+| 结果 → 显示 | 0–1 ms | 与渲染线程解耦 |
 
-```mermaid
-flowchart LR
-    A["USB 相机<br/>720p30 MJPEG"] --> Q["在途队列<br/>最多 2 帧"]
-    Q --> B["JPEG 解码<br/>4 ms"]
-    B --> C["RGA<br/>CSC + letterbox<br/>1-2 ms"]
-    C --> D["NPU 双核<br/>YOLO26n<br/>9 ms"]
-    D --> E["后处理<br/>1 ms"]
-    E --> F["跟踪 / PID"]
-    A --> G["推流 · 录像<br/>MPP H.264"]
-    E --> H["浏览器画框"]
+关键结论：**瓶颈不在算力**。单帧推理 9 ms 相对 33.3 ms 的帧周期余量充足，NPU 双核占用 13% / 11%。优化全部集中在搬运与排队，而非模型。
 
-    classDef hw fill:#f3ecff,stroke:#8f7cf0,color:#1f2937
-    classDef io fill:#e8f1fb,stroke:#5b8def,color:#1f2937
-    classDef soft fill:#e8f7ef,stroke:#3aa675,color:#1f2937
-    class A hw
-    class G,H io
-    class Q,B,C,D,E,F soft
+### 2.3 上界
+
+在途帧数上限为 2：新帧到达时若两帧均未离开推理队列，则丢弃最旧帧。该策略把排队延迟限制在常数级（实测 p100 = 128 ms ≈ 3.8 个帧周期），同时保证吞吐不因个别慢帧塌陷。代价是丢帧：`infer_dropped` 增长属于设计行为，不是故障。
+
+对控制而言这是正确取舍——3 帧前的画面所对应的转角已经失效，延迟比丢帧更危险。
+
+### 2.4 四项工程决定
+
+1. **不排队，丢帧。** 队列长度固定，语义是「最新可用帧」而非「全部帧」。
+2. **RGA 不做软件回退。** 预处理失败即失败。CPU 回退不会报错，只会把 30 FPS 静默降为 12 FPS，这类降级在实时系统里比崩溃更难定位。
+3. **letterbox 合入 RGA。** 色彩转换、缩放、填充一次完成，CPU 全程不接触像素。
+4. **推理双核各一 worker，绑大核。** 与解码、编码共享 A72 簇，控制线程则在 A53 簇，见 §4。
+
+## 3. 车辆控制
+
+### 3.1 被控对象与控制律
+
+控制目标是让选中检测框的**面积**与**横向位置**稳定在参考值，不使用里程计、地图或路径规划。每个被接受的推理结果触发一次控制计算，`dt` 取相邻两帧的采集时间戳差（`dt ≤ 0` 或 `dt > 0.5 s` 视为无效，进入 `priming`）。
+
+```text
+e_a(k) = clamp((A* − A_k) / A*, −1, +1)            面积误差（纵向，远近）
+e_x(k) = 2 · (x_c − 0.5)                            横向误差（左右）
+        |e| < 0.04 时置零                            死区
+
+v(k)  = clamp(Kp_a·e_a + Kd_a·ė_a, 0, v_max)        自动：目标线速度
+v(k)  = v_set                                       手动：定速
+δ(k)  = clamp(Kp_x·e_x + Kd_x·ė_x, −δ_max, +δ_max)  转向修正量
+
+v_L = clamp(v − δ, −v_max, +v_max)                  差速混合
+v_R = clamp(v + δ, −v_max, +v_max)
+
+u_L = clamp(Kp_w·(v_L − v̂_L) + Ki_w·∫(v_L − v̂_L)dt, −1, +1)   轮速环
+u_R = clamp(Kp_w·(v_R − v̂_R) + Ki_w·∫(v_R − v̂_R)dt, −1, +1)
 ```
 
-这行日志里最值得看的是 `run=9`：一次推理只花 9 毫秒。也就是说这颗 NPU 在这条链路上是闲的，瓶颈从来不在算力，而在"一帧要走完多少段"。所以优化没有往模型上做，全做在搬运上。四个决定：
+`v̂` 为电机解码器上报的实测轮速（m/s，单调时钟打点），`u` 为归一化执行量 `[-1, 1]`。**软件从不假设执行量与物理量的映射**：该映射由 `car_motor_can.conf` 描述的适配器负责，未配置时控制环只产出预览值。
 
-**在途上限两帧，宁可丢帧不排队。** 差 3 帧的老画面喂给控制环，比丢一帧更糟——转角早就变了。所以队列满了直接丢，`infer_dropped` 涨上去是设计而不是故障。老帧对一辆要转弯的车没有价值。
+`A*` 在跟随启用时由首个有效帧锁定（当前值 0.0098，约 1% 画面面积）。这意味着**跟随距离是相对的**——它保持的是启用瞬间的视觉尺度，而非绝对米制距离。要做绝对距离控制，需要单目测距或深度输入，当前不具备。
 
-**RGA 不做软件回退。** 如果 RGA 打不开，预处理直接失败退出，不用 CPU 顶上。因为 CPU 顶上不会报错，只会把 30 FPS 悄悄变成 12 FPS——实时系统里这种"温柔的降级"比崩溃更难查。
+### 3.2 参数与包络
 
-**letterbox 塞进 RGA 一次做完。** 色彩转换、缩放、填边三个操作合并成一次硬件任务，CPU 从头到尾不碰像素。这一段的代价是 1 到 2 毫秒，比 memcpy 一帧 NV12 还便宜。
+| 参数 | 默认 | 允许范围 | 作用 |
+|---|---|---|---|
+| `max_speed` | 0.30 m/s | (0, 2] | 纵向限幅 |
+| `max_turn_delta` | 0.15 m/s | (0, 4] | 转向修正限幅 |
+| `deadband` | 0.04 | [0, 0.5] | 误差死区（归一化） |
+| `timeout_ms` | 300 ms | [100, 1000] | 目标/反馈失效阈值 |
+| `speed_kp` / `kd` | 0.40 / 0 | ≤ 100 | 纵向环 |
+| `turn_kp` / `kd` | 0.15 / 0.003 | ≤ 100 | 横向环 |
+| `wheel_kp` / `ki` | 1.00 / 0.10 | ≤ 100 | 轮速环 |
+| `wheel_integral_limit` | 1.0 | — | 积分独立限幅 |
+| `class_id` | 0（person） | [0, 99] | 跟随类别 |
 
-**推理绑双核、每核一个 worker，控制线程 FIFO 20。** 实时预算怎么分、绑在哪个核上、cgroup v2 如何抢走实时带宽，这些坑写在 [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md) 里，不在这里重复。
+包络在执行侧强制：即使 PID 参数被改到发散，`clamp` 仍将输出限制在 `±v_max`。
 
-## 方向盘现在握在谁手里
+### 3.3 联锁与停机语义
 
-控制环只做一件事：**让选中的那个框待在画面中间，大小稳定。** 没有路径规划，没有地图，没有"向前两米"这种东西。
+每帧计算后、下发前检查四道联锁；任一不通过即调用 `stop_wheels()`，理由写入 `status.reason`。
 
-具体是两条 PID 叠起来。纵向看框的面积误差，输出限幅到 `max_speed`（默认 0.3 m/s）；横向看框中心的横坐标误差，输出限幅到 `max_turn_delta`（默认 0.15 m/s）；两者混合成左右轮目标速度，再进一层轮速 PI 转成归一化的 `[-1, 1]` 执行量，交给 CAN 适配器。丢目标超过 `timeout_ms`（默认 300 ms）立刻停。
-
-发命令之前有四道联锁，每一帧都查：
-
-| 联锁 | 意思 |
+| 联锁 | 不通过时的 reason |
 |---|---|
-| 适配器已绑定 | 没有电机驱动就只做预览，不算数 |
-| 线程真的拿到了 FIFO | 抢不到实时优先级就认为不可信，不动 |
-| CAN 已启用 | `can_enabled off` 时一切照算，但不发 |
-| 轮速反馈新鲜 | 超过 300 ms 没有实测轮速，视为失联 |
+| 电机适配器已绑定 | `adapter_not_connected` |
+| 控制线程获得 `SCHED_FIFO` | `fifo_unavailable` |
+| CAN 已启用 | `can_disabled` |
+| 轮速反馈新鲜（≤ `timeout_ms`） | `stale_wheel_feedback` |
 
-任何一道不过，直接 `stop_wheels()`，理由写进 `/api/follow` 的 `status.reason`。能出现的理由只有这几种：`target_lost`、`priming`、`motor_send_failed`，加上四道联锁各自的名字。就这几个字符串，是这套系统对外的全部"失败语义"——后面会看到，它不够用。
+| 停机原因 | 触发条件 |
+|---|---|
+| `target_lost` | 当前帧无匹配类别或全部框非法 |
+| `stale_detection` | 检测结果未在时限内更新 |
+| `priming` | 时间基建立中（首个 `dt` 或 `dt` 越界） |
+| `motor_send_failed` | 适配器下发返回错误 |
+| `motor_stop_failed` | 停机序列本身失败（最高危） |
+| `disabled` / `shutdown` | 跟随未启用 / 进程退出 |
 
-保守是刻意的。参数在入口处就被夹住：`max_speed` 只能落在 0 到 2 m/s，`timeout_ms` 只能落在 100 到 1000 ms，`max_turn_delta` 不超过 4。哪怕有人把 PID 调到发疯，`follow_mix` 的限幅也不会让车超出这个包络。
+这六个字符串构成系统对外的全部失败语义。§6 会说明，对于需要重规划的上层智能体它们过于粗糙——缺的是「为什么」而非「停了」。
 
-现在 `can_enabled off`、`motor.configured false`，所以控制环在"预览"状态跑：`/api/follow` 里那些 `left_target` / `right_target` 数字是算出来的，轮子没动。控制律是对的，执行器还空着。
+## 4. 实时性
 
-## 车上有个乘客，它会说话
+### 4.1 线程与调度
 
-板子上跑着一个 Codex CLI，网页右侧那个面板就是它的座位。它不是嵌进来的网页，也不是一个远程 API 的转发——板上真的会起一个进程，在车机上想事情。
+所有线程使用 `SCHED_FIFO`，并按「控制路径 > 感知路径 > 网络与界面」排序优先级；控制与网络固定在 A53 簇，解码/推理/编码固定在 A72 簇，目的是把周期性负载与突发负载分开，减少缓存与 DVFS 抖动。
 
-它的位置很关键：**服务本体是 root，它自己只是普通用户 `qianruo`。** 看得见的都给它，开得动的都不给。
+| 线程 | 策略 | 优先级 | 绑核 |
+|---|---|---|---|
+| `watchdog` | FIFO | 30 | LITTLE |
+| `car_sport_ctrl` | FIFO | 20 | LITTLE |
+| `can_recv` / `can_send` | FIFO | 15 | LITTLE |
+| `video` | FIFO | 15 | BIG |
+| `decode` | FIFO | 15 | BIG |
+| `yolo_infer` | FIFO | 12 | BIG |
+| `yolo` / `yolo_render` / `rec` | FIFO | 10 | BIG |
+| `main` / `tcp` / `http` | FIFO | 5 | LITTLE |
+| `http_worker` / `yolo_report` | FIFO | 1 | LITTLE |
 
-它看得见什么？比想象中多。只读接口本来就对局域网开放——`/api/system`、`/api/video/stats`、`/api/follow`、`/api/detections/live`——不需要密码。加上 `recordings/logs/` 下按天切分的运行日志、录像清单、检测日报，它完全能回答"刚才为什么停了"：因为停的理由就在 `/api/follow` 的 `status.reason` 里，而 300 ms 的丢目标超时、轮速反馈是否新鲜，都写在同一个 JSON 里。
+控制线程不使用固定节拍，而是「每完成一次推理唤醒一次」，并以 50 ms 超时兜底。这样 PID 的 `dt` 与实际帧间隔一致，避免固定周期与变帧率之间的相位误差。
 
-它开不了口的地方也很清楚：任何 POST 到控制面的接口都要 root——`/api/follow`、`/api/tracking`、`/api/can/send`、`/api/reboot` 全在 `http_check_auth_root` 后面，而它手上没有 root 凭据。
+### 4.2 失效检测
 
-一轮对话是一个短生命周期进程，最长 300 秒，单条消息上限 16000 字符，同时只允许一个任务。用量走 ChatGPT 套餐的两个窗口（5 小时 / 每周），面板画的是**剩余**百分比。窗口用满时 CLI 直接拒绝执行，面板上表现为一句 `rate limit reached`——那不是网络故障，别去查网线。
+应用层看门狗按线程注册，3 s 未喂即判定停摆；进程级由 systemd `WatchdogSec=10` 兜底，超时重启。两级超时都是**秒级**，对 0.3 m/s 的车体可接受，对更高速度不可接受——§6.7 会把它列为必须替换的一环。
+
+### 4.3 已知陷阱
+
+`CONFIG_PREEMPT_RT` 下，FIFO 线程持续占满核心会触发 cgroup v2 的实时带宽限制（默认 950 ms / 1000 ms），表现为周期性「整段卡住又恢复」。调频策略与实时预算必须一起配置，否则性能分析会指向错误的结论。细节见 [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md)。
+
+## 5. 板载语言智能体
+
+### 5.1 信任边界
+
+服务本体以 root 运行（需要配置网卡、调频、重启），智能体进程在 `fork` 后立即 `setuid`/`setgid` 至普通用户 `qianruo`，并继承服务的 systemd 沙箱：根文件系统只读（`ProtectSystem=strict`）、家目录只读（`ProtectHome=read-only`）、`/tmp` 私有（`PrivateTmp=yes`），可写路径仅 `config/`、`recordings/`、`.codex/` 与 `/etc/proxy-client.conf`。
+
+因此它的写权限是**三个目录加一个配置文件**，不是整台机器；它的执行权限是**普通用户**，不是 root。这两条是设计约束，不是现状描述。
+
+### 5.2 可见面
+
+只读接口无需认证即可访问，这是刻意的：观测不构成风险。
+
+| 接口 | 内容 |
+|---|---|
+| `GET /api/system` | CPU 各核、NPU、RGA、温度、内存 |
+| `GET /api/video/stats` | 帧序号、丢帧计数、`processing_age_ms` |
+| `GET /api/follow` | 控制参数、`status.reason`、轮速目标 |
+| `GET /api/detections/live` | 当前帧检测结果 |
+| `recordings/logs/*.log` | 按天切分的运行日志（含每 10 s 计时行） |
+| `recordings/results/` | 检测日报 |
+
+`status.reason` 是它回答「刚才为什么停」的唯一合法依据——这也是 §6 的 P1 验收项。
+
+### 5.3 控制面
+
+任何改变车辆状态或系统状态的请求都要求 Basic 认证且账号具备 root 权限：`POST /api/follow`、`POST /api/tracking`、`POST /api/can/send`、`POST /api/config`、`POST /api/reboot`。智能体没有凭据，无法通过这一层。
+
+### 5.4 会话生命周期
+
+| 项 | 值 |
+|---|---|
+| 执行方式 | 短生命周期子进程，`codex exec --json`，结果写 `-o` 文件 |
+| 单轮超时 | 300 s |
+| 单条消息上限 | 16 000 字符 |
+| 并发 | 1 个任务 |
+| 上下文 | 最近 6 轮，每条截断 1200 字符 |
+| 用户输入 | 经 `stdin` 传递，不进入 `argv` |
+| 认证 | 设备码流程，凭据落在 `CODEX_HOME`，不使用 API key |
+| 额度 | ChatGPT 套餐双窗口（5 小时 / 每周），页面显示剩余百分比 |
+| 审计 | 每轮一行写入 `recordings/codex/chat_YYYYMMDD.txt` |
 
 <div align="center">
 
 <img src="docs/img/ui-codex.png" width="88%" alt="智能体配置卡片">
 
-<sub>模型、推理强度、套餐与两个额度窗口。这张图拍摄时周窗口已用满，所以显示"额度已用尽"。</sub>
+<sub>模型、推理强度、套餐与两个额度窗口。截图时周窗口已用满。</sub>
 
 </div>
 
-于是它现在的角色很明确：**观察者**。它能解释，不能决定。这不是能力不够，是刻意留下的第一层授权——推理可以随便跑，让一台 0.3 m/s 的车动起来这件事，必须过另一道门。
+额度耗尽时 CLI 直接拒绝执行，前端表现为 `rate limit reached`。这是常见误判点：它看起来像网络故障，实际由 `GET /api/codex/quota` 的两个窗口决定。
 
-## 然后呢：几个智能体，一具身体
+## 6. 多智能体控车：目标架构
 
-让一个模型控制一辆车，是把所有问题压进同一个上下文窗口。可开车不是一件事，是好几件节奏完全不同的事：看清楚（30 Hz）、决定往哪走（1–5 Hz）、想清楚要去哪（0.1 Hz，还得联网）。塞进同一次推理，只会换来两样东西——延迟，和幻觉。
+### 6.1 为什么必须分层
 
-所以下一步不是找一个更强的模型，是**分工**：几个智能体共享同一具身体。
+单次语言模型往返在本部署下是秒级的（2–10 s 量级，取决于网络与额度）。以 `v_max = 0.30 m/s` 计，3 s 的决策延迟对应 **0.9 m 的盲行距离**——在室内场景中已超过多数家具间距。与此同时，0.3 m/s 下的制动距离量级仅 2 cm（按 2 m/s² 减速度估算），说明低速工况的危险来源是**反应延迟**而非制动能力。
+
+结论：语言模型不可能进入 30 Hz 回路。它必须待在毫秒级以下的层级，而把「执行」留给确定性代码。
+
+| 层 | 频率 | 时间尺度 | 允许的决策者 |
+|---|---|---|---|
+| 反射层 | 30 Hz | 33 ms | 确定性代码（PID、联锁） |
+| 策略层 | 1–5 Hz | 0.2–1 s | 小模型 / 规则 / 视野受限的 LLM |
+| 意图层 | 0.1 Hz | 秒级 | 语言模型 |
+
+### 6.2 角色与契约
 
 ```mermaid
 flowchart TB
-    H["人说的话"] --> IN["意图代理<br/>0.1 Hz"]
+    H["人的指令"] --> IN["意图代理<br/>0.1 Hz"]
     IN --> PL["驾驶代理<br/>1-5 Hz"]
-    MEM["记忆与定位<br/>对象 ID · 地点"] --> PL
-    PER["感知代理<br/>看见什么"] --> PL
-    PER --> REF["跟随控制<br/>30 Hz"]
-    PL --> EX["执行器<br/>白名单 · 包络 · 时限"]
+    MEM["记忆与定位<br/>身份 · 位姿 · 地标"] --> PL
+    PER["感知代理<br/>结构化目标"] --> PL
+    PER --> REF["反射控制<br/>30 Hz"]
+    PL --> EX["执行器<br/>白名单 · 包络 · 租约"]
     REF --> EX
     SAF["安全代理<br/>不联网"] -.->|否决| EX
     SAF -.->|急停| MOT["电机 · CAN FD"]
@@ -156,169 +306,180 @@ flowchart TB
     class IN,PL,MEM,EX todo
 ```
 
-| 角色 | 现在 | 它需要看见 | 它能决定 | 时限 |
-|---|---|---|---|---|
-| 跟随控制（反射弧） | 已有 | 每帧检测框 | 左右轮目标速度 | 33 ms |
-| 感知代理 | 半个：固定 80 类，目标靠手点 | 视频流 | 画面里有什么、在哪、还是不是同一个 | 33–200 ms |
-| 记忆与定位 | 没有 | 轮速反馈、检测历史 | 对象 ID、地点、走过的路 | 1 s |
-| 驾驶代理 | 没有 | 意图、世界状态 | 把"去那边"拆成三五个动作 | 0.5–2 s |
-| 安全代理 | 半个：联锁 + 看门狗 | 所有动作请求 | 否决、限幅、急停 | < 100 ms |
+<sub>图 2 / Figure 2 — 目标架构。绿色为已具备，黄色为部分具备，灰色为缺失。/ Target architecture: green exists, amber partial, grey missing.</sub>
 
-### 它们共享的应该是事实，不是对话
+| 角色 | 现状 | 输入 | 输出 | 时限 | 失效行为 |
+|---|---|---|---|---|---|
+| 反射控制 | 已有 | 单帧检测 + 轮速 | 左右轮归一化执行量 | 33 ms | 停机 |
+| 感知代理 | 半个（固定 80 类） | 视频流 | 结构化目标列表 + 身份 | 33–200 ms | 上报 `stale_detection` |
+| 记忆与定位 | 无 | 轮速、检测历史 | 对象身份、位姿、地标 | 1 s | 保守降级（丢失即忘） |
+| 驾驶代理 | 无 | 意图 + 世界状态 | 原语序列 | 0.5–2 s | 请求停机 |
+| 安全代理 | 半个（联锁 + 看门狗） | 全部动作请求 | 允许 / 拒绝 / 急停 | < 100 ms | 拒绝一切 |
 
-多智能体最典型的死法，是各自维护一份世界理解，然后在执行层打架：一个说"人还在左边"，一个说"人已经不见了"，车原地抽搐。
+### 6.3 共享世界状态
 
-好消息是地基已经在了。每一帧有单调递增的 `seq`，每个检测带 capture 时间戳，`/api/video/stats` 报 `processing_age_ms`——这本身就是一个带序号、带时效的共享世界状态。智能体之间不该互相聊天，它们应该读写同一份带时间戳的事实，并且知道这份事实有多旧。
+多智能体系统的典型失效模式是各持一份世界理解，在执行层冲突。本系统已有可用地基：帧序号单调递增、检测携带采集时间戳、`processing_age_ms` 给出数据新鲜度。目标形态是把这些收敛为**单一带版本的世界状态**：任一智能体读取时获得 `(seq, capture_ts, age_ms)`，写入只允许感知侧，策略侧只读。
 
-### 只有一个人能碰方向盘
+这消除了「两个智能体看到不同画面」的可能——不是靠协议，而是靠数据结构。
 
-仲裁放在 C 侧，不放在模型侧。任何智能体的动作都只是一次**请求**，进同一个执行器；执行器只做三件事：白名单（只认几种动作）、包络（速度、时长、区域）、时限（超时即停）。模型之间可以争论，执行器不参与讨论。
+### 6.4 单一执行权威
 
-这不是性能考虑，是责任划分。模型的输出是建议，执行器的输出才是电信号。
+仲裁在执行侧，不在模型侧。任何智能体的动作都是一次**请求**，进入同一执行器，由执行器完成三件事：白名单（仅接受已定义原语）、包络（速度、时长、区域）、时限（租约到期即停）。模型之间可以争论，执行器不参与讨论。
 
-### 先补三个原语
+模型输出是建议，执行器输出是电信号。这一条比任何提示词约束都可靠。
 
-现在的运动原语只有一个半：`follow`（跟住一个框）算一个，`setpoint`（定速，但转向仍然自动对中）只能算半个。要让语言变得有意义，至少还缺三个：
+### 6.5 缺失的运动原语
 
-- `go(distance_m, speed)`——直线走一段。缺的是从轮速到位移的积分和打滑补偿：`follow_feedback()` 已经在报实测轮速了，但没人把它积成里程。
-- `turn(deg)`——转向一个角度。缺的是偏航角来源，现在没有 IMU 融合，转向只能闭环在"框有没有回到中间"上。
-- `stop()`——有了，但要变成不依赖模型、不依赖网络的硬件级动作。
+当前仅有 `follow`（视觉伺服）与 `setpoint`（定速，转向仍由视觉误差闭环）。要让语言指令可执行，至少需要：
 
-再加一个 `look_for(描述)`，它把感知代理和检测器接起来。这需要开放词表检测：现在是固定 80 类 COCO 加一个 `class_id`，听不懂"穿蓝衣服的那个人"。
-
-### 延迟决定分层，分层决定授权
-
-一次大模型往返是秒级的，还要看网络和额度。这个数字直接决定了它能待在哪一层：
-
-- **30 Hz 层**：不可能有模型。这里只能是 C 和 PID。
-- **1 Hz 层**：模型可以选策略——跟谁、走哪条、要不要停。
-- **0.1 Hz 层**：模型可以理解意图——"去厨房看看猫在哪"。
-
-把模型放对层，延迟问题就消失了。剩下的是纯工程问题：它说的话，怎么变成安全电信号。
-
-### 四份保险，缺一不可
-
-1. **包络在 C 里。** 参数校验已经有先例（`max_speed` ≤ 2 m/s、`timeout_ms` 100–1000 ms），把这套校验扩展到动作原语上。
-2. **执行器不经过模型。** 模型只能提交请求，不能直接写 CAN。
-3. **硬件心跳。** 现在是 systemd 10 秒、线程 3 秒——对一台 0.3 m/s 的小车偏慢。需要 100–200 ms 级的独立急停，且不跑在 Linux 上。
-4. **人在环。** 按住才走、松手即停，比"你说停它就停"可靠得多。
-
-### 分五步走，每步都要能验收
-
-| 阶段 | 内容 | 验收标准 |
+| 原语 | 语义 | 缺失条件 |
 |---|---|---|
-| P1 观察者（今天） | 能解释车在发生什么 | 问"为什么停了"，回答必须引用 `status.reason`，不许猜 |
-| P2 语义目标 | 一句话选中目标："跟着穿蓝衣服的人" | 20 次里至少 16 次选对；选错后 300 ms 内必须停住 |
-| P3 三个原语 + 执行器 | `go` / `turn` / `stop` 走白名单 | 包络外参数 100% 被拒（上万次随机请求模糊测试）；急停端到端 < 100 ms |
-| P4 短程导航 | 里程计 + 相对位姿 + 简单语义地图 | 5 米直线终点误差 < 20 cm；做不到就老实写"做不到" |
-| P5 监督式自主 | 模型只在包络内选策略，安全代理持否决权 | 人为注入 100 次幻觉目标，全部被拦下 |
+| `go(d, v)` | 直线行进 d 米 | 轮速积分 + 打滑补偿（无里程计） |
+| `turn(θ)` | 转向 θ 度 | 偏航角来源（无 IMU 融合） |
+| `stop()` | 立即停止 | 已具备，需提升为硬件级 |
+| `look_for(desc)` | 按描述检索目标 | 开放词表检测（当前固定 80 类） |
 
-### 接口草案
-
-所有智能体提交动作都走同一个入口。这是设计稿，**还没实现**：
+### 6.6 工具契约（设计稿，未实现）
 
 ```jsonc
-// 提交一个动作
+// 请求
 { "action": "go", "distance_m": 1.5, "speed": 0.25,
-  "lease_ms": 3000, "why": "用户说靠近门口" }
+  "lease_ms": 3000, "intent": "接近门口", "confidence": 0.82 }
 
-// 执行器的回答必须结构化，好让智能体能改计划
-{ "accepted": false, "reason": "envelope",
+// 应答
+{ "accepted": false,
+  "reason": "envelope",
   "detail": "distance_m > 2.0",
-  "state": { "target_lost_ms": 320, "can_enabled": false } }
+  "state": { "seq": 90021, "age_ms": 79, "can_enabled": false,
+             "target_lost_ms": 320, "halt": "stale_wheel_feedback" } }
 ```
 
-第二段比第一段重要。现在的 halt 理由只有几种粗粒度的字符串，模型没法据此调整；而真实的世界会告诉它"电机没接"、"轮速反馈过期"、"目标丢了 320 ms"——这些才是让计划收敛的输入。
+应答必须结构化且包含 `state`：上层据此重规划，而不是重试。`halt` 字段直接复用 §3.3 的停机语义。
 
-### 边界
+### 6.7 四层防护
 
-这套硬件——差速底盘、单目、没有激光、0.3 m/s、打滑不可控——能支撑的合理边界是：**室内、短程、有人看着。** 开放道路不在讨论范围，不是模型不够聪明，是这具身体没有冗余：没有第二套感知，没有独立刹车，没有失效可用的定位。
+| 层 | 机制 | 现状 |
+|---|---|---|
+| 参数包络 | C 侧范围校验 + `clamp` | 已有，需扩展到原语 |
+| 执行隔离 | 模型只提交请求，不触达 CAN | 部分（无请求通道） |
+| 独立急停 | 不依赖 Linux 的心跳检测，100–200 ms | 缺失（当前秒级） |
+| 人在环 | 按住才动、松手即停 | 缺失 |
 
-把这辆车做成一个能在客厅里听懂人话、并且撞到东西之前一定会停的机器人，比把它吹成"自动驾驶"更有意思，也更难。
+第二层与第三层的顺序不能颠倒：在执行通道存在之前引入语言控制，等于把秒级延迟直接接到电机上。
 
-## 量到的数
+### 6.8 分阶段验收
 
-2026-11-07 01:50 的一次读数，两个接口，可以自己复核：
+| 阶段 | 交付 | 验收判据 |
+|---|---|---|
+| P1 | 观测代理（现状） | 被问「为什么停」时必须引用 `status.reason`；100 次问答零编造 |
+| P2 | 语义目标选择 | 20 次指令 ≥ 16 次选中正确目标；误选后 300 ms 内停机 |
+| P3 | 三原语 + 执行器 | 包络外参数 100% 拒绝（≥ 10⁴ 次随机请求）；急停端到端 < 100 ms |
+| P4 | 里程计与短程导航 | 5 m 直线终点误差 < 20 cm（v ≤ 0.3 m/s）；超差即记录为失败 |
+| P5 | 监督式自主 | 注入 100 次幻觉目标，安全代理拦截率 100% |
 
-| 指标 | 读数 |
+判据先于实现写下，是为了避免「能跑就算成功」。
+
+### 6.9 能力边界
+
+差速底盘、单目、无激光、无冗余感知、`v_max = 0.3 m/s`：这套硬件支撑的场景是**室内、短程、有人在场**。开放道路不在讨论范围——限制不在模型能力，而在车体没有第二套感知、没有独立制动、没有失效可用的定位。
+
+## 7. 实测数据
+
+2026-11-07 01:50，服务运行 10.4 小时后的一次读数：
+
+| 指标 | 值 | 来源 |
+|---|---|---|
+| 端到端时延 | 79 ms（max 128 ms） | `/api/video/stats` |
+| 采集帧率 | 30.000 FPS | `/api/video/stats` |
+| 累计产出帧 | 89 993 | `produce_seq` |
+| 解码 / RGA / 推理 / 后处理 | 4 / 1–2 / 9 / 1 ms | 运行日志计时行 |
+| NPU 占用 | 13% / 11%（双核） | `/api/system` |
+| RGA 占用 | 3% / 2%（双核） | `/api/system` |
+| SoC 温度 | 59 ℃ | `/api/system` |
+| 内存占用 | 10%（6 GB） | `/api/system` |
+| 版本 | 1.1.0，commit `3b03399` | `/api/system` |
+
+## 8. 限制与未验证项
+
+- **执行器未闭环**：电机适配器未配置，`motor.configured = false`，控制输出不落 CAN。
+- **无里程计**：轮速反馈可用，位姿不可用，无法执行绝对位移指令。
+- **目标身份短时**：关联在 800 ms 无匹配后过期，目标离开画面再返回不保持身份。
+- **语义容量固定**：80 类 COCO，无法响应开放词表描述。
+- **参考面积相对化**：`A*` 由启用瞬间锁定，跟随距离不是绝对尺度。
+- **硬件编码未压测**：录像走 MPP H.264，未做长时高负载验证。
+- **看门狗粒度**：秒级，对更高速度不安全。
+- **并发路径未审**：`can_slot_dispatch_locked` 与 `frame_ring` 的 claim/mmap 生命周期未做专项并发审查。
+
+## 9. 参考
+
+| 文档 | 内容 |
 |---|---|
-| 端到端延迟 | 79 ms（历史最大 128 ms） |
-| 采集帧率 | 30.000 FPS，已产出 89 993 帧 |
-| 解码 / RGA / 推理 / 后处理 | 4 / 1–2 / 9 / 1 ms |
-| NPU 双核占用 | 13% 和 11% |
-| RGA 双核占用 | 3% 和 2% |
-| 温度 | 59 ℃ |
-| 内存 | 6 GB，已用 10% |
-| 系统版本 | 1.1.0，commit 3b03399 |
-
-来源：`/api/video/stats`（延迟、帧数）、`/api/system`（CPU、NPU、RGA、温度、内存）。运行过程中唯一会明显变化的是延迟和温度，其余基本是常数。
-
-## 没做到的部分
-
-- **电机没接。** CAN 是 off，`adapter: false`。控制律在跑，轮子不动。
-- **没有里程计。** 轮速反馈有，位姿没有，所以"走两米"这件事现在做不到。
-- **目标记忆很短。** 跟踪器的关联超过 800 ms 没有可靠匹配就过期，人走出画面再回来，它不认识。
-- **听不懂具体的东西。** 检测器固定 80 类 COCO，说"那个红色的杯子"没用。
-- **智能体只读。** 从它到执行器之间，一条授权通道都还没有，这是接下来最该补的一环。
-- **硬件编码没压测。** 录像走 MPP H.264，但没做过长时间满负载验证。
+| [docs/FRAME_PIPELINE.md](docs/FRAME_PIPELINE.md) | 帧流水线与缓冲生命周期 |
+| [docs/LATENCY_PROFILE.md](docs/LATENCY_PROFILE.md) | 时延剖析方法与历史数据 |
+| [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md) | 调度、绑核、cgroup v2 预算 |
+| [docs/COMMUNICATION_FLOW.md](docs/COMMUNICATION_FLOW.md) | 模块间通信与事件流 |
+| [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | 量化流程与精度对比 |
+| [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | 功能测试记录 |
 
 ## 附录
 
-### 目录
+### A. 构建与部署
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8          # 板上约 40 s
+sudo scripts/deploy.sh -i        # 安装至 /opt，注册并重启 systemd 单元
+```
+
+浏览器访问 `http://<board>/`，使用系统账号通过 Basic 认证（`getpwnam` + `getspnam` + `crypt`，无独立用户库）。只读接口对局域网开放。
+
+### B. 仓库结构
 
 ```text
 source/           C 实现，约 1.7 万行
-  core/           lifecycle · config · watchdog · 主循环
+  core/           lifecycle · config · watchdog · CPU 亲和
   video/          V4L2 采集 · 帧环 · 解码 · MPP 编码 · 推流
   yolo/           RKNN 推理 · 前后处理 · 帧调度
   control/        跟踪 · PID · 跟随状态机 · CAN 适配
   can/            CAN FD 收发 · DBC 解析 · 电机映射
   http/           reactor · 路由 · 认证 · 各 API
   tcp/            网络信息 · 遥测
-include/          与 source/ 同构的头文件
+include/          与 source/ 同构
 html/             前端，无构建步骤：5 个页面 + 28 个 JS/CSS
 config/           运行配置、模型、标签、DBC、电机映射示例
 scripts/          构建、部署、同步、Codex 桥接
-docs/             延迟剖析、帧流水线、实时调度、通信流程、量化说明
+docs/             设计文档与测试记录
 ```
 
-### 接口
+### C. 接口摘要
 
-只列出会和"控车"发生关系的那些。标 ✅ 的需要 root。
+| 接口 | 方法 | 认证 | 用途 |
+|---|---|---|---|
+| `/api/system`、`/api/video/stats` | GET | 无 | 运行状态 |
+| `/api/detections/live` | GET | 无 | 当前帧检测结果 |
+| `/api/follow` | GET | 无 | 参数、状态、停机原因 |
+| `/api/follow` | POST | root | 参数、开关、目标类别 |
+| `/api/tracking` | POST | root | 按 `seq` + 索引选择目标 |
+| `/api/can/send` | POST | root | 原始 CAN 帧（绕过混合与限幅） |
+| `/api/codex/chat` | POST | root | 智能体会话 |
 
-| 接口 | 方法 | 作用 |
-|---|---|---|
-| `/api/system` `/api/video/stats` | GET | 运行状态与延迟，公开 |
-| `/api/detections/live` | GET | 当前帧的检测结果，公开 |
-| `/api/follow` | GET | 跟随参数、状态、`reason`，公开 |
-| `/api/follow` | POST ✅ | 改跟随参数、开关、选目标类 |
-| `/api/tracking` | POST ✅ | 按 `seq` + 序号选中某个检测框 |
-| `/api/can/send` | POST ✅ | 直接发原始 CAN 帧，不经过跟随层的混合与限幅 |
-| `/api/codex/chat` | POST ✅ | 和车上那个乘客说话 |
-
-### 日志在哪
+### D. 运维
 
 ```bash
 journalctl -u autonomous-driving-car -f     # 服务日志
-recordings/logs/log_info_YYYYMMDD.log       # 按天切分，含每 10 秒的耗时行
+recordings/logs/log_info_YYYYMMDD.log       # 按天切分，含 10 s 计时行
 recordings/videos/                          # 分段录像
 recordings/results/                         # 检测日报
-recordings/codex/chat_YYYYMMDD.txt          # 对话记录，一行一条
+recordings/codex/chat_YYYYMMDD.txt          # 智能体对话审计
 ```
 
-### 几个常见故障
-
-| 现象 | 先看哪里 |
+| 现象 | 定位 |
 |---|---|
-| 画面卡住但进程活着 | `capture_stall_ms`、`infer_dropped`，多半是相机或 USB 带宽 |
-| 延迟从 79 涨到几百 | `queue` 变大说明在途堆积，再看控制线程有没有被降级（`status.fifo`） |
-| 车不动 | `/api/follow` 的 `status.reason` 和 `motor.configured`，先确认电机配了没 |
-| 面板报 `rate limit reached` | `/api/codex/quota`，套餐窗口用满，不是网络 |
-| 服务反复重启 | `systemctl show -p NRestarts`，配合 `WatchdogSec=10` 看是不是某个线程卡住 |
-
-### 其它文档
-
-[docs/FRAME_PIPELINE.md](docs/FRAME_PIPELINE.md) · [docs/LATENCY_PROFILE.md](docs/LATENCY_PROFILE.md) · [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md) · [docs/COMMUNICATION_FLOW.md](docs/COMMUNICATION_FLOW.md) · [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) · [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md)
+| 画面静止但进程存活 | `capture_stall_ms`、`infer_dropped`，查相机与 USB 带宽 |
+| 时延由 79 ms 上升 | 先看 `queue`，再看 `status.fifo` 是否退化为非实时 |
+| 车辆无动作 | `status.reason`（多为 `adapter_not_connected`）+ `motor.configured` |
+| 智能体报 `rate limit reached` | `GET /api/codex/quota`，套餐窗口，非网络 |
+| 服务反复重启 | `systemctl show -p NRestarts`，对照 `WatchdogSec=10` |
 
 <div align="center">
 
@@ -327,12 +488,442 @@ recordings/codex/chat_YYYYMMDD.txt          # 对话记录，一行一条
 <a href="docs/img/ui-files.png"><img src="docs/img/ui-files.png" width="24%" alt="文件页"></a>
 <a href="docs/img/ui-dbc.png"><img src="docs/img/ui-dbc.png" width="24%" alt="DBC 页"></a>
 
-<sub>状态、配置、文件、DBC，点开看原图。DBC 那张是空表，因为这块板子还没接总线。</sub>
+<sub>状态、配置、文件、DBC。DBC 为空表，总线尚未接入。</sub>
 
 </div>
 
 ---
+<a id="english"></a>
 
-如果你只记一件事：这辆车最值钱的不是那 79 ms，而是它把"能看见"和"能动手"分在了两道门后面。接下来要做的多智能体控车，难的不是让模型更聪明，是让这句话在代码里继续成立。
+# English
+
+**A vision-guided differential-drive vehicle on Radxa ROCK 4D (RK3576). The whole camera-to-motor path lives inside one C process at a measured 79 ms end-to-end latency. An on-board language agent has observation rights only — it can explain the vehicle, not drive it.**
+
+## Abstract
+
+This document describes the complete on-vehicle software of a differential-drive robot: V4L2 capture, JPEG decode, RGA preprocessing, RKNN inference, target association, PID following, CAN FD output, H.264 recording and an HTTP console — compiled into a single process supervised by systemd. At 1280×720@30 the measured end-to-end latency is p50 = 79 ms and p100 = 128 ms; a single inference costs 9 ms and leaves the dual-core NPU at 13% / 11% utilisation. The control loop follows one target, guarded by four actuation interlocks and six halt semantics. A language agent runs as an unprivileged user, observes the vehicle through read-only APIs and logs, and holds no execution authority. The second half of this document specifies the target architecture, interface contracts and staged acceptance criteria for turning that agent into a multi-agent driving system.
+
+## 1. System overview
+
+### 1.1 Hardware and software stack
+
+| Item | Specification |
+|---|---|
+| Compute | Radxa ROCK 4D, Rockchip RK3576 |
+| CPU | 4× Cortex-A72 @ 2.208 GHz + 4× Cortex-A53 @ 2.016 GHz |
+| NPU | 6 TOPS INT8, 2 cores |
+| Memory | 6 GB |
+| Kernel | 7.4.0-rc1-npu-rt-full, `CONFIG_PREEMPT_RT=y`, `CONFIG_HZ=1000` |
+| Toolchain | gcc 14.2.0 (Debian 14.2.0-19), CMake |
+| Inference runtime | RKNN Runtime 2.5.0 (`74ea630ce8`, 2026-09-30) |
+| Media stack | V4L2 / libjpeg-turbo / RGA (2 cores) / Rockchip MPP |
+| Camera | USB UVC, MJPEG 1280×720@30 |
+| Bus | CAN FD (SocketCAN), currently `can_enabled off` |
+| Model | YOLO26n, INT8 quantised, 80 COCO classes |
+| Process model | single process, multi-threaded, systemd `Type=notify`, `WatchdogSec=10` |
+
+### 1.2 Design trade-off
+
+The path has eight stages, and every stage has an enumerable deadline. A process boundary costs at least one serialisation and one context switch per frame; against a 33.3 ms frame period that overhead is not paid back by module isolation on a single-camera, single-vehicle system. The cost of this choice is equally explicit: no process isolation, so a single out-of-bounds write takes the whole system down. The compensation is compile-time hardening, an explicit frame-ring lifetime, and a watchdog that detects a stalled thread within 3 s.
+
+### 1.3 Status
+
+| Capability | State |
+|---|---|
+| Capture → inference → tracking → overlay | Operational |
+| Following controller | Operational, preview only (motor adapter unconfigured) |
+| CAN FD transport and DBC decoding | Code complete, bus not connected |
+| Recording and playback | Operational |
+| Language agent | Operational, read-only |
+
+## 2. Latency budget
+
+### 2.1 Measurement
+
+`processing_age_ms` is the monotonic-clock difference between the end of exposure and the moment the frame is drawn with its detections. It is stamped at capture and settled at render, and passed across threads by frame sequence number rather than pointer. It is the only field treated as end-to-end; per-stage timers exist for localisation only.
+
+```bash
+curl -s -u <user>:<pass> http://<board>/api/video/stats   # processing_age_ms / _max_ms
+curl -s -u <user>:<pass> http://<board>/api/system        # NPU, RGA, temperature
+```
+
+### 2.2 Per-stage measurements
+
+The service emits a timing line every 10 s. Fields come from different threads and **must not be summed**:
+
+```text
+yolo timing ms: capture_to_decode=46 deliver_to_decode=14 decode=4 queue=50 resize=2 run=9 post=1
+yolo handoff ms: post_to_display=0 decode_to_display=48 samples=261
+```
+
+| Stage | Measured | Note |
+|---|---|---|
+| Camera → decoded | 46 ms | Includes one 33.3 ms frame interval and USB isochronous transfer |
+| JPEG decode | 4 ms | Two threads, NV12 dma-buf output |
+| In-flight queueing | ~50 ms | Bounded by the in-flight cap, not by compute |
+| RGA preprocessing | 1–2 ms | CSC + letterbox fused into one hardware job |
+| NPU inference | 9 ms | INT8, one frame per call |
+| Post-processing | 1 ms | conf 0.50, NMS 0.45, per-class dedup |
+| Result → display | 0–1 ms | Decoupled from the render thread |
+
+The conclusion is that **compute is not the bottleneck**: 9 ms of inference against a 33.3 ms frame period, with the dual-core NPU at 13% / 11%. All optimisation effort went into movement and queueing, not into the model.
+
+### 2.3 Bound
+
+In-flight frames are capped at two: when a new frame arrives and both slots are still occupied, the oldest is dropped. This holds queueing delay to a small constant (measured p100 = 128 ms ≈ 3.8 frame periods) and prevents a single slow frame from collapsing throughput. Frames are lost by design — a rising `infer_dropped` counter is expected behaviour, not a fault. For control this is the right trade: a frame three periods old describes a heading that no longer exists, and latency is more dangerous than a dropped frame.
+
+### 2.4 Four engineering decisions
+
+1. **Drop, never queue.** The queue semantics are "latest usable frame", not "all frames".
+2. **No software fallback for RGA.** If preprocessing fails, it fails loudly. A CPU fallback would not raise an error; it would silently turn 30 FPS into 12 FPS, which is harder to diagnose than a crash.
+3. **letterbox fused into RGA.** Colour conversion, scaling and padding happen as one hardware job; the CPU never touches a pixel.
+4. **One inference worker per NPU core, pinned to the big cluster.** Control runs on the LITTLE cluster instead — see §4.
+
+## 3. Vehicle control
+
+### 3.1 Plant and control law
+
+The controller stabilises the **area** and **horizontal position** of the selected detection box. There is no odometry, no map, no path planner. Each accepted inference result triggers one control step; `dt` is the difference of consecutive capture timestamps (`dt ≤ 0` or `dt > 0.5 s` is rejected and enters `priming`).
+
+```text
+e_a(k) = clamp((A* − A_k) / A*, −1, +1)            area error (longitudinal)
+e_x(k) = 2 · (x_c − 0.5)                            lateral error
+        zeroed when |e| < 0.04                      deadband
+
+v(k)  = clamp(Kp_a·e_a + Kd_a·ė_a, 0, v_max)        auto: target linear speed
+v(k)  = v_set                                       manual: fixed speed
+δ(k)  = clamp(Kp_x·e_x + Kd_x·ė_x, −δ_max, +δ_max)  steering correction
+
+v_L = clamp(v − δ, −v_max, +v_max)                  differential mix
+v_R = clamp(v + δ, −v_max, +v_max)
+
+u_L = clamp(Kp_w·(v_L − v̂_L) + Ki_w·∫(v_L − v̂_L)dt, −1, +1)   wheel loop
+u_R = clamp(Kp_w·(v_R − v̂_R) + Ki_w·∫(v_R − v̂_R)dt, −1, +1)
+```
+
+`v̂` is measured wheel speed reported by the motor decoder in m/s with a monotonic timestamp; `u` is a normalised actuator command in `[-1, 1]`. **The software never assumes the mapping from normalised command to physical units** — that belongs to the adapter described by `car_motor_can.conf`. With no adapter configured, the loop produces preview values only.
+
+`A*` is latched from the first valid frame when following is enabled (currently 0.0098, about 1% of the frame area). Following distance is therefore **relative**: it preserves the apparent scale at enable time, not an absolute metric distance. Absolute distance control would require monocular ranging or depth, which this platform does not have.
+
+### 3.2 Parameters and envelope
+
+| Parameter | Default | Allowed | Role |
+|---|---|---|---|
+| `max_speed` | 0.30 m/s | (0, 2] | longitudinal clamp |
+| `max_turn_delta` | 0.15 m/s | (0, 4] | steering clamp |
+| `deadband` | 0.04 | [0, 0.5] | error deadband (normalised) |
+| `timeout_ms` | 300 ms | [100, 1000] | target / feedback expiry |
+| `speed_kp` / `kd` | 0.40 / 0 | ≤ 100 | longitudinal loop |
+| `turn_kp` / `kd` | 0.15 / 0.003 | ≤ 100 | lateral loop |
+| `wheel_kp` / `ki` | 1.00 / 0.10 | ≤ 100 | wheel-speed loop |
+| `wheel_integral_limit` | 1.0 | — | independent integral clamp |
+| `class_id` | 0 (person) | [0, 99] | target class |
+
+The envelope is enforced at the actuator boundary: even with divergent PID gains, `clamp` keeps the output inside `±v_max`.
+
+### 3.3 Interlocks and halt semantics
+
+Four interlocks are evaluated after every control step and before any command is issued; any failure calls `stop_wheels()` and writes the cause to `status.reason`.
+
+| Interlock | `reason` on failure |
+|---|---|
+| Motor adapter bound | `adapter_not_connected` |
+| Control thread holds `SCHED_FIFO` | `fifo_unavailable` |
+| CAN enabled | `can_disabled` |
+| Wheel feedback fresh (≤ `timeout_ms`) | `stale_wheel_feedback` |
+
+| Halt cause | Condition |
+|---|---|
+| `target_lost` | No detection of the configured class in the current frame |
+| `stale_detection` | Detection result not refreshed within the deadline |
+| `priming` | Time base being established (first `dt` or out-of-range `dt`) |
+| `motor_send_failed` | Adapter rejected the command |
+| `motor_stop_failed` | The stop sequence itself failed (highest severity) |
+| `disabled` / `shutdown` | Following disabled / process exiting |
+
+These six strings are the entire failure vocabulary of the system. §6 argues they are too coarse for a planner: they say *that* it stopped, not *why*.
+
+## 4. Real-time design
+
+### 4.1 Threads and scheduling
+
+Every thread runs `SCHED_FIFO`, ordered as control path > perception path > network and UI. Control and networking are pinned to the A53 cluster; decode, inference and encode to the A72 cluster, separating periodic from bursty load and reducing cache and DVFS jitter.
+
+| Thread | Policy | Priority | Affinity |
+|---|---|---|---|
+| `watchdog` | FIFO | 30 | LITTLE |
+| `car_sport_ctrl` | FIFO | 20 | LITTLE |
+| `can_recv` / `can_send` | FIFO | 15 | LITTLE |
+| `video` | FIFO | 15 | BIG |
+| `decode` | FIFO | 15 | BIG |
+| `yolo_infer` | FIFO | 12 | BIG |
+| `yolo` / `yolo_render` / `rec` | FIFO | 10 | BIG |
+| `main` / `tcp` / `http` | FIFO | 5 | LITTLE |
+| `http_worker` / `yolo_report` | FIFO | 1 | LITTLE |
+
+The control thread is not fixed-rate: it wakes once per completed inference, with a 50 ms timeout as a safety net. This keeps PID `dt` equal to the actual frame interval and avoids phase error between a nominal period and a variable frame rate.
+
+### 4.2 Failure detection
+
+A per-thread application watchdog fires after 3 s without a heartbeat; systemd `WatchdogSec=10` restarts the process as a second level. Both are **seconds**, acceptable at 0.3 m/s and not acceptable at higher speed — §6.7 lists this as a required replacement.
+
+### 4.3 Known trap
+
+Under `CONFIG_PREEMPT_RT`, a FIFO thread saturating a core triggers the cgroup v2 real-time bandwidth limit (default 950 ms per 1000 ms period), which appears as a periodic freeze-then-resume. Frequency scaling and the RT budget must be configured together, or profiling will point at the wrong conclusion. See [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md).
+
+## 5. On-board language agent
+
+### 5.1 Trust boundary
+
+The service runs as root because it configures interfaces, frequency governors and reboots. The agent process drops privileges to `qianruo` immediately after `fork` and inherits the service's systemd sandbox: root filesystem read-only (`ProtectSystem=strict`), home read-only (`ProtectHome=read-only`), private `/tmp` (`PrivateTmp=yes`), with write access limited to `config/`, `recordings/`, `.codex/` and `/etc/proxy-client.conf`.
+
+Its write surface is therefore **three directories and one config file**, not the machine, and its privilege level is **unprivileged**, not root. Both are design constraints, not descriptions of current luck.
+
+### 5.2 Observable surface
+
+Read-only endpoints require no authentication, deliberately: observation carries no actuation risk.
+
+| Endpoint | Content |
+|---|---|
+| `GET /api/system` | Per-core CPU, NPU, RGA, temperature, memory |
+| `GET /api/video/stats` | Frame sequence, drop counters, `processing_age_ms` |
+| `GET /api/follow` | Control parameters, `status.reason`, wheel targets |
+| `GET /api/detections/live` | Detections of the current frame |
+| `recordings/logs/*.log` | Daily logs, including the 10 s timing line |
+| `recordings/results/` | Daily detection reports |
+
+`status.reason` is the only legitimate source for answering "why did it stop", and that is exactly the P1 acceptance criterion in §6.8.
+
+### 5.3 Control plane
+
+Every request that changes vehicle or system state requires Basic authentication with a root-capable account: `POST /api/follow`, `POST /api/tracking`, `POST /api/can/send`, `POST /api/config`, `POST /api/reboot`. The agent holds no credentials and cannot cross this boundary.
+
+### 5.4 Session lifecycle
+
+| Item | Value |
+|---|---|
+| Execution | short-lived child process, `codex exec --json`, reply via `-o` file |
+| Per-turn timeout | 300 s |
+| Message limit | 16 000 characters |
+| Concurrency | 1 job |
+| Context | last 6 turns, each truncated to 1200 characters |
+| User input | passed on `stdin`, never through `argv` |
+| Authentication | device-code flow, credentials in `CODEX_HOME`, no API key |
+| Quota | ChatGPT plan, two windows (5-hour / weekly), UI shows remaining % |
+| Audit | one line per turn in `recordings/codex/chat_YYYYMMDD.txt` |
+
+When the quota is exhausted the CLI refuses to run and the UI shows `rate limit reached`. This is the most common misdiagnosis: it looks like a network fault but is decided by the two windows in `GET /api/codex/quota`.
+
+## 6. Multi-agent vehicle control
+
+### 6.1 Why layering is mandatory
+
+A single language-model round trip costs 2–10 s on this deployment, depending on network and quota. At `v_max = 0.30 m/s` a 3 s decision latency corresponds to **0.9 m of blind travel**, which already exceeds typical indoor clearances. Meanwhile the braking distance at 0.3 m/s is on the order of 2 cm (assuming 2 m/s²), so at low speed the hazard is **reaction latency**, not braking capability.
+
+A language model therefore cannot enter a 30 Hz loop. It belongs at the second-and-below timescale, with execution left to deterministic code.
+
+| Layer | Rate | Timescale | Permitted decision maker |
+|---|---|---|---|
+| Reflex | 30 Hz | 33 ms | Deterministic code (PID, interlocks) |
+| Tactics | 1–5 Hz | 0.2–1 s | Small models / rules / constrained LLM |
+| Intent | 0.1 Hz | seconds | Language model |
+
+### 6.2 Roles and contracts
+
+```mermaid
+flowchart TB
+    H["Human command"] --> IN["Intent agent<br/>0.1 Hz"]
+    IN --> PL["Driving agent<br/>1-5 Hz"]
+    MEM["Memory & localisation<br/>identity · pose · landmarks"] --> PL
+    PER["Perception agent<br/>structured targets"] --> PL
+    PER --> REF["Reflex control<br/>30 Hz"]
+    PL --> EX["Actuator<br/>allow-list · envelope · lease"]
+    REF --> EX
+    SAF["Safety agent<br/>offline"] -.->|veto| EX
+    SAF -.->|e-stop| MOT["Motors · CAN FD"]
+    EX --> MOT
+
+    classDef done fill:#e8f7ef,stroke:#3aa675,color:#1f2937
+    classDef half fill:#fdf3e3,stroke:#d99b3a,color:#1f2937
+    classDef todo fill:#f4f5f7,stroke:#9aa4b2,color:#1f2937
+    class REF done
+    class PER,SAF half
+    class IN,PL,MEM,EX todo
+```
+
+<sub>Figure 2 — Target architecture: green exists, amber partial, grey missing.</sub>
+
+| Role | Status | Input | Output | Deadline | On failure |
+|---|---|---|---|---|---|
+| Reflex control | Exists | One frame + wheel speed | Normalised wheel commands | 33 ms | Stop |
+| Perception agent | Partial (fixed 80 classes) | Video stream | Structured targets + identity | 33–200 ms | Report `stale_detection` |
+| Memory & localisation | Missing | Wheel speed, detection history | Identity, pose, landmarks | 1 s | Degrade conservatively |
+| Driving agent | Missing | Intent + world state | Primitive sequence | 0.5–2 s | Request stop |
+| Safety agent | Partial (interlocks + watchdog) | Every action request | Allow / deny / e-stop | < 100 ms | Deny everything |
+
+### 6.3 Shared world state
+
+The classic multi-agent failure is each agent keeping its own world model and then fighting at the actuator: one insists the person is still on the left, another that the person is gone, and the vehicle oscillates. The foundation already exists — a monotonic frame sequence, capture timestamps on every detection, and `processing_age_ms` as an explicit freshness field. The target is a **single versioned world state**: readers receive `(seq, capture_ts, age_ms)`, writes are accepted only from the perception side, and the tactical side is read-only. This removes the possibility of two agents seeing different frames — through the data structure rather than through protocol.
+
+### 6.4 Single actuation authority
+
+Arbitration lives on the execution side, not in the models. Every agent action is a **request** into one actuator that performs three checks: allow-list (defined primitives only), envelope (speed, duration, region) and lease (stop on expiry). Models may disagree; the actuator does not negotiate. Model output is an opinion; actuator output is a voltage.
+
+### 6.5 Missing motion primitives
+
+Only `follow` (visual servo) and `setpoint` (fixed speed, steering still closed on visual error) exist today.
+
+| Primitive | Semantics | Blocker |
+|---|---|---|
+| `go(d, v)` | Travel `d` metres | Wheel-speed integration and slip compensation (no odometry) |
+| `turn(θ)` | Rotate `θ` degrees | Yaw source (no IMU fusion) |
+| `stop()` | Stop immediately | Exists, must become hardware-level |
+| `look_for(desc)` | Retrieve a target by description | Open-vocabulary detection (currently 80 fixed classes) |
+
+### 6.6 Tool contract (design draft, unimplemented)
+
+```jsonc
+// request
+{ "action": "go", "distance_m": 1.5, "speed": 0.25,
+  "lease_ms": 3000, "intent": "approach the door", "confidence": 0.82 }
+
+// response
+{ "accepted": false,
+  "reason": "envelope",
+  "detail": "distance_m > 2.0",
+  "state": { "seq": 90021, "age_ms": 79, "can_enabled": false,
+             "target_lost_ms": 320, "halt": "stale_wheel_feedback" } }
+```
+
+The response must be structured and must carry `state`, so the planner can re-plan instead of retrying. The `halt` field reuses the vocabulary from §3.3.
+
+### 6.7 Defence in depth
+
+| Layer | Mechanism | Status |
+|---|---|---|
+| Parameter envelope | Range validation + `clamp` in C | Exists, must extend to primitives |
+| Execution isolation | Models submit requests, never touch CAN | Partial (no request path yet) |
+| Independent e-stop | Heartbeat not mediated by Linux, 100–200 ms | Missing (currently seconds) |
+| Human in the loop | Hold-to-drive, release-to-stop | Missing |
+
+The order of the second and third layers cannot be swapped: introducing language control before an execution path exists would connect a multi-second latency directly to the motors.
+
+### 6.8 Staged acceptance
+
+| Stage | Deliverable | Acceptance criterion |
+|---|---|---|
+| P1 | Observation agent (today) | Asked "why did it stop", must cite `status.reason`; zero fabrications in 100 queries |
+| P2 | Semantic target selection | ≥ 16 of 20 commands select the intended target; stop within 300 ms of a wrong pick |
+| P3 | Three primitives + actuator | 100% rejection of out-of-envelope parameters (≥ 10⁴ random requests); e-stop < 100 ms end-to-end |
+| P4 | Odometry and short-range navigation | 5 m straight-line terminal error < 20 cm at v ≤ 0.3 m/s; anything worse is recorded as a failure |
+| P5 | Supervised autonomy | 100 injected hallucinated targets, 100% intercepted by the safety agent |
+
+Criteria are written before implementation to avoid "it moves, therefore it works".
+
+### 6.9 Operating envelope
+
+Differential drive, monocular camera, no lidar, no redundant perception, `v_max = 0.3 m/s`: the supported scenario is **indoor, short-range, supervised**. Open-road operation is out of scope — not because of model capability, but because the platform has no second sensing modality, no independent brake and no fail-operational localisation.
+
+## 7. Measurements
+
+Single reading at 2026-11-07 01:50, after 10.4 hours of uptime:
+
+| Metric | Value | Source |
+|---|---|---|
+| End-to-end latency | 79 ms (max 128 ms) | `/api/video/stats` |
+| Capture rate | 30.000 FPS | `/api/video/stats` |
+| Frames produced | 89 993 | `produce_seq` |
+| Decode / RGA / inference / post | 4 / 1–2 / 9 / 1 ms | timing log line |
+| NPU utilisation | 13% / 11% (2 cores) | `/api/system` |
+| RGA utilisation | 3% / 2% (2 cores) | `/api/system` |
+| SoC temperature | 59 ℃ | `/api/system` |
+| Memory in use | 10% of 6 GB | `/api/system` |
+| Version | 1.1.0, commit `3b03399` | `/api/system` |
+
+## 8. Limitations and unverified items
+
+- **Actuator not closed-loop**: motor adapter unconfigured, `motor.configured = false`, control output never reaches CAN.
+- **No odometry**: wheel speed is available, pose is not; absolute displacement commands are impossible.
+- **Short-lived identity**: association expires after 800 ms without a match; a target leaving and re-entering the frame is not recognised.
+- **Fixed semantic capacity**: 80 COCO classes; open-vocabulary descriptions are not supported.
+- **Relative reference area**: `A*` is latched at enable time, so following distance is not an absolute scale.
+- **Hardware encoding untested**: annotated recording uses MPP H.264, but no long-duration load test has been run.
+- **Watchdog granularity**: seconds; unsafe at higher speeds.
+- **Concurrency path unreviewed**: claim/mmap lifetimes in `can_slot_dispatch_locked` and `frame_ring` have not had a dedicated concurrency review.
+
+## 9. References
+
+| Document | Content |
+|---|---|
+| [docs/FRAME_PIPELINE.md](docs/FRAME_PIPELINE.md) | Frame pipeline and buffer lifetimes |
+| [docs/LATENCY_PROFILE.md](docs/LATENCY_PROFILE.md) | Latency methodology and history |
+| [docs/REALTIME_SCHEDULING.md](docs/REALTIME_SCHEDULING.md) | Scheduling, affinity, cgroup v2 budget |
+| [docs/COMMUNICATION_FLOW.md](docs/COMMUNICATION_FLOW.md) | Inter-module communication and events |
+| [docs/YOLO26N_QUANTIZATION.md](docs/YOLO26N_QUANTIZATION.md) | Quantisation flow and accuracy |
+| [docs/FUNCTIONAL_TEST_REPORT.md](docs/FUNCTIONAL_TEST_REPORT.md) | Functional test record |
+
+## Appendix
+
+### A. Build and deploy
+
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j8          # about 40 s on the board
+sudo scripts/deploy.sh -i        # install to /opt, register and restart the unit
+```
+
+Open `http://<board>/`; Basic authentication is checked against system accounts (`getpwnam` + `getspnam` + `crypt`, no separate user store). Read-only endpoints are reachable from the LAN without credentials.
+
+### B. Repository layout
+
+```text
+source/           C implementation, ~17k lines
+  core/           lifecycle · config · watchdog · CPU affinity
+  video/          V4L2 capture · frame ring · decode · MPP encode · streaming
+  yolo/           RKNN inference · pre/post-processing · frame scheduling
+  control/        tracking · PID · follow state machine · CAN adapter
+  can/            CAN FD transport · DBC decoding · motor mapping
+  http/           reactor · routing · authentication · APIs
+  tcp/            network info · telemetry
+include/          mirrors source/
+html/             front end, no build step: 5 pages + 28 JS/CSS files
+config/           runtime config, model, labels, DBC, motor mapping example
+scripts/          build, deploy, sync, Codex bridge
+docs/             design documents and test records
+```
+
+### C. API summary
+
+| Endpoint | Method | Auth | Purpose |
+|---|---|---|---|
+| `/api/system`, `/api/video/stats` | GET | none | Runtime state |
+| `/api/detections/live` | GET | none | Detections of the current frame |
+| `/api/follow` | GET | none | Parameters, status, halt reason |
+| `/api/follow` | POST | root | Parameters, enable, target class |
+| `/api/tracking` | POST | root | Select a target by `seq` + index |
+| `/api/can/send` | POST | root | Raw CAN frame (bypasses mixing and clamps) |
+| `/api/codex/chat` | POST | root | Agent session |
+
+### D. Operations
+
+```bash
+journalctl -u autonomous-driving-car -f     # service log
+recordings/logs/log_info_YYYYMMDD.log       # daily, includes the 10 s timing line
+recordings/videos/                          # segmented recordings
+recordings/results/                         # daily detection reports
+recordings/codex/chat_YYYYMMDD.txt          # agent conversation audit
+```
+
+| Symptom | Where to look |
+|---|---|
+| Picture frozen, process alive | `capture_stall_ms`, `infer_dropped`; camera or USB bandwidth |
+| Latency rising above 79 ms | `queue` first, then `status.fifo` for a degraded scheduler |
+| Vehicle does not move | `status.reason` (usually `adapter_not_connected`) and `motor.configured` |
+| Agent reports `rate limit reached` | `GET /api/codex/quota`; plan windows, not network |
+| Restart loop | `systemctl show -p NRestarts` against `WatchdogSec=10` |
+
+---
+
+**If you remember one thing:** the value of this platform is not the 79 ms — it is that observation and actuation sit behind two different doors. The multi-agent driving work ahead is not mainly about a smarter model; it is about keeping that sentence true in code.
 
 GPL-3.0-or-later · [LICENSE](LICENSE)
