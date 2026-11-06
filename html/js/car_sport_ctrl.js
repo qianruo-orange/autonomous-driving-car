@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 (function() {
-    const grid = document.querySelector('.can-grid');
+    /* 智能跟随卡片固定放在页面最下方：挂到最后一个 bottom-grid，跨两列 */
+    const grids = document.querySelectorAll('.bottom-grid');
+    const grid = grids.length ? grids[grids.length - 1]
+                              : document.querySelector('.can-grid');
     if (!grid) return;
     const card = document.createElement('form');
     card.className = 'card';
