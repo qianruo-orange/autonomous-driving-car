@@ -14,7 +14,7 @@
     <span id="datetime"></span>
     <a href="/" class="btn btn-back">📊 <span data-i18n="主界面">主界面</span></a>
     <a href="/config" class="btn btn-back">⚙ <span data-i18n="系统配置">系统配置</span></a>
-    <a href="/logs" class="btn btn-back">📁 <span data-i18n="行驶日志">行驶日志</span></a>
+    <a href="/logs" class="btn btn-back">📁 <span data-i18n="文件下载">文件下载</span></a>
     <button id="langBtn" class="theme-btn" onclick="toggleLang()" data-i18n-title="切换语言">English</button>
     <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" data-i18n-title="切换主题"></button>
     <a href="#" onclick="reboot()" class="pwr pwr-reboot">⏻ <span data-i18n="重启">重启</span></a>
@@ -28,6 +28,10 @@
       <div class="core-bars" id="cpu_cores"></div>
     </div>
     <div class="card status-card">
+      <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
+      <div class="sec"><h4>RGA</h4><div class="core-bars" id="rga_cores"></div></div>
+    </div>
+    <div class="card status-card">
       <div class="sec duo">
         <div class="half"><h4><span data-i18n="内存">内存</span><b id="mem_val">--%</b></h4>
         <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div></div>
@@ -36,10 +40,6 @@
         <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div></div>
         <div class="used"><b id="disk_used">-</b> / <span id="disk_total">-</span></div></div>
       </div>
-    </div>
-    <div class="card status-card">
-      <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
-      <div class="sec"><h4>RGA</h4><div class="core-bars" id="rga_cores"></div></div>
     </div>
     <div class="card status-card"><h3 data-i18n="网络速度">网络速度</h3><div id="net_speed"></div></div>
   </div>

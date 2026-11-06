@@ -347,6 +347,58 @@
   var updateState = null;
   var canInstall = false;
   var installing = false;
+  var progressTimer = null;
+
+  function stopProgress() {
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+  }
+
+  function paintProgress(d) {
+    var mb = (d.downloaded || 0) / 1048576;
+    var tot = (d.total || 0) / 1048576;
+    var txt = t('正在下载更新 {percent}%', {percent: d.percent || 0}) +
+              ' · ' + mb.toFixed(1) + ' / ' + Math.round(tot) + ' MB';
+    var phase = String(d.phase || '').replace(/^==>\s*/, '');
+    if (phase && !/Downloading/i.test(phase)) txt += ' · ' + phase;
+    updateResult.hidden = false;
+    updateResult.className = 'codex-update-text accent';
+    updateResult.textContent = txt;
+  }
+
+  function fetchProgress() {
+    return App.json('/api/codex/update/status', {timeout: 15000});
+  }
+
+  /* 安装/下载期间每 2.5 秒刷新一次进度；结束后回到常规的版本检查 */
+  function startProgress() {
+    stopProgress();
+    installing = true;
+    canInstall = false;
+    updateBtn.disabled = true;
+    updateState = {mode: 'downloading', cls: 'accent'};
+    paintUpdate();
+    progressTimer = setInterval(async function () {
+      var d;
+      try {
+        d = await fetchProgress();
+      } catch (error) {
+        return;
+      }
+      paintProgress(d);
+      if (d.running) return;
+      stopProgress();
+      installing = false;
+      updateBtn.disabled = false;
+      var tail = String(d.log || '').trim().split('\n').pop().slice(0, 160);
+      await loadModels();
+      await load();
+      await checkUpdate();
+      if (updateState.mode === 'ok' && updateState.data.update_available && tail) {
+        updateState.data.failTail = tail;
+        paintUpdate();
+      }
+    }, 2500);
+  }
 
   function paintUpdate() {
     updateResult.hidden = !updateState;
@@ -355,11 +407,12 @@
     updateBtn.disabled = installing;
     if (!updateState) return;
     updateResult.className = 'codex-update-text' + (updateState.cls ? ' ' + updateState.cls : '');
+    if (updateState.mode === 'downloading') return;   /* 进度由 paintProgress 维护 */
     if (updateState.mode === 'checking') {
       updateResult.textContent = t('检查中…'); return;
     }
     if (updateState.mode === 'installing') {
-      updateResult.textContent = t('正在安装更新，请勿断电…'); return;
+      updateResult.textContent = t('正在启动安装…'); return;
     }
     if (updateState.mode === 'error') {
       updateResult.textContent = t('检查更新失败') + ': ' + updateState.error; return;
@@ -373,10 +426,6 @@
       updateResult.textContent = done;
       return;
     }
-    if (updateState.mode === 'started') {
-      updateResult.textContent = t('已在后台开始更新（约 190 MB，约 10 分钟以上）；完成后刷新页面查看版本');
-      return;
-    }
     var d = updateState.data;
     var txt = t('当前 {current} · 最新 {latest}',
       {current: d.current || '—', latest: d.latest || '—'});
@@ -384,6 +433,7 @@
     else if (d.update_available) txt += ' · ' + t('有可用更新，点击安装更新');
     else txt += ' · ' + t('已是最新版本');
     if (d.stale) txt += ' · ' + t('使用上次检查结果');
+    if (d.failTail) txt += ' · ' + t('上次尝试失败') + ': ' + d.failTail;
     updateResult.textContent = txt;
   }
 
@@ -411,13 +461,16 @@
     try {
       var data = await App.json('/api/codex/update/install',
         {authenticated: true, method: 'POST', timeout: 60000});
-      /* 板端会立刻返回：更新单元在后台下载（约 190 MB），不阻塞网页 */
-      updateState = data && data.started
-        ? {mode: 'started', data: data, cls: 'accent'}
-        : {mode: 'installed', data: data || {}, cls: data && data.ok ? 'accent' : 'err'};
+      if (data && data.started) {
+        /* 后台单元已经开始下载：立刻切到进度条模式 */
+        App.status('codex', 'ok', t('已在后台开始更新'));
+        startProgress();
+        return;
+      }
+      updateState = {mode: 'installed', data: data || {},
+                     cls: data && data.ok ? 'accent' : 'err'};
       App.status('codex', data && data.ok ? 'ok' : 'err',
-        data && data.started ? t('已在后台开始更新')
-                             : t('已更新到 {version}', {version: (data && data.version) || '—'}));
+        t('已更新到 {version}', {version: (data && data.version) || '—'}));
       await loadModels();
       await load();
     } catch (error) {
@@ -433,4 +486,12 @@
     if (installing) return;
     if (canInstall) installUpdate(); else checkUpdate();
   });
+
+  /* 打开页面时如果后台正在更新，直接显示进度 */
+  (async function () {
+    try {
+      var d = await fetchProgress();
+      if (d && d.running) startProgress();
+    } catch (error) {}
+  })();
 })();

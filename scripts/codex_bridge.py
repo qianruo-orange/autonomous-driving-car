@@ -652,6 +652,69 @@ def update_env():
     return env
 
 
+UPDATE_TMPDIR = os.path.join(REC, "tmp")
+UPDATE_PROGRESS = os.path.join(REC, "codex_update_progress.txt")
+
+
+def update_download_state():
+    """Bytes the installer has pulled so far.
+
+    The service runs with PrivateTmp, so it cannot see the host /tmp where the
+    updater writes its tarball. The transient unit therefore runs a small
+    reporter that samples the file size into UPDATE_PROGRESS, which is inside
+    the writable recordings directory.
+    """
+    best = 0
+    try:
+        with open(UPDATE_PROGRESS, "r", encoding="utf-8") as fp:
+            best = int((fp.read() or "0").strip() or 0)
+    except (OSError, ValueError):
+        best = 0
+    path = ""
+    for root, dirs, files in os.walk(UPDATE_TMPDIR):
+        for name in files:
+            if not name.lower().endswith(".tar.gz"):
+                continue
+            full = os.path.join(root, name)
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            if size > best:
+                best, path = size, full
+    return best, path
+
+
+UPDATE_TOTAL = 187844332   # codex-package-aarch64-unknown-linux-musl.tar.gz
+
+
+def cmd_update_status(args):
+    """Progress of the running (or last) `codex update`."""
+    s = settings()
+    cli = s.get("cli_path", "")
+    unit = running_update_unit()
+    log = read_text(os.path.join(REC, "codex_update.log"))
+    done_bytes, path = update_download_state()
+    total = UPDATE_TOTAL
+    m = re.search(r"out of (\d+) bytes", log)
+    if m:
+        total = int(m.group(1))
+    percent = int(min(100, done_bytes * 100 / total)) if total else 0
+    tail = [line for line in log.strip().splitlines() if line.strip()][-3:]
+    result(args.out, {
+        "ok": True,
+        "running": bool(unit),
+        "unit": unit,
+        "downloaded": done_bytes,
+        "total": total,
+        "percent": percent,
+        "phase": (tail[-1] if tail else ""),
+        "log": "\n".join(tail)[-600:],
+        "cli_version": s.get("cli_version", "") or cli_version(cli),
+        "path": path,
+    })
+
+
 def running_update_unit():
     """Name of an already running update unit, if any (never run two at once)."""
     try:
@@ -680,14 +743,32 @@ def start_update_outside_sandbox(cli):
     """
     log_path = os.path.join(REC, "codex_update.log")
     unit = "codex-update-%d" % int(time.time())
-    shell = "exec %s update > %s 2>&1" % (cli, log_path)
+    try:
+        os.makedirs(UPDATE_TMPDIR, exist_ok=True)
+        os.chmod(UPDATE_TMPDIR, 0o777)
+    except OSError:
+        pass
+    # A flaky TLS proxy kills single attempts; retry a few times before giving up.
+    # A background reporter samples the host-side tarball size so the web UI can
+    # show real download progress (the service's PrivateTmp hides /tmp).
+    reporter = (
+        "(for _ in $(seq 1 1800); do "
+        "f=$(ls -t /tmp/tmp.*/codex-package-aarch64-unknown-linux-musl.tar.gz "
+        "2>/dev/null | head -1); "
+        "if [ -n \"$f\" ]; then stat -c %%s \"$f\" > %s 2>/dev/null; fi; "
+        "sleep 2; done) & REPORTER=$!; "
+        "for i in 1 2 3; do %s update && break; echo \"retry $i\"; sleep 5; done; "
+        "kill $REPORTER 2>/dev/null"
+    ) % (UPDATE_PROGRESS, cli)
+    shell = "{ %s; } > %s 2>&1" % (reporter, log_path)
     cmd = ["systemd-run", "--collect", "--quiet", "--unit", unit,
            "--uid", "qianruo", "--gid", "qianruo",
            "--setenv", "HOME=/home/qianruo",
            "--setenv", "CODEX_HOME=/home/qianruo/.codex",
            "--setenv", "PATH=/usr/local/bin:/usr/bin:/bin:/home/qianruo/.local/bin",
            "--setenv", "TERM=dumb",
-           "--setenv", "NO_COLOR=1"]
+           "--setenv", "NO_COLOR=1",
+           "--setenv", "TMPDIR=" + UPDATE_TMPDIR]
     for key, value in proxy_env().items():
         cmd += ["--setenv", "%s=%s" % (key, value)]
     cmd += ["/bin/sh", "-c", shell]
@@ -1111,6 +1192,7 @@ COMMANDS = {
     "status": cmd_status,
     "check-update": cmd_check_update,
     "update-install": cmd_update_install,
+    "update-status": cmd_update_status,
     "models": cmd_models,
     "quota": cmd_quota,
     "config": cmd_config,

@@ -503,6 +503,9 @@
     try {
       var r = await fetch('/api/system');
       var d = await r.json();
+      /* 时钟先更新：主界面没有内存/磁盘元素，后面那段落会在 catch 里中断 */
+      var clock = document.getElementById('datetime');
+      if (clock) clock.textContent = fmtTime();
       document.getElementById('temp').textContent = d.temp + '°C';
 
       /* 总体 CPU */

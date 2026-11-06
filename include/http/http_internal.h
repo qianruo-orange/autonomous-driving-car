@@ -85,6 +85,7 @@ void http_rec_handler(app_ctx_t *app, int fd, const char *method, const char *ur
 void http_codex_status(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_update_check(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_update_install(app_ctx_t *, int, const char *, const char *, const char *);
+void http_codex_update_status(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_models(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_quota(app_ctx_t *, int, const char *, const char *, const char *);
 void http_codex_config_post(app_ctx_t *, int, const char *, const char *, const char *);

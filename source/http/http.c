@@ -826,6 +826,7 @@ static void http_process_request(http_conn_t *c)
         { "/api/codex/status",        0, NULL,   http_codex_status,        http_check_auth_root },
         { "/api/codex/update/check",  0, NULL,   http_codex_update_check,  http_check_auth_root },
         { "/api/codex/update/install",0, "POST", http_codex_update_install,http_check_auth_root },
+        { "/api/codex/update/status", 0, NULL,   http_codex_update_status, http_check_auth_root },
         { "/api/codex/models",        0, NULL,   http_codex_models,        http_check_auth_root },
         { "/api/codex/quota",         0, NULL,   http_codex_quota,         http_check_auth_root },
         { "/api/codex/config",        0, "POST", http_codex_config_post,   http_check_auth_root },

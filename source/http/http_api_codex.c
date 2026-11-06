@@ -205,6 +205,14 @@ void http_codex_update_install(app_ctx_t *app, int fd, const char *method,
     reply_bridge(fd, "update-install", NULL, 0, NULL);
 }
 
+/* Progress of the background updater (bytes pulled, phase, version). */
+void http_codex_update_status(app_ctx_t *app, int fd, const char *method,
+                              const char *uri, const char *req)
+{
+    (void)app; (void)method; (void)uri; (void)req;
+    reply_bridge(fd, "update-status", NULL, 0, NULL);
+}
+
 /* Model catalog straight from the installed CLI (no hard-coded list). */
 void http_codex_models(app_ctx_t *app, int fd, const char *method,
                        const char *uri, const char *req)
