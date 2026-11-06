@@ -62,6 +62,7 @@ typedef struct {
     char label[32];
     int persist, all;
     int have_motion;   /* --v/--ms 提供了单段计划 */
+    int basic;         /* 管理员路由：即使同时带了凭证，也只用 Basic */
 } opts_t;
 
 static volatile sig_atomic_t g_abort;
@@ -165,7 +166,7 @@ static int http_call(const opts_t *o, const char *method, const char *path,
     if (fd < 0) return -1;
 
     char auth[384] = "";
-    if (o->token[0]) snprintf(auth, sizeof(auth), "X-Agent-Cap: %s\r\n", o->token);
+    if (!o->basic && o->token[0]) snprintf(auth, sizeof(auth), "X-Agent-Cap: %s\r\n", o->token);
     else if (o->user[0]) {
         char raw[200], enc[300];
         snprintf(raw, sizeof(raw), "%s:%s", o->user, o->password);
@@ -738,10 +739,12 @@ int main(int argc, char **argv)
         return cmd_simple(&o, "POST", "/api/agent/disarm", "");
     }
     if (!strcmp(cmd, "token")) {
+        o.basic = 1;
         if (!o.user[0]) { jprint("{\"error\":\"admin credential required: --user/--password or ADC_USER/ADC_PASS\"}"); return 4; }
         return cmd_token(&o);
     }
     if (!strcmp(cmd, "arm")) {
+        o.basic = 1;
         if (!o.user[0]) { jprint("{\"error\":\"admin credential required\"}"); return 4; }
         if (!o.token[0]) { jprint("{\"error\":\"token=<32 hex> is required\"}"); return 2; }
         char form[96];
@@ -749,10 +752,12 @@ int main(int argc, char **argv)
         return cmd_simple(&o, "POST", "/api/agent/arm", form);
     }
     if (!strcmp(cmd, "revoke")) {
+        o.basic = 1;
         if (!o.user[0]) { jprint("{\"error\":\"admin credential required\"}"); return 4; }
         return cmd_revoke(&o);
     }
     if (!strcmp(cmd, "status") || !strcmp(cmd, "audit")) {
+        o.basic = 1;
         if (!o.user[0]) { jprint("{\"error\":\"admin credential required\"}"); return 4; }
         return cmd_simple(&o, "GET", !strcmp(cmd, "status") ? "/api/agent/state" : "/api/agent/audit", NULL);
     }

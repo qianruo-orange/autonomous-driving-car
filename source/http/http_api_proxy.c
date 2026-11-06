@@ -46,6 +46,23 @@ typedef struct {
 } proxy_conf_t;
 
 /* ---- 小工具 ---- */
+/* 配置文件里换行是有意义的结构，不能像普通 JSON 字符串那样把它吃掉。 */
+static void escape_text(const char *in, char *out, size_t size)
+{
+    size_t o = 0;
+    out[0] = 0;
+    for (const char *p = in; p && *p && o + 8 < size; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = (char)c; }
+        else if (c == '\n') { out[o++] = '\\'; out[o++] = 'n'; }
+        else if (c == '\t') { out[o++] = '\\'; out[o++] = 't'; }
+        else if (c == '\r') continue;
+        else if (c < 0x20) { out[o++] = ' '; }
+        else out[o++] = (char)c;
+    }
+    out[o] = 0;
+}
+
 static int read_all(const char *path, char *out, size_t size)
 {
     FILE *f = fopen(path, "rb");
@@ -335,7 +352,7 @@ static void reply_config(int fd, const proxy_conf_t *c, const char *backup, int 
     snprintf(sysenv + eoff, sizeof(sysenv) - (size_t)eoff, "}");
 
     char esc_raw[PROXY_RAW_MAX * 6 / 5 + 32];
-    http_json_escape(c->raw, esc_raw, sizeof(esc_raw));
+    escape_text(c->raw, esc_raw, sizeof(esc_raw));
     char esc_backup[320], esc_url[256], esc_err[360];
     http_json_escape(backup ? backup : "", esc_backup, sizeof(esc_backup));
     http_json_escape(url, esc_url, sizeof(esc_url));
