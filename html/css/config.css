@@ -169,3 +169,26 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 /* CPU 频率卡标题栏：左侧标题（无左边线，因为卡片自带分区色）+ 中间当前值 + 右侧保存 */
 #card_cpufreq>h3>span:first-child{border-left:0;padding-left:0}
 #card_cpufreq>h3 .ip-cur{padding-left:2px}
+
+/* ===== 窄屏（≤720） =====
+   配置页字段本身已经是单列纵向，这里只做"手机尺寸下的收边"：
+   卡片内边距、分组间距、文件选择控件高度对齐到 38px 控件基准。 */
+@media (max-width: 720px) {
+  .card { max-width: none; padding: 14px; margin-bottom: var(--sp-3); }
+  .card > h3,
+  .card > .card-head { margin-bottom: var(--sp-2); }
+  .can-grid, .bottom-grid { gap: var(--sp-3); }
+  .yolo-split { gap: var(--sp-3); padding-top: 0; }
+  .cfg-grid, .cfg-grid.yolo-basic, .cfg-grid.yolo-upload { gap: 12px; }
+  .net-grid { gap: 12px; }
+  .car-param-group { padding: 12px; }
+  .car-param-group h4 { margin-bottom: var(--sp-2); }
+
+  /* 已选文件名不要被"选择文件"按钮挤没 */
+  .yolo-file-choice { height: 38px; }
+  .yolo-upload .row .yolo-upload-btn { height: 38px; padding: 0 14px; }
+  .yolo-file-choice .add-btn { height: 28px; }
+
+  /* 保存按钮跟着标题走，手机上标题可能换行，别让它掉到第二行中间 */
+  .card > h3 > .card-save { align-self: flex-start; }
+}

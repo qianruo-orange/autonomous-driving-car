@@ -167,6 +167,37 @@ a:hover { color: var(--accent-hover); }
 }
 .page-fill > .grow { flex: 1 1 auto; min-height: 0; }
 
+/* ---- 底部导航（窄屏） ----
+   桌面端导航在顶栏；手机上顶栏放不下 7 个控件，会折成四五行把首屏压掉。
+   窄屏改用固定底部标签栏，顶栏只留标题 + 主题/语言/电源。 */
+.tabbar { display: none; }
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  height: 100%;
+  border-radius: var(--r-md);
+  color: var(--muted);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  line-height: 1;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: color .18s, background .18s;
+}
+.tab .icon { width: 20px; height: 20px; }
+.tab span {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tab:active { background: var(--accent-weak); }
+.tab.active { color: var(--accent); background: var(--accent-weak); }
+
 /* 滚动条：深色下默认的白块很扎眼 */
 * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -179,10 +210,123 @@ a:hover { color: var(--accent-hover); }
 }
 ::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: var(--border-hover); }
 
-@media (max-width: 720px) {
-  body { padding: var(--sp-3); }
-  .top-bar { gap: var(--sp-2); }
-  .tb-left { flex: 1 1 100%; }
-  .tb-right { width: 100%; justify-content: flex-start; }
+/* 平板竖屏（721~900）：导航仍留在顶栏，但要把控件压窄才排得进一行，
+   否则"关机"会被单独挤到第二行。 */
+@media (max-width: 900px) and (min-width: 721px) {
   h1 { font-size: var(--fs-16); }
+  #datetime { display: none; }
+  .top-bar .btn { padding: 0 10px; }
+  .top-bar .pwr { width: 34px; padding: 0; }
+  .top-bar .pwr span { display: none; }
 }
+
+/* ---- 窄屏 ----
+   顶栏压成两行：标题 + 全局图标；页面级操作单独一行、可横向滚动。
+   导航交给底部标签栏，所以顶栏里的 .btn 导航链接隐藏。 */@media (max-width: 720px) {
+  body {
+    padding: var(--sp-3);
+    padding-bottom: calc(var(--tabbar-h) + var(--sp-3) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .top-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-2) 6px;
+    margin-bottom: var(--sp-3);
+    padding-bottom: var(--sp-3);
+  }
+  /* 让标题和页面级操作直接参与顶栏栅格，才能分到两行 */
+  .tb-left { display: contents; }
+  .tb-left > h1 {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    font-size: var(--fs-16);
+  }
+  .tb-left > h1 > span {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .tb-left > .card-status:empty { display: none; }
+
+  /* 页面级操作：第二行，单行横滚，不换行堆高 */
+  .tb-left > .btn,
+  .tb-left > .card-status,
+  .tb-left > .tb-ops,
+  .tb-left > .file-actions {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .tb-ops,
+  .tb-left > .file-actions {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--sp-2);
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tb-ops::-webkit-scrollbar { display: none; }
+  .tb-ops > *,
+  .tb-left > .file-actions > * { flex: 0 0 auto; }
+
+  .tb-right {
+    grid-column: 2;
+    grid-row: 1;
+    flex-wrap: nowrap;
+    gap: 6px;
+    margin-left: 0;
+    justify-content: flex-end;
+  }
+  /* 导航 / 时间：导航进底部栏，时间由手机状态栏提供 */
+  .tb-right > .btn { display: none; }
+  #datetime { display: none; }
+
+  /* 顶栏图标压到 34px 见方，文字按钮只留文字 */
+  .top-bar .theme-btn,
+  .top-bar .pwr {
+    height: 34px;
+    padding: 0 9px;
+    border-radius: 10px;
+    font-size: var(--fs-12);
+  }
+  .top-bar .pwr { width: 34px; padding: 0; }
+  .top-bar .pwr span { display: none; }
+  .top-bar .pwr .icon { width: 17px; height: 17px; }
+
+  /* 页面级操作按钮同样压一档 */
+  .tb-ops .btn,
+  .tb-left > .file-actions .btn {
+    height: 34px;
+    padding: 0 12px;
+    font-size: var(--fs-12);
+  }
+
+  /* 底部标签栏 */
+  .tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 900;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px;
+    height: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--border);
+    background: var(--surface-1);
+    box-shadow: 0 -6px 24px rgba(0, 0, 0, .22);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+  }
+
+  /* 手机上内容按自然高度堆叠，别再用视口高度去撑 */
+  .grid { min-height: 0; }
+}
+

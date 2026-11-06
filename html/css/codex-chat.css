@@ -112,6 +112,8 @@
   .codex-chat-log{height:240px}
   .codex-chat-form{flex-direction:column}
   .codex-chat-form .btn{min-height:40px}
+  /* 手机上对话区给固定高度、内部滚动，别让 flex:1 把它拉到半屏高 */
+  .codex-chat-side .codex-chat-log{flex:0 0 auto;height:30vh;min-height:180px;max-height:320px}
 }
 
 /* codex update line in the title bar */

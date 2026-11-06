@@ -152,13 +152,17 @@
   color: var(--accent);
 }
 
-/* 逐核占用网格 */
+/* 逐核占用网格。列数由 JS 写在 data-cols 上（按核数 1~4），
+   不写内联 grid-template-columns，窄屏才能用媒体查询改回两列。 */
 .core-bars {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   justify-content: start;
   gap: 12px 14px;
 }
+.core-bars[data-cols="1"] { grid-template-columns: minmax(0, 1fr); }
+.core-bars[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.core-bars[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .core-bar { height: 7px; }
 .core-item { min-width: 0; }
 .core-label {
@@ -248,8 +252,36 @@
   .monitor-grid { grid-template-columns: minmax(0, 1fr); }
   .status-column { min-height: 420px; }
 }
+
+/* 窄屏：视频下方的说明与统计改成上下两段。
+   原来两者挤一行，手机上整行被省略号截断，端到端延迟这类关键数字反而看不见。 */
+@media (max-width: 720px) {
+  /* 手机上内容按自然高度堆叠。必须写在这里：layout.css 里的同名规则
+     会被本文件更靠后的 .grid 定义盖掉（同特异性、后定义优先），
+     结果 .grid 仍按 100vh 撑高，行被 stretch 拉开 → 视频上下出现黑边。 */
+  .grid { min-height: 0; }
+  .video-card { padding: 10px; gap: 8px; }
+  .video-fps { top: 14px; right: 14px; }
+  .tracking-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+  .tracking-toolbar #tracking_status {
+    white-space: normal;
+    overflow: visible;
+  }
+  .video-stats {
+    margin-left: 0;
+    white-space: normal;
+    overflow: visible;
+    font-size: var(--fs-11);
+    line-height: 1.5;
+  }
+  .status-column { min-height: 0; }
+}
+
 @media (max-width: 560px) {
   .val { font-size: 24px; }
   .temp { font-size: var(--fs-16); }
-  .core-bars { grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); }
 }

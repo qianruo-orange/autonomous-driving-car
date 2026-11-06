@@ -51,7 +51,6 @@
   font-variant-numeric: tabular-nums;
 }
 .status-cpu .core-bars {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-top: 2px;
 }
 
@@ -65,5 +64,22 @@
 /* 卡片内容不足时靠上排布，别被 1fr 拉散 */
 @media (max-width: 900px) {
   .status-page-grid { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; }
-  .status-cpu .core-bars { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* 窄屏：8 个核排 4 列时每格只有 ~90px，"Core0 1%"和进度条挤在一起，
+   降到两列让每根条都能看清。选择器比 .core-bars[data-cols] 更具体，
+   所以能盖掉 JS 写的列数，不用 !important。 */
+@media (max-width: 720px) {
+  .status-page-grid { gap: var(--sp-3); }
+  .status-page-grid .status-card {
+    padding: 14px;
+    gap: var(--sp-2);
+  }
+  .status-page-grid .core-bars {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 14px;
+  }
+  .status-cpu .cpu-temp { font-size: var(--fs-16); }
+  /* 内存/磁盘在窄卡里仍是两列，但要允许各自收缩 */
+  .status-page-grid .duo { gap: var(--sp-3); }
 }

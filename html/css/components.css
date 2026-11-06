@@ -128,8 +128,10 @@ html[data-theme="light"] .btn-clear { color: var(--danger); }
 }
 #langBtn { font-size: var(--fs-12); letter-spacing: .3px; }
 
-/* 电源操作：顶部栏最右侧，描边危险档 */
-.pwr { border-color: var(--danger-border); color: var(--danger); background: transparent; }
+/* 电源操作：顶部栏最右侧，描边危险档。
+   注意必须写完整的 border，不能只写 border-color——<a> 没有默认边框，
+   只改颜色等于没画，图标会像裸文字浮在顶栏上。 */
+.pwr { border: 1px solid var(--danger-border); color: var(--danger); background: transparent; }
 .pwr:hover { background: var(--danger-weak); border-color: var(--danger); }
 .pwr-shutdown { border-color: var(--warn-border); color: var(--warn); }
 .pwr-shutdown:hover { background: var(--warn-weak); border-color: var(--warn); }

@@ -484,7 +484,9 @@
        拉到整行两端，那样两者看起来像不相干的两个数据。
        上限同时受容器宽度约束（min(100%, N*112px)），窄屏下自动收缩不溢出。 */
     var cols = Math.min(names.length, 4);
-    el.style.gridTemplateColumns = 'repeat(' + cols + ', minmax(0, 1fr))';
+    /* 列数只写在 data-cols 上，网格由 CSS 决定：
+       内联 grid-template-columns 会盖掉窄屏媒体查询，手机上就无法降成两列 */
+    el.dataset.cols = String(cols);
     el.style.maxWidth = 'min(100%, ' + (cols * 112) + 'px)';
   }
 
