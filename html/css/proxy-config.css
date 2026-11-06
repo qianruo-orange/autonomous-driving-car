@@ -12,3 +12,11 @@
 @media (max-width:720px){
   .proxy-head-actions{margin-left:0;width:100%;justify-content:flex-start}
 }
+
+/* 测试结果直接显示在卡片标题栏，不再占字段下方一行 */
+#network_title .nt-result{display:none;font-size:12px;color:var(--muted);max-width:38vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#network_title .nt-result:not(:empty){display:inline-block}
+#network_title .nt-result.testing{color:var(--accent)}
+#network_title .nt-result .nt-ok{color:#4cc9a0}
+#network_title .nt-result .nt-fail{color:#e0556a}
+#network_title .nt-result .nt-val{color:var(--text);font-weight:600}

@@ -96,7 +96,9 @@
     <span class="proxy-badge" id="proxy_service_badge">—</span>
     <span class="card-status" id="status_nettest"></span>
     <span class="proxy-head-actions">
-      <button type="button" class="btn btn-save card-save" id="proxy_save">💾 <span data-i18n="保存">保存</span></button>
+      <span class="nt-result" id="nt_ping_result"></span>
+    <span class="nt-result" id="nt_speed_result"></span>
+    <button type="button" class="btn btn-save card-save" id="proxy_save">💾 <span data-i18n="保存">保存</span></button>
     </span>
   </h3>
   <div class="net-grid" id="card_nettest">
@@ -106,11 +108,9 @@
     <div class="net-field"><label for="proxy_no_proxy" data-i18n="不走代理的地址">不走代理的地址</label><input type="text" id="proxy_no_proxy" autocomplete="off"></div>
     <div class="net-field w6"><label for="nt_ping_target" data-i18n="Ping 测试">Ping 测试</label>
       <div class="nt-input-group"><input type="text" id="nt_ping_target" data-i18n-ph="IP / 域名" placeholder="IP / 域名" value="192.168.1.1"><button type="button" class="btn btn-back nt-go" data-net-test="ping" data-i18n="测试">测试</button></div>
-      <span class="nt-result" id="nt_ping_result"></span>
     </div>
     <div class="net-field w6"><label for="nt_speed_target" data-i18n="网速测试">网速测试</label>
       <div class="nt-input-group"><select id="nt_speed_target"><option value="https://speed.cloudflare.com/__down?bytes=5000000" data-i18n="Cloudflare CDN">Cloudflare CDN</option><option value="https://proof.ovh.net/files/1Mb.dat" data-i18n="OVH (欧洲)">OVH (欧洲)</option><option value="custom" data-i18n="自定义地址">自定义地址</option></select><input type="text" id="nt_speed_custom" placeholder="https://..." style="display:none"><button type="button" class="btn btn-back nt-go" data-net-test="speed" data-i18n="测速">测速</button></div>
-      <span class="nt-result" id="nt_speed_result"></span>
     </div>
   </div>
   <p class="card-status proxy-status" id="status_proxy" role="status" aria-live="polite"></p>
