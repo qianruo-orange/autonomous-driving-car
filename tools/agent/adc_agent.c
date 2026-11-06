@@ -164,10 +164,10 @@ static int http_call(const opts_t *o, const char *method, const char *path,
     int fd = http_open();
     if (fd < 0) return -1;
 
-    char auth[256] = "";
+    char auth[384] = "";
     if (o->token[0]) snprintf(auth, sizeof(auth), "X-Agent-Cap: %s\r\n", o->token);
     else if (o->user[0]) {
-        char raw[200], enc[280];
+        char raw[200], enc[300];
         snprintf(raw, sizeof(raw), "%s:%s", o->user, o->password);
         if (base64(raw, enc, sizeof(enc)) > 0)
             snprintf(auth, sizeof(auth), "Authorization: Basic %s\r\n", enc);
@@ -678,8 +678,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "https is not supported by this build (loopback only)\n");
         return 2;
     }
-    char hostbuf[128];
-    snprintf(hostbuf, sizeof(hostbuf), "%s", hp);
+    char hostbuf[256];
+    snprintf(hostbuf, sizeof(hostbuf), "%.200s", hp);
     char *slash = strchr(hostbuf, '/');
     if (slash) *slash = 0;
     char *colon = strrchr(hostbuf, ':');

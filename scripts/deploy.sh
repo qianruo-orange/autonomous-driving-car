@@ -177,28 +177,38 @@ do_install() {
     cp -r "$PROJECT_DIR/html" "$DEPLOY_DIR/html"
 
     echo "[CLEAN] retired tooling"
+    # 工程已不含任何 Python：清掉旧部署残留的脚本与解释器产物
     if [ -d "$DEPLOY_DIR/scripts" ]; then
         find "$DEPLOY_DIR/scripts" -type f \( -name '*.py' -o -name '*.pyc' -o -name '*.pyo' \) -delete
         find "$DEPLOY_DIR/scripts" -depth -type d -empty -delete
     fi
+    rm -f "$DEPLOY_DIR/bin/codex_bridge.py" "$DEPLOY_DIR/bin/proxy_config.py"
 
     echo "[INSTALL] recordings/{logs,videos,results}/"
     mkdir -p "$DEPLOY_DIR/recordings/logs" "$DEPLOY_DIR/recordings/videos" "$DEPLOY_DIR/recordings/results"
 
+    echo "[INSTALL] on-board tools (adc-agent, codex-bridge)"
+    for tool in adc-agent codex-bridge; do
+        if [ ! -x "$PROJECT_DIR/bin/$tool" ]; then
+            echo "[ERROR] missing $PROJECT_DIR/bin/$tool; run scripts/build.sh first"
+            systemctl start "$SERVICE_NAME" 2>/dev/null || true
+            return 1
+        fi
+        cp "$PROJECT_DIR/bin/$tool" "$DEPLOY_DIR/bin/$tool"
+        chmod 755 "$DEPLOY_DIR/bin/$tool"
+    done
+
     echo "[INSTALL] Codex chat bridge"
     mkdir -p "$DEPLOY_DIR/.codex/out" "$DEPLOY_DIR/.codex/inbox" \
              "$DEPLOY_DIR/recordings/codex"
-    cp "$PROJECT_DIR/scripts/codex_bridge.py" "$DEPLOY_DIR/bin/codex_bridge.py"
-    chmod 755 "$DEPLOY_DIR/bin/codex_bridge.py"
     if id -u qianruo >/dev/null 2>&1; then
         chown -R qianruo:qianruo "$DEPLOY_DIR/.codex" "$DEPLOY_DIR/recordings/codex"
     fi
     chmod 700 "$DEPLOY_DIR/.codex"
 
     echo "[INSTALL] network proxy editor"
-    mkdir -p "$DEPLOY_DIR/recordings/proxy-out" "$DEPLOY_DIR/recordings/proxy-backups"
-    cp "$PROJECT_DIR/scripts/proxy_config.py" "$DEPLOY_DIR/bin/proxy_config.py"
-    chmod 755 "$DEPLOY_DIR/bin/proxy_config.py"
+    # 代理配置由主程序进程内处理，这里只准备备份目录
+    mkdir -p "$DEPLOY_DIR/recordings/proxy-backups"
     if [ ! -f /etc/proxy-client.conf ]; then
         cat > /etc/proxy-client.conf <<'PROXYEOF'
 # 开发板网络代理配置文件

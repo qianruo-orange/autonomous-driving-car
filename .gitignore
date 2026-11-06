@@ -101,7 +101,3 @@ config/vofa.conf
 config/.vofa.conf.*
 config/ano.conf
 config/.ano.conf.*
-
-# Python bytecode
-__pycache__/
-*.pyc

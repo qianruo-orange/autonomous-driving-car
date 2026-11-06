@@ -357,6 +357,6 @@ void http_agent_frame(app_ctx_t *app, int fd, const char *method,
     }
     if (http_write_all(fd, header, (size_t)hn) != 0 ||
         http_write_all(fd, jpeg, len) != 0)
-        LOG_WARN("agent: short write while serving a frame");
+        LOG_INFO("agent: short write while serving a frame");
     free(jpeg);
 }

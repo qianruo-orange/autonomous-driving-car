@@ -17,15 +17,17 @@
 
 #include <stddef.h>
 
+#include "core/common.h"
+
 /* 把 perception JSON 对象追加到 out（不含外层 key），返回写入后的偏移；
    失败返回 -1。size 不足时截断为 -1，不做部分写入。 */
 int agent_perception_json(char *out, size_t size, int off);
 
 /* HTTP 处理函数。frame 支持 ?b64=1（JSON 内嵌 base64，便于单次工具调用返回）
    与 ?max_bytes=N（超过则 413，避免把 4 MB 的帧塞给上游模型）。 */
-void http_agent_perception(struct app_ctx_t *app, int fd, const char *method,
+void http_agent_perception(app_ctx_t *app, int fd, const char *method,
                            const char *uri, const char *req);
-void http_agent_frame(struct app_ctx_t *app, int fd, const char *method,
+void http_agent_frame(app_ctx_t *app, int fd, const char *method,
                       const char *uri, const char *req);
 
 #endif
