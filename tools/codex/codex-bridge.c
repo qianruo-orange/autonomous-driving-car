@@ -381,8 +381,14 @@ static int read_all(const char *path, sb_t *out)
 static int write_atomic(const char *path, const char *data, size_t len, mode_t mode)
 {
     char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    /* O_NOFOLLOW：桥接是 root，而 .codex/out 与 recordings/codex 对服务账号可写
+     * （子进程以 qianruo 写录像）。少这个标志，本地用户放一个 reply.json.tmp
+     * 指向 /etc/shadow 就能让 root 去截断它。 */
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0)
         return -1;
     size_t off = 0;
@@ -1317,20 +1323,30 @@ static void build_update_env(env_t *e)
  * the bridge itself is not root.  Dropping only when we actually are root is
  * the same thing in production (systemd starts us as root) and keeps the
  * non-root case working for local testing. */
-static void drop_privileges(void)
+/* 返回 0 = 已经（或本来就）是目标身份；非 0 = 失败的 errno，调用方必须 abort。
+ *
+ * 以前的写法是"任何一步失败就 return"，那次 return 意味着 codex 以 root 身份
+ * 带着 --sandbox danger-full-access 跑起来，而且没有任何日志。既然桥接本身以
+ * root 被拉起，降权失败就是硬错误，不能降级成"继续跑"。 */
+static int drop_privileges(void)
 {
     if (geteuid() != 0)
-        return;
+        return 0;
     struct passwd *pw = getpwnam(CLI_USER);
-    if (!pw)
-        return;
-    if (setgroups(0, NULL) != 0) {
-        /* keep going: uid/gid below still restrict the child */
+    if (!pw) {
+        int err = errno;
+        return err ? err : ENOENT;
     }
+    /* setgroups 在部分 LSM 配置下会被拒；uid/gid 仍然会限制子进程，所以它失败
+     * 不阻断，但下面两步失败必须阻断。 */
+    (void)setgroups(0, NULL);
     if (setgid(pw->pw_gid) != 0)
-        return;
+        return errno ? errno : EPERM;
     if (setuid(pw->pw_uid) != 0)
-        return;
+        return errno ? errno : EPERM;
+    if (setuid(0) == 0)      /* 仍能拿到 root：说明 setuid 没真正生效 */
+        return EPERM;
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1433,7 +1449,12 @@ static int run_proc(char *const argv[], env_t *env, const char *cwd,
             (void)w;
             _exit(127);
         }
-        drop_privileges();
+        int perr = drop_privileges();
+        if (perr) {
+            ssize_t w = write(exec_pipe[1], &perr, sizeof(perr));
+            (void)w;
+            _exit(127);
+        }
         execve(argv[0], argv, env->v);
         int err = errno;
         ssize_t w = write(exec_pipe[1], &err, sizeof(err));
@@ -1739,7 +1760,8 @@ static jval *app_server_call(const char *method, jval *params, int timeout_ms,
         int devnull = open("/dev/null", O_WRONLY);
         if (devnull >= 0)
             dup2(devnull, STDERR_FILENO);
-        drop_privileges();
+        if (drop_privileges())
+            _exit(127);
         char *argv[3];
         argv[0] = cli;
         argv[1] = (char *)"app-server";
@@ -2497,7 +2519,7 @@ static char *slice_dup(const char *s, size_t start, size_t end)
 static int record_name_ok(const char *name)
 {
     /* ^chat_\d{8}\.txt$ */
-    if (!name || strncmp(name, "chat_", 5) != 0)
+    if (!name || strlen(name) != 17 || strncmp(name, "chat_", 5) != 0)
         return 0;
     for (int i = 0; i < 8; i++)
         if (!isdigit((unsigned char)name[5 + i]))
@@ -4111,7 +4133,8 @@ static pid_t spawn_login_pty(const char *cli, int *master_out)
         if (slave > 2)
             close(slave);
         close(master);
-        drop_privileges();
+        if (drop_privileges())
+            _exit(127);
         char *argv[4];
         argv[0] = (char *)cli;
         argv[1] = (char *)"login";

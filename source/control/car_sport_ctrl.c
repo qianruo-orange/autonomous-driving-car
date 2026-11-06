@@ -54,6 +54,9 @@ static const double defaults[N] = {0,    0, .3, .15, .04, 300, .4, 0,   0, .15, 
 /* How long a fresh command may wait for the decoder's first wheel frame
  * before the missing feedback is treated as an actuator fault. */
 #define AGENT_FEEDBACK_GRACE_MS 500ull
+/* 租约到期后先停车、再等这段时间：HTTP 只有一条事件循环线程，一次几秒的阻塞
+ * 不等于执行器失联，不该要求操作员到现场重新 arm。超过宽限仍未续租才锁存。 */
+#define AGENT_LEASE_GRACE_MS    1500ull
 static struct {
     pthread_mutex_t lock, feedback_lock, save_lock;
     pthread_cond_t changed;
@@ -210,9 +213,20 @@ static void agent_tick(unsigned long long now, int can_enabled)
      * can still show what would have been commanded. */
     follow_mix(g.ag.v, g.ag.steer, g.cfg[SPEED], &g.left_target, &g.right_target);
 
-    if (!g.ag.expiry_ms || now > g.ag.expiry_ms) {
+    if (!g.ag.expiry_ms) {
+        /* No outstanding command at all: hold still without latching. */
+        stop_wheels("agent_idle");
+        g.ag.state = AGENT_MOTION_IDLE;
+        return;
+    }
+    if (now > g.ag.expiry_ms) {
+        /* The wheels stop on the very first missed lease, but the latch waits
+         * out a grace window: a blocked HTTP thread jitters the 8 Hz pulse
+         * train, and that must not turn into a state only a human can clear.
+         * Past the window the caller really is gone, so latch as before. */
         stop_wheels("lease_expired");
-        agent_latch("lease_expired");
+        if (now - g.ag.expiry_ms >= AGENT_LEASE_GRACE_MS)
+            agent_latch("lease_expired");
         return;
     }
     /* Transport-level preconditions first: they do not depend on feedback, so a
@@ -490,15 +504,17 @@ int follow_agent_cmd(double v, double steer, unsigned ttl_ms)
     return 0;
 }
 
-void follow_agent_cancel(void)
+void follow_agent_cancel(int disable_profile)
 {
     if (!atomic_load(&g.ready))
         return;
-    /* Ending agent motion must never hand control back to the vision path:
-     * an enabled profile would otherwise resume chasing a target the moment
-     * the agent stops talking. The profile is disabled and the operator has
-     * to re-enable it explicitly. */
-    (void)follow_force_disable("agent_stopped");
+    /* disable_profile=1（stop/estop/disarm）：结束智能体运动绝不能把控制权交回
+     * 视觉路径——开着 profile 的话，智能体一停止说话车就会去追目标。所以关掉
+     * profile，由操作员显式重开。
+     * disable_profile=0（release）：只放弃租约。一条计划正常跑完后调用它，下一次
+     * plan 才能接着跑，否则每次结束都要人点一次"启用"。 */
+    if (disable_profile)
+        (void)follow_force_disable("agent_stopped");
     pthread_mutex_lock(&g.lock);
     g.ag.state = AGENT_MOTION_IDLE;
     g.ag.expiry_ms = 0;

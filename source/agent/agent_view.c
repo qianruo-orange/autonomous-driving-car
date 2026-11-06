@@ -27,7 +27,6 @@
 #include "yolo/rknn_yolo.h"
 
 #define VIEW_MAX_OBJECTS     12
-#define VIEW_HIST_RECORDS    8
 #define VIEW_MAX_FRAME_BYTES (2u * 1024u * 1024u)
 
 static int jadd(char *buf, size_t size, int off, const char *fmt, ...)
@@ -68,9 +67,8 @@ int agent_perception_json(char *out, size_t size, int off)
 {
     if (!out || !size) return -1;
 
-    yolo_result_t recs[VIEW_HIST_RECORDS];
-    int n = rknn_yolo_results_since(0, recs, VIEW_HIST_RECORDS);
-    const yolo_result_t *r = n > 0 ? &recs[n - 1] : NULL;
+    yolo_result_t rec;
+    const yolo_result_t *r = rknn_yolo_latest(&rec) ? &rec : NULL;
 
     frame_ring_t *ring = video_stream_get_ring();
     frame_ring_stats_t fs;

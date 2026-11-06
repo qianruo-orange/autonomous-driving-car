@@ -54,6 +54,12 @@ int rknn_yolo_decoder_ready(void);
    前端 MJPEG 透传链路用它把检测坐标与原始画面按 seq 精确对齐。 */
 int rknn_yolo_results_since(unsigned long long after, yolo_result_t *out, int max);
 
+/* 取「最新一条」检测结果：每帧推理完成后覆盖写，只保留 seq 最大的那次。
+   返回 1 = 已写入 out，0 = 还没有任何结果。
+   需要最新一帧时必须用它，不能用 results_since(0, buf, N) 取末尾——那个函数
+   是从最旧一条开始填的，且受 N 与环形深度 YOLO_HIST_N 的关系影响。 */
+int rknn_yolo_latest(yolo_result_t *out);
+
 /* 类别名（只读，进程生命周期内有效）；越界返回 "object"。 */
 const char *rknn_yolo_class_name(int cls);
 

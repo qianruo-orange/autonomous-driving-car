@@ -79,7 +79,10 @@ typedef struct {
 } agent_motion_t;
 
 int follow_agent_cmd(double v, double steer, unsigned ttl_ms);
-void follow_agent_cancel(void);
+/* 放弃当前租约并停车。disable_profile=1 同时关闭 profile（stop/estop/disarm：
+ * 防止视觉路径在智能体闭嘴后接管）；=0 只释放租约（release：计划正常结束，
+ * 后续指令仍可接着下）。 */
+void follow_agent_cancel(int disable_profile);
 void follow_agent_reset(void);
 int follow_agent_snapshot(agent_motion_t *out);
 int follow_profile_enabled(void);

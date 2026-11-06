@@ -19,6 +19,8 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +48,20 @@ typedef struct {
 } proxy_conf_t;
 
 /* ---- 小工具 ---- */
+/* snprintf 返回的是"本来想写的长度"，截断时它会大于剩余空间。
+ * 把它直接加到偏移上会让 off 越过缓冲，下一轮 sizeof - off 下溢成巨大的 size_t，
+ * 指针跑到栈外。所有拼接都必须走这里：只在完整写入时前进偏移。 */
+static int sadd(char *buf, size_t size, int off, const char *fmt, ...)
+{
+    if (off < 0 || (size_t)off >= size) return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + off, size - (size_t)off, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= size - (size_t)off) return -1;
+    return off + n;
+}
+
 /* 配置文件里换行是有意义的结构，不能像普通 JSON 字符串那样把它吃掉。 */
 static void escape_text(const char *in, char *out, size_t size)
 {
@@ -270,8 +286,11 @@ static void service_state(char *state, size_t size)
 
 static int service_set(int enabled, char *err, size_t errlen)
 {
-    char cmd[160], out[512];
-    snprintf(cmd, sizeof(cmd), "systemctl %s " PROXY_SERVICE " 2>&1", enabled ? "restart" : "stop");
+    char cmd[180], out[512];
+    /* --no-block：restart 的等待是秒级的，而 HTTP 只有一条事件循环线程，
+     * 它卡住的每一毫秒都在推迟 /api/agent/motion 的续租。 */
+    snprintf(cmd, sizeof(cmd), "systemctl %s %s " PROXY_SERVICE " 2>&1",
+             enabled ? "--no-block restart" : "--no-block stop");
     int rc = run_cmd(cmd, out, sizeof(out));
     if (rc != 0) {
         snprintf(err, errlen, "%.300s", out[0] ? out : "systemctl failed");
@@ -322,16 +341,15 @@ static int body_bool(const char *body, const char *key, int *present)
 static void reply_config(int fd, const proxy_conf_t *c, const char *backup, int applied,
                          const char *apply_error)
 {
-    char url[192], service[32], sysenv[1024];
+    char url[192], service[32], sysenv[2048];
     proxy_url(c, url, sizeof(url));
     service_state(service, sizeof(service));
 
     /* 板级环境变量：proxy-client.service 写进 /etc/environment 的最终值 */
     char envraw[4096];
     read_all("/etc/environment", envraw, sizeof(envraw));
-    int eoff = 0;
     const char *wanted[] = { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY" };
-    eoff += snprintf(sysenv + eoff, sizeof(sysenv) - (size_t)eoff, "{");
+    int eoff = sadd(sysenv, sizeof(sysenv), 0, "{");
     for (int i = 0; i < 4; i++) {
         char found[256] = "";
         char *copy = strdup(envraw);
@@ -346,10 +364,11 @@ static void reply_config(int fd, const proxy_conf_t *c, const char *backup, int 
         }
         char esc[300];
         http_json_escape(found, esc, sizeof(esc));
-        eoff += snprintf(sysenv + eoff, sizeof(sysenv) - (size_t)eoff, "%s\"%s\":\"%s\"",
-                         i ? "," : "", wanted[i], esc);
+        eoff = sadd(sysenv, sizeof(sysenv), eoff, "%s\"%s\":\"%s\"",
+                    i ? "," : "", wanted[i], esc);
     }
-    snprintf(sysenv + eoff, sizeof(sysenv) - (size_t)eoff, "}");
+    eoff = sadd(sysenv, sizeof(sysenv), eoff, "}");
+    if (eoff < 0) snprintf(sysenv, sizeof(sysenv), "{}");
 
     char esc_raw[PROXY_RAW_MAX * 6 / 5 + 32];
     escape_text(c->raw, esc_raw, sizeof(esc_raw));
@@ -358,7 +377,7 @@ static void reply_config(int fd, const proxy_conf_t *c, const char *backup, int 
     http_json_escape(url, esc_url, sizeof(esc_url));
     http_json_escape(apply_error ? apply_error : "", esc_err, sizeof(esc_err));
 
-    size_t cap = strlen(esc_raw) + 2048;
+    size_t cap = strlen(esc_raw) + 4096;
     char *json = malloc(cap);
     if (!json) { http_err(fd, 500, "Error", "out of memory"); return; }
     int off = snprintf(json, cap,
@@ -373,7 +392,8 @@ static void reply_config(int fd, const proxy_conf_t *c, const char *backup, int 
                        esc_url, esc_raw, sysenv, service,
                        !strcmp(service, "active") ? "true" : "false",
                        esc_backup, applied ? "true" : "false", esc_err);
-    if (off < 0) { free(json); http_err(fd, 500, "Error", "encode failed"); return; }
+    /* off >= cap 表示被截断：此时 http_ok_json 会按 off 读出去，必须当错误处理。 */
+    if (off < 0 || (size_t)off >= cap) { free(json); http_err(fd, 500, "Error", "encode failed"); return; }
     http_ok_json(fd, json, (size_t)off);
     free(json);
 }
@@ -465,7 +485,7 @@ static int tcp_probe(const char *host, int port, char *err, size_t errlen)
             ok = 1;
         } else if (errno == EINPROGRESS) {
             struct pollfd pfd = { .fd = s, .events = POLLOUT };
-            if (poll(&pfd, 1, 5000) == 1) {
+            if (poll(&pfd, 1, 1500) == 1) {
                 int soerr = 0;
                 socklen_t len = sizeof(soerr);
                 if (getsockopt(s, SOL_SOCKET, SO_ERROR, &soerr, &len) == 0 && soerr == 0) ok = 1;
@@ -482,15 +502,14 @@ static int tcp_probe(const char *host, int port, char *err, size_t errlen)
     return ok;
 }
 
-void http_proxy_test(app_ctx_t *app, int fd, const char *method,
-                     const char *uri, const char *req)
+/* 真正的探测：最坏情况 curl 5 s + tcp 1.5 s。它绝不能跑在事件循环里——那个线程
+ * 同时负责 /api/agent/motion 的应答，卡过 500 ms 就会让租约到期、车被硬停。 */
+static void proxy_test_run(char *json, size_t size)
 {
-    (void)app; (void)method; (void)uri; (void)req;
     proxy_conf_t conf;
     conf_read(&conf);
     if (!conf_valid(&conf)) {
-        static const char msg[] = "{\"ok\":false,\"error\":\"invalid proxy configuration\"}";
-        http_ok_json(fd, msg, sizeof(msg) - 1);
+        snprintf(json, size, "{\"ok\":false,\"error\":\"invalid proxy configuration\"}");
         return;
     }
     char url[192], tcp_error[200] = "";
@@ -501,7 +520,7 @@ void http_proxy_test(app_ctx_t *app, int fd, const char *method,
     snprintf(cmd, sizeof(cmd),
              "env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy "
              "curl -sS -o /dev/null -w '%%{http_code}' --proxy '%s' "
-             "--connect-timeout 8 --max-time 15 https://api.openai.com/v1/models 2>/dev/null", url);
+             "--connect-timeout 3 --max-time 5 https://api.openai.com/v1/models 2>/dev/null", url);
     int rc = run_cmd(cmd, out, sizeof(out));
     int http_code = 0;
     for (const char *p = out; *p; p++) if (*p >= '0' && *p <= '9') http_code = http_code * 10 + (*p - '0');
@@ -515,11 +534,87 @@ void http_proxy_test(app_ctx_t *app, int fd, const char *method,
     http_json_escape(url, esc_url, sizeof(esc_url));
     http_json_escape(tcp_error, esc_tcp, sizeof(esc_tcp));
     http_json_escape(curl_error, esc_curl, sizeof(esc_curl));
-    char json[1024];
-    int off = snprintf(json, sizeof(json),
-                       "{\"ok\":true,\"url\":\"%s\",\"tcp\":%s,\"tcp_error\":\"%s\","
-                       "\"http_code\":%d,\"curl_error\":\"%s\",\"reachable\":%s}",
-                       esc_url, tcp_ok ? "true" : "false", esc_tcp, http_code, esc_curl,
-                       reachable ? "true" : "false");
-    http_ok_json(fd, json, (size_t)off);
+    snprintf(json, size,
+             "{\"ok\":true,\"url\":\"%s\",\"tcp\":%s,\"tcp_error\":\"%s\","
+             "\"http_code\":%d,\"curl_error\":\"%s\",\"reachable\":%s}",
+             esc_url, tcp_ok ? "true" : "false", esc_tcp, http_code, esc_curl,
+             reachable ? "true" : "false");
+}
+
+/* 单槽结果：同一时刻只允许一次探测在跑，第二次 POST 返回 429 而不是排队。
+ * 这也是报告里建议的"同一客户端冷却"，只是把窗口收成"上一次还没结束"。 */
+#define PT_JSON_MAX 1024
+typedef struct {
+    int    pending;
+    char   json[PT_JSON_MAX];
+    time_t finished_at;
+} proxy_test_t;
+
+static proxy_test_t    g_pt;
+static pthread_mutex_t g_pt_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *proxy_test_worker(void *arg)
+{
+    (void)arg;
+    char buf[PT_JSON_MAX];
+    proxy_test_run(buf, sizeof(buf));
+    pthread_mutex_lock(&g_pt_lock);
+    safe_strncpy(g_pt.json, sizeof(g_pt.json), buf);
+    g_pt.pending = 0;
+    g_pt.finished_at = time(NULL);
+    pthread_mutex_unlock(&g_pt_lock);
+    return NULL;
+}
+
+/* ---- /api/proxy/test ----
+ * POST：提交一次探测，立即返回 {"ok":true,"pending":true}；
+ * GET ：轮询上一次的结果，仍在跑时同样返回 pending。
+ * 契约从"同步等结果"变成"提交 + 轮询"，因为同步等待曾让整个 Web 面被串行化。 */
+void http_proxy_test(app_ctx_t *app, int fd, const char *method,
+                     const char *uri, const char *req)
+{
+    (void)app; (void)uri; (void)req;
+
+    static const char kPending[] = "{\"ok\":true,\"pending\":true}";
+
+    if (strcmp(method, "POST") != 0) {
+        char body[PT_JSON_MAX];
+        int pending;
+        time_t done;
+        pthread_mutex_lock(&g_pt_lock);
+        pending = g_pt.pending;
+        done = g_pt.finished_at;
+        safe_strncpy(body, sizeof(body), g_pt.json);
+        pthread_mutex_unlock(&g_pt_lock);
+
+        if (pending) { http_ok_json(fd, kPending, sizeof(kPending) - 1); return; }
+        if (body[0]) { http_ok_json(fd, body, strlen(body)); return; }
+        char empty[128];
+        int n = snprintf(empty, sizeof(empty),
+                         "{\"ok\":true,\"pending\":false,\"never_run\":true}");
+        (void)done;
+        http_ok_json(fd, empty, (size_t)n);
+        return;
+    }
+
+    pthread_mutex_lock(&g_pt_lock);
+    if (g_pt.pending) {
+        pthread_mutex_unlock(&g_pt_lock);
+        http_err(fd, 429, "Too Many Requests",
+                 "{\"ok\":false,\"error\":\"a proxy test is already running\"}");
+        return;
+    }
+    g_pt.pending = 1;
+    g_pt.json[0] = 0;
+    pthread_mutex_unlock(&g_pt_lock);
+
+    if (http_worker_start(proxy_test_worker, NULL) != 0) {
+        pthread_mutex_lock(&g_pt_lock);
+        g_pt.pending = 0;
+        pthread_mutex_unlock(&g_pt_lock);
+        http_err(fd, 503, "Service Unavailable",
+                 "{\"ok\":false,\"error\":\"cannot start proxy test\"}");
+        return;
+    }
+    http_ok_json(fd, kPending, sizeof(kPending) - 1);
 }

@@ -90,17 +90,28 @@ static void serve_rec_list(int fd)
                 struct ent t = ents[i]; ents[i] = ents[j]; ents[j] = t;
             }
 
+    /* 按 mtime 倒序尽量装：录满一天后条目会超过 64 KB 的响应缓冲，此时只返回
+     * 最近的一段并置 truncated=true，绝不把构造失败的 -1 当长度传出去。 */
     char json[65536];
     int off = snprintf(json, sizeof(json), "{\"files\":[");
+    int emitted = 0;
     for (int i = 0; i < n; i++) {
+        if (off < 0 || (size_t)off + 128 > sizeof(json)) break;
         char ts[32];
         strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", localtime(&ents[i].mtime));
-        off = http_json_append(json, sizeof(json), off,
+        int noff = http_json_append(json, sizeof(json), off,
             "%s{\"name\":\"%s\",\"size\":%lld,\"mtime\":\"%s\"}",
-            i ? "," : "", ents[i].name, (long long)ents[i].size, ts);
-        if (off < 0) break;
+            emitted ? "," : "", ents[i].name, (long long)ents[i].size, ts);
+        if (noff < 0) break;
+        off = noff;
+        emitted++;
     }
-    off = http_json_append(json, sizeof(json), off, "]}");
+    off = http_json_append(json, sizeof(json), off, "],\"total\":%d,\"truncated\":%s}",
+                           n, emitted < n ? "true" : "false");
+    if (off < 0) {
+        http_err(fd, 500, "Error", "recording list could not be encoded");
+        return;
+    }
     http_ok_json(fd, json, (size_t)off);
 }
 

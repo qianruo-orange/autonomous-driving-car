@@ -38,6 +38,8 @@
 #define HTTP_TIMEOUT_MS 5000
 #define PLAN_SEG_MAX    64
 #define RESP_MAX        (512 * 1024)
+/* token --persist 的落盘位置，与服务端 AGENT_DIR 保持一致 */
+#define AGENT_TOKEN_FILE "recordings/agent/token"
 
 typedef struct {
     double v, steer;
@@ -203,13 +205,20 @@ static int http_call(const opts_t *o, const char *method, const char *path,
     char *buf = malloc(resp_size);
     if (!buf) { close(fd); return -1; }
     size_t got = 0;
+    int truncated = 0;
     for (;;) {
-        if (got + 1 >= resp_size) break;
+        if (got + 1 >= resp_size) { truncated = 1; break; }
         ssize_t n = recv(fd, buf + got, resp_size - 1 - got, 0);
         if (n <= 0) break;
         got += (size_t)n;
     }
     close(fd);
+    if (truncated) {
+        /* 半截 JSON 比没有更糟：调用方会把它当完整结果解析。 */
+        free(buf);
+        resp[0] = 0;
+        return -2;
+    }
     buf[got] = 0;
 
     int status = -1;
@@ -428,12 +437,21 @@ static int cmd_frame(const opts_t *o)
     if (o->save[0] && !o->b64)
         return frame_to_file(o, o->save) == 0 ? 0 : 4;
 
-    char *resp = malloc(RESP_MAX);
+    /* base64 把体积放大到 4/3，再算上 JSON 包装；按 max_bytes 定容，否则默认
+     * 1 MiB 的帧（约 1.37 MB 的 base64）会被 512 KB 的通用缓冲截断成半截 JSON，
+     * 而且退出码还是 0。 */
+    long limit = o->max_bytes > 0 ? o->max_bytes : 1048576L;
+    size_t cap = (size_t)limit * 4 / 3 + 4096;
+    char *resp = malloc(cap);
     if (!resp) return 4;
     char path[256];
-    snprintf(path, sizeof(path), "/api/agent/frame?b64=%d&max_bytes=%ld", o->b64 ? 1 : 0,
-             o->max_bytes > 0 ? o->max_bytes : 1048576L);
-    int code = http_call(o, "GET", path, NULL, resp, RESP_MAX);
+    snprintf(path, sizeof(path), "/api/agent/frame?b64=%d&max_bytes=%ld", o->b64 ? 1 : 0, limit);
+    int code = http_call(o, "GET", path, NULL, resp, cap);
+    if (code == -2) {
+        jprint("{\"error\":\"frame larger than %ld bytes; lower --max-bytes or use --save\"}", limit);
+        free(resp);
+        return 4;
+    }
     if (code != 200) {
         char esc[256];
         json_escape(code < 0 ? "transport failure" : resp, esc, sizeof(esc));
@@ -580,7 +598,9 @@ static int cmd_drive(const opts_t *o)
             sleep_ms(1000 / HZ);
         }
     }
-    cmd_simple(o, "POST", "/api/agent/stop", "");
+    /* 正常跑完用 release：只放弃租约，不动操作员的 follow 开关。用 stop 的话每次
+     * 结束都会关掉 profile，下一段 plan 的预检必然被拒。中止路径仍然用 stop。 */
+    cmd_simple(o, "POST", "/api/agent/release", "");
     jprint("{\"done\":true,\"commands\":%d,\"seconds\":%.2f,\"meters\":%.3f}",
            sent, (double)(mono_ms() - started) / 1000.0, total);
     return 0;
@@ -644,6 +664,19 @@ int main(int argc, char **argv)
 
     const char *env = getenv("AGENT_CAP");
     if (env) snprintf(o.token, sizeof(o.token), "%s", env);
+    if (!o.token[0]) {
+        /* token --persist 写下的交接文件：服务端以 0640/root:qianruo 落盘，
+         * 这里以服务账号读。环境变量优先，文件只是"少一次手工导出"。 */
+        FILE *fp = fopen(AGENT_TOKEN_FILE, "r");
+        if (fp) {
+            if (fgets(o.token, sizeof(o.token), fp)) {
+                size_t n = strlen(o.token);
+                while (n && (o.token[n - 1] == '\n' || o.token[n - 1] == '\r' || o.token[n - 1] == ' '))
+                    o.token[--n] = 0;
+            }
+            fclose(fp);
+        }
+    }
     env = getenv("ADC_USER");
     if (env) snprintf(o.user, sizeof(o.user), "%s", env);
     env = getenv("ADC_PASS");
@@ -726,7 +759,11 @@ int main(int argc, char **argv)
         }
         return cmd_drive(&o);
     }
-    if (!strcmp(cmd, "stop") || !strcmp(cmd, "release")) {
+    if (!strcmp(cmd, "release")) {
+        o.basic = 0;
+        return cmd_simple(&o, "POST", "/api/agent/release", "");
+    }
+    if (!strcmp(cmd, "stop")) {
         if (!o.token[0]) { jprint("{\"error\":\"missing credential\"}"); return 4; }
         return cmd_simple(&o, "POST", "/api/agent/stop", "");
     }

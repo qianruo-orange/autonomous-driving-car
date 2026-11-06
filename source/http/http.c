@@ -258,17 +258,20 @@ static int conn_is_yolo_upload(const http_conn_t *c)
     return strncmp(c->uri, "/api/yolo/upload", sizeof("/api/yolo/upload") - 1) == 0;
 }
 
-/* 追加数据到输出缓冲；超限（慢客户端）直接断开连接 */
+/* 追加数据到输出缓冲；超限（慢客户端）直接断开连接。
+ * 容量判断一律写成减法：len 来自调用方，曾经出现过 (size_t)-1 被当作长度传进来，
+ * 加法回绕后 wlen + len 反而变小，检查恒不成立，随后 memcpy 巨长长度当场段错误。 */
 static int conn_append(http_conn_t *c, const void *data, size_t len)
 {
     if (c->closed || len == 0) return 0;
-    if (c->wlen + len > HTTP_WBUF_MAX) {
+    if (!data || len > HTTP_WBUF_MAX || c->wlen > HTTP_WBUF_MAX - len) {
         conn_close(c);
         return -1;
     }
-    if (c->wlen + len > c->wcap) {
+    if (len > c->wcap - c->wlen) {
+        size_t need = c->wlen + len;
         size_t ncap = c->wcap * 2;
-        while (ncap < c->wlen + len) ncap *= 2;
+        while (ncap < need) ncap *= 2;
         char *nb = realloc(c->wbuf, ncap);
         if (!nb) { conn_close(c); return -1; }
         c->wbuf = nb;
@@ -854,7 +857,7 @@ static void http_process_request(http_conn_t *c)
         { "/api/codex/record",        1, NULL,   http_codex_record,        http_check_auth_root },
         { "/api/codex/export",        0, NULL,   http_codex_export,        http_check_auth_root },
         { "/api/proxy/config",        0, NULL,   http_proxy_config,        http_check_auth_root },
-        { "/api/proxy/test",          0, "POST", http_proxy_test,          http_check_auth_root },
+        { "/api/proxy/test",          0, NULL,   http_proxy_test,          http_check_auth_root },
         /* 智能体能力层：凭证由 root 签发，动作由 root arm；
            motion/observe/stop 只认凭证，不认 Basic，避免把 root 密码交给模型。 */
         { "/api/agent/token",         0, "POST", http_agent_token,         http_check_auth_root },
@@ -862,11 +865,12 @@ static void http_process_request(http_conn_t *c)
         { "/api/agent/arm",           0, "POST", http_agent_arm,           http_check_auth_root },
         { "/api/agent/state",         0, NULL,   http_agent_state,         http_check_auth_root },
         { "/api/agent/audit",         0, NULL,   http_agent_audit,         http_check_auth_root },
-        { "/api/agent/observe",       0, "GET",  http_agent_observe,       NULL },
+        { "/api/agent/observe",       1, "GET",  http_agent_observe,       NULL },
         { "/api/agent/perception",    1, "GET",  http_agent_perception,    NULL },
         { "/api/agent/frame",         1, "GET",  http_agent_frame,         NULL },
         { "/api/agent/motion",        0, "POST", http_agent_motion,        NULL },
         { "/api/agent/stop",          0, "POST", http_agent_stop,          NULL },
+        { "/api/agent/release",       0, "POST", http_agent_release,       NULL },
         { "/api/agent/estop",         0, "POST", http_agent_estop,         NULL },
         { "/api/agent/disarm",        0, "POST", http_agent_disarm,        NULL },
     };

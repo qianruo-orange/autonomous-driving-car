@@ -21,6 +21,8 @@
 
 /* 审计与运行表象 */
 #define AGENT_DIR        "recordings/agent"
+/* 服务账号：凭证落盘后由它读取，也是 codex 桥接降权后的目标用户 */
+#define AGENT_SERVICE_GROUP "qianruo"
 
 int agent_hw_init(void *app);
 void agent_hw_destroy(void *app);
@@ -35,6 +37,8 @@ void http_agent_arm(app_ctx_t *, int, const char *, const char *, const char *);
 void http_agent_disarm(app_ctx_t *, int, const char *, const char *, const char *);
 void http_agent_motion(app_ctx_t *, int, const char *, const char *, const char *);
 void http_agent_stop(app_ctx_t *, int, const char *, const char *, const char *);
+/* 只放弃租约、保留 profile：一条计划正常结束时用它，下一条计划才能直接接上 */
+void http_agent_release(app_ctx_t *, int, const char *, const char *, const char *);
 void http_agent_estop(app_ctx_t *, int, const char *, const char *, const char *);
 void http_agent_observe(app_ctx_t *, int, const char *, const char *, const char *);
 void http_agent_state(app_ctx_t *, int, const char *, const char *, const char *);

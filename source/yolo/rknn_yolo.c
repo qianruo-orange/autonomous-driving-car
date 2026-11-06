@@ -517,8 +517,17 @@ int rknn_yolo_results_since(unsigned long long after, yolo_result_t *out, int ma
     return n;
 }
 
-/* 类别名（只读）：供前端叠加标注框时显示与烧框一致的标签；越界返回 "object"。 */
-const char *rknn_yolo_class_name(int cls)
+int rknn_yolo_latest(yolo_result_t *out)
+{
+    if (!out) return 0;
+    pthread_mutex_lock(&g_yolo.result_mutex);
+    int have = g_yolo.result.seq != 0;
+    if (have) *out = g_yolo.result;
+    pthread_mutex_unlock(&g_yolo.result_mutex);
+    return have;
+}
+
+/* 类别名（只读）：供前端叠加标注框时显示与烧框一致的标签；越界返回 "object"。 */const char *rknn_yolo_class_name(int cls)
 {
     if (cls < 0 || cls >= g_yolo.classes.count) return "object";
     return g_yolo.classes.names[cls];

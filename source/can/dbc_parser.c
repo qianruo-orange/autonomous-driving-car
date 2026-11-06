@@ -119,6 +119,11 @@ static int parse_signal(dbc_t *dbc, const char *line)
     int n = sscanf(line, "SG_ %63s : %d|%d@%c%c (%lf,%lf)%n",
                    name, &start, &len, &order, &type, &factor, &offset, &consumed);
     if (n < 7) return -1;
+    /* 负数起始位是最容易漏掉的一种坏 DBC：Intel 路径的 max_byte 会算成 -1，
+     * 于是 "-1 >= frame->len" 不成立、越界检查被静默绕过，随后 extract_intel()
+     * 用 data[pos/8] 读到帧缓冲之前，pos % 8 为负还触发移位 UB。 */
+    if (start < 0 || len <= 0 || len > 64) return -1;
+    if (start + len > 8 * 64) return -1;
 
     /* 可选部分：[<min>|<max>] "<unit>" */
     double min = 0.0, max = 0.0;
@@ -190,6 +195,8 @@ static int dbc_decode_raw(const dbc_t *dbc, int sig_idx,
 
     const dbc_signal_t *sig = &dbc->signals[sig_idx];
     if (sig->length <= 0 || sig->length > 64) return -1;
+    /* 即使来源是别人手写的 dbc_t（不只 parse_signal），也要挡住负起始位。 */
+    if (sig->start_bit < 0 || sig->start_bit + sig->length > 8 * 64) return -1;
 
     /* 校验信号覆盖的字节是否在帧数据范围内 */
     int max_byte;

@@ -3,6 +3,7 @@
 #include "agent/agent_hw.h"
 
 #include <grp.h>
+#include <stdarg.h>
 #include <math.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -134,6 +135,30 @@ static int req_header(const char *req, const char *name, char *out, size_t size)
     return 0;
 }
 
+/* 拼接 JSON 片段：snprintf 在截断时返回"本来想写的长度"，把它当偏移加回去会让
+ * 下一次 sizeof - off 下溢成巨大的 size_t。只在完整写入时前进偏移。 */
+static int jadd(char *buf, size_t size, int off, const char *fmt, ...)
+{
+    if (off < 0 || (size_t)off >= size) return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + off, size - (size_t)off, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= size - (size_t)off) return -1;
+    return off + n;
+}
+
+/* 任何一个片段放不下就整体 500，绝不把半截 JSON 发出去。 */
+#define CAT(fd, json, off, ...)                                                        \
+    do {                                                                               \
+        int _n = jadd(json, sizeof(json), off, __VA_ARGS__);                            \
+        if (_n < 0) {                                                                  \
+            http_err(fd, 500, "Internal Server Error", "observe response too large");   \
+            return;                                                                    \
+        }                                                                              \
+        off = _n;                                                                      \
+    } while (0)
+
 static void audit_path(char *out, size_t size)
 {
     time_t now = time(NULL);
@@ -146,28 +171,64 @@ static void audit_path(char *out, size_t size)
 }
 
 /* One JSON object per accepted or refused operation. This is the only artefact
- * that survives a restart, so it carries the full argument set and verdict. */
+ * that survives a restart, so it carries the full argument set and verdict.
+ *
+ * 文件句柄常开：这条路径在 8 Hz 的指令流上，逐条 fopen/fclose 会把一个实时
+ * 控制循环的旁路变成每秒 8 次 open+write+close。每 AUDIT_FLUSH_LINES 行或
+ * 超过 1 s 才 fflush，崩溃时最多丢这一段。 */
+#define AUDIT_FLUSH_LINES 64
+static struct {
+    FILE   *fp;
+    int     day;
+    int     lines;
+    time_t  last_flush;
+} g_audit;
+static pthread_mutex_t g_audit_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int audit_day(struct tm *parts)
+{
+    return (parts->tm_year + 1900) * 10000 + (parts->tm_mon + 1) * 100 + parts->tm_mday;
+}
+
 static void audit(const char *tool, const char *actor, const char *args, const char *result,
                   const char *reason)
 {
-    (void)mkdir(PATH_RECORDINGS, 0755);
-    (void)mkdir(AGENT_DIR, 0755);
-    char path[96];
-    audit_path(path, sizeof(path));
-    FILE *f = fopen(path, "a");
-    if (!f) return;
     time_t now = time(NULL);
     struct tm parts;
-    char ts[32] = "";
-    if (localtime_r(&now, &parts)) strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &parts);
+    if (!localtime_r(&now, &parts)) return;
+    int day = audit_day(&parts);
+
     char a_args[320], a_reason[96], a_actor[48];
     json_escape(args ? args : "", a_args, sizeof(a_args));
     json_escape(reason ? reason : "", a_reason, sizeof(a_reason));
     json_escape(actor ? actor : "-", a_actor, sizeof(a_actor));
-    fprintf(f, "{\"ts\":\"%s\",\"mono_ms\":%llu,\"tool\":\"%s\",\"actor\":\"%s\",\"args\":\"%s\","
-               "\"result\":\"%s\",\"reason\":\"%s\"}\n",
+    char ts[32];
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &parts);
+
+    pthread_mutex_lock(&g_audit_lock);
+    if (g_audit.fp && g_audit.day != day) {
+        fclose(g_audit.fp);
+        g_audit.fp = NULL;
+    }
+    if (!g_audit.fp) {
+        char path[96];
+        audit_path(path, sizeof(path));
+        g_audit.fp = fopen(path, "a");
+        g_audit.day = day;
+        g_audit.lines = 0;
+        if (!g_audit.fp) { pthread_mutex_unlock(&g_audit_lock); return; }
+    }
+    fprintf(g_audit.fp,
+            "{\"ts\":\"%s\",\"mono_ms\":%llu,\"tool\":\"%s\",\"actor\":\"%s\",\"args\":\"%s\","
+            "\"result\":\"%s\",\"reason\":\"%s\"}\n",
             ts, now_ms(), tool, a_actor, a_args, result, a_reason);
-    fclose(f);
+    g_audit.lines++;
+    if (g_audit.lines >= AUDIT_FLUSH_LINES || now - g_audit.last_flush >= 1) {
+        fflush(g_audit.fp);
+        g_audit.lines = 0;
+        g_audit.last_flush = now;
+    }
+    pthread_mutex_unlock(&g_audit_lock);
 }
 
 static void actor_of(const cap_t *cap, char *out, size_t size)
@@ -268,8 +329,8 @@ static void send_state_json(int fd)
 {
     char json[1024];
     int off = 0;
-    off += snprintf(json + off, sizeof(json) - off, "{\"armed\":%s,", s.armed ? "true" : "false");
-    off += snprintf(json + off, sizeof(json) - off,
+    CAT(fd, json, off, "{\"armed\":%s,", s.armed ? "true" : "false");
+    CAT(fd, json, off,
                     "\"armed_token\":\"%.6s\",\"cmds\":%llu,\"rejected\":%llu,\"stops\":%llu,"
                     "\"faults\":%llu,\"last_reject\":\"%s\",\"caps\":[",
                     s.armed ? s.armed_token : "", s.cmds, s.rejected, s.stops, s.faults,
@@ -277,7 +338,7 @@ static void send_state_json(int fd)
     int first = 1;
     for (int i = 0; i < AGENT_TOKENS && off < (int)sizeof(json) - 200; i++) {
         if (!s.caps[i].live) continue;
-        off += snprintf(json + off, sizeof(json) - off,
+        CAT(fd, json, off,
                         "%s{\"label\":\"%s\",\"mask\":\"%.6s\",\"scope\":%u,\"v_max\":%.3f,"
                         "\"steer_max\":%.3f,\"budget_m\":%.1f,\"used_m\":%.2f,\"ttl_s\":%llu}",
                         first ? "" : ",", s.caps[i].label, s.caps[i].token, s.caps[i].scope,
@@ -286,7 +347,7 @@ static void send_state_json(int fd)
                         (s.caps[i].expires_ms - now_ms()) / 1000);
         first = 0;
     }
-    off += snprintf(json + off, sizeof(json) - off, "]}");
+    CAT(fd, json, off, "]}");
     http_ok_json(fd, json, (size_t)off);
 }
 
@@ -378,15 +439,20 @@ void http_agent_token(app_ctx_t *app, int fd, const char *method, const char *ur
     int persist = 0;
     const char *p = http_form_find(f, n, "persist");
     if (p && (!strcmp(p, "1") || !strcasecmp(p, "true"))) {
-        /* Opt-in handoff to the on-board agent: group-readable by the service
-         * account, never world-readable, and invalidated by the same expiry. */
-        FILE *out = fopen("config/agent.token", "w");
+        /* Opt-in handoff to the on-board executor: adc-agent reads this file
+         * when $AGENT_CAP is empty. It lives under recordings/ because that
+         * directory is both writable at runtime and excluded from Git — the
+         * previous location (config/) was one `git add -A` away from being
+         * committed. Group-readable by the service account, never world. */
+        char path[96];
+        snprintf(path, sizeof(path), "%s/token", AGENT_DIR);
+        FILE *out = fopen(path, "w");
         if (out) {
             fprintf(out, "%s\n", token);
             fclose(out);
-            (void)chmod("config/agent.token", 0640);
-            struct group *gr = getgrnam("qianruo");
-            if (gr) (void)chown("config/agent.token", 0, gr->gr_gid);
+            (void)chmod(path, 0640);
+            struct group *gr = getgrnam(AGENT_SERVICE_GROUP);
+            if (gr) (void)chown(path, 0, gr->gr_gid);
             persist = 1;
         }
     }
@@ -437,7 +503,7 @@ void http_agent_revoke(app_ctx_t *app, int fd, const char *method, const char *u
     pthread_mutex_unlock(&s.lock);
 
     if (was_armed) {
-        follow_agent_cancel();
+        follow_agent_cancel(1);
         follow_force_disable("agent_revoked");
         s.stops++;
     }
@@ -494,7 +560,7 @@ void http_agent_disarm(app_ctx_t *app, int fd, const char *method, const char *u
     (void)method;
     (void)uri;
     cap_t cap;
-    if (cap_from_request(body, AGENT_SCOPE_OBSERVE, &cap) < 0) {
+    if (cap_from_request(body, AGENT_SCOPE_MOTION, &cap) < 0) {
         http_err(fd, 401, "Unauthorized", "missing or invalid X-Agent-Cap");
         return;
     }
@@ -503,7 +569,7 @@ void http_agent_disarm(app_ctx_t *app, int fd, const char *method, const char *u
     s.armed = 0;
     memset(s.armed_token, 0, sizeof(s.armed_token));
     pthread_mutex_unlock(&s.lock);
-    follow_agent_cancel();
+    follow_agent_cancel(1);
     s.stops++;
     char actor[48];
     actor_of(&cap, actor, sizeof(actor));
@@ -569,9 +635,20 @@ void http_agent_motion(app_ctx_t *app, int fd, const char *method, const char *u
         return;
     }
 
+    /* 快照用的是 trylock，控制线程在 1 ms tick 里时必然失败；它的临界区只有
+     * 几十纳秒，重试几次就能拿到。直接把一条合法指令当"控制器启动中"丢弃，
+     * 会让执行器把整条计划判成传输失败。 */
     agent_motion_t st;
-    if (follow_agent_snapshot(&st) < 0) {
-        http_err(fd, 503, "Service Unavailable", "controller starting");
+    int snap = -1;
+    for (int i = 0; i < 3 && snap < 0; i++) {
+        snap = follow_agent_snapshot(&st);
+        if (snap < 0) {
+            struct timespec pause = {.tv_nsec = 1000000};
+            nanosleep(&pause, NULL);
+        }
+    }
+    if (snap < 0) {
+        http_err(fd, 503, "Service Unavailable", "controller busy; retry");
         return;
     }
     if (st.traveled_m >= cap.budget_m) {
@@ -582,7 +659,7 @@ void http_agent_motion(app_ctx_t *app, int fd, const char *method, const char *u
         memset(s.armed_token, 0, sizeof(s.armed_token));
         s.stops++;
         pthread_mutex_unlock(&s.lock);
-        follow_agent_cancel();
+        follow_agent_cancel(1);
         follow_force_disable("agent_budget_exhausted");
         audit("motion", "cap", "", "reject", "budget exhausted");
         http_err(fd, 409, "Conflict", "distance budget exhausted; credential disarmed");
@@ -627,7 +704,10 @@ void http_agent_stop(app_ctx_t *app, int fd, const char *method, const char *uri
     (void)method;
     (void)uri;
     cap_t cap;
-    if (cap_from_request(body, AGENT_SCOPE_OBSERVE, &cap) < 0) {
+    /* 停车会关掉整个 profile，是执行动作，不是观测动作：只读凭证不该有
+     * 把车踢出自动驾驶模式的能力。紧急停车另有一个 estop 端点，它只要求
+     * observe，因为让车停下永远是安全方向。 */
+    if (cap_from_request(body, AGENT_SCOPE_MOTION, &cap) < 0) {
         http_err(fd, 401, "Unauthorized", "missing or invalid X-Agent-Cap");
         return;
     }
@@ -640,11 +720,31 @@ void http_agent_stop(app_ctx_t *app, int fd, const char *method, const char *uri
         memset(s.armed_token, 0, sizeof(s.armed_token));
     }
     pthread_mutex_unlock(&s.lock);
-    follow_agent_cancel();
+    follow_agent_cancel(1);
     s.stops++;
     char actor[48];
     actor_of(&cap, actor, sizeof(actor));
     audit("agent.stop", actor, armed ? "armed" : "idle", "ok", "");
+    send_state_json(fd);
+}
+
+/* ---- POST /api/agent/release ----
+ * 与 stop 的区别只有一件事：不关 profile。一条计划跑完后 release，操作员的
+ * follow 开关保持原样，下一段计划可以直接续上；stop 是"我不要它继续动了"。 */
+void http_agent_release(app_ctx_t *app, int fd, const char *method, const char *uri, const char *body)
+{
+    (void)app;
+    (void)method;
+    (void)uri;
+    cap_t cap;
+    if (cap_from_request(body, AGENT_SCOPE_MOTION, &cap) < 0) {
+        http_err(fd, 401, "Unauthorized", "missing or invalid X-Agent-Cap");
+        return;
+    }
+    follow_agent_cancel(0);
+    char actor[48];
+    actor_of(&cap, actor, sizeof(actor));
+    audit("agent.release", actor, "", "ok", "lease cleared, profile kept");
     send_state_json(fd);
 }
 
@@ -663,14 +763,15 @@ void http_agent_estop(app_ctx_t *app, int fd, const char *method, const char *ur
     s.armed = 0;
     memset(s.armed_token, 0, sizeof(s.armed_token));
     pthread_mutex_unlock(&s.lock);
-    follow_agent_cancel();
+    follow_agent_cancel(1);
     /* Emergency stop also drops the operator's enable flag: nothing moves
      * again until a human re-enables the profile. */
     follow_force_disable("agent_estop");
     s.stops++;
     char actor[48];
     actor_of(&cap, actor, sizeof(actor));
-    audit("agent.estop", actor, "", "ok", "profile disabled");
+    audit("agent.estop", actor, (cap.scope & AGENT_SCOPE_MOTION) ? "scope=motion" : "scope=observe",
+          "ok", "profile disabled");
     send_state_json(fd);
 }
 
@@ -691,8 +792,8 @@ void http_agent_observe(app_ctx_t *app, int fd, const char *method, const char *
     int have_agent = follow_agent_snapshot(&st) == 0;
     char json[9216];
     int off = 0;
-    off += snprintf(json + off, sizeof(json) - off, "{\"ts_ms\":%llu,", now_ms());
-    off += snprintf(json + off, sizeof(json) - off,
+    CAT(fd, json, off, "{\"ts_ms\":%llu,", now_ms());
+    CAT(fd, json, off,
                     "\"profile\":{\"enabled\":%s,\"reason\":\"%s\"},",
                     have_agent && st.enabled ? "true" : "false", have_agent ? st.reason : "");
     if (have_tel) {
@@ -707,14 +808,14 @@ void http_agent_observe(app_ctx_t *app, int fd, const char *method, const char *
             snprintf(sact, sizeof(sact), "%.3f", tel.steering_actual);
         snprintf(spd, sizeof(spd), "%.3f", tel.speed_target);
         snprintf(str, sizeof(str), "%.3f", tel.steering_target);
-        off += snprintf(json + off, sizeof(json) - off,
+        CAT(fd, json, off,
                         "\"motion\":{\"speed_target\":%s,\"steer_target\":%s,\"speed_actual\":%s,"
                         "\"steer_actual\":%s,\"wheel_feedback\":%s},",
                         spd, str, act, sact, tel.feedback_valid ? "true" : "false");
     } else {
-        off += snprintf(json + off, sizeof(json) - off, "\"motion\":null,");
+        CAT(fd, json, off, "\"motion\":null,");
     }
-    off += snprintf(json + off, sizeof(json) - off,
+    CAT(fd, json, off,
                     "\"agent\":{\"armed\":%s,\"state\":\"%s\",\"expires_in_ms\":%llu,"
                     "\"traveled_m\":%.2f,\"budget_m\":%.1f,\"fault\":\"%s\"},",
                     s.armed ? "true" : "false",
@@ -723,27 +824,27 @@ void http_agent_observe(app_ctx_t *app, int fd, const char *method, const char *
                                : "idle",
                     have_agent ? st.expires_in_ms : 0ULL, have_agent ? st.traveled_m : 0.0,
                     cap.budget_m, have_agent ? st.fault : "");
-    off += snprintf(json + off, sizeof(json) - off,
+    CAT(fd, json, off,
                     "\"actuation\":{\"motor_bound\":%s,\"can_enabled\":%s,\"ready\":%s},",
                     have_agent && st.motor_bound ? "true" : "false",
                     have_agent && st.can_enabled ? "true" : "false",
                     have_agent && st.actuation_ready ? "true" : "false");
     /* The caller's own envelope, so a local executor can refuse an oversized
      * plan before it ever reaches the control loop. */
-    off += snprintf(json + off, sizeof(json) - off,
+    CAT(fd, json, off,
                     "\"limits\":{\"v_max\":%.3f,\"steer_max\":%.3f,\"budget_m\":%.1f,"
                     "\"expires_in_ms\":%llu},",
                     cap.v_max, cap.steer_max, cap.budget_m,
                     cap.expires_ms > now_ms() ? cap.expires_ms - now_ms() : 0ULL);
     /* 一次调用同时给"能不能动"和"看见了什么"：只读状态下也能跑完整感知回路。 */
-    off += snprintf(json + off, sizeof(json) - off, "\"perception\":");
+    CAT(fd, json, off, "\"perception\":");
     int p = agent_perception_json(json, sizeof(json), off);
     if (p < 0) {
         http_err(fd, 500, "Internal Server Error", "perception snapshot too large");
         return;
     }
     off = p;
-    off += snprintf(json + off, sizeof(json) - off, "}");
+    CAT(fd, json, off, "}");
     http_ok_json(fd, json, (size_t)off);
 }
 
