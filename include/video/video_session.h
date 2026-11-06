@@ -13,7 +13,7 @@
  * one file at a time. NV12 is the shared format for both downstream paths:
  * RGA letterboxes it to RGB888 for inference, and the MPP encoder consumes it
  * directly (its input format is fixed to YUV420SP). The recording thread drives the segment lifecycle (open at start,
- * rotate on day change or size cap, finalize with a moov box); HTTP APIs queue
+ * rotate on day change, finalize with a moov box); HTTP APIs queue
  * start/stop/split commands; deletion is synchronized with segment creation,
  * publication and finalization.
  */

@@ -8,7 +8,7 @@
 
 自动驾驶小车（Autonomous Driving Car）是一个**感知、推理、控制**一体化的 Linux 车载平台。当前版本把相机采集、RKNN YOLO26 推理、视觉跟踪、差速轮控制、CAN/CAN FD 通信、标注录像和浏览器管理界面跑在同一个纯 C11 应用里。LLM 推理属于规划能力，尚未实现。
 
-目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核和模型平台都按这颗 SoC 在编译期确定。
+目标板是 **Radxa ROCK 4D / RK3576**：NPU 双核、RGA 双核、CPU 大小核分组和模型平台都按这颗 SoC 固定，不做设备能力自发现。
 
 推理链路里除解码外都由硬件完成：
 
@@ -22,18 +22,18 @@
 
 ### 实测性能
 
-以下数据来自板端部署版本，采集 30 fps：
+以下数据来自板端部署版本的一次实测（相机请求 30 fps，UVC 实际约 29 fps）；数值随配置与任务负载波动，仅作量级参考：
 
 | 指标 | 数值 |
 | --- | --- |
-| 端到端延迟（`processing_age_ms`） | **80 ms**，最大 126 ms |
-| 每帧流水线工作量 | **约 16 ms**（解码 5、RGA 1、NPU 9、后处理 1；解码与 NPU 在不同线程上重叠） |
+| 端到端延迟（`processing_age_ms`） | **约 80 ms**，最大 126 ms |
+| 每帧流水线工作量 | **约 15 ms**（解码 5、RGA 1、NPU 8、后处理 1；解码与 NPU 在不同线程上重叠） |
 | 整机 CPU 占用 | **约 4 %** |
 | 每核 NPU 负载 | 8–13 % |
 | 每核 RGA 负载 | 约 2 % |
-| 采集 / 丢帧 | 30 fps，环形缓冲丢帧 0，`infer_dropped` 0 |
+| 采集 / 丢帧 | 请求 30 fps、实测约 29 fps，环形缓冲丢帧 0，`infer_dropped` 0 |
 
-80 ms 由三部分构成：33 ms 相机侧延迟（UVC 一帧的固有延迟，不是软件问题）、约 16 ms 流水线，以及最多一个帧周期的渲染节拍。逐环节耗时见[延迟剖析](docs/LATENCY_PROFILE.md)。
+80 ms 由三部分构成：33 ms 相机侧延迟（UVC 一帧的固有延迟，不是软件问题）、约 15 ms 流水线，以及最多一个帧周期的渲染节拍。逐环节耗时见[延迟剖析](docs/LATENCY_PROFILE.md)。
 
 ### 快速开始
 
@@ -49,13 +49,13 @@ curl -s http://127.0.0.1/api/video/stats
 
 ### 架构
 
-单个 C/C++ 进程加协作式工作线程。[main.c](source/core/main.c) 按固定顺序运行模块表；共享帧环、结果队列和控制器快照把各阶段连起来。图中蓝色为数据处理，绿色为输出，琥珀色为检查，红色为失败路径。录像只有一份标注 MP4：带检测框、走硬件 H.264 编码。
+单个 C11 进程加协作式工作线程（源码全为 `.c`，不含 C++）。[main.c](source/core/main.c) 按固定顺序运行模块表；共享帧环、结果队列和控制器快照把各阶段连起来。图中蓝色为数据处理，绿色为输出，琥珀色为检查。录像只有一份标注 MP4：带检测框、走硬件 H.264 编码。
 
 #### 运行时总览
 
 ```mermaid
 flowchart LR
-    Camera["V4L2<br/>相机 MJPEG"] --> Ring["帧环<br/>原始 JPEG + NV12 fd"]
+    Camera["V4L2<br/>相机 MJPEG"] --> Ring["帧环<br/>原始 JPEG"]
     Ring --> YOLO["RGA letterbox<br/>→ RKNN YOLO26"]
     Ring -->|原始 JPEG| Video["直播 MJPEG<br/>相机原始字节"]
     YOLO --> Results["结果队列<br/>最新帧优先"]
@@ -81,7 +81,7 @@ flowchart LR
         Raw["V4L2 mmap<br/>JPEG 帧"]
     end
     subgraph Infer["2. 固定推理池（2 线程）"]
-        Nv12["libjpeg-turbo 解码<br/>NV12 dma-buf"] --> Rga["RGA RGA2E<br/>CSC + letterbox"]
+        Nv12["libjpeg-turbo 解码<br/>NV12 dma-buf（解码器 8 槽环）"] --> Rga["RGA2E<br/>CSC + letterbox"]
         Rga --> Canvas["CMA 画布<br/>512×512 RGB"]
         Canvas --> Npu["RKNN run<br/>8 ms"]
         Npu --> Post["C 后处理<br/>解码 + NMS"]
@@ -111,7 +111,7 @@ flowchart LR
 | `yolo_infer` 0 | Core 0（`mask 0x1`） | RGA2E core 0（`0x4`） |
 | `yolo_infer` 1 | Core 1（`mask 0x2`） | RGA2E core 1（`0x8`） |
 
-每个解码线程各有自己的 libjpeg 实例和 8 槽 NV12 dma-buf 环，解出的帧留在槽里；worker 让 RGA 一趟完成色彩转换与缩放，写进 CMA 画布，再把画布地址直接交给 `rknn_inputs_set`——RGA 与 NPU 之间零拷贝。
+帧环只保存相机原始 JPEG；NV12 dma-buf 不进帧环，它由每个解码线程私有的 8 槽环管理（各线程一个 libjpeg 实例），解出的帧留在槽里。worker 让 RGA 一趟完成色彩转换与缩放，写进 CMA 画布，再把画布地址直接交给 `rknn_inputs_set`——RGA 与 NPU 之间零拷贝。
 
 #### Web 管理、CAN 与监控
 
@@ -141,11 +141,13 @@ flowchart LR
     class Watchdog check
 ```
 
-模块表顺序：**context → log → config → DBC → CAN → CAN RX/TX → TCP → HTTP → following → ANO → video → YOLO → watchdog → recording → signals**。运动与感知线程心跳丢失视为致命错误；管理线程只记录日志并复位，不因此停车。
+模块表顺序：**context → log → config → main → DBC → CAN → CAN RX/TX → TCP → HTTP → HTTP worker → following → ANO → video → decode → YOLO → YOLO infer → YOLO render → YOLO report → watchdog → recording → signals**。运动与感知线程心跳丢失视为致命错误；管理线程只记录日志并复位，不因此停车。
+
+**调度。** 所有工作线程都用 `SCHED_FIFO`，优先级 1–30，看门狗最高。早期版本的 `SCHED_DEADLINE` 已全部改回 FIFO——本内核上 DL 调度与绑核互斥（先绑后 DL 报 `EPERM`，先 DL 后绑报 `EBUSY`），无法兼得，因此优先保证绑核。CPU 分组按 RK3576 写死，不再做能力自发现：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTTP、CAN、跟随、看门狗和结果上报；大核组 cpu4-7（Cortex-A72）跑采集、解码、推理、渲染和录像线程。详见[实时调度说明](docs/REALTIME_SCHEDULING.md)。
 
 ### 感知
 
-**采集。** V4L2 MJPEG，1280×720，30 fps。设备通过稳定路径（`/dev/v4l/by-id/...`）打开，因为新增内置媒体驱动会改变 `/dev/videoN` 编号。
+**采集。** V4L2 MJPEG，1280×720，请求 30 fps（UVC 实测约 29 fps）。建议把 `video_device` 配成稳定路径（`/dev/v4l/by-id/...`），因为新增内置媒体驱动会改变 `/dev/videoN` 编号；当前板端 `config.txt` 用的是 `/dev/video2`。
 
 **解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 单帧约 5 ms。解码已从采集线程里剥出来：2 个解码线程各持一个 libjpeg 实例并行工作，`SCHED_FIFO` 15 绑在大核组（RK3576 的 cpu4-7）。单线程软解只能到 25 fps，双线程跑满相机的 29 fps，采集线程只负责 claim 与投递。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
 
@@ -164,7 +166,7 @@ flowchart LR
 | `/model.23/Sigmoid_output_0` | `[1,5376,80]` | INT8，NHWC | 类别分数 |
 | `/model.23/Mul_2_output_0` | `[1,4,5376]` | FP16 | cx, cy, w, h（模型像素） |
 
-worker 只对框张量向运行时请求 float，类别分数自己反量化。输出布局不符的模型在加载时直接拒绝。框保持 FP16 是因为 INT8 会把框量化成约 2.73 px 的步长，代价是 mAP(50–95) 掉 2.45 个点；类别用 NHWC 是为了让同一锚点的 80 个分数连续，后处理从 4 ms 降到 1 ms。
+worker 只对框张量向运行时请求 float，类别分数自己反量化。加载时校验输入 1 路、输出 1 或 2 路，不符即拒绝；两路输出里"谁是类别、谁是框"按维度自动判别，`(1,80,A)` 与 `(1,A,80)` 两种排布都支持。框保持 FP16 是因为 INT8 会把框量化成约 2.73 px 的步长，代价是 mAP(50–95) 掉 2.45 个点；类别用 NHWC 是为了让同一锚点的 80 个分数连续，后处理从 4 ms 降到 1 ms。
 
 64 图留出集上的精度（conf ≥ 0.001、类内 NMS IoU 0.7、101 点 AP）：**mAP50 0.5909，mAP50–95 0.4336**。
 
@@ -210,11 +212,11 @@ RK3576 的 RGA2E 在内核里以 **RGA2** 设备注册，按核调度使用 `IM_
 
 资源卡片显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 占用率由应用按核计时统计——对每次 `improcess` 调用计时，按 1 秒滑窗汇总。
 
-Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。槽位在最后一个连接关闭 30 秒后过期，多余地址收到 HTTP 503。
+Web 访问按**源 IPv4 地址**分配槽位，最多 **8 个地址**（`HTTP_MAX_CLIENTS`）；同一地址的页面、API、视频和下载连接共用一个槽，可开多个标签页。槽位在最后一个连接关闭 30 秒后过期；若连接未正常关闭导致计数卡住，120 秒后按 stale 身份回收。超出槽位的地址收到 HTTP 503。
 
 #### 直播与框叠加
 
-主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq` 头，浏览器据此知道当前画面是哪一帧。
+主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq`（采集序号）和 `X-Ts`（采集时刻，板端单调时钟毫秒）头：前者把画面与检测结果对齐，后者配合 `/api/video/stats` 换算端到端延迟。
 
 
 框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h`，以及每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）。浏览器把记录与显示帧对齐；如果该帧没有推理结果，就回退到六帧内最近的记录，再远则跳过该帧。
@@ -225,7 +227,7 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/videos/` 下写 `video_<YYYYMMDD>.mp4`（同一天重开会顺次加 `_1`、`_2`，不覆盖已录内容）：推理路径解出的 NV12 在 Y/UV 两个平面上画上检测框，再交给 VEPU510 硬件编成 H.264。框是单一彩色的 3 px 描边，颜色按类别从 12 色调色板里取（同类恒定、跨类岔开），左上角贴一条同色标签条，写类别名和置信度（`person 0.88`），字色按底色亮度自动选黑/白。彩色描边在白墙、白衬衫上也能看清，而且只占一条 3 px 色带，色度开销很小。恒定 QP 18（FIXQP，不做码率控制），720p 实测约 **7.9 Mbps**，即 **3.5 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。编码输入用 12 个缓冲组成的环，按**帧龄**（保留 8 帧）回收：MPP 异步读输入缓冲，并把它当作后续 P 帧的参考帧，写完立刻复用会让框线在录像里退化成断续的虚线。
 
-分段只按**日期变化**触发：跨天时结束当前文件、在新日期目录下开始下一段，录像不中断。另有手动分段接口供前端调用。MP4 的样本偏移是 64 位的，单文件不受 4 GiB 限制。
+自动分段只按**日期变化**触发：跨天时收尾当前文件（写入 moov），在**同一目录** `recordings/videos/` 下按新日期命名续录，录像不中断；另有手动分段接口 `POST /api/rec/split` 供前端调用。MP4 的样本偏移是 64 位的（`co64`），单文件不受 4 GiB 限制。
 
 录像从不等待推理，所以模型卡住或重载不会中断录像。检测框只画进 MP4；浏览器画面仍是原始字节加前端叠加层。
 
@@ -239,7 +241,7 @@ curl -s http://127.0.0.1/api/rec/status
 curl -s http://127.0.0.1/api/system
 ```
 
-`GET /api/video/stats` 报告 `capture_fps`、`capture_dropped`、`driver_dropped`、`capture_stall_ms`、`render_skipped` 和 `processing_age_ms`，可用来区分相机问题和推理滞后。Release 构建保留调试信息，可用 `coredumpctl` 分析。
+`GET /api/video/stats` 报告 `capture_fps`、`capture_dropped`、`driver_dropped`、`capture_stall_ms`、`infer_dropped`、`render_skipped`、`processing_age_ms` 和 `processing_age_max_ms`，可用来区分相机问题和推理滞后。Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` 分析。
 
 ### 模型与配置管理
 
@@ -269,7 +271,9 @@ curl -s http://127.0.0.1/api/system
 | `video_fps` | 请求帧率，`0` 表示沿用驱动默认 |
 | `mjpeg_max_kbps` | 单客户端直播预算（kbit/s），`0` 不限额 |
 
-**导出配置**会把实际配置文件和模型打包成 `.tar.gz` 下载（解压后不超过 64 MiB，内部同步元数据除外）。
+几项容易误读的 YOLO 配置：`yolo_input_size` 只是动态模型或读取模型属性失败时的回退值，静态模型以 `.rknn` 的实际输入为准（当前 `yolo26.rknn` 是 **512×512**，即使 `config.txt` 里写 `640`）；`yolo_conf` / `yolo_nms` 用百分比整数（`50` = 0.50、`45` = 0.45）；`yolo_threads` 不决定推理线程数，工作线程固定等于 NPU 核数（2）。
+
+**导出配置**会把实际配置文件和模型打包成 `.tar.gz` 下载（解压后不超过 64 MiB，内部同步元数据除外）。所有打包下载——配置、检测记录、日志、录像和文件集——的文件名都带 `%Y%m%d_%H%M%S` 时间戳（如 `config_pack_20261106_113425.tar.gz`），避免浏览器复用缓存里的旧包。
 
 ### 通信注册
 
@@ -300,7 +304,7 @@ TCP 保留部分写，并在接收槽满时重置客户端。CAN 按接口加 ID
 | `tools/model/` | 离线模型链路：ONNX 导出、RKNN 量化、数据集准备、原始输出 dump、mAP 评测 |
 | `docs/` | 架构、延迟、量化、实时调度等文档 |
 
-视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`rga_preprocess.c` 负责 RGA 画布，`video_session.c` 负责录像会话与分段，`video_record.c` 负责画框与硬件编码线程，`rec_mp4.c` 负责 MP4 容器。
+视频相关模块：`video_stream.c` 负责采集与 MJPEG 分发，`frame_ring.c` 负责缓冲交接，`jpeg_decoder.c` 负责 libjpeg-turbo 软解与 NV12 dma-buf 环，`rga_preprocess.c` 负责 RGA 画布，`video_session.c` 负责录像会话与分段，`video_record.c` 负责画框与硬件编码线程，`rec_mp4.c` 负责 MP4 容器，`rec_font.h` 是标签用的 16×24 点阵字库。
 
 ### 依赖
 
@@ -350,6 +354,10 @@ sudo bash scripts/deploy.sh -i    # 安装并启动
 
 下一步是把 LLM 推理与 YOLO、常规运动控制并列集成。共享资源调度、控制时序和实时内核上的端到端延迟仍在评估；上文描述的实现是这项工作的基础。
 
+### 许可证
+
+[GPL-3.0-or-later](LICENSE)。
+
 ## English documentation
 
 A Linux vehicle platform for **perception, inference and control** on a single
@@ -358,8 +366,9 @@ visual tracking, differential wheel control, CAN/CAN-FD communication, annotated
 recording and a browser management interface as one C11 application.
 LLM inference is planned, not implemented.
 
-The target board is the **Radxa ROCK 4D / RK3576**: the NPU cores, RGA cores and
-model platform are fixed for that SoC at compile time.
+The target board is the **Radxa ROCK 4D / RK3576**: the NPU cores, RGA cores,
+big/little CPU split and model platform are fixed for that SoC rather than
+auto-detected from device capabilities.
 
 Every stage except decoding runs on hardware accelerators:
 
@@ -381,19 +390,21 @@ MP4.
 
 ### Measured performance
 
-Numbers from the deployed build on the board, 30 fps capture:
+Numbers from one measurement on the deployed build (camera requested at 30 fps,
+UVC delivers about 29 fps). They vary with configuration and load, so treat them
+as an order of magnitude:
 
 | Metric | Value |
 | --- | --- |
-| End-to-end latency (`processing_age_ms`) | **80 ms**, max 126 ms |
-| Pipeline work per frame | **~16 ms** (decode 5, RGA 1, NPU 9, postprocess 1; decode overlaps NPU on other threads) |
+| End-to-end latency (`processing_age_ms`) | **~80 ms**, max 126 ms |
+| Pipeline work per frame | **~15 ms** (decode 5, RGA 1, NPU 8, postprocess 1; decode overlaps NPU on other threads) |
 | CPU load, whole system | **~4 %** |
 | NPU load per core | 8–13 % |
 | RGA load per core | ~2 % |
-| Capture / dropped frames | 30 fps, 0 from the ring, 0 `infer_dropped` |
+| Capture / dropped frames | 30 fps requested, ~29 fps measured, 0 from the ring, 0 `infer_dropped` |
 
-80 ms splits into 33 ms of camera-side latency (UV C one-frame delay, not
-software), ~16 ms of pipeline, and up to one frame period of render pacing. See
+80 ms splits into 33 ms of camera-side latency (UVC one-frame delay, not
+software), ~15 ms of pipeline, and up to one frame period of render pacing. See
 [latency profile](docs/LATENCY_PROFILE.md) for per-stage timings.
 
 ### Quick start
@@ -412,16 +423,16 @@ Prerequisites are a kernel with the Rockchip NPU and RGA drivers, libjpeg-turbo,
 
 ### Architecture
 
-One C/C++ process with cooperating worker threads. [main.c](source/core/main.c)
-runs a module table in a fixed order; a shared frame ring, a result queue and
-controller snapshots connect the stages. Blue nodes process data, green nodes are
-outputs, amber nodes are checks, red nodes are failure paths.
+One C11 process with cooperating worker threads (all sources are `.c`; there is
+no C++). [main.c](source/core/main.c) runs a module table in a fixed order; a
+shared frame ring, a result queue and controller snapshots connect the stages.
+Blue nodes process data, green nodes are outputs, amber nodes are checks.
 
 #### Runtime overview
 
 ```mermaid
 flowchart LR
-    Camera["V4L2<br/>camera MJPEG"] --> Ring["Frame ring<br/>raw JPEG + NV12 fd"]
+    Camera["V4L2<br/>camera MJPEG"] --> Ring["Frame ring<br/>raw JPEG"]
     Ring --> YOLO["RGA letterbox<br/>→ RKNN YOLO26"]
     Ring -->|Native JPEG| Video["Live MJPEG<br/>raw camera bytes"]
     YOLO --> Results["Result queue<br/>latest frame wins"]
@@ -447,7 +458,7 @@ flowchart LR
         Raw["V4L2 mmap<br/>JPEG frame"]
     end
     subgraph Infer["2. Fixed inference pool (2 threads)"]
-        Nv12["libjpeg-turbo decode<br/>NV12 dma-buf"] --> Rga["RGA RGA2E<br/>CSC + letterbox"]
+        Nv12["libjpeg-turbo decode<br/>NV12 dma-buf (decoder 8-slot ring)"] --> Rga["RGA2E<br/>CSC + letterbox"]
         Rga --> Canvas["CMA canvas<br/>512×512 RGB"]
         Canvas --> Npu["RKNN run<br/>8 ms"]
         Npu --> Post["C postprocess<br/>decode + NMS"]
@@ -477,9 +488,10 @@ Two worker threads, each bound to one NPU core **and** one RGA core:
 | `yolo_infer` 0 | Core 0 (`mask 0x1`) | RGA2E core 0 (`0x4`) |
 | `yolo_infer` 1 | Core 1 (`mask 0x2`) | RGA2E core 1 (`0x8`) |
 
-Each decode thread keeps its own libjpeg instance and 8-slot NV12 dma-buf ring;
-the worker asks RGA for colour conversion plus scaling in one pass into a
-CMA-backed model canvas, and passes that canvas address straight to
+The frame ring holds only the camera's raw JPEG; NV12 dma-bufs live in a private
+8-slot ring owned by each decode thread (one libjpeg instance per thread), not in
+the frame ring. The worker asks RGA for colour conversion plus scaling in one pass
+into a CMA-backed model canvas, and passes that canvas address straight to
 `rknn_inputs_set`, giving a zero-copy handoff between RGA and NPU.
 
 #### Web management, CAN and supervision
@@ -510,16 +522,28 @@ flowchart LR
     class Watchdog check
 ```
 
-Module-table order: **context → log → config → DBC → CAN → CAN RX/TX → TCP →
-HTTP → following → ANO → video → YOLO → watchdog → recording → signals**.
+Module-table order: **context → log → config → main → DBC → CAN → CAN RX/TX →
+TCP → HTTP → HTTP worker → following → ANO → video → decode → YOLO → YOLO
+infer → YOLO render → YOLO report → watchdog → recording → signals**.
 Motion and perception threads are fatal on a missed heartbeat; management
 threads log and reset instead of stopping the vehicle.
 
+**Scheduling.** Every worker thread uses `SCHED_FIFO`, with priorities from 1 to
+30 and the watchdog highest. The earlier `SCHED_DEADLINE` setup was removed: on
+this kernel deadline scheduling and CPU affinity are mutually exclusive (setting
+affinity first gives `EPERM`, setting deadline first gives `EBUSY`), so affinity
+wins. CPU groups are hardcoded for the RK3576 rather than auto-detected: the
+little cluster (cpu0-3, Cortex-A53) runs main, TCP/HTTP, CAN, following,
+watchdog and result reporting; the big cluster (cpu4-7, Cortex-A72) runs
+capture, decode, inference, rendering and recording. See
+[real-time scheduling](docs/REALTIME_SCHEDULING.md).
+
 ### Perception
 
-**Capture.** V4L2 MJPEG at 1280×720, 30 fps. The device is opened through a
-stable path (`/dev/v4l/by-id/...`), because adding a built-in media driver can
-renumber `/dev/videoN`.
+**Capture.** V4L2 MJPEG at 1280×720, 30 fps requested (UVC delivers about 29
+fps). A stable `video_device` path (`/dev/v4l/by-id/...`) is recommended, since
+adding a built-in media driver can renumber `/dev/videoN`; the current board
+config uses `/dev/video2`.
 
 **Decode.** libjpeg-turbo decodes the JPEG into NV12 on the CPU (~5 ms per 720p
 frame) and writes it into a CMA dma-buf that RGA reads directly. Decoding was
@@ -551,10 +575,12 @@ intermediate results and keeps latency low.
 | `/model.23/Mul_2_output_0` | `[1,4,5376]` | FP16 | cx, cy, w, h in model pixels |
 
 The worker asks the runtime for float only on the box tensor and dequantises the
-scores itself. A model with a different output layout is rejected at load time.
-Boxes stay FP16 because INT8 quantises them to a ~2.73 px step, which costs
-2.45 mAP(50–95) points. Scores are NHWC so the 80 values of one anchor are
-contiguous, which cut postprocessing from 4 ms to 1 ms.
+scores itself. Load time validates one input and one or two outputs, rejecting
+anything else; with two outputs the class/box roles are inferred from the dims
+and both `(1,80,A)` and `(1,A,80)` layouts are accepted. Boxes stay FP16 because
+INT8 quantises them to a ~2.73 px step, which costs 2.45 mAP(50-95) points.
+Scores are NHWC so the 80 values of one anchor are contiguous, which cut
+postprocessing from 4 ms to 1 ms.
 
 Accuracy on a 64-image held-out set (conf ≥ 0.001, class NMS IoU 0.7, 101-point
 AP): **mAP50 0.5909, mAP50–95 0.4336**.
@@ -623,15 +649,19 @@ memory/disk. NPU load comes from `/sys/kernel/debug/rknpu/load`; RGA load is mea
 inside the application by timing each `improcess` call per core over a
 one-second window.
 
-Web access supports **two source IPv4 addresses**; one address can open many
-tabs. The slot expires 30 s after its last connection closes and an extra
-address receives HTTP 503.
+Web access allocates slots by **source IPv4 address**, up to **8 addresses**
+(`HTTP_MAX_CLIENTS`); page, API, video and download sockets from one address
+share a slot, and one address can open many tabs. A slot expires 30 s after its
+last connection closes; a socket count stuck after an unclean close is reclaimed
+as stale after 120 s. An address beyond the slots receives HTTP 503.
 
 #### Live view and overlay
 
 The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of
-the camera's own JPEG frames. Each part carries an `X-Seq` header so the browser
-knows which frame is on screen.
+the camera's own JPEG frames. Each part carries `X-Seq` (capture sequence) and
+`X-Ts` (capture time, board monotonic milliseconds): the former aligns the
+picture with detection results, the latter combines with `/api/video/stats` to
+compute end-to-end latency.
 
 Boxes come from `GET /api/detections/live?after=N`, returning records with
 `seq`, image `w`/`h` and per object `x1, y1, x2, y2, class, score, name` in
@@ -663,10 +693,11 @@ from inference and costs one memory copy per frame. Encoder input is a ring of
 asynchronously and holds them as references for later P frames, so recycling a
 buffer right after `encode_put_frame()` shreds the overlay into dashes.
 
-Segments break on a **date change**: at midnight the current file is closed and
-the next one starts in the new day's directory without interrupting the
-recording. A manual split endpoint exists for the UI. MP4 sample offsets are
-64-bit, so a single file is not limited to 4 GiB.
+Automatic segments break on a **date change**: at midnight the current file is
+finalised (moov written) and recording continues in the **same directory**,
+`recordings/videos/`, with the new date in the filename. `POST /api/rec/split`
+provides a manual split for the UI. MP4 sample offsets are 64-bit (`co64`), so a
+single file is not limited to 4 GiB.
 
 Recording never waits on inference, so a stalled or reloading model does not
 interrupt it. The boxes are drawn into the MP4 only; the browser picture is
@@ -686,9 +717,10 @@ curl -s http://127.0.0.1/api/system
 ```
 
 `GET /api/video/stats` reports `capture_fps`, `capture_dropped`,
-`driver_dropped`, `capture_stall_ms`, `render_skipped` and `processing_age_ms`,
-which separate camera problems from inference lag. Release builds keep debug
-information for `coredumpctl`.
+`driver_dropped`, `capture_stall_ms`, `infer_dropped`, `render_skipped`,
+`processing_age_ms` and `processing_age_max_ms`, which separate camera problems
+from inference lag. Release builds keep debug information (`-O3 -DNDEBUG -g`)
+for `coredumpctl`.
 
 ### Model and configuration management
 
@@ -724,8 +756,18 @@ Key video settings:
 | `video_fps` | Requested frame rate; `0` keeps the driver default |
 | `mjpeg_max_kbps` | Per-client live-stream budget in kbit/s; `0` = uncapped |
 
+A few YOLO settings are easy to misread: `yolo_input_size` is only a fallback
+for dynamic models or when reading the model attributes fails - a static model
+uses its real input size (the current `yolo26.rknn` is **512x512** even though
+`config.txt` says `640`); `yolo_conf` and `yolo_nms` are integer percentages
+(`50` = 0.50, `45` = 0.45); `yolo_threads` does not size the inference pool,
+which is fixed to the NPU core count (2).
+
 **Export config** downloads the actual configuration and model as `.tar.gz`
-(≤ 64 MiB uncompressed, internal metadata excluded).
+(≤ 64 MiB uncompressed, internal metadata excluded). Every packed download -
+config, detection reports, logs, recordings and the file bundle - carries a
+`%Y%m%d_%H%M%S` timestamp in its filename (for example
+`config_pack_20261106_113425.tar.gz`) so browsers cannot reuse a cached copy.
 
 ### Communication registration
 
@@ -762,9 +804,11 @@ locking rules are in [communication flow](docs/COMMUNICATION_FLOW.md).
 | `docs/` | Architecture, latency, quantisation, real-time scheduling notes |
 
 Video modules: `video_stream.c` owns capture and MJPEG fan-out,
-`frame_ring.c` owns buffer handoff, `rga_preprocess.c` owns the RGA canvas,
-`video_session.c` owns recording sessions and segmentation, `video_record.c` owns the
-box-drawing and hardware encoder thread, and `rec_mp4.c` owns the MP4 container.
+`frame_ring.c` owns buffer handoff, `jpeg_decoder.c` owns libjpeg-turbo software
+decoding and the NV12 dma-buf ring, `rga_preprocess.c` owns the RGA canvas,
+`video_session.c` owns recording sessions and segmentation, `video_record.c` owns
+the box-drawing and hardware encoder thread, `rec_mp4.c` owns the MP4 container,
+and `rec_font.h` holds the 16x24 bitmap font used for labels.
 
 ### Requirements
 
