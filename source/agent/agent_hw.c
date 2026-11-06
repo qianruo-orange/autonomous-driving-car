@@ -590,9 +590,8 @@ void http_agent_motion(app_ctx_t *app, int fd, const char *method, const char *u
     }
 
     int rc = follow_agent_cmd(v, steer, (unsigned)ttl);
-    /* 重新取一次快照：应答要描述这条指令生效之后的状态，而不是之前的。
-     * 之前把 st 直接复用，reason 会停留在 agent_idle，读起来像"指令没生效"。 */
-    (void)follow_agent_snapshot(&st);
+    /* 应答里的 state/reason 是"接受那一刻"的快照：真正的执行结果由 1 ms 后的
+     * 控制 tick 决定，故障会在下一次 observe 里以 fault 形式出现。 */
     char args[96], actor[48];
     actor_of(&cap, actor, sizeof(actor));
     snprintf(args, sizeof(args), "v=%.3f steer=%.3f ttl=%ums", v, steer, (unsigned)ttl);
