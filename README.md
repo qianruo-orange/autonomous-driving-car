@@ -83,6 +83,7 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/system | head -c 120
 ## 系统架构
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#12203a','primaryTextColor':'#cdd9e8','primaryBorderColor':'#5ec2f0','lineColor':'#5e7ea0','secondaryColor':'#1a2a44','tertiaryColor':'#0f1a2e','fontFamily':'Segoe UI, Helvetica, Arial, sans-serif'}}}%%
 flowchart LR
     subgraph 采集层
         CAM(UVC 摄像头) --> CAP(capture 线程<br/>V4L2 mmap)
@@ -131,6 +132,7 @@ sequenceDiagram
 ## 感知流水线
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#12203a','primaryTextColor':'#cdd9e8','primaryBorderColor':'#5ec2f0','lineColor':'#5e7ea0','secondaryColor':'#1a2a44','tertiaryColor':'#0f1a2e','fontFamily':'Segoe UI, Helvetica, Arial, sans-serif'}}}%%
 flowchart LR
     A(V4L2 采集<br/>1280x720 NV12) -->|零拷贝| B(RGA<br/>letterbox 640)
     B -->|RKNN 输入| C(NPU 推理<br/>yolov26n)
@@ -146,6 +148,7 @@ flowchart LR
 ## 视觉跟踪与跟随
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#12203a','primaryTextColor':'#cdd9e8','primaryBorderColor':'#5ec2f0','lineColor':'#5e7ea0','secondaryColor':'#1a2a44','tertiaryColor':'#0f1a2e','fontFamily':'Segoe UI, Helvetica, Arial, sans-serif'}}}%%
 flowchart LR
     CLICK(用户点框) --> SEED(记录外观种子<br/>seed_x / seed_y / area)
     SEED --> MATCH(每帧在检测结果里匹配<br/>class + 位置 + 面积)
@@ -169,16 +172,17 @@ flowchart LR
 ## 实时调度与绑核
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#12203a','primaryTextColor':'#cdd9e8','primaryBorderColor':'#5ec2f0','lineColor':'#5e7ea0','secondaryColor':'#1a2a44','tertiaryColor':'#0f1a2e','fontFamily':'Segoe UI, Helvetica, Arial, sans-serif'}}}%%
 flowchart LR
-    subgraph CPU4-7[大核 2.2GHz]
-        RT(控制线程<br/>SCHED_FIFO prio 20)
-        INF(推理 worker)
-    end
-    subgraph CPU0-3[小核 2.0GHz]
-        CAP2(采集线程)
-        HTTP2(HTTP / 编码)
-    end
-    RT -->|周期 10ms| CAN2(CAN 发送)
+    CAP2(采集线程<br/>小核 2.0GHz)
+    INF(推理 worker<br/>大核 2.2GHz)
+    RT(控制线程<br/>SCHED_FIFO prio 20)
+    HTTP2(HTTP / 编码<br/>小核 2.0GHz)
+    BR(浏览器)
+    CAN2(CAN 发送)
+    CAP2 --> INF --> RT
+    CAP2 --> HTTP2 --> BR
+    RT -->|周期 10ms| CAN2
 ```
 
 - 控制环固定在大核，`SCHED_FIFO` 优先级 20，与推理/HTTP 隔离
@@ -208,6 +212,7 @@ flowchart LR
 板子通过电脑上的代理软件出网，配置写在 `/etc/proxy-client.conf`，由 `proxy-client.service` 生效。
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#12203a','primaryTextColor':'#cdd9e8','primaryBorderColor':'#5ec2f0','lineColor':'#5e7ea0','secondaryColor':'#1a2a44','tertiaryColor':'#0f1a2e','fontFamily':'Segoe UI, Helvetica, Arial, sans-serif'}}}%%
 flowchart LR
     WEB(/config 代理卡片/) -->|保存 + 开关| PY(proxy_config.py)
     PY -->|写 EnvironmentFile| CONF(/etc/proxy-client.conf/)
@@ -371,6 +376,7 @@ all run inside a single C process. Power on, join WiFi, open the page — the ca
 ## Architecture
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#12203a','primaryTextColor':'#cdd9e8','primaryBorderColor':'#5ec2f0','lineColor':'#5e7ea0','secondaryColor':'#1a2a44','tertiaryColor':'#0f1a2e','fontFamily':'Segoe UI, Helvetica, Arial, sans-serif'}}}%%
 flowchart LR
     CAM(UVC camera) --> CAP(capture thread<br/>V4L2 mmap)
     CAP -->|DMA-BUF| RGA(RGA preprocess)
