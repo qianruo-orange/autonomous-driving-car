@@ -83,27 +83,27 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/system | head -c 120
 ## 系统架构
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph 采集层
-        CAM[UVC 摄像头] --> CAP[capture 线程<br/>V4L2 mmap]
+        CAM(UVC 摄像头) --> CAP(capture 线程<br/>V4L2 mmap)
     end
     subgraph 加速层
-        CAP -->|DMA-BUF| RGA[RGA 预处理<br/>缩放/裁切/格式转换]
-        RGA --> POOL[NPU 推理池<br/>4 worker]
-        POOL --> DET[检测结果<br/>bbox + score + cls]
+        CAP -->|DMA-BUF| RGA(RGA 预处理<br/>缩放/裁切/格式转换)
+        RGA --> POOL(NPU 推理池<br/>4 worker)
+        POOL --> DET(检测结果<br/>bbox + score + cls)
     end
     subgraph 输出层
-        CAP -->|NV12| MPP[MPP 硬编<br/>MJPEG 720p30]
-        MPP --> HTTP[HTTP 服务<br/>multipart 推流]
-        DET --> OVL[前端 canvas 叠加]
-        HTTP --> BROWSER[浏览器]
+        CAP -->|NV12| MPP(MPP 硬编<br/>MJPEG 720p30)
+        MPP --> HTTP(HTTP 服务<br/>multipart 推流)
+        DET --> OVL(前端 canvas 叠加)
+        HTTP --> BROWSER(浏览器)
         OVL --> BROWSER
     end
     subgraph 控制层
-        DET --> TRK[跟踪器<br/>按 seq 对齐]
-        TRK --> PID[跟随 PID]
-        PID --> CAN[CAN FD 发送]
-        CAN --> MOTOR[左右轮电机]
+        DET --> TRK(跟踪器<br/>按 seq 对齐)
+        TRK --> PID(跟随 PID)
+        PID --> CAN(CAN FD 发送)
+        CAN --> MOTOR(左右轮电机)
     end
 ```
 
@@ -132,11 +132,11 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    A[V4L2 采集<br/>1280x720 NV12] -->|零拷贝| B[RGA<br/>letterbox 640]
-    B -->|RKNN 输入| C[NPU 推理<br/>yolov26n]
-    C --> D[解码 + NMS<br/>CPU, 4 线程]
-    D --> E[按类别过滤<br/>conf / iou]
-    E --> F[检测列表<br/>seq 关联]
+    A(V4L2 采集<br/>1280x720 NV12) -->|零拷贝| B(RGA<br/>letterbox 640)
+    B -->|RKNN 输入| C(NPU 推理<br/>yolov26n)
+    C --> D(解码 + NMS<br/>CPU, 4 线程)
+    D --> E(按类别过滤<br/>conf / iou)
+    E --> F(检测列表<br/>seq 关联)
 ```
 
 - **零拷贝**：采集缓冲直接以 DMA-BUF 交给 RGA/NPU，不在 CPU 与加速器之间搬像素
@@ -146,17 +146,17 @@ flowchart LR
 ## 视觉跟踪与跟随
 
 ```mermaid
-flowchart TB
-    CLICK[用户点框] --> SEED[记录外观种子<br/>seed_x / seed_y / area]
-    SEED --> MATCH[每帧在检测结果里匹配<br/>class + 位置 + 面积]
-    MATCH -->|命中| ERR[偏差 ex, ey<br/>面积误差]
-    MATCH -->|丢失| LOST[超时 300ms → 停车]
-    ERR --> DEAD[死区过滤<br/>deadband 0.04]
-    DEAD --> PIDX[转向 PID<br/>turn_kp/kd]
-    DEAD --> PIDS[速度 PID<br/>speed_kp]
-    PIDX --> MIX[左右轮混合<br/>max_turn_delta 限幅]
+flowchart LR
+    CLICK(用户点框) --> SEED(记录外观种子<br/>seed_x / seed_y / area)
+    SEED --> MATCH(每帧在检测结果里匹配<br/>class + 位置 + 面积)
+    MATCH -->|命中| ERR(偏差 ex, ey<br/>面积误差)
+    MATCH -->|丢失| LOST(超时 300ms → 停车)
+    ERR --> DEAD(死区过滤<br/>deadband 0.04)
+    DEAD --> PIDX(转向 PID<br/>turn_kp/kd)
+    DEAD --> PIDS(速度 PID<br/>speed_kp)
+    PIDX --> MIX(左右轮混合<br/>max_turn_delta 限幅)
     PIDS --> MIX
-    MIX --> OUT[左右轮目标速度 m/s]
+    MIX --> OUT(左右轮目标速度 m/s)
 ```
 
 设计要点：
@@ -171,14 +171,14 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph CPU4-7[大核 2.2GHz]
-        RT[控制线程<br/>SCHED_FIFO prio 20]
-        INF[推理 worker]
+        RT(控制线程<br/>SCHED_FIFO prio 20)
+        INF(推理 worker)
     end
     subgraph CPU0-3[小核 2.0GHz]
-        CAP2[采集线程]
-        HTTP2[HTTP / 编码]
+        CAP2(采集线程)
+        HTTP2(HTTP / 编码)
     end
-    RT -->|周期 10ms| CAN2[CAN 发送]
+    RT -->|周期 10ms| CAN2(CAN 发送)
 ```
 
 - 控制环固定在大核，`SCHED_FIFO` 优先级 20，与推理/HTTP 隔离
@@ -209,11 +209,11 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    WEB[/config 代理卡片/] -->|保存 + 开关| PY[proxy_config.py]
-    PY -->|写 EnvironmentFile| CONF[/etc/proxy-client.conf/]
-    CONF --> SVC[proxy-client.service]
-    SVC -->|生成| ENV[/etc/environment<br/>/etc/profile.d/proxy.sh<br/>systemd drop-in/]
-    ENV --> ALL[全机流量走代理]
+    WEB(/config 代理卡片/) -->|保存 + 开关| PY(proxy_config.py)
+    PY -->|写 EnvironmentFile| CONF(/etc/proxy-client.conf/)
+    CONF --> SVC(proxy-client.service)
+    SVC -->|生成| ENV(/etc/environment<br/>/etc/profile.d/proxy.sh<br/>systemd drop-in/)
+    ENV --> ALL(全机流量走代理)
 ```
 
 - 开关即 `systemctl start/stop proxy-client`，停止时 `ExecStop` 会清空上述三处变量，恢复直连
@@ -371,20 +371,20 @@ all run inside a single C process. Power on, join WiFi, open the page — the ca
 ## Architecture
 
 ```mermaid
-flowchart TB
-    CAM[UVC camera] --> CAP[capture thread<br/>V4L2 mmap]
-    CAP -->|DMA-BUF| RGA[RGA preprocess]
-    RGA --> POOL[NPU pool<br/>4 workers]
-    POOL --> DET[detections]
-    CAP -->|NV12| MPP[MPP encode<br/>MJPEG 720p30]
-    MPP --> HTTP[HTTP multipart]
-    DET --> OVL[browser canvas overlay]
-    HTTP --> BROWSER[browser]
+flowchart LR
+    CAM(UVC camera) --> CAP(capture thread<br/>V4L2 mmap)
+    CAP -->|DMA-BUF| RGA(RGA preprocess)
+    RGA --> POOL(NPU pool<br/>4 workers)
+    POOL --> DET(detections)
+    CAP -->|NV12| MPP(MPP encode<br/>MJPEG 720p30)
+    MPP --> HTTP(HTTP multipart)
+    DET --> OVL(browser canvas overlay)
+    HTTP --> BROWSER(browser)
     OVL --> BROWSER
-    DET --> TRK[tracker by seq]
-    TRK --> PID[follow PID]
-    PID --> CAN[CAN FD]
-    CAN --> MOTOR[motors]
+    DET --> TRK(tracker by seq)
+    TRK --> PID(follow PID)
+    PID --> CAN(CAN FD)
+    CAN --> MOTOR(motors)
 ```
 
 Every frame carries a monotonically increasing capture sequence `seq`; detections, the streamed
