@@ -4,6 +4,8 @@
 
 #include <stddef.h>
 
+#include "video/rec_annot.h"
+
 /**
  * Recording sessions. The camera JPEG is decoded to NV12 (hardware JPEG
  * decoder), detection boxes are drawn on the Y plane, and the result is
@@ -66,7 +68,9 @@ int video_rec_status(video_rec_status_t *out);
 
 
 /* 标注录像：把一帧 NV12（dma-buf）连同检测框交给标注编码线程。
-   xyxy 为 count 组 x1,y1,x2,y2（原图像素）。未启用标注录像时为空操作。 */
-void video_rec_annot_frame(const void *nv12, int w, int h, const float *xyxy, int count);
+   boxes 为原图像素的框，label 由调用方填好（"person 0.94"）。
+   未启用标注录像时为空操作。 */
+void video_rec_annot_frame(const void *nv12, int w, int h,
+                           const rec_annot_box_t *boxes, int count);
 
 #endif /* VIDEO_REC_H */

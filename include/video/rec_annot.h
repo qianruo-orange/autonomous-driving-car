@@ -17,10 +17,13 @@
 
 typedef struct rec_annot rec_annot_t;
 
-/* 框（原图坐标，与 yolo_result_t 一致） */
+/* 框（原图坐标，与 yolo_result_t 一致）。
+   label 由调用方填好（如 "person 0.94"），为空时只画框不画标签。 */
 typedef struct {
     float x1, y1, x2, y2;
+    float conf;
     int   cls;
+    char  label[24];
 } rec_annot_box_t;
 
 /* 启动线程并创建第一个 MP4。bitrate_kbps 在固定 QP 下不再影响画质，

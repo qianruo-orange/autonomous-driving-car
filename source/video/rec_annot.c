@@ -28,10 +28,22 @@
 #include <rockchip/mpp_packet.h>
 
 #include "core/log.h"
+#include "video/rec_font.h"
 #include "video/rec_mp4.h"
 
 #define ANNOT_QUEUE_CAP  12
 #define ANNOT_MAX_BOXES  32
+
+/* 帧缓冲环。MPP 是异步读输入缓冲的：put_frame 返回时它可能还在读这一帧，而
+ * 这一帧又会成为后续 P 帧的参考帧。所以缓冲不能"用完就复用"——写进去的下一
+ * 帧会和上一帧的像素混在一起。画面主体几乎不变，看着还正常；变化的部分（框
+ * 线、标签文字）会被撕成断续的虚线，这就是"画框异常、没有标签"的根因。
+ *
+ * 回收只按帧龄算：某个缓冲承载的帧比"最新提交的帧"旧了 ANNOT_BUF_KEEP 帧才
+ * 允许复用。按帧龄而不是按码流包计数，是因为一帧可能拆成多个 VCL 包吐出，用
+ * 包计数会把还挂在编码器里的缓冲提前放掉。 */
+#define ANNOT_BUF_COUNT  12
+#define ANNOT_BUF_KEEP   8
 
 /* 恒定量化步长。FIXQP 模式下画质只由这一个数决定：
  *   18 —— 比 20 再细一档（约 1.5 倍码率），720p30 的细线与文字边缘更干净；
@@ -66,42 +78,98 @@ struct rec_annot {
     MppApi *enc_mpi;
     MppBufferGroup grp;
 
-    MppBuffer buf[4];
+    MppBuffer buf[ANNOT_BUF_COUNT];
+    int  buf_frame[ANNOT_BUF_COUNT];  /* 该缓冲承载的帧序号，-1 表示空闲 */
+    unsigned put_count;               /* 已交给编码器的帧数（单调递增） */
 
-    int buf_next;    int enc_ready;
+    int enc_ready;
 
     atomic_ullong frames, dropped, bytes_total;
     atomic_uint last_ms;
     atomic_int   disabled;        /* 硬件不可用时置位，永不重试 */
 };
 
-/* 画框：w 是图像宽度，stride 是缓冲行距（MPP 要求 16 对齐，可能与 w 不等）。
-   两者混用就会出现“斜条纹/花屏”——每行错开 fixed 字节，越往下越斜。 */
+/* Y 平面上的两种绘制值：纯白在白墙/白衬衫上几乎看不见，H.264 还会把 1~2 px
+   的细线压成断续的点，所以框一律画成"黑边 + 白线"，任何背景都能读出轮廓。 */
+#define ANNOT_DARK   16
+#define ANNOT_LIGHT  235
+
+/* 画一个空心矩形。w 是图像宽度，stride 是缓冲行距（MPP 要求 16 对齐，可能与
+   w 不等）。两者混用就会出现"斜条纹/花屏"——每行错开 fixed 字节，越往下越斜。 */
+static void draw_rect(unsigned char *y, int w, int h, int stride,
+                      int x1, int y1, int x2, int y2, int thickness, unsigned char value)
+{
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 > w - 1) x2 = w - 1;
+    if (y2 > h - 1) y2 = h - 1;
+    if (x2 - x1 < 1 || y2 - y1 < 1) return;
+
+    for (int t = 0; t < thickness; t++) {
+        int yt = y1 + t, yb = y2 - t;
+        if (yt > yb) break;
+        size_t row = (size_t)yt * (size_t)stride;
+        memset(y + row + x1, value, (size_t)(x2 - x1 + 1));
+        if (yb != yt) {
+            row = (size_t)yb * (size_t)stride;
+            memset(y + row + x1, value, (size_t)(x2 - x1 + 1));
+        }
+        int xl = x1 + t, xr = x2 - t;
+        if (xl > xr) break;
+        for (int yy = yt; yy <= yb; yy++) {
+            unsigned char *line = y + (size_t)yy * (size_t)stride;
+            line[xl] = value;
+            line[xr] = value;
+        }
+    }
+}
+
+/* 标签：黑底白字的点阵条，贴在框左上角外侧；框贴顶时改放框内。 */
+static void draw_label(unsigned char *y, int w, int h, int stride,
+                       int bx1, int by1, const char *text)
+{
+    if (!text || !text[0]) return;
+    size_t len = strlen(text);
+    if (len > 24) len = 24;
+    int tw = (int)len * REC_FONT_W;
+    int bar_w = tw + 6, bar_h = REC_FONT_H + 4;
+    if (bar_w > w) return;
+
+    int x0 = bx1 < 0 ? 0 : bx1;
+    if (x0 + bar_w > w) x0 = w - bar_w;
+    int y0 = by1 - bar_h;
+    if (y0 < 0) y0 = by1 + 2;
+    if (y0 + bar_h > h) y0 = h - bar_h;
+    if (x0 < 0 || y0 < 0) return;
+
+    for (int yy = y0; yy < y0 + bar_h; yy++)
+        memset(y + (size_t)yy * (size_t)stride + x0, ANNOT_DARK, (size_t)bar_w);
+
+    for (size_t i = 0; i < len; i++) {
+        int code = (unsigned char)text[i];
+        if (code < REC_FONT_FIRST || code >= REC_FONT_FIRST + 95) code = '?';
+        const unsigned short *glyph = rec_font[code - REC_FONT_FIRST];
+        int gx = x0 + 3 + (int)i * REC_FONT_W;
+        for (int r = 0; r < REC_FONT_H; r++) {
+            unsigned short bits = glyph[r];
+            if (!bits) continue;
+            unsigned char *line = y + (size_t)(y0 + 2 + r) * (size_t)stride;
+            for (int c = 0; c < REC_FONT_W; c++)
+                if (bits & (1u << (REC_FONT_W - 1 - c))) line[gx + c] = ANNOT_LIGHT;
+        }
+    }
+}
+
+/* 画一个检测框：外层黑边压住背景，内层白线标出位置，再贴类别标签。 */
 static void draw_box_nv12(unsigned char *y, int w, int h, int stride,
                           const rec_annot_box_t *b, int thickness)
 {
     int x1 = (int)(b->x1 + 0.5f), y1 = (int)(b->y1 + 0.5f);
     int x2 = (int)(b->x2 + 0.5f), y2 = (int)(b->y2 + 0.5f);
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 > w - 1) x2 = w - 1;
-    if (y2 > h - 1) y2 = h - 1;
     if (x2 - x1 < 2 || y2 - y1 < 2) return;
-    for (int t = 0; t < thickness; t++) {
-        int yt = y1 + t, yb = y2 - t;
-        if (yt < h && yb >= 0) {
-            memset(y + (size_t)yt * stride + x1, 0xFF, (size_t)(x2 - x1 + 1));
-            memset(y + (size_t)yb * stride + x1, 0xFF, (size_t)(x2 - x1 + 1));
-        }
-        int xl = x1 + t, xr = x2 - t;
-        if (xl >= 0 && xr < w) {
-            for (int yy = y1; yy <= y2; yy++)
-                if (yy >= 0 && yy < h) {
-                    y[(size_t)yy * stride + xl] = 0xFF;
-                    y[(size_t)yy * stride + xr] = 0xFF;
-                }
-        }
-    }
+    draw_rect(y, w, h, stride, x1, y1, x2, y2, thickness + 2, ANNOT_DARK);
+    draw_rect(y, w, h, stride, x1, y1, x2, y2, thickness, ANNOT_LIGHT);
+    draw_label(y, w, h, stride, x1 < 0 ? 0 : x1, y1 < 0 ? 0 : y1, b->label);
 }
 
 static int encoder_open(rec_annot_t *s)
@@ -161,12 +229,33 @@ static int encoder_open(rec_annot_t *s)
             LOG_ERROR("rec_annot: 无法启用逐 IDR 参数集");
     }
     if (mpp_buffer_group_get_internal(&s->grp, MPP_BUFFER_TYPE_DRM) != MPP_OK) return -1;
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < ANNOT_BUF_COUNT; i++) {
         if (mpp_buffer_get(s->grp, &s->buf[i],
                            (size_t)s->hor_stride * s->ver_stride * 3 / 2) != MPP_OK)
             return -1;
+        s->buf_frame[i] = -1;
+    }
     s->enc_ready = 1;
     return 0;
+}
+
+/* 取一个空闲缓冲，并给它打上帧序号。返回 -1 表示环形已排满：此时宁可丢掉
+ * 这一帧，也不能覆盖编码器可能还在读的缓冲。 */
+static int buf_acquire(rec_annot_t *s)
+{
+    /* 先按帧龄把老缓冲放回池子 */
+    if (s->put_count > ANNOT_BUF_KEEP) {
+        unsigned limit = s->put_count - ANNOT_BUF_KEEP;
+        for (int i = 0; i < ANNOT_BUF_COUNT; i++)
+            if (s->buf_frame[i] >= 0 && (unsigned)s->buf_frame[i] < limit)
+                s->buf_frame[i] = -1;
+    }
+    for (int i = 0; i < ANNOT_BUF_COUNT; i++)
+        if (s->buf_frame[i] < 0) {
+            s->buf_frame[i] = (int)s->put_count++;
+            return i;
+        }
+    return -1;
 }
 
 /* MPP 可能把 SPS/PPS/SEI 单独成包：缓存到下一个切片包，拼成完整访问单元。 */
@@ -184,9 +273,9 @@ static int pkt_has_vcl(const unsigned char *buf, size_t len)
     return 0;
 }
 
-static void annot_feed(rec_annot_t *s, const unsigned char *p, size_t len)
+static void annot_feed(rec_annot_t *s, const unsigned char *p, size_t len, int vcl)
 {
-    if (!pkt_has_vcl(p, len)) {
+    if (!vcl) {
         if (pending_len + len > pending_cap) {
             size_t cap = pending_len + len + 4096;
             unsigned char *grown = realloc(pending, cap);
@@ -221,7 +310,8 @@ static void drain_packets(rec_annot_t *s)
         const unsigned char *ptr = mpp_packet_get_pos(pkt);
         size_t len = mpp_packet_get_length(pkt);
         int eos = mpp_packet_get_eos(pkt);
-        if (len && s->mp4) annot_feed(s, ptr, len);
+        int vcl = len ? pkt_has_vcl(ptr, len) : 0;
+        if (len && s->mp4) annot_feed(s, ptr, len, vcl);
         if (len) atomic_fetch_add(&s->bytes_total, len);
         mpp_packet_deinit(&pkt);
         if (eos) break;
@@ -237,7 +327,7 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     if (!s->enc_ready && encoder_open(s) != 0) {
         if (s->enc_ctx) { mpp_destroy(s->enc_ctx); s->enc_ctx = NULL; }
         if (s->grp) { mpp_buffer_group_put(s->grp); s->grp = NULL; }
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < ANNOT_BUF_COUNT; i++)
             if (s->buf[i]) { mpp_buffer_put(s->buf[i]); s->buf[i] = NULL; }
         atomic_store(&s->disabled, 1);
         LOG_ERROR("rec_annot: 硬件编码器不可用，本次运行停用标注录像");
@@ -245,9 +335,20 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
     }
     if (f->w != s->w || f->h != s->h) return -1;
 
-    MppBuffer frame_buf = s->buf[s->buf_next];
-    s->buf_next = (s->buf_next + 1) % 4;
+    int slot = buf_acquire(s);
+    if (slot < 0) { drain_packets(s); slot = buf_acquire(s); }
+    if (slot < 0) return -1;
+    MppBuffer frame_buf = s->buf[slot];
     unsigned char *dst = mpp_buffer_get_ptr(frame_buf);
+    /* dma-buf 若是带 cache 的映射，CPU 写完必须做一次 cache 回写，否则 VEPU
+       通过 DMA 读到的可能是旧行——又是一种"文字被啃掉"的来源。START/END 把
+       这段写入包起来；非 dma-buf 缓冲（fd < 0）或已经 uncached 时是空操作。 */
+    int fd = mpp_buffer_get_fd(frame_buf);
+    struct dma_buf_sync sync;
+    if (fd >= 0) {
+        sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE;
+        if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != 0) { /* 忽略：不支持同步的缓冲 */ }
+    }
     /* 源是紧凑 NV12（行距 = w），目标是 stride 行距的缓冲：逐行拷，不能整块 memcpy */
     const unsigned char *src = f->nv12;
     for (int y = 0; y < s->h; y++)
@@ -258,6 +359,10 @@ static int encode_frame(rec_annot_t *s, annot_frame_t *f)
         memcpy(dst_uv + (size_t)y * s->hor_stride, src_uv + (size_t)y * s->w, (size_t)s->w);
     for (int i = 0; i < f->count; i++)
         draw_box_nv12(dst, s->w, s->h, s->hor_stride, &f->boxes[i], 3);
+    if (fd >= 0) {
+        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE;
+        if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != 0) { /* 同上 */ }
+    }
 
     MppFrame out = NULL;
     if (mpp_frame_init(&out) != MPP_OK) return -1;
@@ -308,7 +413,7 @@ static void *annot_task(void *arg)
             mpp_frame_deinit(&eos);
         }
         drain_packets(s);
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < ANNOT_BUF_COUNT; i++)
             if (s->buf[i]) { mpp_buffer_put(s->buf[i]); s->buf[i] = NULL; }
         if (s->grp) { mpp_buffer_group_put(s->grp); s->grp = NULL; }
         mpp_destroy(s->enc_ctx);

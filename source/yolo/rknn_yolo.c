@@ -661,17 +661,24 @@ static void *yolo_worker_task(void *arg)
         res.decode_end_us = job.decode_end_us;
         res.post_done_us = yolo_now_us();
         yolo_record_result(&job, &res);
-        /* 标注录像：把本帧 NV12 与检测框交给编码线程（内部立即拷贝） */
+        /* 标注录像：把本帧 NV12 与检测框（含类别标签）交给编码线程（内部立即拷贝） */
         if (job.annot_nv12) {
-            float xyxy[YOLO_MAX_DETS * 4];
-            int n = res.count > YOLO_MAX_DETS ? YOLO_MAX_DETS : res.count;
+            rec_annot_box_t boxes[32];
+            int n = res.count > (int)(sizeof(boxes) / sizeof(boxes[0]))
+                  ? (int)(sizeof(boxes) / sizeof(boxes[0])) : res.count;
             for (int i = 0; i < n; i++) {
-                xyxy[4 * i + 0] = res.dets[i].x1;
-                xyxy[4 * i + 1] = res.dets[i].y1;
-                xyxy[4 * i + 2] = res.dets[i].x2;
-                xyxy[4 * i + 3] = res.dets[i].y2;
+                const yolo_det_t *det = &res.dets[i];
+                const char *name = det->cls >= 0 && det->cls < g_yolo.classes.count
+                                 ? g_yolo.classes.names[det->cls] : "obj";
+                boxes[i].x1 = det->x1;
+                boxes[i].y1 = det->y1;
+                boxes[i].x2 = det->x2;
+                boxes[i].y2 = det->y2;
+                boxes[i].conf = det->conf;
+                boxes[i].cls = det->cls;
+                snprintf(boxes[i].label, sizeof(boxes[i].label), "%s %.2f", name, (double)det->conf);
             }
-            video_rec_annot_frame(job.annot_nv12, job.w, job.h, xyxy, n);
+            video_rec_annot_frame(job.annot_nv12, job.w, job.h, boxes, n);
         }
         free(job.annot_nv12);
         job.annot_nv12 = NULL;

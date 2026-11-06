@@ -603,18 +603,11 @@ void video_rec_destroy(void *arg)
     pthread_mutex_destroy(&g_rec.lock);
 }
 
-void video_rec_annot_frame(const void *nv12, int w, int h, const float *xyxy, int count)
+void video_rec_annot_frame(const void *nv12, int w, int h,
+                           const rec_annot_box_t *boxes, int count)
 {
-    if (!nv12 || !xyxy) return;
+    if (!nv12 || !boxes) return;
     if (count < 0) count = 0;
-    rec_annot_box_t boxes[32];
-    int n = count > 32 ? 32 : count;
-    for (int i = 0; i < n; i++) {
-        boxes[i].x1 = xyxy[4 * i + 0];
-        boxes[i].y1 = xyxy[4 * i + 1];
-        boxes[i].x2 = xyxy[4 * i + 2];
-        boxes[i].y2 = xyxy[4 * i + 3];
-        boxes[i].cls = 0;
-    }
-    if (g_rec.annot) rec_annot_push(g_rec.annot, nv12, w, h, boxes, n);
+    if (count > 32) count = 32;
+    if (g_rec.annot) rec_annot_push(g_rec.annot, nv12, w, h, boxes, count);
 }
