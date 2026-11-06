@@ -138,10 +138,30 @@
     <span class="codex-head-actions">
       <button type="button" class="btn btn-back codex-login-btn" id="codex_login_btn" data-i18n="登录">登录</button>
       <button type="button" class="btn btn-back" id="codex_update_check" data-i18n="检查更新">检查更新</button>
-      <button type="button" class="btn btn-back" id="codex_logout" data-i18n="退出登录">退出登录</button>
     </span>
   </h3>
-  <p class="codex-hint" id="codex_cli_info"></p>
+  <div class="codex-run">
+    <div class="codex-run-field"><label for="codex_model" data-i18n="模型">模型</label>
+      <select id="codex_model">
+        <option value="" data-i18n="默认（跟随 CLI）">默认（跟随 CLI）</option>
+        <option value="gpt-5.1-codex-max">gpt-5.1-codex-max</option>
+        <option value="gpt-5.2">gpt-5.2</option>
+        <option value="gpt-5.1-codex">gpt-5.1-codex</option>
+        <option value="gpt-5.1">gpt-5.1</option>
+        <option value="gpt-5-codex">gpt-5-codex</option>
+        <option value="gpt-5">gpt-5</option>
+      </select>
+    </div>
+    <div class="codex-run-field"><label for="codex_effort" data-i18n="推理速率">推理速率</label>
+      <select id="codex_effort">
+        <option value="minimal" data-i18n="极低（minimal）">极低（minimal）</option>
+        <option value="low" data-i18n="低（low）">低（low）</option>
+        <option value="medium" data-i18n="中（medium，推荐）">中（medium，推荐）</option>
+        <option value="high" data-i18n="高（high）">高（high）</option>
+        <option value="xhigh" data-i18n="极高（xhigh，仅 codex-max / 5.2）">极高（xhigh，仅 codex-max / 5.2）</option>
+      </select>
+    </div>
+  </div>
   <p class="codex-update-text" id="codex_update_result" role="status" aria-live="polite" hidden></p>
   <div class="codex-login-area" id="codex_login_area" hidden>
     <div class="codex-device-row">

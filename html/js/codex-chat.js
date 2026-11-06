@@ -9,14 +9,11 @@
   var input = document.getElementById('codex_chat_input');
   var send = document.getElementById('codex_send_btn');
   var stopBtn = document.getElementById('codex_stop_btn');
-  var newBtn = document.getElementById('codex_new_btn');
-  var downloadBtn = document.getElementById('codex_download_btn');
   var badge = document.getElementById('codex_login_badge');
   var meta = document.getElementById('codex_chat_meta');
   if (!log || !form) return;
 
   var signature = '';
-  var dividerAt = -1;
   var lastData = null;
   var sending = false;
 
@@ -50,7 +47,7 @@
     });
     var sig = [rows.length, data.busy, data.job, data.last_error,
                data.logged_in, data.login && data.login.state,
-               dividerAt, window.getLang()].join('|');
+               window.getLang()].join('|');
     if (sig === signature) return;
     signature = sig;
     log.replaceChildren();
@@ -60,21 +57,9 @@
       setI18nText(empty, '还没有对话。输入一条消息开始和 Codex 交流。');
       log.appendChild(empty);
     }
-    rows.forEach(function (row, index) {
-      if (dividerAt === index) {
-        var divider = document.createElement('div');
-        divider.className = 'codex-divider';
-        setI18nText(divider, '— 新会话 —');
-        log.appendChild(divider);
-      }
+    rows.forEach(function (row) {
       log.appendChild(bubble(row));
     });
-    if (dividerAt >= rows.length) {
-      var tailDivider = document.createElement('div');
-      tailDivider.className = 'codex-divider';
-      setI18nText(tailDivider, '— 新会话 —');
-      log.appendChild(tailDivider);
-    }
     if (data.busy) {
       var thinking = document.createElement('div');
       thinking.className = 'codex-msg assistant';
@@ -162,40 +147,5 @@
     } catch (error) {
       App.status('codex_chat', 'err', t('停止失败'));
     } finally { stopBtn.disabled = false; }
-  });
-
-  newBtn.addEventListener('click', async function () {
-    if (lastData && lastData.busy) {
-      App.status('codex_chat', 'err', t('Codex 正在回复，请先停止'));
-      return;
-    }
-    try {
-      var response = await authFetch('/api/codex/reset', {method: 'POST'});
-      var result = await response.json();
-      if (!result.ok) throw new Error(result.error || 'reset failed');
-      dividerAt = (lastData && lastData.messages ? lastData.messages.filter(function (r) {
-        return r.role === 'user' || r.role === 'assistant';
-      }).length : 0);
-      signature = '';
-      App.status('codex_chat', 'ok', t('新会话已开始'));
-      await refresh();
-    } catch (error) {
-      App.status('codex_chat', 'err', t('新会话失败'));
-    }
-  });
-
-  downloadBtn.addEventListener('click', async function () {
-    downloadBtn.disabled = true;
-    try {
-      var response = await authFetch('/api/codex/export');
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      var disposition = response.headers.get('Content-Disposition') || '';
-      var match = /filename="?([^";]+)"?/.exec(disposition);
-      var name = match ? match[1] : 'codex_chat.jsonl';
-      App.downloadBlob(await response.blob(), name);
-      App.status('codex_chat', 'ok', t('记录已开始下载'));
-    } catch (error) {
-      App.status('codex_chat', 'err', t('记录下载失败'));
-    } finally { downloadBtn.disabled = false; }
   });
 })();

@@ -37,15 +37,34 @@ INBOX = os.path.join(CX, "inbox")
 
 DEFAULT_SETTINGS = {
     "cli_path": "/home/qianruo/.local/bin/codex",
+    "model": "",
+    "effort": "medium",
     "sandbox": "danger-full-access",
     "cli_version": "",
 }
-# Runtime options (model / sandbox / workdir) are no longer configurable
-# from the web UI; the sandbox is pinned to full access for every run.
+# Runtime options (sandbox / workdir) are no longer configurable from the web
+# UI; the sandbox is pinned to full access for every run. Model and reasoning
+# effort ("速率") come back as two dropdowns on the config page.
 FORCED_SANDBOX = "danger-full-access"
+EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 RECORD_NAME = re.compile(r"^chat_\d{8}\.jsonl$")
-DEVICE_URL = re.compile(r"https://[^\s/]*auth\.openai\.com[^\s]*|https://[^\s]+/device[^\s]*")
+DEVICE_URL_PAGE = re.compile(r"https://[^\s]*/device(?![A-Za-z])[^\s]*")
+DEVICE_URL_ANY = re.compile(r"https://[^\s/]*auth\.openai\.com[^\s]*")
 DEVICE_CODE = re.compile(r"\b([A-Z0-9]{4,}-[A-Z0-9]{4,})\b")
+# Terminal output carries ANSI colour/OSC-8 escapes that would otherwise end
+# up inside the captured URL (e.g. "…/device\x1b[0m") or break the code match.
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def find_device_url(text):
+    """Prefer the human sign-in page; never show an API endpoint URL."""
+    m = DEVICE_URL_PAGE.search(text)
+    if m:
+        return m.group(0).rstrip(".,;)")
+    m = DEVICE_URL_ANY.search(text)
+    if m and "/api/" not in m.group(0):
+        return m.group(0).rstrip(".,;)")
+    return ""
 
 
 def now_iso():
@@ -82,11 +101,14 @@ def write_json(path, value):
 def settings():
     s = dict(DEFAULT_SETTINGS)
     s.update(read_json(SETTINGS, {}))
-    # Legacy settings.json may still carry model/sandbox/workdir; drop them and
-    # pin the sandbox so a stale read-only value can never weaken the runtime.
+    # The sandbox stays pinned so a stale read-only value can never weaken the
+    # runtime; legacy workdir is dropped, and model/effort are validated.
     s["sandbox"] = FORCED_SANDBOX
-    s.pop("model", None)
     s.pop("workdir", None)
+    if s.get("effort") not in EFFORTS:
+        s["effort"] = "medium"
+    if not isinstance(s.get("model"), str):
+        s["model"] = ""
     return s
 
 
@@ -198,6 +220,10 @@ def config_toml(s):
     lines = ["# Managed by the autonomous-driving-car web UI.",
              'approval_policy = "never"',
              'sandbox_mode = "%s"' % FORCED_SANDBOX]
+    if s.get("model"):
+        lines.append('model = "%s"' % s["model"])
+    if s.get("effort"):
+        lines.append('model_reasoning_effort = "%s"' % s["effort"])
     path = CONFIG_TOML + ".tmp"
     with open(path, "w", encoding="utf-8") as fp:
         fp.write("\n".join(lines))
@@ -228,7 +254,9 @@ def build_status():
         "logged_in": bool(mode and mode != "none"),
         "auth_mode": mode or "none",
         "login": lg,
-        "settings": {"sandbox": FORCED_SANDBOX},
+        "settings": {"sandbox": FORCED_SANDBOX,
+                     "model": s.get("model", ""),
+                     "effort": s.get("effort", "medium")},
         "busy": bool(st.get("busy")),
         "job": st.get("job", ""),
         "thread_id": st.get("thread_id", ""),
@@ -362,10 +390,13 @@ def cmd_status(args):
 def cmd_config(args):
     payload = json.loads(read_text(args.input) or "{}")
     s = settings()
-    for key in ("cli_path",):
+    for key in ("cli_path", "model"):
         if key in payload:
             value = str(payload[key])[:512].strip()
             s[key] = value
+    if "effort" in payload:
+        value = str(payload["effort"]).strip().lower()
+        s["effort"] = value if value in EFFORTS else "medium"
     if not s.get("cli_version") and cli_available(s.get("cli_path", "")):
         s["cli_version"] = cli_version(s["cli_path"])
     write_json(SETTINGS, s)
@@ -392,9 +423,9 @@ def device_login_worker(cli):
         return
     os.close(slave)
     started = time.time()
-    buffer = ""
-    url = code = ""
+    clean_text = ""
     tail = ""
+    url = code = ""
     while time.time() - started < 900:
         if proc.poll() is not None and not select.select([master], [], [], 0)[0]:
             break
@@ -406,14 +437,12 @@ def device_login_worker(cli):
             break
         if not chunk:
             break
-        buffer += chunk
+        clean_text = (clean_text + ANSI.sub("", chunk))[-8000:]
         tail = (tail + chunk)[-1200:]
         if not url:
-            m = DEVICE_URL.search(buffer)
-            if m:
-                url = m.group(0).rstrip(".,;)")
+            url = find_device_url(clean_text)
         if not code:
-            m = DEVICE_CODE.search(buffer)
+            m = DEVICE_CODE.search(clean_text)
             if m:
                 code = m.group(1)
         if url or code:
@@ -421,7 +450,6 @@ def device_login_worker(cli):
                                "message": "Waiting for browser authorisation",
                                "started_at": int(started),
                                "expires_at": int(started) + 900})
-        buffer = buffer[-4000:]
     try:
         os.close(master)
     except OSError:
@@ -432,7 +460,15 @@ def device_login_worker(cli):
     except Exception:
         proc.kill()
         rc = -1
-    clean = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", tail).replace("\r", " ").strip()
+    clean = ANSI.sub("", tail).replace("\r", " ").strip()
+    # The one-time code sometimes only shows up in the final output (success
+    # banner or failure message); match it there as a last resort.
+    if not url:
+        url = find_device_url(clean_text)
+    if not code:
+        m = DEVICE_CODE.search(clean_text) or DEVICE_CODE.search(clean)
+        if m:
+            code = m.group(1)
     logged = os.path.exists(AUTH)
     final = "success" if (rc == 0 or logged) else "error"
     write_json(LOGIN, {"state": final, "url": url, "code": code,

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/* codex-config.js — Codex CLI login and settings on /config. */
+/* codex-config.js — Codex CLI login and settings on /config.
+   One title-bar button serves both directions: "Sign in" (start / retry the
+   device-code flow) when signed out, "Sign out" when signed in. */
 (function () {
   'use strict';
   function el(id) { return document.getElementById(id); }
@@ -10,33 +12,38 @@
   var deviceCode = el('codex_device_code');
   var deviceCopy = el('codex_device_copy');
   var deviceHint = el('codex_device_hint');
-  var cliInfo = el('codex_cli_info');
+  var modelSel = el('codex_model');
+  var effortSel = el('codex_effort');
   var pending = false;
+  var saving = false;
+  var loggedIn = false;
+  var loginRequested = false;
 
   function render(data) {
     var login = data.login || {};
+    loggedIn = !!data.logged_in;
     var text, cls = '';
     if (login.state === 'starting' || login.state === 'pending') {
       text = t('等待浏览器授权'); cls = 'warn';
-    } else if (data.logged_in) {
-      text = t('已登录'); cls = 'ok';
-    } else if (login.state === 'error') {
-      text = t('登录失败'); cls = 'warn';
+    } else if (loggedIn) {
+      text = t('退出登录'); cls = 'ok';
     } else {
+      /* Signed out, or the last attempt failed — the button starts or
+         retries the device-code sign-in. */
       text = t('登录');
     }
     loginBtn.textContent = text;
     loginBtn.className = 'btn btn-back codex-login-btn' + (cls ? ' ' + cls : '');
     loginBtn.disabled = pending ||
-      data.logged_in ||
       login.state === 'starting' || login.state === 'pending';
 
-    cliInfo.textContent = (data.cli_found ? 'Codex CLI ' + (data.cli_version || '') : t('未找到 Codex CLI')) +
-      ' · ' + (data.cli_path || '');
+    var s = data.settings || {};
+    if (document.activeElement !== modelSel) modelSel.value = s.model || '';
+    if (document.activeElement !== effortSel) effortSel.value = s.effort || 'medium';
 
     var url = login.url || '';
     var code = login.code || '';
-    loginArea.hidden = !!data.logged_in;
+    loginArea.hidden = loggedIn || !loginRequested;
     deviceLink.textContent = url || t('正在获取登录链接…');
     deviceLink.href = url || '#';
     deviceCode.textContent = code || '— — — —';
@@ -64,9 +71,45 @@
   App.poll(load, {interval: 2000});
   document.addEventListener('languagechange', function () { load(); paintUpdate(); });
 
+  async function saveSettings() {
+    if (saving) return;
+    saving = true;
+    try {
+      var response = await authFetch('/api/codex/config', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({model: modelSel.value, effort: effortSel.value})
+      });
+      var result = await response.json();
+      if (!result.ok) throw new Error(result.error || 'HTTP ' + response.status);
+      App.status('codex', 'ok', t('已保存 Codex 设置'));
+      await load();
+    } catch (error) {
+      App.status('codex', 'err', t('Codex 设置保存失败') + ': ' + error.message);
+    } finally {
+      saving = false;
+    }
+  }
+  modelSel.addEventListener('change', saveSettings);
+  effortSel.addEventListener('change', saveSettings);
+
   loginBtn.addEventListener('click', async function () {
     if (loginBtn.disabled) return;
+    if (loggedIn) {
+      if (!confirm(t('确定退出 Codex 登录并清除已保存的凭据？'))) return;
+      loginBtn.disabled = true;
+      try {
+        var out = await authFetch('/api/codex/logout', {method: 'POST'});
+        if (!out.ok) throw new Error('HTTP ' + out.status);
+        App.status('codex', 'ok', t('已退出登录'));
+        loginRequested = false;
+      } catch (error) {
+        App.status('codex', 'err', t('退出登录失败'));
+      }
+      await load();
+      return;
+    }
     pending = true; loginBtn.disabled = true;
+    loginRequested = true;
     loginArea.hidden = false;
     try {
       var response = await authFetch('/api/codex/login/device', {method: 'POST'});
@@ -128,17 +171,5 @@
     }
     paintUpdate();
     updateBtn.disabled = false;
-  });
-
-  el('codex_logout').addEventListener('click', async function () {
-    if (!confirm(t('确定退出 Codex 登录并清除已保存的凭据？'))) return;
-    try {
-      var response = await authFetch('/api/codex/logout', {method: 'POST'});
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      App.status('codex', 'ok', t('已退出登录'));
-      await load();
-    } catch (error) {
-      App.status('codex', 'err', t('退出登录失败'));
-    }
   });
 })();

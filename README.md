@@ -249,18 +249,24 @@ systemd 沙箱只开放这一个文件可写
 三者通过需要 root 认证的 `/api/codex/` 接口与 `bin/codex_bridge.py` 协作；C 层只拉起短命的
 Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模型。
 
-- **登录（仅设备码）**：未登录时标题栏显示「登录」按钮，点击即发起设备码登录并在
-  卡片内展开登录链接与一次性验证码（15 分钟），复制验证码后在浏览器完成授权。
-  不再提供 API Key 登录；`config.toml` 只使用 Codex 内置的 ChatGPT provider，凭据由
-  CLI 自行从 `.codex/auth.json` 读取。运行参数（模型 / 沙箱 / 工作目录）已从界面移除。
-  「检查更新」「退出登录」固定在卡片标题栏右侧。
+- **登录（仅设备码）**：标题栏只有一个登录/退出按钮——未登录（含上次登录失败）时显示
+  「登录」，点击即发起设备码登录并在卡片内展开登录链接与一次性验证码（15 分钟），
+  复制验证码后在浏览器完成授权；已登录后同一按钮变为「退出登录」。不再提供 API Key
+  登录；`config.toml` 只使用 Codex 内置的 ChatGPT provider，凭据由 CLI 自行从
+  `.codex/auth.json` 读取。沙箱 / 工作目录仍不可配置；「检查更新」固定在卡片标题栏
+  右侧，登录链接与验证码从终端输出中剥离 ANSI 转义后提取，避免乱码。
+- **模型与推理速率**：配置页 Codex 卡片提供「模型」与「推理速率」两个下拉框（改动即
+  保存）。模型可选默认（跟随 CLI）、`gpt-5.1-codex-max`、`gpt-5.2`、`gpt-5.1-codex`、
+  `gpt-5.1`、`gpt-5-codex`、`gpt-5`；推理速率对应 `model_reasoning_effort`
+  （minimal / low / medium / high / xhigh，其中 xhigh 仅 codex-max 与 5.2 支持），
+  两者写入 `.codex/config.toml`，每次对话开始前由桥接脚本刷新。
 - **检查更新**：配置页「检查更新」比对本地 `codex --version` 与 npm registry 上的
   `@openai/codex` 最新版本，查询走整机代理。这是只读检查，不会执行 `codex update`；代理
   偶发 TLS 失败时会重试多个端点，仍失败则显示上次成功检查的结果。
 - **凭据与记录分离**：`/opt/autonomous-driving-car/.codex/` 存 CLI 凭据（不会被文件打包
   下载），`recordings/codex/chat_YYYYMMDD.jsonl` 逐行存 `user` / `assistant` / `event` 记录。
-- **下载**：日志页列出每日记录，可单文件下载或打包导出（JSONL），也可一键清空；主页聊天框
-  的「下载记录」按钮直接导出全部。
+- **下载**：日志页列出每日记录，可单文件下载或打包导出（JSONL），也可一键清空。主页
+  对话栏只保留「停止」按钮，下载与设置统一在配置页 / 日志页完成。
 - **权限**：沙箱固定为 `sandbox=danger-full-access`，CLI 子进程降权到普通账号运行；
   等于把高权限 agent 暴露给通过网页认证的用户，请确保网络与认证配置可信。
 - **多轮上下文**：目前由桥接脚本把最近 6 条消息拼进 prompt，尚未使用 `codex exec resume`。
@@ -745,14 +751,22 @@ interaction log. They share the root-authenticated `/api/codex/` endpoints and
 `bin/codex_bridge.py`. The C layer only spawns a short-lived Python process:
 long turns are detached by the bridge, so no HTTP worker waits for a model.
 
-- **Sign-in (device code only)**: when signed out the title bar shows a "Sign in"
-  button; clicking it starts the device-code flow and expands the sign-in link
-  and one-time code (valid 15 minutes) inside the card — copy the code and
-  authorise in a browser. API-key sign-in is no longer offered and `config.toml`
-  always uses the built-in ChatGPT provider, whose credentials the CLI reads from
-  `.codex/auth.json`. Runtime options (model / sandbox / workdir) were removed
-  from the UI. "Check for updates" and "Sign out" stay on the right of the card
-  title bar.
+- **Sign-in (device code only)**: the title bar has a single button — it reads
+  "Sign in" when signed out (also after a failed attempt; clicking starts or
+  retries the device-code flow and expands the sign-in link and one-time code,
+  valid 15 minutes, inside the card) and flips to "Sign out" once signed in.
+  API-key sign-in is no longer offered and `config.toml` always uses the
+  built-in ChatGPT provider, whose credentials the CLI reads from
+  `.codex/auth.json`. Sandbox / workdir stay non-configurable. "Check for
+  updates" stays on the right of the card title bar. Sign-in link and code are
+  parsed from terminal output with ANSI escapes stripped, so no mojibake.
+- **Model and reasoning effort**: the Codex card on the config page has two
+  dropdowns ("Model" and "Reasoning effort"; changes save immediately). Models:
+  default (follow the CLI), `gpt-5.1-codex-max`, `gpt-5.2`, `gpt-5.1-codex`,
+  `gpt-5.1`, `gpt-5-codex`, `gpt-5`. Effort maps to `model_reasoning_effort`
+  (minimal / low / medium / high / xhigh; xhigh is only supported by
+  codex-max and 5.2). Both are written to `.codex/config.toml`, refreshed by
+  the bridge before every turn.
 - **Check for updates**: the config page compares the local `codex --version`
   with the latest `@openai/codex` release on the npm registry through the
   board-wide proxy. This is read-only — it never runs `codex update`. The proxy
@@ -763,8 +777,8 @@ long turns are detached by the bridge, so no HTTP worker waits for a model.
   `recordings/codex/chat_YYYYMMDD.jsonl` stores one JSON object per line with
   `user` / `assistant` / `event` roles.
 - **Downloads**: the logs page lists daily records for single-file download,
-  packed JSONL export or clearing; the chat box has a "download log" button for
-  the full export.
+  packed JSONL export or clearing. The home chat column keeps only a "Stop"
+  button; downloads and settings live on the config / logs pages.
 - **Privileges**: the sandbox is pinned to `danger-full-access` and CLI children
   drop to an unprivileged account. This exposes a high-privilege agent to anyone
   who passes web authentication — keep network and auth config trustworthy.
