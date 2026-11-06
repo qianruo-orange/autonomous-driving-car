@@ -362,6 +362,14 @@
 
   function barColor(p) { return p < 60 ? 'green' : p < 85 ? 'yellow' : 'red'; }
 
+  /* 数据按区间着色：绿=健康 黄=临界 红=告警。只切换 .c-low/.c-mid/.c-high，
+     不碰元素自身的结构性 class（如 .cpu-temp / .video-fps）。 */
+  function setDataState(el, state) {
+    if (!el) return;
+    el.classList.remove('c-low', 'c-mid', 'c-high');
+    if (state) el.classList.add(state);
+  }
+
   /* 取某次请求在本机时间线上的「收到首字节」时刻。用 Resource Timing 而不是
      performance.now()：后者要等主线程排到才执行，解 1080p JPEG 时能被推迟几十毫秒，
      会把钟差算小、延迟压到 0；网络栈打点不受渲染线程负载影响。
@@ -512,7 +520,9 @@
       /* 时钟先更新：主界面没有内存/磁盘元素，后面那段落会在 catch 里中断 */
       var clock = document.getElementById('datetime');
       if (clock) clock.textContent = fmtTime();
-      document.getElementById('temp').textContent = d.temp + '°C';
+      var tempEl = document.getElementById('temp');
+      tempEl.textContent = d.temp + '°C';
+      setDataState(tempEl, d.temp < 60 ? 'c-low' : d.temp < 75 ? 'c-mid' : 'c-high');
 
       /* 总体 CPU */
       var cpuPct = 0;
@@ -688,6 +698,7 @@
       fpsCnt = 0; shownCnt = 0; fpsWin = now;
     }
     el.textContent = fpsVal > 0 ? Math.round(fpsVal) + ' FPS' : '-- FPS';
+    setDataState(el, fpsVal <= 0 ? null : fpsVal >= 24 ? 'c-low' : fpsVal >= 15 ? 'c-mid' : 'c-high');
     el.title = 'Displayed: ' + Math.round(fpsVal) + ' FPS; received: ' + Math.round(receivedFps) + ' FPS';
     var stats = document.getElementById('video_stats');
     if (stats) {

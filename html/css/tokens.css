@@ -53,6 +53,24 @@
   --bar-h: 8px;
   --bar-r: 4px;
 
+  /* ---- 数据着色 ----
+     进度条按占用区间取色：低负载绿、中段琥珀、高负载红。
+     只有"数据"允许用高饱和色，界面本体保持克制，颜色才有指向性。 */
+  --data-low-a: #2fb287;  --data-low-b: #46d6ad;
+  --data-mid-a: #d99b1f;  --data-mid-b: #edc94f;
+  --data-high-a: #e3576b; --data-high-b: #f2768a;
+  --data-cpu-a: #2f9fe0;  --data-cpu-b: #52c6f0;
+  --data-npu-a: #7b86e8;  --data-npu-b: #a58ff2;
+  --data-io-a: #1fb6c9;   --data-io-b: #45d6c6;
+
+  /* ---- 玻璃质感 ----
+     只用在"浮在内容之上"的表面：底栏、断连提示、下拉与弹窗。
+     卡片不用（一屏十几张卡都开模糊，手机 GPU 扛不住）。 */
+  --glass-bg: rgba(9, 14, 24, .62);
+  --glass-border: rgba(255, 255, 255, .07);
+  --glass-blur: 18px;
+  --glass-sat: 150%;
+
   /* ---- 控件 ---- */
   --input-bg: var(--surface-2);
   --btn-bg: rgba(255, 255, 255, .06);
@@ -161,4 +179,133 @@ html[data-theme="light"] {
   --shadow-lift: 0 10px 26px rgba(43, 64, 92, .18);
 
   --card-highlight: rgba(255, 255, 255, .8);
+
+  --glass-bg: rgba(255, 255, 255, .74);
+  --glass-border: rgba(38, 84, 138, .10);
+}
+
+/* ============================================================
+   配色方案（只在深色主题下生效，浅色主题保持单一蓝调）
+   切换方式：<html data-palette="graphite">，由 js/palette.js 维护
+   原则：界面本体的饱和度压低，高饱和只留给数据和状态。
+   ============================================================ */
+
+/* ---- 深空霓虹：青蓝主调 + 品红点缀，科技感最强 ---- */
+html[data-palette="neon"]:not([data-theme="light"]) {
+  --bg: linear-gradient(158deg, #05070d 0%, #0a1020 52%, #070b16 100%);
+  --surface-1: rgba(16, 22, 38, .86);
+  --surface-2: rgba(9, 13, 24, .72);
+  --surface-3: rgba(22, 30, 50, .94);
+
+  --border: rgba(90, 200, 255, .16);
+  --border-strong: rgba(90, 200, 255, .30);
+  --border-hover: rgba(53, 224, 255, .60);
+
+  --text: #dbe6f7;
+  --text-strong: #f5fbff;
+  --muted: #9aacc6;
+  --muted-2: #71839e;
+
+  --accent: #35e0ff;
+  --accent-hover: #8af0ff;
+  --accent-weak: rgba(53, 224, 255, .10);
+  --accent-weak-2: rgba(53, 224, 255, .20);
+  --glow: rgba(53, 224, 255, .30);
+  --name: #ff4d9d;
+
+  --track: rgba(120, 180, 230, .18);
+  --glass-bg: rgba(6, 10, 20, .60);
+}
+
+/* ---- 极光青绿：青绿 + 紫，柔和通透，长时间盯屏最舒服 ---- */
+html[data-palette="aurora"]:not([data-theme="light"]) {
+  --bg: linear-gradient(158deg, #05100d 0%, #0a1a18 52%, #061211 100%);
+  --surface-1: rgba(14, 30, 28, .86);
+  --surface-2: rgba(8, 20, 19, .72);
+  --surface-3: rgba(18, 36, 34, .94);
+
+  --border: rgba(90, 220, 180, .16);
+  --border-strong: rgba(90, 220, 180, .30);
+  --border-hover: rgba(43, 227, 167, .55);
+
+  --text: #d6eee7;
+  --text-strong: #f2fffb;
+  --muted: #93b3ac;
+  --muted-2: #6c8781;
+
+  --accent: #2be3a7;
+  --accent-hover: #7ff0cb;
+  --accent-weak: rgba(43, 227, 167, .10);
+  --accent-weak-2: rgba(43, 227, 167, .20);
+  --glow: rgba(43, 227, 167, .26);
+  --name: #7c6cff;
+
+  --track: rgba(110, 200, 175, .18);
+  --glass-bg: rgba(6, 16, 14, .60);
+}
+
+/* ---- 落日琥珀：暖底 + 琥珀珊瑚，观感最亲和 ---- */
+html[data-palette="amber"]:not([data-theme="light"]) {
+  --bg: linear-gradient(158deg, #0e0a07 0%, #1a130c 52%, #120d09 100%);
+  --surface-1: rgba(32, 25, 18, .88);
+  --surface-2: rgba(20, 15, 11, .74);
+  --surface-3: rgba(40, 31, 22, .94);
+
+  --border: rgba(230, 170, 90, .16);
+  --border-strong: rgba(230, 170, 90, .30);
+  --border-hover: rgba(255, 176, 32, .55);
+
+  --text: #f0e2cf;
+  --text-strong: #fff8ee;
+  --muted: #bda78c;
+  --muted-2: #8e7b65;
+
+  --accent: #ffb020;
+  --accent-hover: #ffca61;
+  --accent-weak: rgba(255, 176, 32, .10);
+  --accent-weak-2: rgba(255, 176, 32, .20);
+  --glow: rgba(255, 176, 32, .26);
+  --name: #ff6b5a;
+
+  --track: rgba(210, 170, 120, .18);
+  --glass-bg: rgba(16, 12, 8, .62);
+}
+
+/* ---- 石墨极简：近乎无色，颜色只出现在数据里 ---- */
+html[data-palette="graphite"]:not([data-theme="light"]) {
+  --bg: linear-gradient(160deg, #08080a 0%, #111114 55%, #0a0a0c 100%);
+  --surface-1: rgba(26, 26, 29, .86);
+  --surface-2: rgba(16, 16, 19, .74);
+  --surface-3: rgba(32, 32, 36, .95);
+
+  --border: rgba(255, 255, 255, .085);
+  --border-strong: rgba(255, 255, 255, .16);
+  --border-hover: rgba(255, 255, 255, .32);
+
+  --text: #d8d9de;
+  --text-strong: #f6f7f9;
+  --muted: #9a9ca4;
+  --muted-2: #6e7078;
+
+  /* 强调色用克制的冷灰蓝而非纯白：既保持「近乎无色」的极简感，
+     又让链接、按钮、激活 tab 保有辨识度，不与背景糊成一片 */
+  --accent: #aebbd0;
+  --accent-hover: #d4deea;
+  --accent-weak: rgba(174, 187, 208, .14);
+  --accent-weak-2: rgba(174, 187, 208, .24);
+  --glow: rgba(174, 187, 208, .16);
+  --name: #c9d2e0;
+
+  --track: rgba(255, 255, 255, .10);
+  --btn-bg: rgba(255, 255, 255, .055);
+  --knob: #b9bcc4;
+  --select-disabled-text: #9a9ca4;
+  --select-disabled-bg: #1d1d21;
+
+  --shadow: 0 6px 26px rgba(0, 0, 0, .50);
+  --shadow-lift: 0 8px 24px rgba(0, 0, 0, .58);
+  --card-highlight: rgba(255, 255, 255, .05);
+
+  --glass-bg: rgba(12, 12, 14, .62);
+  --glass-border: rgba(255, 255, 255, .08);
 }

@@ -319,11 +319,11 @@ a:hover { color: var(--accent-hover); }
     gap: 2px;
     height: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
     padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
-    border-top: 1px solid var(--border);
-    background: var(--surface-1);
+    border-top: 1px solid var(--glass-border);
+    background: var(--glass-bg);
     box-shadow: 0 -6px 24px rgba(0, 0, 0, .22);
-    backdrop-filter: blur(14px) saturate(140%);
-    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   }
 
   /* 手机上内容按自然高度堆叠，别再用视口高度去撑 */

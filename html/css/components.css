@@ -248,12 +248,19 @@ input:disabled { opacity: .5; cursor: not-allowed; }
   border-radius: inherit;
   transition: width .45s ease;
 }
-.green  { background: linear-gradient(90deg, #2fb287, #4cd6ae); }
-.yellow { background: linear-gradient(90deg, #d99b1f, #edc94f); }
-.blue   { background: linear-gradient(90deg, #2f9fe0, #4fc3ee); }
-.indigo { background: linear-gradient(90deg, #7b86e8, #a58ff2); }
-.cyan   { background: linear-gradient(90deg, #1fb6c9, #45d6c6); }
-.red    { background: linear-gradient(90deg, #e3576b, #f07284); }
+/* 数据着色：颜色只表达「占用区间」，不再写死色值，交给 tokens 管理 */
+.green  { background: linear-gradient(90deg, var(--data-low-a), var(--data-low-b)); }
+.yellow { background: linear-gradient(90deg, var(--data-mid-a), var(--data-mid-b)); }
+.blue   { background: linear-gradient(90deg, var(--data-cpu-a), var(--data-cpu-b)); }
+.indigo { background: linear-gradient(90deg, var(--data-npu-a), var(--data-npu-b)); }
+.cyan   { background: linear-gradient(90deg, var(--data-io-a), var(--data-io-b)); }
+.red    { background: linear-gradient(90deg, var(--data-high-a), var(--data-high-b)); }
+
+/* 数据文字按区间着色（温度、帧率等数值）。!important 用于压过 .video-fps
+   的固定浅色和 .cpu-temp 的 accent，让「状态色」优先于「展示色」。 */
+.c-low  { color: var(--data-low-b) !important; }
+.c-mid  { color: var(--data-mid-b) !important; }
+.c-high { color: var(--data-high-b) !important; }
 
 /* ========== 状态文字 ========== */
 .card-status,
