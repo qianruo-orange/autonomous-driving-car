@@ -754,6 +754,11 @@ static void http_process_request(http_conn_t *c)
         http_serve_file(fd, "/config.html"); goto finish;
     }
 
+    if (strcmp(c->uri, "/status") == 0 || strncmp(c->uri, "/status.html", 12) == 0) {
+        if (!http_check_auth_root(req, fd)) goto finish;
+        http_serve_file(fd, "/status.html"); goto finish;
+    }
+
     if (strcmp(c->uri, "/dbc") == 0 || strncmp(c->uri, "/dbc.html", 9) == 0) {
         if (!http_check_auth_user(req, fd)) goto finish;
         http_serve_file(fd, "/dbc.html"); goto finish;

@@ -36,6 +36,13 @@
 .codex-chat-foot{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:8px;color:var(--muted);font-size:11px}
 .codex-chat-foot a{color:var(--accent);text-decoration:none}
 
+/* Side variant: the chat card lives in the dashboard's right column and
+   stretches to the same height as the video card (log area flexes). */
+.codex-chat-side{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;margin-top:0;padding:14px 16px}
+.codex-chat-side .codex-chat-log{flex:1 1 auto;height:auto;min-height:220px}
+.codex-chat-side .codex-chat-head{row-gap:6px}
+.codex-chat-side .codex-chat-form textarea{min-height:44px;max-height:120px}
+
 /* Shared settings widgets (config page) */
 .codex-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:10px}
 .codex-field{display:flex;flex-direction:column;gap:5px;min-width:0}

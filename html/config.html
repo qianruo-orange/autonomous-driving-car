@@ -21,6 +21,7 @@
   </div>
   <div class="tb-right">
     <a href="/" class="btn btn-back"> <span data-i18n="主界面">主界面</span></a>
+    <a href="/status" class="btn btn-back">📈 <span data-i18n="系统状态">系统状态</span></a>
     <a href="/logs" class="btn btn-back">📁 <span data-i18n="行驶日志">行驶日志</span></a>
     <button id="langBtn" class="theme-btn" onclick="toggleLang()" data-i18n-title="切换语言">English</button>
     <button id="themeBtn" class="theme-btn" onclick="toggleTheme()" data-i18n-title="切换主题">🌙</button>
@@ -89,56 +90,60 @@
 </div>
 
 <div class="bottom-grid">
-<section class="card" id="card_proxy" aria-labelledby="proxy_title">
-  <h3 id="proxy_title"><span data-i18n="网络代理">网络代理</span>
+<section class="card" id="card_network" aria-labelledby="network_title">
+  <h3 id="network_title"><span data-i18n="网络代理与测试">网络代理与测试</span>
     <span class="proxy-badge" id="proxy_service_badge">—</span>
+    <span class="card-status" id="status_nettest"></span>
     <span class="proxy-head-actions">
       <button type="button" class="btn btn-save" id="proxy_save" data-i18n="保存配置">保存配置</button>
       <button type="button" class="btn btn-back" id="proxy_apply" data-i18n="保存并应用">保存并应用</button>
       <button type="button" class="btn btn-back" id="proxy_reload" data-i18n="重新读取">重新读取</button>
     </span>
   </h3>
-  <div class="proxy-grid">
-    <div class="proxy-field"><label for="proxy_host" data-i18n="代理主机">代理主机</label><input type="text" id="proxy_host" placeholder="192.168.1.5" autocomplete="off"></div>
-    <div class="proxy-field"><label for="proxy_port" data-i18n="端口">端口</label><input type="number" id="proxy_port" min="1" max="65535" step="1"></div>
-    <div class="proxy-field"><label for="proxy_scheme" data-i18n="协议">协议</label><select id="proxy_scheme"><option value="http">http</option><option value="socks5">socks5</option><option value="socks5h">socks5h</option></select></div>
-    <div class="proxy-field"><label for="proxy_no_proxy" data-i18n="不走代理的地址">不走代理的地址</label><input type="text" id="proxy_no_proxy" autocomplete="off"></div>
+  <div class="network-split">
+    <div class="network-pane" id="card_proxy">
+      <h4 data-i18n="网络代理">网络代理</h4>
+      <div class="proxy-grid">
+        <div class="proxy-field"><label for="proxy_host" data-i18n="代理主机">代理主机</label><input type="text" id="proxy_host" placeholder="192.168.1.5" autocomplete="off"></div>
+        <div class="proxy-field"><label for="proxy_port" data-i18n="端口">端口</label><input type="number" id="proxy_port" min="1" max="65535" step="1"></div>
+        <div class="proxy-field"><label for="proxy_scheme" data-i18n="协议">协议</label><select id="proxy_scheme"><option value="http">http</option><option value="socks5">socks5</option><option value="socks5h">socks5h</option></select></div>
+        <div class="proxy-field"><label for="proxy_no_proxy" data-i18n="不走代理的地址">不走代理的地址</label><input type="text" id="proxy_no_proxy" autocomplete="off"></div>
+      </div>
+      <p class="card-status proxy-status" id="status_proxy" role="status" aria-live="polite"></p>
+    </div>
+    <div class="network-pane" id="card_nettest">
+      <h4><span data-i18n="网络测试">网络测试</span><span class="nt-result" id="nt_ping_result"></span><span class="nt-result" id="nt_speed_result"></span><span class="nt-result" id="nt_reach_result"></span></h4>
+      <div class="nt-section">
+        <div class="nt-row">
+          <label data-i18n="Ping 测试">Ping 测试</label>
+          <div class="nt-input-group">
+            <input type="text" id="nt_ping_target" data-i18n-ph="IP / 域名" placeholder="IP / 域名" value="192.168.1.1">
+          </div>
+          <button type="button" class="btn btn-back nt-go" data-net-test="ping" data-i18n="测试">测试</button>
+        </div>
+        <div class="nt-row">
+          <label data-i18n="网速测试">网速测试</label>
+          <div class="nt-input-group">
+            <select id="nt_speed_target">
+              <option value="https://speed.cloudflare.com/__down?bytes=5000000" data-i18n="Cloudflare CDN">Cloudflare CDN</option>
+              <option value="https://proof.ovh.net/files/1Mb.dat" data-i18n="OVH (欧洲)">OVH (欧洲)</option>
+              <option value="custom" data-i18n="自定义地址">自定义地址</option>
+            </select>
+            <input type="text" id="nt_speed_custom" placeholder="https://..." style="display:none">
+          </div>
+          <button type="button" class="btn btn-back nt-go" data-net-test="speed" data-i18n="测速">测速</button>
+        </div>
+        <div class="nt-row">
+          <label data-i18n="网站可达性">网站可达性</label>
+          <div class="nt-input-group">
+            <input type="text" id="nt_reach_target" placeholder="https://example.com">
+          </div>
+          <button type="button" class="btn btn-back nt-go" data-net-test="reach" data-i18n="检测">检测</button>
+        </div>
+      </div>
+    </div>
   </div>
-  <div class="proxy-actions">
-    <button type="button" class="btn btn-back" id="proxy_test" data-i18n="测试连通">测试连通</button>
-  </div>
-  <p class="card-status proxy-status" id="status_proxy" role="status" aria-live="polite"></p>
 </section>
-<div class="card" id="card_nettest"><h3><span data-i18n="网络测试">网络测试</span><span class="card-status" id="status_nettest"></span><span class="nt-result" id="nt_ping_result"></span><span class="nt-result" id="nt_speed_result"></span><span class="nt-result" id="nt_reach_result"></span></h3>
-<div class="nt-section">
-<div class="nt-row">
-<label data-i18n="Ping 测试">Ping 测试</label>
-<div class="nt-input-group">
-<input type="text" id="nt_ping_target" data-i18n-ph="IP / 域名" placeholder="IP / 域名" value="192.168.1.1">
-</div>
-<button type="button" class="btn btn-back nt-go" data-net-test="ping" data-i18n="测试">测试</button>
-</div>
-<div class="nt-row">
-<label data-i18n="网速测试">网速测试</label>
-<div class="nt-input-group">
-<select id="nt_speed_target">
-<option value="https://speed.cloudflare.com/__down?bytes=5000000" data-i18n="Cloudflare CDN">Cloudflare CDN</option>
-<option value="https://proof.ovh.net/files/1Mb.dat" data-i18n="OVH (欧洲)">OVH (欧洲)</option>
-<option value="custom" data-i18n="自定义地址">自定义地址</option>
-</select>
-<input type="text" id="nt_speed_custom" placeholder="https://..." style="display:none">
-</div>
-<button type="button" class="btn btn-back nt-go" data-net-test="speed" data-i18n="测速">测速</button>
-</div>
-<div class="nt-row">
-<label data-i18n="网站可达性">网站可达性</label>
-<div class="nt-input-group">
-<input type="text" id="nt_reach_target" placeholder="https://example.com">
-</div>
-<button type="button" class="btn btn-back nt-go" data-net-test="reach" data-i18n="检测">检测</button>
-</div>
-</div>
-</div>
 </div>
 
 <div class="bottom-grid">
@@ -155,6 +160,9 @@
   <h3 id="codex_cfg_title"><span data-i18n="Codex CLI 配置">Codex CLI 配置</span>
     <span class="codex-badge" id="codex_status_badge" data-i18n="未登录">未登录</span>
     <span class="card-status" id="status_codex" role="status" aria-live="polite"></span>
+    <span class="codex-head-actions">
+      <button type="button" class="btn btn-back" id="codex_logout" data-i18n="退出登录">退出登录</button>
+    </span>
   </h3>
   <p class="codex-hint" id="codex_cli_info"></p>
   <div class="codex-update-row">
@@ -172,18 +180,6 @@
       <button type="button" class="btn btn-back" id="codex_device_copy" data-i18n="复制验证码">复制验证码</button>
     </div>
     <p class="codex-hint" id="codex_device_hint"></p>
-  </div>
-  <div class="codex-panel">
-    <h4 data-i18n="运行参数">运行参数</h4>
-    <div class="codex-grid">
-      <div class="codex-field"><label for="codex_model" data-i18n="模型">模型</label><input type="text" id="codex_model" placeholder="(default)"></div>
-      <div class="codex-field"><label for="codex_sandbox" data-i18n="沙箱模式">沙箱模式</label><select id="codex_sandbox"><option value="read-only" data-i18n="只读">只读</option><option value="workspace-write" data-i18n="工作区可写">工作区可写</option><option value="danger-full-access" data-i18n="完全访问（危险）">完全访问（危险）</option></select></div>
-      <div class="codex-field"><label for="codex_workdir" data-i18n="工作目录">工作目录</label><input type="text" id="codex_workdir"></div>
-    </div>
-    <div class="codex-actions">
-      <button type="button" class="btn btn-save" id="codex_save_cfg" data-i18n="保存设置">保存设置</button>
-      <button type="button" class="btn btn-back" id="codex_logout" data-i18n="退出登录">退出登录</button>
-    </div>
   </div>
 </section>
 </div>

@@ -197,16 +197,17 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 
 | 页面 | 地址 | 功能 |
 | --- | --- | --- |
-| 主页 | `/` | 实时视频、框叠加、目标选择、资源监控（CPU / NPU / RGA）、底部 Codex 对话 |
+| 主页 | `/` | 实时视频、框叠加、目标选择、右侧 Codex 对话栏 |
+| 系统状态 | `/status` | 资源监控：逐核 CPU / NPU / RGA、内存 / 磁盘、网络速度 |
 | 系统配置 | `/config` | 相机、YOLO、CAN、CPU、跟随、Web IP、遥测、网络代理、Codex CLI 登录 |
 | 行车日志 | `/logs` | 日志与结果浏览、视频回放、下载、清理、Codex 交互记录 |
 | DBC 查看 | `/dbc` | CAN 定义与解码信号 |
 
-主页 `/` 与 DBC 页用本地 Linux 账号做 HTTP Basic 认证；`/config`、`/logs` 页面以及所有写操作、日志/文件下载要求 `root` 或 `sudo` 组成员。部分只读状态接口完全公开。Web 访问按**源 IPv4 地址**分配槽位，最多 **8 个地址**（`HTTP_MAX_CLIENTS`）；同一地址的页面、API、视频和下载连接共用一个槽，可开多个标签页。槽位在最后一个连接关闭 30 秒后过期；连接未正常关闭导致计数卡住时，120 秒后按 stale 身份回收。超出槽位的地址收到 HTTP 503。
+主页 `/` 与 DBC 页用本地 Linux 账号做 HTTP Basic 认证；`/config`、`/status`、`/logs` 页面以及所有写操作、日志/文件下载要求 `root` 或 `sudo` 组成员。部分只读状态接口完全公开。Web 访问按**源 IPv4 地址**分配槽位，最多 **8 个地址**（`HTTP_MAX_CLIENTS`）；同一地址的页面、API、视频和下载连接共用一个槽，可开多个标签页。槽位在最后一个连接关闭 30 秒后过期；连接未正常关闭导致计数卡住时，120 秒后按 stale 身份回收。超出槽位的地址收到 HTTP 503。
 
-资源卡片显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 占用率由应用对每次 `improcess` 调用计时，按 1 秒滑窗按核汇总。
+系统状态页（`/status`）显示逐核 CPU、**逐核 NPU**、**逐核 RGA** 以及内存/磁盘与网络速度。NPU 负载来自 `/sys/kernel/debug/rknpu/load`；RGA 占用率由应用对每次 `improcess` 调用计时，按 1 秒滑窗按核汇总。
 
-主页底部的聊天框、配置页的代理与登录卡片、日志页的交互记录列表分别见[网络代理](#网络代理)与[Codex 对话](#codex-对话)。`/config` 底部四个卡片两两成对并排：网络代理与网络测试一行，CPU 频率与 Codex CLI 配置一行；窗口窄于 960 px 时自动改为上下堆叠。
+主页右侧的聊天栏、配置页的网络与登录卡片、日志页的交互记录列表分别见[网络代理](#网络代理)与[Codex 对话](#codex-对话)。`/config` 底部两个卡片：网络代理与网络测试合并为一张卡片（左代理、右测试，占满整行），CPU 频率与 Codex CLI 配置一行左右并排；窗口窄于 960 px 时自动改为上下堆叠。
 
 主页播放 `GET /video/mjpeg`，即相机原始 JPEG 帧的 `multipart/x-mixed-replace` 流。每个分段带 `X-Seq`（采集序号）和 `X-Ts`（采集时刻，板端单调时钟毫秒）：前者把画面与检测结果对齐，后者配合 `/api/video/stats` 换算端到端延迟。框来自 `GET /api/detections/live?after=N`，记录里有 `seq`、图像 `w`/`h` 和每个目标的 `x1, y1, x2, y2, class, score, name`（原图像素坐标）；浏览器按帧序号对齐，若该帧没有推理结果，回退到六帧内最近的记录，再远则跳过。720p 单帧 60–110 KB，30 fps 不限额需要 18–26 Mbps；`mjpeg_max_kbps` 限制单客户端预算，socket 积压时丢弃整帧避免延迟累积。
 
@@ -223,7 +224,7 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 | `PROXY_SCHEME` | `http` / `socks5` / `socks5h` |
 | `NO_PROXY` | 不走代理的地址列表，默认 `localhost,127.0.0.1,::1` |
 
-界面只呈现这四个输入框与「测试连通」按钮，当前代理地址和端口直接由输入框显示；「保存配置」「保存并应用」「重新读取」放在卡片标题栏右侧，不再显示配置文件路径、系统环境变量或原始文件内容。
+界面只呈现这四个输入框，当前代理地址和端口直接由输入框显示；「保存配置」「保存并应用」「重新读取」放在卡片标题栏右侧，不再显示配置文件路径、系统环境变量或原始文件内容。
 
 两个保存按钮的区别：
 
@@ -234,9 +235,7 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
   `/etc/systemd/system.conf.d/90-proxy-client.conf` 与 apt 代理设置。已有 shell 与服务
   需重新加载环境才会使用新值。
 
-「测试连通」检查代理端口的 TCP 可达性，并用该代理请求
-`https://api.openai.com/v1/models`：返回 `401` 表示链路通、只是没带凭据；超时或 `000`
-表示代理不可达。systemd 沙箱只开放这一个文件可写
+systemd 沙箱只开放这一个文件可写
 （`ReadWritePaths=/etc/proxy-client.conf`），因此备份与临时输出都放在 `recordings/` 下。
 
 > [!WARNING]
@@ -245,14 +244,14 @@ CPU 分组按 RK3576 写死：小核组 cpu0-3（Cortex-A53）跑 main、TCP/HTT
 
 ### Codex 对话
 
-主页底部是可与本机 `codex` CLI 对话的聊天框，配置页提供登录设置，行车日志页可下载完整交互记录。
+主页右侧是可与本机 `codex` CLI 对话的聊天栏，配置页提供登录设置，行车日志页可下载完整交互记录。
 三者通过需要 root 认证的 `/api/codex/` 接口与 `bin/codex_bridge.py` 协作；C 层只拉起短命的
 Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模型。
 
 - **登录（仅设备码）**：配置页「开始设备码登录」显示登录链接与一次性验证码（15 分钟），
   复制验证码后在浏览器完成授权。不再提供 API Key 登录；`config.toml` 只使用 Codex 内置的
-  ChatGPT provider，凭据由 CLI 自行从 `.codex/auth.json` 读取。「运行参数」仅保留模型、
-  沙箱模式与工作目录。
+  ChatGPT provider，凭据由 CLI 自行从 `.codex/auth.json` 读取。运行参数（模型 / 沙箱 /
+  工作目录）已从界面移除。
 - **检查更新**：配置页「检查更新」比对本地 `codex --version` 与 npm registry 上的
   `@openai/codex` 最新版本，查询走整机代理。这是只读检查，不会执行 `codex update`；代理
   偶发 TLS 失败时会重试多个端点，仍失败则显示上次成功检查的结果。
@@ -260,8 +259,8 @@ Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模�
   下载），`recordings/codex/chat_YYYYMMDD.jsonl` 逐行存 `user` / `assistant` / `event` 记录。
 - **下载**：日志页列出每日记录，可单文件下载或打包导出（JSONL），也可一键清空；主页聊天框
   的「下载记录」按钮直接导出全部。
-- **权限**：默认 `sandbox=read-only`，CLI 子进程降权到普通账号运行；
-  `danger-full-access` 等于把高权限 agent 暴露给通过网页认证的用户，请谨慎选择。
+- **权限**：沙箱固定为 `sandbox=danger-full-access`，CLI 子进程降权到普通账号运行；
+  等于把高权限 agent 暴露给通过网页认证的用户，请确保网络与认证配置可信。
 - **多轮上下文**：目前由桥接脚本把最近 6 条消息拼进 prompt，尚未使用 `codex exec resume`。
 
 > [!IMPORTANT]
@@ -287,7 +286,7 @@ Python 进程，长回合由桥接脚本后台执行，HTTP worker 不等待模�
 | 模型 | `POST /api/yolo/upload` **R** | 上传替换 `.rknn` 模型 |
 | 控制 | `GET /api/follow`、`/api/tracking`、`/api/can/*`、`/api/ano`（公开）；对应 POST **R** | 跟随、跟踪、CAN 收发与 DBC、遥测 |
 | 系统管理 | `GET /api/reboot`、`/api/shutdown` **R** | 重启 / 关机 |
-| 网络代理 | `GET /api/proxy/config` **R**、`POST /api/proxy/config` **R**、`POST /api/proxy/test` **R** | 读取/保存整机代理配置、测试连通 |
+| 网络代理 | `GET /api/proxy/config` **R**、`POST /api/proxy/config` **R**、`POST /api/proxy/test` **R** | 读取/保存整机代理配置、连通性测试（仅接口，界面无按钮） |
 | Codex 对话 | `/api/codex/status`、`update/check`、`config`、`login/device`、`chat`、`reset`、`stop`、`logout`、`history`、`records`、`record`、`export`、`records/clear` **R** | 状态、版本检查、设备码登录、对话、交互记录与导出 |
 
 > [!TIP]
@@ -330,8 +329,7 @@ curl -s -u <用户>:<密码> http://127.0.0.1/api/logs
 | 录像里框线断成虚线 | MPP 输入缓冲过早复用；当前实现已按帧龄回收，若复现先确认部署的是最新构建 |
 | 服务起不来 / FIFO 设置失败 | 检查 cgroup v2 的 `-.slice.d/90-autonomous-driving-car-rt.conf` 是否生效 |
 | Codex 返回 `401 Incorrect API key` 或提示额度不足 | 当前账号没有有效 token 或额度。重新完成设备码登录；代理只解决网络可达 |
-| 「检查更新」显示无法访问 npm registry | 代理链路偶发 TLS 失败；界面会自动重试多个端点并返回上次成功检查的结果，也可用「测试连通」确认代理 |
-| 代理端口可达但外网超时 | 用配置页「测试连通」看 TCP 与 HTTP 状态码；`401` 表示链路通、只是没带凭据 |
+| 「检查更新」显示无法访问 npm registry | 代理链路偶发 TLS 失败；界面会自动重试多个端点并返回上次成功检查的结果 |
 | 保存代理后整机未生效 | 「保存配置」只写文件；点「保存并应用」或执行 `sudo systemctl reload proxy-client.service` |
 
 Release 构建保留调试信息（`-O3 -DNDEBUG -g`），可用 `coredumpctl` 分析崩溃。
@@ -660,28 +658,31 @@ Open `http://<board-ip>/`; HTTP listens on port **80**.
 
 | Page | Address | Operations |
 | --- | --- | --- |
-| Home | `/` | Live video, box overlay, target selection, resource monitor (CPU/NPU/RGA), Codex chat at the bottom |
+| Home | `/` | Live video, box overlay, target selection, Codex chat in the right column |
+| System Status | `/status` | Resource monitor: per-core CPU / NPU / RGA, memory / disk, network throughput |
 | System Configuration | `/config` | Camera, YOLO, CAN, CPU, following, web IP, telemetry, network proxy, Codex CLI sign-in |
 | Driving Logs | `/logs` | Log/report browsing, playback, downloads, cleanup, Codex interaction records |
 | DBC viewer | `/dbc` | CAN definitions and decoded signals |
 
 Home `/` and DBC accept a local Linux account over HTTP Basic auth; `/config`,
-`/logs`, every write operation and log/file downloads require `root` or `sudo`
+`/status`, `/logs`, every write operation and log/file downloads require `root` or `sudo`
 group membership. Some read-only status APIs are public. Slots are allocated by **source IPv4 address**,
 up to **8** (`HTTP_MAX_CLIENTS`); page, API, video and download sockets from one
 address share a slot and may open many tabs. A slot expires 30 s after its last
 connection closes; a stuck socket count is reclaimed as stale after 120 s.
 Addresses beyond the limit receive HTTP 503.
 
-The resource card shows per-core CPU, **NPU**, **RGA** and memory/disk. NPU load
+The status page (`/status`) shows per-core CPU, **NPU**, **RGA**, memory/disk and
+network throughput. NPU load
 comes from `/sys/kernel/debug/rknpu/load`; RGA load is measured in-process by
 timing every `improcess` call per core over a one-second window.
 
-The chat box on the home page, the proxy/sign-in cards on `/config` and the
+The chat column on the home page, the network/sign-in cards on `/config` and the
 interaction-record list on `/logs` are described in
 [Network proxy](#network-proxy) and [Codex chat](#codex-chat). At the bottom of
-`/config` the cards are paired into two rows: network proxy beside network test,
-CPU frequency beside Codex CLI. Below 960 px they stack vertically.
+`/config` there are two cards: network proxy and network tests merged into one
+card (proxy left, tests right, full width), and CPU frequency beside Codex CLI.
+Below 960 px they stack vertically.
 
 The home page plays `GET /video/mjpeg`, a `multipart/x-mixed-replace` stream of
 the camera's own JPEG frames. Each part carries `X-Seq` (capture sequence) and
@@ -708,10 +709,10 @@ Codex chat bridge: it neither reads nor changes any Codex setting.
 | `PROXY_SCHEME` | `http` / `socks5` / `socks5h` |
 | `NO_PROXY` | Bypass list, default `localhost,127.0.0.1,::1` |
 
-The card shows only these four inputs plus "Test connection"; the current proxy
-address and port are read straight from the inputs. "Save config", "Save and
-apply" and "Reload" sit on the right of the card title bar. The config-file path,
-system environment variables and raw file contents are not shown in the UI.
+The card shows only these four inputs; the current proxy address and port are read
+straight from the inputs. "Save config", "Save and apply" and "Reload" sit on the
+right of the card title bar. The config-file path, system environment variables
+and raw file contents are not shown in the UI.
 
 The two save buttons differ:
 
@@ -723,12 +724,11 @@ The two save buttons differ:
   `/etc/systemd/system.conf.d/90-proxy-client.conf` and apt's proxy settings.
   Existing shells and services need to reload their environment.
 
-**Test connection** checks TCP reachability of the proxy port and requests
-`https://api.openai.com/v1/models` through the proxy: `401` means the path works
-but no credentials were supplied; a timeout or `000` means the proxy is
-unreachable. The systemd sandbox exposes only this one file for writing
+The systemd sandbox exposes only this one file for writing
 (`ReadWritePaths=/etc/proxy-client.conf`), so backups and temporary output live
-under `recordings/`.
+under `recordings/`. A `POST /api/proxy/test` endpoint still exists for scripts
+(TCP probe plus a proxied request to `api.openai.com`, where `401` means the
+path works), but the UI no longer shows a test button.
 
 > [!WARNING]
 > This changes networking for the **whole board** (apt, curl, CLIs, ...), not
@@ -736,7 +736,7 @@ under `recordings/`.
 
 ### Codex chat
 
-A chat box at the bottom of the home page talks to the local `codex` CLI; the
+A chat column on the right of the home page talks to the local `codex` CLI; the
 config page holds sign-in settings and the logs page can download the full
 interaction log. They share the root-authenticated `/api/codex/` endpoints and
 `bin/codex_bridge.py`. The C layer only spawns a short-lived Python process:
@@ -746,7 +746,8 @@ long turns are detached by the bridge, so no HTTP worker waits for a model.
   link and one-time code (valid 15 minutes); copy the code and authorise in a
   browser. API-key sign-in is no longer offered and `config.toml` always uses the
   built-in ChatGPT provider, whose credentials the CLI reads from
-  `.codex/auth.json`. "Runtime options" only holds model, sandbox and workdir.
+  `.codex/auth.json`. Runtime options (model / sandbox / workdir) were removed
+  from the UI.
 - **Check for updates**: the config page compares the local `codex --version`
   with the latest `@openai/codex` release on the npm registry through the
   board-wide proxy. This is read-only — it never runs `codex update`. The proxy
@@ -759,9 +760,9 @@ long turns are detached by the bridge, so no HTTP worker waits for a model.
 - **Downloads**: the logs page lists daily records for single-file download,
   packed JSONL export or clearing; the chat box has a "download log" button for
   the full export.
-- **Privileges**: the default sandbox is `read-only` and CLI children drop to an
-  unprivileged account. `danger-full-access` exposes a high-privilege agent to
-  anyone who passes web authentication — choose it deliberately.
+- **Privileges**: the sandbox is pinned to `danger-full-access` and CLI children
+  drop to an unprivileged account. This exposes a high-privilege agent to anyone
+  who passes web authentication — keep network and auth config trustworthy.
 - **Multi-turn context**: currently built by prepending the last six messages to
   the prompt; `codex exec resume` is not used yet.
 
@@ -874,8 +875,7 @@ curl -s -u <user>:<password> http://127.0.0.1/api/logs
 | Boxes look like dashed lines in the MP4 | MPP input buffers were recycled too early; current builds recycle by frame age — confirm the deployed binary is current |
 | Service fails to start / cannot set FIFO | Check that `-.slice.d/90-autonomous-driving-car-rt.conf` is active on cgroup v2 |
 | Codex returns `401 Incorrect API key` or out-of-credits | No valid token/quota on the account. Repeat the device-code sign-in; the proxy only fixes reachability |
-| "Check for updates" cannot reach the npm registry | The proxy drops some TLS handshakes; the UI retries several endpoints and falls back to the last successful result, or use "Test connection" |
-| Proxy port reachable but outbound requests time out | Use "Test connection" and read TCP/HTTP status; `401` means the path works but no credentials were supplied |
+| "Check for updates" cannot reach the npm registry | The proxy drops some TLS handshakes; the UI retries several endpoints and falls back to the last successful result |
 | Proxy change did not take effect board-wide | "Save" only writes the file; use "Save and apply" or run `sudo systemctl reload proxy-client.service` |
 
 Release builds keep debug information (`-O3 -DNDEBUG -g`) for `coredumpctl`.

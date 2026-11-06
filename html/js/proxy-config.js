@@ -88,32 +88,11 @@
     }
   }
 
-  async function test() {
-    if (pending) return;
-    pending = true;
-    setStatus(t('检测中') + '…');
-    try {
-      var j = await call('/api/proxy/test', {method: 'POST'});
-      var msg = (j.reachable ? t('代理可用') : t('代理不可用')) +
-        ' · ' + (j.tcp ? t('端口可达') : t('端口不可达')) +
-        ' · ' + t('HTTP 状态码') + '=' + (j.http_code || 0);
-      if (j.tcp_error) msg += ' · ' + j.tcp_error;
-      if (j.curl_error) msg += ' · ' + j.curl_error;
-      setStatus(msg, j.reachable ? 'ok' : 'warn');
-    } catch (e) {
-      setStatus(t('检测失败') + ': ' + e.message, 'warn');
-    } finally {
-      pending = false;
-    }
-  }
-
   var bSave = el('proxy_save');
   var bApply = el('proxy_apply');
-  var bTest = el('proxy_test');
   var bReload = el('proxy_reload');
   if (bSave) bSave.addEventListener('click', function () { save(false); });
   if (bApply) bApply.addEventListener('click', function () { save(true); });
-  if (bTest) bTest.addEventListener('click', test);
   if (bReload) bReload.addEventListener('click', load);
   load();
 })();

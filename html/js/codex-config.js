@@ -10,19 +10,8 @@
   var deviceCode = el('codex_device_code');
   var deviceCopy = el('codex_device_copy');
   var deviceHint = el('codex_device_hint');
-  var model = el('codex_model');
-  var sandbox = el('codex_sandbox');
-  var workdir = el('codex_workdir');
   var cliInfo = el('codex_cli_info');
   var pending = false;
-
-  function settingsPayload() {
-    return {
-      model: model.value.trim(),
-      sandbox: sandbox.value,
-      workdir: workdir.value.trim()
-    };
-  }
 
   function render(data) {
     var login = data.login || {};
@@ -38,11 +27,6 @@
     }
     badge.textContent = text;
     badge.className = 'codex-badge ' + cls;
-
-    var s = data.settings || {};
-    if (document.activeElement !== model) model.value = s.model || '';
-    if (document.activeElement !== sandbox) sandbox.value = s.sandbox || 'read-only';
-    if (document.activeElement !== workdir) workdir.value = s.workdir || '/opt/autonomous-driving-car';
 
     cliInfo.textContent = (data.cli_found ? 'Codex CLI ' + (data.cli_version || '') : t('未找到 Codex CLI')) +
       ' · ' + (data.cli_path || '');
@@ -98,21 +82,6 @@
       App.status('codex', 'ok', t('验证码已复制'));
     } catch (error) {
       App.status('codex', 'err', t('复制失败'));
-    }
-  });
-
-  el('codex_save_cfg').addEventListener('click', async function () {
-    try {
-      var response = await authFetch('/api/codex/config', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(settingsPayload())
-      });
-      var result = await response.json();
-      if (!result.ok) throw new Error(result.error || 'HTTP ' + response.status);
-      App.status('codex', 'ok', t('设置已保存'));
-      await load();
-    } catch (error) {
-      App.status('codex', 'err', t('设置保存失败') + ': ' + error.message);
     }
   });
 

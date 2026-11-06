@@ -16,7 +16,7 @@ h1{font-size:24px;margin-bottom:0}
 #card_can{--section-mark:#e9bd63}
 #card_net{--section-mark:#61c4e6}
 #card_cpufreq{--section-mark:#e99ab9}
-#card_nettest{--section-mark:#efa875}
+#card_network{--section-mark:#efa875}
 #card_car_ctrl{--section-mark:#bc9aef}
 /* Deeper accents remain distinct on the light card background. */
 html[data-theme="light"] #camera_form{--section-mark:#6366c7}
@@ -24,7 +24,7 @@ html[data-theme="light"] #card_yolo{--section-mark:#16866b}
 html[data-theme="light"] #card_can{--section-mark:#a87518}
 html[data-theme="light"] #card_net{--section-mark:#167fa5}
 html[data-theme="light"] #card_cpufreq{--section-mark:#b9507e}
-html[data-theme="light"] #card_nettest{--section-mark:#ba652e}
+html[data-theme="light"] #card_network{--section-mark:#ba652e}
 html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #card_can h3{flex-wrap:wrap}
 #card_can[hidden]{display:none}
@@ -159,11 +159,17 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
   .nt-input-group{min-width:0}
   .card{padding:14px}
 }
-/* Two paired rows: proxy + network test, CPU frequency + Codex CLI. */
+/* Bottom rows: merged network card (proxy | tests) and CPU frequency | Codex CLI. */
 .bottom-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start;margin-bottom:16px}
 .bottom-grid>.card{max-width:none;min-width:0;width:100%;margin-bottom:0}
-.bottom-grid #card_nettest h3{flex-wrap:wrap}
+/* Merged network card fills the whole row: proxy on the left, tests on the right. */
+.bottom-grid #card_network{grid-column:1 / -1}
+.network-split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start;padding-top:10px}
+.network-pane{min-width:0;border:1px solid var(--card-border);border-radius:12px;padding:12px 14px;background:var(--btn-bg)}
+.network-pane>h4{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 4px;font-size:13px;color:var(--accent)}
+.network-pane+.network-pane{margin-left:0}
 .bottom-grid .nt-result{white-space:normal;overflow-wrap:anywhere}
 @media(max-width:960px){
   .bottom-grid{grid-template-columns:minmax(0,1fr)}
+  .network-split{grid-template-columns:minmax(0,1fr)}
 }

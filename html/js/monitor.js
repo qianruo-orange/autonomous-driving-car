@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* monitor.js — 仪表盘数据刷新 */
 (function() {
+  /* Same module serves the dashboard (/) and the status page (/status).
+     The status page has no <video>/<img>: skip the player + FPS loops there. */
+  var HAS_VIDEO = !!document.getElementById('stream_video');
   var lastCpu = {user:0,sys:0,idle:0,total:0};
   var lastCores = [];
   var npuCount = -1;
@@ -607,7 +610,7 @@
 
     } catch(e) {}
     updateNet();
-    updateVideoStats();
+    if (HAS_VIDEO) updateVideoStats();
   }
 
   var playerConfig = {}, playerBusy = false, playerSuspended = false;
@@ -615,7 +618,7 @@
      检测框不烧进画面，改由 canvas 按帧序号叠加（见 overlayDraw）。 */
   var LIVE_STREAM_URL = '/video/mjpeg';
   async function updatePlayer() {
-    if (playerBusy || document.hidden || playerSuspended) return;
+    if (!HAS_VIDEO || playerBusy || document.hidden || playerSuspended) return;
     playerBusy = true;
     try {
       if (!window.STREAM_URL) {
@@ -649,7 +652,7 @@
       }
     } finally { playerBusy = false; }
   }
-  (function pollPlayer() {
+  if (HAS_VIDEO) (function pollPlayer() {
     updatePlayer().catch(function() {}).then(function() { setTimeout(pollPlayer, 1000); });
   })();
 
@@ -658,8 +661,9 @@
     update().then(function() { setTimeout(poll, 1000); }, function() { setTimeout(poll, 1000); });
   })();
 
-  /* 每秒刷新视频流 FPS 徽标：窗口内无新帧则显示 --（流停滞） */
-  setInterval(function() {
+  /* 每秒刷新视频流 FPS 徽标：窗口内无新帧则显示 --（流停滞）。
+     仅主界面（有视频元素）需要；状态页没有该元素。 */
+  if (HAS_VIDEO) setInterval(function() {
     var el = document.getElementById('video_fps');
     if (!el) return;
     var now = Date.now();

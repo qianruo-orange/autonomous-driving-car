@@ -37,12 +37,12 @@ INBOX = os.path.join(CX, "inbox")
 
 DEFAULT_SETTINGS = {
     "cli_path": "/home/qianruo/.local/bin/codex",
-    "model": "",
-    "sandbox": "read-only",
-    "workdir": ROOT,
+    "sandbox": "danger-full-access",
     "cli_version": "",
 }
-SANDBOXES = {"read-only", "workspace-write", "danger-full-access"}
+# Runtime options (model / sandbox / workdir) are no longer configurable
+# from the web UI; the sandbox is pinned to full access for every run.
+FORCED_SANDBOX = "danger-full-access"
 RECORD_NAME = re.compile(r"^chat_\d{8}\.jsonl$")
 DEVICE_URL = re.compile(r"https://[^\s/]*auth\.openai\.com[^\s]*|https://[^\s]+/device[^\s]*")
 DEVICE_CODE = re.compile(r"\b([A-Z0-9]{4,}-[A-Z0-9]{4,})\b")
@@ -82,6 +82,11 @@ def write_json(path, value):
 def settings():
     s = dict(DEFAULT_SETTINGS)
     s.update(read_json(SETTINGS, {}))
+    # Legacy settings.json may still carry model/sandbox/workdir; drop them and
+    # pin the sandbox so a stale read-only value can never weaken the runtime.
+    s["sandbox"] = FORCED_SANDBOX
+    s.pop("model", None)
+    s.pop("workdir", None)
     return s
 
 
@@ -192,9 +197,7 @@ def config_toml(s):
     """
     lines = ["# Managed by the autonomous-driving-car web UI.",
              'approval_policy = "never"',
-             'sandbox_mode = "%s"' % s["sandbox"]]
-    if s.get("model"):
-        lines.append('model = "%s"' % s["model"])
+             'sandbox_mode = "%s"' % FORCED_SANDBOX]
     path = CONFIG_TOML + ".tmp"
     with open(path, "w", encoding="utf-8") as fp:
         fp.write("\n".join(lines))
@@ -225,8 +228,7 @@ def build_status():
         "logged_in": bool(mode and mode != "none"),
         "auth_mode": mode or "none",
         "login": lg,
-        "settings": {k: s.get(k, "") for k in
-                     ("model", "sandbox", "workdir")},
+        "settings": {"sandbox": FORCED_SANDBOX},
         "busy": bool(st.get("busy")),
         "job": st.get("job", ""),
         "thread_id": st.get("thread_id", ""),
@@ -360,13 +362,9 @@ def cmd_status(args):
 def cmd_config(args):
     payload = json.loads(read_text(args.input) or "{}")
     s = settings()
-    for key in ("cli_path", "model", "sandbox", "workdir"):
+    for key in ("cli_path",):
         if key in payload:
             value = str(payload[key])[:512].strip()
-            if key == "sandbox" and value not in SANDBOXES:
-                value = "read-only"
-            if key == "workdir" and not value.startswith(ROOT):
-                value = ROOT
             s[key] = value
     if not s.get("cli_version") and cli_available(s.get("cli_path", "")):
         s["cli_version"] = cli_version(s["cli_path"])
@@ -483,9 +481,7 @@ def chat_worker(job, message, cli):
     config_toml(s)  # always match the provider to the credential in auth.json
     reply_file = os.path.join(OUT_DIR, "reply_%s.txt" % job)
     cmd = [cli, "exec", "--json", "--skip-git-repo-check",
-           "-s", s["sandbox"], "-C", s["workdir"], "-o", reply_file, "-"]
-    if s.get("model"):
-        cmd[2:2] = ["-m", s["model"]]
+           "-s", FORCED_SANDBOX, "-C", ROOT, "-o", reply_file, "-"]
     events = []
     events_raw = []
     thread_id = state().get("thread_id", "")
