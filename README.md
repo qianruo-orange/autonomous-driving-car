@@ -6,16 +6,25 @@
 
 # Autonomous Driving Car
 
-**Radxa ROCK 4D（RK3576）上的视觉循迹小车：从相机到电机的整条链路跑在一个 C 进程里，连上 WiFi 打开网页就能开。**
+**Radxa ROCK 4D（RK3576）上的视觉循迹小车：相机到电机整条链路跑在一个 C 进程里，板上还带一个能读代码、改代码、看日志的 Codex 智能体。**
 
 [![Version](https://img.shields.io/badge/version-1.1.0-5ec2f0?style=for-the-badge)](#)
 [![Platform](https://img.shields.io/badge/platform-Radxa%20ROCK%204D-5ec2f0?style=for-the-badge)](https://radxa.com)
 [![SoC](https://img.shields.io/badge/SoC-RK3576-8f7cf0?style=for-the-badge)](#)
 [![NPU](https://img.shields.io/badge/NPU-RKNN%202.5%20%C2%B7%20RGA-e9bd63?style=for-the-badge)](#)
 [![Kernel](https://img.shields.io/badge/kernel-PREEMPT__RT-2d8a5c?style=for-the-badge&logo=linux&logoColor=white)](#)
+[![LLM](https://img.shields.io/badge/on--board%20agent-Codex%20CLI-8f7cf0?style=for-the-badge)](#板上-ai-智能体codex)
 [![License](https://img.shields.io/badge/license-GPL--3.0-e0556a?style=for-the-badge)](LICENSE)
 
 [**中文**](#zh) · [**English**](#en)
+
+</div>
+
+<div align="center">
+
+<img src="docs/img/hero.png" width="100%" alt="实时画面：YOLO 检测框、FPS 与端到端延迟">
+
+<sub>720p30 实时画面，单帧检测 `person 0.91`，底部是实测吞吐与端到端延迟。画面中的人像已整体马赛克处理。</sub>
 
 </div>
 
@@ -26,12 +35,13 @@
 ## 目录
 
 - [这是什么](#这是什么)
+- [界面](#界面)
 - [实测指标](#实测指标)
+- [板上 AI 智能体（Codex）](#板上-ai-智能体codex)
 - [整体架构](#整体架构)
 - [帧流水线](#帧流水线)
 - [跟踪与跟随控制](#跟踪与跟随控制)
 - [实时调度与绑核](#实时调度与绑核)
-- [网页控制台](#网页控制台)
 - [构建与部署](#构建与部署)
 - [配置与模型](#配置与模型)
 - [HTTP API](#http-api)
@@ -44,21 +54,47 @@
 
 ## 这是什么
 
-一辆差速小车的完整固件。摄像头采集、硬件加速推理、目标跟踪、PID 跟随、CAN FD 电机输出、视频推流、录像与回放，加上一个零安装的网页控制台，全部编译进同一个 C 可执行文件，由 systemd 托管。
+一辆差速小车的完整固件。摄像头采集、硬件加速推理、目标跟踪、PID 跟随、CAN FD 电机输出、视频推流、录像回放，加上一个零安装的网页控制台，全部编译进同一个 C 可执行文件，由 systemd 托管。
 
-设计上只有一条主线：**把像素处理压在硬件单元上，让 CPU 只做调度**。解码走 libjpeg-turbo 双线程，色彩转换与 letterbox 走 RGA，推理走 NPU 双核；实时画面直接转发相机原生 MJPEG、不做二次编码，录像才用板载 MPP 编成 H.264 fMP4。因此 720p30 的实时闭环在一颗嵌入式 SoC 上只占用约 4% 的整机 CPU。
+2026 年的版本多了一层：**板子上跑着一个 Codex CLI 智能体**，网页上就能和它对话，让它读这个仓库的代码、翻运行日志、改错、重新编译。它不是外挂的聊天窗口，是长在车机里的开发助手 —— 见 [板上 AI 智能体](#板上-ai-智能体codex)。
 
 | 能做什么 | 说明 |
 |---|---|
 | 视觉循迹 / 跟车 | 在画面上点选一个检测框，车自动转向并保持距离；目标丢失立即停车 |
 | 纯检测演示 | 不接电机也能跑：实时出框、同帧对齐、检测结果可回放导出 |
 | 边缘推理基准 | `/status` 看 NPU / RGA / CPU 逐核占用与端到端延迟曲线 |
-| 分段录像 | 把原始画面按段编成 H.264 fMP4，浏览器内播放、打包下载 |
-| 板上 AI 助手 | 内置 Codex 对话与额度显示，直接在车机上排查问题 |
+| 分段录像 | 按段编成 H.264 fMP4，浏览器内播放、打包下载 |
+| **板上 AI 助手** | 内置 Codex 对话：读代码、查日志、改文件、跑构建，带额度与用量显示 |
 | 总线调试 | DBC 解析、CAN 报文抓取与发送、信号在线解码 |
 
 > **为什么不是树莓派 + ROS？**
 > 720p30 的闭环在 Pi 上跑不动，光是软件解码就吃满 CPU。这里的取舍是：单进程共享内存，帧以 DMA-BUF 在采集、RGA、NPU 之间流转，不做序列化和拷贝；控制线程跑在 PREEMPT_RT 的 FIFO 优先级上，避免"看到了但来不及刹车"。代价是没有 ROS 生态，所有模块都要自己写。
+
+---
+
+## 界面
+
+五个页面，纯静态资源，无构建步骤、无 CDN 依赖，中英双语 + 明暗主题。
+
+| 主界面 — 实时画面 + Codex 对话 | 系统状态 — 逐核占用与温度 |
+|:---:|:---:|
+| [![主界面](docs/img/ui-main.png)](docs/img/ui-main.png) | [![系统状态](docs/img/ui-status.png)](docs/img/ui-status.png) |
+| 点框即追踪；右侧是板载智能体，角标显示已登录 | CPU / NPU / RGA 占用、频率、内存磁盘、网速 |
+
+| 系统配置 | 文件下载 |
+|:---:|:---:|
+| [![系统配置](docs/img/ui-config.png)](docs/img/ui-config.png) | [![文件下载](docs/img/ui-files.png)](docs/img/ui-files.png) |
+| YOLO、调频、Codex、代理、采集参数，写操作需管理员密码 | 日志 / 录像 / 检测日报 / 对话记录，可预览、打包、清理 |
+
+<div align="center">
+
+[![DBC 信号解析](docs/img/ui-dbc.png)](docs/img/ui-dbc.png)
+
+<sub>DBC 信号解析：上传 DBC 后按报文在线解码收发方向的总线信号（本机未接总线，故为空表）</sub>
+
+</div>
+
+> 首图与主界面截图里，摄像头画面是**整块马赛克**的：原始画面是真人，进公开仓库前做了像素化，只保留检测框与 FPS 角标。截图取自 2026-11-07 01:33 的真实运行状态。
 
 ---
 
@@ -80,6 +116,93 @@
 
 ---
 
+## 板上 AI 智能体（Codex）
+
+这是这套固件里最新、也最容易被忽略的一层：**车机自己会读代码**。
+
+不是把 OpenAI 的网页嵌进 iframe，而是把 Codex CLI 装到板上，用一层很薄的桥接接到现有的 C HTTP 服务上。浏览器里发一句话，板上真的会起一个 agent 进程去干活。
+
+```mermaid
+flowchart LR
+    B["浏览器<br/>/ 右侧对话面板"] -->|"POST /api/codex/chat<br/>需 root Basic"| C["C HTTP 服务<br/>http_api_codex.c"]
+    C -->|"短进程 + --out JSON"| P["codex_bridge.py<br/>以 qianruo 降权运行"]
+    P -->|"detach 后台 worker"| X["codex exec --json<br/>-C /opt/autonomous-driving-car"]
+    X -->|"读写文件 · 执行命令"| R["仓库 / 日志 / 录像目录"]
+    X <-->|"HTTPS"| O["ChatGPT 后端"]
+    X -->|"reply.txt + 事件流"| P
+    P -->|"记录"| L["recordings/codex/chat_YYYYMMDD.txt"]
+
+    classDef io fill:#e8f1fb,stroke:#5b8def,color:#1f2937
+    classDef hw fill:#f3ecff,stroke:#8f7cf0,color:#1f2937
+    classDef ctl fill:#e8f7ef,stroke:#3aa675,color:#1f2937
+    class B,O io
+    class C,P,X hw
+    class R,L ctl
+```
+
+**链路分工**（`source/http/http_api_codex.c` 360 行 + `scripts/codex_bridge.py` 1326 行）：
+
+| 环节 | 做法 | 为什么 |
+|---|---|---|
+| HTTP → 桥接 | 每次调用都是短生命周期进程，结果写 `--out` JSON 后退出 | 不让 Python 常驻，崩溃不影响 HTTP reactor |
+| 长任务 | 一轮对话、设备码登录 detach 到后台子进程 | HTTP worker 永远不阻塞，前端轮询状态 |
+| 用户输入 | 一律走 `--input` 文件，永不进 argv | 中文、引号、换行都不会被 shell 拆开 |
+| 权限 | `codex` 以 `qianruo` 身份运行，服务本身是 root | 服务要 root 才能配网/调频，但 agent 不需要 |
+| 执行 | `-s danger-full-access`、`approval_policy = "never"` | 无人值守场景下不想卡在交互确认 |
+| 上下文 | 最近 6 轮对话（每条截断 1200 字符）+ 当前消息 | 控制在 CLI 上下文的便宜区间 |
+| 上限 | 单轮 300 s 超时；同时只允许 1 个 job；单条消息 16000 字符 | 车机内存和 CPU 都紧张 |
+
+### 它能做什么，不能做什么
+
+**能**：读整个仓库（C 源码、HTML、脚本、文档）、读 `recordings/` 下的日志与录像清单、跑 `cmake` / 编译、改文件、调只读接口（`/api/system`、`/api/video/stats`、`/api/detections/live`）。
+
+**不能**：`sudo`、跑 `deploy.sh -i`、以及任何 POST 到控制面的接口 —— 这些在 `http.c` 的路由表里被标成 `http_check_auth_root`，而 agent 手上没有 root 凭据。
+
+这是刻意的：**推理与执行分开授权**。模型可以随便分析、随便改代码，但把车开出去这件事必须过 root 密码。
+
+### 登录、额度与升级
+
+- **登录**：设备码流程。页面上点"登录"→ 板上调 CLI 拿 device code → 浏览器打开 `https://auth.openai.com/codex/device` 输码 → 凭据落 `.codex/auth.json`。不配置自定义 provider，也不存 API key。
+- **模型与推理强度**：页面上是两个下拉框，写进 `.codex/config.toml`（`model`、`model_reasoning_effort`）。可选模型列表来自 CLI 的 app-server，不是前端写死的。
+- **额度**：读 ChatGPT 套餐的两个窗口（5 小时 / 每周），页面画的是**剩余**百分比 + 重置时间。
+
+<div align="center">
+
+<img src="docs/img/ui-codex.png" width="88%" alt="Codex CLI 配置卡片">
+
+<sub>配置卡片：模型 GPT-6.1-Sol、推理强度 medium、PLUS 套餐。这张图拍摄时周窗口已用满，所以下面写着"额度已用尽"。</sub>
+
+</div>
+
+- **升级**：检查 npm 上的最新版本，安装动作在 sandbox 之外单独拉起，避免自己改自己被系统沙箱拦住。
+
+### 记录与审计
+
+每轮对话都落盘，一行一条，纯文本，`recordings/codex/chat_YYYYMMDD.txt`：
+
+```text
+23:18:38 你：你好
+23:19:04 错误：Worker quit with fatal: Transport channel closed ...
+```
+
+事件流（`thread.started`、`item.completed` 等）只留在 JSON 里用于调试，不写进可读记录。网页"文件下载"页能预览、打包、导出这些记录。
+
+### 从"能问答"到"能控车"
+
+这里的现状要说清楚：**它已经能改代码，但还不能开车**。
+
+| 环节 | 现在 | 缺什么 |
+|---|---|---|
+| 读状态 | ✅ 只读 API + 日志 | — |
+| 改代码 / 编译 | ✅ full-access 工作目录 | — |
+| 部署 | ❌ 需要 root | 一条受审计的部署通道 |
+| 下发运动指令 | ❌ 控制接口要 root | 把动作封装成工具，而不是给 shell |
+| 安全 | 靠权限隔离 | 速度/时长/地理围栏包络、人在环审批、失败即停 |
+
+真要让模型参与控制，顺序应该是：先把"前进 0.3 m/s、左转 50 ms"这类动作做成**带参数校验的工具调用**，再加一层不依赖模型的硬件急停，最后才是让模型在包络内决策。现在直接给它一个 shell 去 `curl POST /api/follow`，是不负责任的。
+
+---
+
 ## 整体架构
 
 ```mermaid
@@ -95,34 +218,19 @@ flowchart LR
     POST --> OVL["浏览器叠加"]
     STREAM --> OVL
     OVL --> WEB["网页控制台"]
+    AG["Codex agent"] -.->|"只读"| WEB
 
     classDef io fill:#e8f1fb,stroke:#5b8def,color:#1f2937
     classDef hw fill:#f3ecff,stroke:#8f7cf0,color:#1f2937
     classDef ctl fill:#e8f7ef,stroke:#3aa675,color:#1f2937
     class CAM,CAP,STREAM,WEB io
     class DEC,RGA,NPU,POST hw
-    class TRK,CAN,MOTOR,OVL ctl
+    class TRK,CAN,MOTOR,OVL,AG ctl
 ```
 
 **模块表驱动的生命周期。** 所有常驻线程（名称、初始化顺序、调度策略、优先级、CPU 分组）集中声明在 `source/core/main.c` 的一张表里：按依赖顺序初始化，启动失败回滚连续前缀，退出时按相反顺序析构，并以 5 秒为限逐个 join。新增模块只要扩表，不用改调度代码。
 
 **采集序号 `seq` 是贯穿全链路的主键。** 每一帧出队时拿到自增序号，解码、推理结果、推流帧、前端叠加都带着它。前端按 `seq` 把框贴回对应那一帧，因此框不会比画面慢几帧，丢帧也能被精确统计。
-
-```mermaid
-sequenceDiagram
-    participant C as 采集线程
-    participant D as 解码线程
-    participant N as 推理 worker
-    participant H as HTTP 推流
-    participant B as 浏览器
-    C->>C: seq=101 出队
-    C->>D: 投递原始帧
-    C->>H: 原始 MJPEG（X-Seq: 101）
-    H->>B: multipart 帧
-    D->>N: 解码完成
-    N-->>B: /api/detections/live?after=100
-    B->>B: 按 seq 匹配 → 画在对应帧上
-```
 
 ---
 
@@ -221,7 +329,7 @@ RK3576 是 4×Cortex-A53 + 4×Cortex-A72。分组按 SoC 写死在 `cpu_affinity
 | 线程 | 策略 / 优先级 | CPU 组 |
 |---|---|---|
 | main · TCP · HTTP reactor | FIFO 5 | LITTLE |
-| HTTP worker · 推理日报 | FIFO 1 | LITTLE |
+| HTTP worker · 推理日报 · Codex 桥接 | FIFO 1 | LITTLE |
 | 图像渲染 · 录像 | FIFO 10 | BIG |
 | NPU 推理 worker | FIFO 12 | BIG |
 | JPEG 软解 ×2 · 相机采集 | FIFO 15 | BIG |
@@ -233,30 +341,6 @@ RK3576 是 4×Cortex-A53 + 4×Cortex-A72。分组按 SoC 写死在 `cpu_affinity
 - 解码优先级高于推理（15 > 12），保证推理取帧时数据已就绪。
 - **cgroup v2 陷阱**：内核启用 `CONFIG_RT_GROUP_SCHED` 时，服务子组可能没有实时预算，申请 FIFO 返回 `EPERM`。`scripts/deploy.sh` 会在停机前检查并在根 slice 上设 `DisableControllers=cpu`，验证生效后才安装。
 - 跟随控制接口会回报实际拿到的策略、优先级与内核是否 RT，不是"配置了就算成功"。
-
----
-
-## 网页控制台
-
-纯静态 HTML/CSS/JS，无构建步骤，无外部 CDN 依赖，中英双语 + 明暗主题，手机浏览器可用。
-
-| 页面 | 用途 |
-|---|---|
-| `/` | 实时画面、点框追踪、FPS 与延迟读数、Codex 对话 |
-| `/status` | CPU 逐核占用与频率、温度、NPU / RGA、内存磁盘、网络速率 |
-| `/config` | 相机、YOLO、CPU 调频、跟随、录像、网络与代理、Codex |
-| `/logs` | 日志、录像、检测日报、文件打包下载 |
-| `/dbc` | DBC 上传解析、实时报文、在线信号解码与发送 |
-
-<div align="center">
-
-| 系统配置 | 系统状态 |
-|:---:|:---:|
-| ![config](docs/img/config.png) | ![status](docs/img/status.png) |
-
-</div>
-
-认证走 HTTP Basic，账号密码即系统账户（`getpwnam` + `crypt` 校验），失败按来源 IP 做窗口限速并短暂封禁，避免 crypt 被打成 CPU DoS。
 
 ---
 
@@ -303,6 +387,8 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/video/stats
 | `config/yolo26.rknn` | ✗ | 运行时模型，构建与部署按哈希校验 |
 | `config/coco.names` | ✓ | 80 类标签 |
 | `config/can0.dbc` · `can1.dbc` | ✓ | DBC 示例，可在网页上传替换 |
+| `.codex/config.toml` | ✗ | 由网页写入：`model`、`model_reasoning_effort`、`approval_policy` |
+| `.codex/auth.json` | ✗ | 设备码登录凭据，**绝不能入库** |
 
 运行期配置一律不入库，避免每次调参都污染提交历史。
 
@@ -310,7 +396,7 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/video/stats
 
 ## HTTP API
 
-接口以 JSON 为主（个别写接口返回纯文本状态），除页面与静态资源外均需 Basic 认证。
+接口以 JSON 为主（个别写接口返回纯文本状态）。认证分两级：页面与只读接口用系统账户 Basic 认证，写接口额外要求 root 或 sudo 组成员。
 
 | 分组 | 端点 |
 |---|---|
@@ -324,7 +410,9 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/video/stats
 | 网络 | `GET /api/network` · `/ifaces` · `GET/POST /api/proxy/config` · `/api/nettest` |
 | 日志 | `GET /api/logs` · `POST /api/logs/clear` |
 | ANO 遥测 | `GET/POST /api/ano` |
-| Codex | `GET /api/codex/status` · `/models` · `/quota` · `/history` · `POST /api/codex/chat` · `/update/install` |
+| **Codex** | `GET /api/codex/status` · `/models` · `/quota` · `/history` · `/records` · `/export` · `POST /api/codex/chat` · `/stop` · `/reset` · `/login/device` · `/config` · `/update/check` · `/update/install` · `/logout` |
+
+`/api/codex/*` 全部要求 root 认证 —— 智能体能改代码，所以进这道门就要管理员密码。
 
 ---
 
@@ -333,7 +421,7 @@ curl -s -u qianruo:qianruo http://127.0.0.1/api/video/stats
 ```text
 source/                 C 实现（约 1.7 万行）
 ├── core/               模块表、配置读写、日志、CPU 亲和性、通用容器
-├── http/               epoll reactor + worker、全部 REST 接口、静态文件
+├── http/               epoll reactor + worker、全部 REST 接口、静态文件、Codex 桥接层
 ├── video/              V4L2 采集 · 帧环 · RGA 预处理 · fMP4 录像 · JPEG 解码
 ├── yolo/               RKNN 推理池（多 worker + 在途限流）、后处理、事件分发
 ├── control/            跟随控制（PID · 死区 · 限幅 · 电机适配）与视觉跟踪
@@ -359,7 +447,7 @@ config/                 运行期配置与标签、DBC、模型
 | `recordings/logs/log_info_YYYYMMDD.log` | 按天切分的运行日志 |
 | `recordings/videos/video_YYYYMMDD_N.mp4` | 分段录像（H.264 fMP4） |
 | `recordings/results/` | 检测日报 |
-| `recordings/codex/` | 对话记录与升级日志 |
+| `recordings/codex/chat_YYYYMMDD.txt` | 与板载智能体的对话记录 |
 | `recordings/proxy-backups/` | 代理配置改动前的备份 |
 
 | 现象 | 排查 |
@@ -373,6 +461,8 @@ config/                 运行期配置与标签、DBC、模型
 | 两侧轮子反向 | 反馈 `fb_scale` 符号或电机安装方向，不是 PID 问题 |
 | 保存报 401 | 会话过期，重新弹框输入；连续失败会触发 IP 限速 |
 | 样式全丢 | `curl /css/common.css` 应为 200，字节数与磁盘一致 |
+| Codex 报 `Transport channel closed` | 先看 `/api/codex/quota`：周窗口用满会直接拒答，不是网络问题 |
+| Codex 一直"正在回答" | `/api/codex/stop`；桥接单轮超时 300 s，卡死时 `busy` 标记最多 330 s 后自动失效 |
 
 ---
 
@@ -381,6 +471,8 @@ config/                 运行期配置与标签、DBC、模型
 诚实列出来，避免误用：
 
 - **CAN 与电机闭环未在本机验收**：仓库只有协议示例，没有绑定具体电机型号；实车闭环、CAN FD 总线收发与在线 DBC 解码需自行配置后验证。
+- **舱内 AI 依赖外部账号**：Codex 走 ChatGPT 套餐配额，断网或额度用尽就只剩只读能力；模型、额度、可用性都不由本仓库控制。
+- **AI 不能控车**：控制面接口一律要 root 凭据，agent 拿不到；"让模型开车"目前只是路线图，不是功能。
 - **单目标**：同时只跟一个目标，多目标切换会重置外观种子。
 - **手工选点**：没有车道线检测或语义分割，循迹依赖 YOLO 的 80 类目标。
 - **MJPEG 推流**：延迟可控但带宽不低，弱网下不如 WebRTC；硬件 JPEG 解码器存在同帧多次解码不一致的缺陷，因此固定用软件解码。
@@ -407,6 +499,8 @@ config/                 运行期配置与标签、DBC、模型
 
 ## 路线图
 
+- [x] 板载 Codex 智能体：对话、额度、记录、升级
+- [ ] 把控制动作封装成受校验的工具调用，让模型在安全包络内参与决策
 - [ ] 多目标同时跟随与目标切换
 - [ ] 车道线检测替代手工选点
 - [ ] WebRTC 低延迟推流替代 MJPEG
@@ -423,7 +517,12 @@ config/                 运行期配置与标签、DBC、模型
 
 # English
 
-**A vision-guided differential-drive car on Radxa ROCK 4D (RK3576).** Capture, NPU inference, tracking, PID following, CAN FD motor output, streaming and the web console all live in one C process, supervised by systemd. Power the board, join WiFi, open the page — the car is drivable.
+**A vision-guided differential-drive car on Radxa ROCK 4D (RK3576).** Capture, NPU inference, tracking, PID following, CAN FD motor output, streaming and the web console all live in one C process, supervised by systemd. An on-board **Codex CLI agent** sits behind the same console: it can read this repository, inspect runtime logs, edit files and rebuild — behind a root-only gate that keeps it away from the control plane.
+
+<div align="center">
+<img src="docs/img/hero.png" width="100%" alt="Live view with detection box">
+<br><sub>720p30 live view, single-frame detection, measured throughput and end-to-end latency. The person in frame is pixelated on purpose.</sub>
+</div>
 
 ## Measured on hardware
 
@@ -438,6 +537,12 @@ config/                 运行期配置与标签、DBC、模型
 | Model accuracy | mAP50 0.591 / mAP50-95 0.434 |
 
 Numbers come from `/api/video/stats`, `/api/system` and runtime logs, not from estimates.
+
+## On-board agent
+
+`codex exec` runs on the board, detached from the HTTP reactor by a thin Python bridge. Every `/api/codex/*` endpoint requires **root** Basic auth, and the CLI itself runs as the unprivileged `qianruo` user with `danger-full-access` on the repository only. Consequences: it can read code, read logs, edit files and compile; it cannot `sudo`, run the deploy script, or POST to any control endpoint (`/api/follow`, `/api/can/send`, …) because those are root-gated. Model and reasoning effort are chosen in the web UI and written to `.codex/config.toml`; login uses the ChatGPT device-code flow; quota is read from the CLI's app-server and shown as remaining percentage.
+
+Letting a model *drive* is a roadmap item, not a feature: it needs validated tool calls, a hardware envelope and a human-in-the-loop, not a shell.
 
 ## Architecture
 
@@ -454,72 +559,41 @@ flowchart LR
     POST --> OVL["browser overlay"]
     STREAM --> OVL
     OVL --> WEB["web console"]
+    AG["Codex agent"] -.->|"read-only"| WEB
 
     classDef io fill:#e8f1fb,stroke:#5b8def,color:#1f2937
     classDef hw fill:#f3ecff,stroke:#8f7cf0,color:#1f2937
     classDef ctl fill:#e8f7ef,stroke:#3aa675,color:#1f2937
     class CAM,CAP,STREAM,WEB io
     class DEC,RGA,NPU,POST hw
-    class TRK,CAN,MOTOR,OVL ctl
+    class TRK,CAN,MOTOR,OVL,AG ctl
 ```
 
-Every thread — name, init order, scheduling policy, priority, CPU cluster — is declared in one table in `source/core/main.c`. Modules initialise in dependency order, roll back on failure, and are destroyed in reverse order with a 5-second join deadline.
+## Screens
 
-Each frame carries a monotonic capture sequence `seq`. Detections, streamed frames and the overlay all reference the same `seq`, so boxes never drift from the picture and dropped frames are counted exactly.
+| Main console | System status |
+|:---:|:---:|
+| ![main](docs/img/ui-main.png) | ![status](docs/img/ui-status.png) |
 
-## Frame budget (80 ms)
+| Configuration | Files |
+|:---:|:---:|
+| ![config](docs/img/ui-config.png) | ![files](docs/img/ui-files.png) |
 
-| Stage | Cost | Note |
-|---|---:|---|
-| Camera + driver | 33 ms | driver timestamp to `DQBUF`, inherent UVC latency |
-| JPEG decode | 5 ms | two threads in parallel, no application-side queueing |
-| RGA CSC + letterbox | 1–2 ms | NV12 → RGB, resize and padding in one pass |
-| NPU run | 9–10 ms | 512×512, one worker per core |
-| Post-process | ≈ 1 ms | anchor scan + class-wise NMS |
-| Render cadence | ≤ 33 ms | overlay stream submits at 30 fps |
-
-In-flight frames are capped at 2 (`YOLO_MAX_INFLIGHT`). With dual-thread decoding the producer caught up with the camera and the queue grew without bound — latency hit 169 ms. Capping in-flight depth brought it back to 80 ms with `infer_dropped` at 0.
-
-## Following
-
-No auto-tracking: you click a box, that box is followed. Detections are associated frame to frame by constant-velocity prediction, overlap and area, expiring after 800 ms. Steering and speed PIDs are mixed into wheel targets, clamped by `max_speed` and `max_turn_delta`, and mapped to CAN frames by a validated `car_motor_can.conf`. Target loss beyond `timeout_ms`, stale wheel feedback, or an inference stall over one second all force a stop command. The controller starts disabled and stays disabled until you enable it.
-
-## Build and deploy
+## Build & deploy
 
 ```bash
 sudo apt install -y build-essential cmake git python3 curl libnl-3-dev libnl-route-3-dev \
                     libjpeg-turbo8-dev librga-dev
-cd ~/autonomous-driving-car && ./scripts/build.sh -R
-sudo ./scripts/deploy.sh -i
-curl -s -u qianruo:qianruo http://127.0.0.1/api/video/stats
+./scripts/build.sh -R          # release build, ~40 s
+sudo ./scripts/deploy.sh -i    # install to /opt, register the systemd unit
 ```
 
-Requires a PREEMPT_RT kernel, `librknnrt` 2.5.0, `librockchip_mpp`, `librga`, and a matching `config/yolo26.rknn` (the model is not tracked; see [tools/model](tools/model/README.md)). `deploy.sh` handles the cgroup v2 real-time budget issue before stopping the running service.
+The runtime model (`config/yolo26.rknn`) is not in the repository; see [tools/model](tools/model/README.md) for the dataset → ONNX → RKNN chain.
 
-## Repository layout
+## Known limits
 
-```text
-source/    C implementation — core, http, video, yolo, control, can, tcp, telemetry, watchdog
-include/   matching headers
-html/      static console, five pages, no build step
-scripts/   build · deploy · model_sync · git_sync · codex_bridge · proxy_config
-tools/     offline model pipeline (dataset → ONNX → RKNN → evaluation)
-docs/      latency, scheduling, frame pipeline, quantization, tests, review
-config/    runtime config, labels, DBC, model
-```
-
-## Limitations
-
-CAN motor closed-loop control is not validated on this unit — the repository ships an example mapping, not a specific motor model. Only one target is followed at a time, tracking relies on manual selection of the 80 COCO classes, and streaming is MJPEG rather than WebRTC. Recording uses the MPP H.264 encoder; output was verified with ffprobe but not soak-tested. Open review findings are tracked in [docs/CODE_REVIEW.md](docs/CODE_REVIEW.md).
-
-## Documentation
-
-[Latency profile](docs/LATENCY_PROFILE.md) · [Real-time scheduling](docs/REALTIME_SCHEDULING.md) · [Frame pipeline](docs/FRAME_PIPELINE.md) · [Communication flow](docs/COMMUNICATION_FLOW.md) · [Quantization](docs/YOLO26N_QUANTIZATION.md) · [Functional test report](docs/FUNCTIONAL_TEST_REPORT.md) · [Code review](docs/CODE_REVIEW.md) · [Model pipeline](tools/model/README.md)
-
-Kernel side (PREEMPT_RT, NPU/RGA drivers, CPU-freq patches): [qianruo-orange/rock-4d-npu-kernel](https://github.com/qianruo-orange/rock-4d-npu-kernel).
+CAN motor closed-loop control is not validated on this unit — the repository ships an example mapping, not a specific motor model. The agent needs an external ChatGPT subscription and stops answering when the weekly quota is gone. Only one target is followed at a time, tracking relies on manual selection of the 80 COCO classes, and streaming is MJPEG rather than WebRTC. Annotated recording uses MPP H.264 and has only been smoke-tested. Open review findings are tracked in [docs/CODE_REVIEW.md](docs/CODE_REVIEW.md).
 
 ## License
 
-GPL-3.0-or-later © qianruo-orange — see [LICENSE](LICENSE).
-
-<div align="right"><a href="#top">⬆ back to top</a></div>
+GPL-3.0-or-later — see [LICENSE](LICENSE).
