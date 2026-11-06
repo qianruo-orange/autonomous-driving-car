@@ -117,3 +117,14 @@ table tr td:last-child{
 table tr td:last-child>*{margin:0!important;float:none!important}
 table tr td:last-child>button,
 table tr td:last-child>a{flex:0 0 auto}
+
+/* ===== action cell: inline flow, uniform gap ===== */
+/* td 保持 table-cell（flex 会破坏单元格底边），用 font-size:0 消除空白节点，
+   再靠统一的 margin-left 控制间距 */
+table tr td:last-child{text-align:right;white-space:nowrap;font-size:0}
+table tr td:last-child>*{
+  display:inline-flex;align-items:center;vertical-align:middle;
+  margin:0 0 0 8px;font-size:12px;line-height:1.4}
+table tr td:last-child>*:first-child{margin-left:0}
+table tr td:last-child>button.file-preview-button,
+table tr td:last-child>button.del{font-size:11px}
