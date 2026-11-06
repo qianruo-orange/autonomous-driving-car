@@ -67,7 +67,9 @@ static int file_query(const char *uri, const char *key, char *out, size_t cap)
             memcpy(encoded,q+n+1,length-n-1); encoded[length-n-1]=0;
             return http_url_decode(encoded,out,cap)>0;
         }
-        if (!end) break; q=end+1;
+        if (!end)
+            break;
+        q=end+1;
     }
     return 0;
 }
@@ -120,7 +122,10 @@ static int file_mp4_closed(int fd,const char *relative)
         uint64_t length=file_be32(h);unsigned minimum=8;
         if(length==1){if(pread(fd,h+8,8,offset+8)!=8)return 0;length=file_be64(h+8);minimum=16;}
         if(length<minimum || length>(uint64_t)(st.st_size-offset))return 0;
-        if(!memcmp(h+4,"ftyp",4))ftyp=1;if(!memcmp(h+4,"moov",4))moov=1;
+        if(!memcmp(h+4,"ftyp",4))
+            ftyp=1;
+        if(!memcmp(h+4,"moov",4))
+            moov=1;
         offset+=(off_t)length;
     }
     return offset==st.st_size && ftyp && moov;
@@ -137,7 +142,9 @@ static int file_send(int fd,const void *bytes,size_t length,uint64_t started)
         if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK)){
             struct pollfd p={.fd=fd,.events=POLLOUT};int rc=poll(&p,1,1000);
             if(rc<0 && errno==EINTR)continue;
-            if(rc<0 || (p.revents&(POLLERR|POLLHUP|POLLNVAL)))return -1;continue;
+            if(rc<0 || (p.revents&(POLLERR|POLLHUP|POLLNVAL)))
+                return -1;
+            continue;
         }
         return -1;
     }
@@ -172,7 +179,10 @@ static void file_cookie_token_key(const char *request,const char *key,char token
     while(*p){while(*p==' '||*p==';')p++;char *end=strchr(p,';');size_t n=end?(size_t)(end-p):strlen(p);
         size_t prefix=strlen(key);
         if(n==prefix+65 && !memcmp(p,key,prefix)&&p[prefix]=='='){memcpy(token,p+prefix+1,64);token[64]=0;return;}
-        if(!end)break;p=end+1;}
+        if(!end)
+            break;
+        p=end+1;
+    }
 }
 
 static void file_cookie_token(const char *request,char token[65])
@@ -265,7 +275,13 @@ static void file_preview(file_job_t *job)
     if(!text||!json){free(text);free(json);close(fd);file_error(job,ENOMEM);return;}
     size_t used=0,limit=st.st_size>(off_t)FILE_TEXT_LIMIT?FILE_TEXT_LIMIT:(size_t)st.st_size;int failed=0;
     while(used<limit){ssize_t n=read(fd,text+used,limit-used);
-        if(n<0&&errno==EINTR)continue;if(n<0){failed=1;break;}if(!n)break;used+=(size_t)n;}
+        if(n<0&&errno==EINTR)
+            continue;
+        if(n<0){failed=1;break;}
+        if(!n)
+            break;
+        used+=(size_t)n;
+    }
     close(fd);if(failed){free(text);free(json);file_error(job,EIO);return;}
     int prefix=snprintf(json,256,"{\"total_bytes\":%" PRIuMAX ",\"truncated\":%s,\"text\":\"",(uintmax_t)st.st_size,
         st.st_size>(off_t)used?"true":"false");size_t n=file_escape(text,used,json+prefix);
@@ -279,12 +295,30 @@ static int file_range(const char *range,uint64_t size,uint64_t *first,uint64_t *
     if(strncmp(range,"bytes=",6)||strchr(range,','))return -1;
     const char *p=range+6;char *end;errno=0;
     if(*p=='-'){
-        if(p[1]<'0'||p[1]>'9')return -1;uint64_t suffix=strtoull(p+1,&end,10);
-        if(errno||*end||!suffix||!size)return -1;*first=suffix>=size?0:size-suffix;*last=size-1;return 1;
+        if(p[1]<'0'||p[1]>'9')
+            return -1;
+        uint64_t suffix=strtoull(p+1,&end,10);
+        if(errno||*end||!suffix||!size)
+            return -1;
+        *first=suffix>=size?0:size-suffix;
+        *last=size-1;
+        return 1;
     }
-    if(*p<'0'||*p>'9')return -1;*first=strtoull(p,&end,10);if(errno||*end!='-'||*first>=size)return -1;
-    p=end+1;if(!*p){*last=size-1;return 1;}if(*p<'0'||*p>'9')return -1;
-    *last=strtoull(p,&end,10);if(errno||*end||*last<*first)return -1;if(*last>=size)*last=size-1;return 1;
+    if(*p<'0'||*p>'9')
+        return -1;
+    *first=strtoull(p,&end,10);
+    if(errno||*end!='-'||*first>=size)
+        return -1;
+    p=end+1;
+    if(!*p){*last=size-1;return 1;}
+    if(*p<'0'||*p>'9')
+        return -1;
+    *last=strtoull(p,&end,10);
+    if(errno||*end||*last<*first)
+        return -1;
+    if(*last>=size)
+        *last=size-1;
+    return 1;
 }
 
 static void file_video(file_job_t *job)
@@ -306,7 +340,11 @@ static void file_video(file_job_t *job)
         unsigned char bytes[65536];uint64_t remaining=last-first+1,offset=first,started=file_now();
         while(remaining){size_t wanted=remaining>sizeof(bytes)?sizeof(bytes):(size_t)remaining;
             ssize_t got=pread(fd,bytes,wanted,(off_t)offset);if(got<0&&errno==EINTR)continue;
-            if(got<=0||file_send(job->fd,bytes,(size_t)got,started))break;remaining-=(uint64_t)got;offset+=(uint64_t)got;}
+            if(got<=0||file_send(job->fd,bytes,(size_t)got,started))
+                break;
+            remaining-=(uint64_t)got;
+            offset+=(uint64_t)got;
+        }
     }
     close(fd);
 }
@@ -314,14 +352,22 @@ static void file_video(file_job_t *job)
 static int file_write(int fd,const void *bytes,size_t size)
 {
     size_t at=0;while(at<size){ssize_t n=write(fd,(const char*)bytes+at,size-at);if(n<0&&errno==EINTR)continue;
-        if(n<=0)return -1;at+=(size_t)n;}return 0;
+        if(n<=0)
+            return -1;
+        at+=(size_t)n;
+    }
+    return 0;
 }
 
 static int file_copy(int source,int target,off_t size)
 {
     char buffer[65536];off_t offset=0;while(offset<size){size_t wanted=size-offset>(off_t)sizeof(buffer)?sizeof(buffer):(size_t)(size-offset);
         ssize_t n=pread(source,buffer,wanted,offset);if(n<0&&errno==EINTR)continue;if(n<=0){errno=EIO;return -1;}
-        if(file_write(target,buffer,(size_t)n))return -1;offset+=n;}return 0;
+        if(file_write(target,buffer,(size_t)n))
+            return -1;
+        offset+=n;
+    }
+    return 0;
 }
 
 static void file_remove_tree(const char *path)
@@ -510,7 +556,11 @@ static void *file_worker(void *argument)
         else file_response(job,405,"text/plain",NULL,NULL,0);
     }
     /* Return admission before close: the OS may immediately reuse the fd. */
-    if(job->on_close)job->on_close(job->fd);close(job->fd);free(job->request);free(job);
+    if(job->on_close)
+        job->on_close(job->fd);
+    close(job->fd);
+    free(job->request);
+    free(job);
     pthread_mutex_lock(&file_worker_lock);file_workers--;pthread_mutex_unlock(&file_worker_lock);return NULL;
 }
 
@@ -522,7 +572,10 @@ int http_files_start(app_ctx_t *app,int fd,const char *method,const char *uri,co
     if(file_workers>=FILE_WORKERS){pthread_mutex_unlock(&file_worker_lock);errno=EBUSY;return -1;}
     file_workers++;pthread_mutex_unlock(&file_worker_lock);
     file_job_t *job=calloc(1,sizeof(*job));int error=ENOMEM;
-    if(!job)goto failed;job->fd=fd;job->on_close=on_close;
+    if(!job)
+        goto failed;
+    job->fd=fd;
+    job->on_close=on_close;
     safe_strncpy(job->method,sizeof(job->method),method);safe_strncpy(job->uri,sizeof(job->uri),uri);
     safe_strncpy(job->log_root,sizeof(job->log_root),app&&app->cfg?app->cfg->log_dir:PATH_LOGS);
     job->request=strndup(request,32768);if(!job->request){free(job);goto failed;}
