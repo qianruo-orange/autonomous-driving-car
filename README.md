@@ -16,7 +16,7 @@
 相机 MJPEG → libjpeg-turbo 软解（NV12 dma-buf）→ RGA（色彩转换 + letterbox）→ NPU → C 后处理
 ```
 
-分工明确：libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12（720p 约 4 ms/帧），RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 另承担后处理与结果分发。端到端 44 ms，整机 CPU 占用约 3 %。
+分工明确：libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12（720p 单帧约 5 ms，两个解码线程各持一个 libjpeg 实例、绑在大核前两核上并行），RGA 一趟完成色彩转换与缩放，NPU 输出检测张量，CPU 另承担后处理与结果分发。端到端 80 ms，整机 CPU 占用约 4 %。
 
 直播保持传感器原始画质：`/video/mjpeg` 直接转发相机 MJPEG 字节，检测框由浏览器 canvas 按帧序号叠加。录像走另一条路——推理解出的 NV12 画上框后由 VEPU510 硬件编成 H.264，保存为 MP4。
 
@@ -26,15 +26,14 @@
 
 | 指标 | 数值 |
 | --- | --- |
-| 端到端延迟（`processing_age_ms`） | **44 ms**，p95 45 ms |
-| 每帧流水线工作量 | **11 ms**（解码 1、RGA 1、NPU 8、后处理 1） |
-| 占 33.3 ms 帧周期的比例 | 33 % |
-| 整机 CPU 占用 | **约 2 %** |
+| 端到端延迟（`processing_age_ms`） | **80 ms**，最大 126 ms |
+| 每帧流水线工作量 | **约 16 ms**（解码 5、RGA 1、NPU 9、后处理 1；解码与 NPU 在不同线程上重叠） |
+| 整机 CPU 占用 | **约 4 %** |
 | 每核 NPU 负载 | 8–13 % |
 | 每核 RGA 负载 | 约 2 % |
-| 采集 / 丢帧 | 30 fps，环形缓冲丢帧 0 |
+| 采集 / 丢帧 | 30 fps，环形缓冲丢帧 0，`infer_dropped` 0 |
 
-44 ms 由两部分构成：33 ms 相机侧延迟（UVC 一帧的固有延迟，不是软件问题）加 11 ms 流水线。逐环节耗时见[延迟剖析](docs/LATENCY_PROFILE.md)。
+80 ms 由三部分构成：33 ms 相机侧延迟（UVC 一帧的固有延迟，不是软件问题）、约 16 ms 流水线，以及最多一个帧周期的渲染节拍。逐环节耗时见[延迟剖析](docs/LATENCY_PROFILE.md)。
 
 ### 快速开始
 
@@ -112,7 +111,7 @@ flowchart LR
 | `yolo_infer` 0 | Core 0（`mask 0x1`） | RGA2E core 0（`0x4`） |
 | `yolo_infer` 1 | Core 1（`mask 0x2`） | RGA2E core 1（`0x8`） |
 
-解码线程把帧留在 NV12 dma-buf 里；worker 让 RGA 一趟完成色彩转换与缩放，写进 CMA 画布，再把画布地址直接交给 `rknn_inputs_set`——RGA 与 NPU 之间零拷贝。
+每个解码线程各有自己的 libjpeg 实例和 8 槽 NV12 dma-buf 环，解出的帧留在槽里；worker 让 RGA 一趟完成色彩转换与缩放，写进 CMA 画布，再把画布地址直接交给 `rknn_inputs_set`——RGA 与 NPU 之间零拷贝。
 
 #### Web 管理、CAN 与监控
 
@@ -148,7 +147,7 @@ flowchart LR
 
 **采集。** V4L2 MJPEG，1280×720，30 fps。设备通过稳定路径（`/dev/v4l/by-id/...`）打开，因为新增内置媒体驱动会改变 `/dev/videoN` 编号。
 
-**解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 约 4 ms/帧。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
+**解码。** libjpeg-turbo 在 CPU 上把 JPEG 解成 NV12，写进 CMA dma-buf 供 RGA 直接读取，720p 单帧约 5 ms。解码已从采集线程里剥出来：2 个解码线程各持一个 libjpeg 实例并行工作，`SCHED_FIFO` 15 绑在大核前两核（cpu4、5，按 `cpu_capacity` 自动发现）。单线程软解只能到 25 fps，双线程跑满相机的 29 fps，采集线程只负责 claim 与投递。板载 `rockchip-jpegd`（VDPU720）对同一帧多次解码结果不一致——8×8 块内第 0 行精确正确、其余行每次不同，画面上会留下块状灰斑与边缘断口，因此不使用。
 
 **预处理。** RGA 一次调用完成 NV12 → RGB、等比缩放和居中放置到 512×512 画布，约 1 ms。114 灰边只在启动时填一次，之后每帧 RGA 只写中心区域。
 
@@ -224,7 +223,7 @@ Web 访问支持**两个源 IPv4 地址**，同一地址可开多个标签页。
 
 ### 录像与可观测性
 
-录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/videos/` 下写 `annot_<日期>_<时间>.mp4`：推理路径解出的 NV12 在 Y 平面画上检测框，再交给 VEPU510 硬件编成 H.264。720p 约 **12 Mbps**，即 **5.4 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。
+录像自动开始，产物是**一份带检测框的 MP4**。每次会话在 `recordings/videos/` 下写 `annot_<日期>_<时间>.mp4`：推理路径解出的 NV12 在 Y 平面画上检测框，再交给 VEPU510 硬件编成 H.264。恒定 QP 18（FIXQP，不做码率控制），720p 实测约 **7.9 Mbps**，即 **3.5 GB/小时**，VLC、ffplay 和浏览器都能直接播放。帧不重复解码——标注录像复用的就是推理已经解好的那份 NV12，每帧只多一次内存拷贝。
 
 分段只按**日期变化**触发：跨天时结束当前文件、在新日期目录下开始下一段，录像不中断。另有手动分段接口供前端调用。MP4 的样本偏移是 64 位的，单文件不受 4 GiB 限制。
 
@@ -368,10 +367,11 @@ Every stage except decoding runs on hardware accelerators:
 camera MJPEG → libjpeg-turbo decode (NV12 dma-buf) → RGA (CSC + letterbox) → NPU → C postprocess
 ```
 
-libjpeg-turbo turns the JPEG into NV12 on the CPU (~4 ms per 720p frame), RGA
+libjpeg-turbo turns the JPEG into NV12 on the CPU (~5 ms per 720p frame), RGA
 does colour conversion and scaling in one pass, the NPU emits the detection
-tensors, and the CPU handles postprocessing and result dispatch. End to end this
-is 44 ms at about 3 % whole-system CPU load.
+tensors, and the CPU handles postprocessing and result dispatch. Decoding runs
+on two threads, each with its own libjpeg instance, pinned to the first two big
+cores. End to end this is 80 ms at about 4 % whole-system CPU load.
 
 The live view keeps the sensor's own quality: `/video/mjpeg` forwards the
 camera's MJPEG bytes and the browser canvas overlays the boxes, aligned by frame
@@ -385,17 +385,16 @@ Numbers from the deployed build on the board, 30 fps capture:
 
 | Metric | Value |
 | --- | --- |
-| End-to-end latency (`processing_age_ms`) | **44 ms**, p95 45 ms |
-| Pipeline work per frame | **11 ms** (decode 1, RGA 1, NPU 8, postprocess 1) |
-| Share of a 33.3 ms frame period | 33 % |
-| CPU load, whole system | **~2 %** |
+| End-to-end latency (`processing_age_ms`) | **80 ms**, max 126 ms |
+| Pipeline work per frame | **~16 ms** (decode 5, RGA 1, NPU 9, postprocess 1; decode overlaps NPU on other threads) |
+| CPU load, whole system | **~4 %** |
 | NPU load per core | 8–13 % |
 | RGA load per core | ~2 % |
-| Capture / dropped frames | 30 fps, 0 from the ring |
+| Capture / dropped frames | 30 fps, 0 from the ring, 0 `infer_dropped` |
 
-44 ms splits into 33 ms of camera-side latency (UV C one-frame delay, not
-software) plus 11 ms of pipeline. See [latency profile](docs/LATENCY_PROFILE.md) for
-per-stage timings.
+80 ms splits into 33 ms of camera-side latency (UV C one-frame delay, not
+software), ~16 ms of pipeline, and up to one frame period of render pacing. See
+[latency profile](docs/LATENCY_PROFILE.md) for per-stage timings.
 
 ### Quick start
 
@@ -478,10 +477,10 @@ Two worker threads, each bound to one NPU core **and** one RGA core:
 | `yolo_infer` 0 | Core 0 (`mask 0x1`) | RGA2E core 0 (`0x4`) |
 | `yolo_infer` 1 | Core 1 (`mask 0x2`) | RGA2E core 1 (`0x8`) |
 
-The decode thread keeps the frame in an NV12 dma-buf; the worker asks RGA for
-colour conversion plus scaling in one pass into a CMA-backed model canvas, and
-passes that canvas address straight to `rknn_inputs_set`, giving a zero-copy
-handoff between RGA and NPU.
+Each decode thread keeps its own libjpeg instance and 8-slot NV12 dma-buf ring;
+the worker asks RGA for colour conversion plus scaling in one pass into a
+CMA-backed model canvas, and passes that canvas address straight to
+`rknn_inputs_set`, giving a zero-copy handoff between RGA and NPU.
 
 #### Web management, CAN and supervision
 
@@ -522,11 +521,15 @@ threads log and reset instead of stopping the vehicle.
 stable path (`/dev/v4l/by-id/...`), because adding a built-in media driver can
 renumber `/dev/videoN`.
 
-**Decode.** libjpeg-turbo decodes the JPEG into NV12 on the CPU (~4 ms per 720p
-frame) and writes it into a CMA dma-buf that RGA reads directly. The on-SoC
-`rockchip-jpegd` (VDPU720) is not used: repeated decodes of the same frame do not
-agree — row 0 of every 8x8 block is exact while the remaining rows differ each
-run, leaving blocky grey patches and broken edges on screen.
+**Decode.** libjpeg-turbo decodes the JPEG into NV12 on the CPU (~5 ms per 720p
+frame) and writes it into a CMA dma-buf that RGA reads directly. Decoding was
+moved out of the capture thread into two threads, one libjpeg instance each,
+running `SCHED_FIFO` 15 on the first two big cores (cpu4 and cpu5, discovered
+from `cpu_capacity`): a single software decoder tops out at 25 fps, the pair
+saturates the camera's 29 fps, and the capture thread only claims and submits.
+The on-SoC `rockchip-jpegd` (VDPU720) is not used: repeated decodes of the same
+frame do not agree — row 0 of every 8x8 block is exact while the remaining rows
+differ each run, leaving blocky grey patches and broken edges on screen.
 
 **Preprocess.** RGA performs NV12 → RGB, letterbox scaling and placement into a
 512×512 canvas in one call (~1 ms). The 114-grey border is filled once at start
@@ -645,8 +648,9 @@ whole frames are dropped so latency does not accumulate.
 Recording starts automatically and produces a **single MP4 with the detection
 boxes burned in**. Each session writes `annot_<date>_<time>.mp4` under
 `recordings/videos/`: the NV12 the inference path already decoded gets the
-boxes drawn into its luma plane, then the VEPU510 encodes it to H.264. That is
-about **12 Mbps**, or **5.4 GB/hour** at 720p, and the file plays in VLC, ffplay
+boxes drawn into its luma plane, then the VEPU510 encodes it to H.264. Coding
+uses a constant QP of 18 (FIXQP, no rate control): measured about **7.9 Mbps**,
+or **3.5 GB/hour** at 720p, and the file plays in VLC, ffplay
 and the browser. No frame is decoded twice - the annotated file reuses the NV12
 from inference and costs one memory copy per frame.
 

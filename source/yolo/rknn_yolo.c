@@ -78,6 +78,7 @@ static __thread size_t annot_cap;
 
 #define YOLO_MAX_WORKERS 2     /* RK3576：NPU 双核，一核一个线程 */
 #define YOLO_QUEUE_CAP   4     /* 任务队列容量（帧），与 worker 数共同约束在途帧内存 */
+#define YOLO_MAX_INFLIGHT 2    /* 在途上限（帧）：解码并行后不压深度会让延迟累积到 ~170 ms */
 #define YOLO_RESULT_CAP  8     /* 结果队列容量（帧），推理结果入队，composer 消费渲染 */
 #define YOLO_HIST_N      16    /* 最近结果环形缓冲深度（供前端按 seq 对齐叠框） */
 
@@ -197,6 +198,16 @@ static frame_slot_t *yolo_slot(frame_ring_t *r, unsigned long long seq)
     return &r->slots[seq & (FRAME_RING_N - 1)];
 }
 
+/* 未完成的 claim 数（在途帧）。解码并行后生产追平消费，队列会永久积压，
+   用它把流水线深度压住。调用方需持环锁。 */
+static int yolo_inflight_locked(frame_ring_t *r)
+{
+    int n = 0;
+    for (int i = 0; i < FRAME_RING_N; i++)
+        if (r->slots[i].raw_claims > 0) n++;
+    return n;
+}
+
 /* 任务作废（停池/推理失败/队列拒绝）：摘除槽 claim（raw 恢复可释放）
    并把 rgb 归还池。解码已成功，作废不计 infer_dropped */
 static void yolo_job_abandon(const yolo_job_t *job)
@@ -210,6 +221,165 @@ static void yolo_job_abandon(const yolo_job_t *job)
     if (job->rgb)
         frame_ring_buf_put_locked(ring, FRAME_RING_POOL_RGB, job->rgb, job->rgb_cap);
     frame_ring_unlock(ring);
+}
+
+/* 解码成功但任务没进推理队列（停池/退出）：abandon 只管 claim 与 rgb，
+   解码线程 malloc 的 NV12 副本要在这里一起释放。 */
+static void yolo_job_discard(yolo_job_t *job)
+{
+    yolo_job_abandon(job);
+    free(job->annot_nv12);
+    job->annot_nv12 = NULL;
+}
+
+/* ---- 解码阶段：两个独立 libjpeg 实例并行 ----
+ *
+ * 采集线程只做 claim 和投递，解码挪到独立线程。顺序仍是 seq 递增：队列 FIFO、
+ * 每个线程独立解码，完成后直接进推理队列（推理侧本来就按完成时间消费）。
+ *
+ * 队列深度等于线程数，投递前先等空位（背压），所以投递本身不会阻塞，可以
+ * 在整个 claim 窗口里持 g_producer_mutex，与停池清理共用同一把锁。 */
+#define YOLO_DECODE_THREADS 2
+
+static int yolo_queue_push(const yolo_job_t *job);
+
+typedef struct {
+    yolo_job_t           job;       /* 元数据已填，nv12_fd/annot_nv12 由解码线程补 */
+    const unsigned char *raw;
+    size_t               raw_len;
+} decode_item_t;
+
+static struct {
+    decode_item_t   q[YOLO_DECODE_THREADS];
+    int             head, tail, count;
+    pthread_mutex_t lock;
+    pthread_cond_t  not_empty;
+    pthread_cond_t  not_full;
+    pthread_t       tid[YOLO_DECODE_THREADS];
+    int             created;
+    _Atomic int     stop;
+} g_decode;
+
+static void *yolo_decode_task(void *arg)
+{
+    (void)arg;
+    (void)pthread_setname_np(pthread_self(), "decode");
+    /* 每个线程一个 decoder：jpeg_decompress_struct 不可跨线程共用 */
+    jpeg_decoder_t *decoder = jpeg_decoder_open();
+    if (!decoder) {
+        /* 与旧行为一致：没有解码器就等于没有 YOLO，整体退出让 systemd 重启 */
+        LOG_ERROR("decode: libjpeg decoder open failed — stopping");
+        atomic_store(&g_yolo.decoder_ready, 0);
+        g_yolo.app->fatal = 1;
+        g_yolo.app->running = 0;
+    } else {
+        atomic_store(&g_yolo.decoder_ready, 1);
+    }
+
+    for (;;) {
+        pthread_mutex_lock(&g_decode.lock);
+        while (!g_decode.count && !atomic_load(&g_decode.stop) && g_yolo.pool_running)
+            pthread_cond_wait(&g_decode.not_empty, &g_decode.lock);
+        if (atomic_load(&g_decode.stop) || !g_yolo.pool_running || !g_decode.count) {
+            pthread_mutex_unlock(&g_decode.lock);
+            break;
+        }
+        decode_item_t item = g_decode.q[g_decode.head];
+        g_decode.head = (g_decode.head + 1) % YOLO_DECODE_THREADS;
+        g_decode.count--;
+        pthread_cond_signal(&g_decode.not_full);
+        pthread_mutex_unlock(&g_decode.lock);
+
+        yolo_job_t job = item.job;
+        unsigned char *annot = NULL;
+        int fd = -1, ok = 0;
+        if (decoder) {
+            size_t need = (size_t)job.w * (size_t)job.h * 3 / 2;
+            annot = malloc(need);
+            ok = annot && jpeg_decoder_nv12(decoder, item.raw, item.raw_len,
+                                            job.w, job.h, &fd, annot) == 0;
+        }
+        job.decode_end_us = yolo_now_us();
+        if (!ok) {
+            free(annot);
+            /* 解码失败：摘 claim 并计 infer_dropped（与旧内联路径一致） */
+            frame_ring_t *ring = yolo_ring();
+            if (ring) {
+                frame_ring_lock(ring);
+                frame_slot_t *s = yolo_slot(ring, job.seq);
+                if (s->seq == job.seq && s->raw_claims > 0)
+                    frame_ring_infer_unclaim_locked(ring, s, 0);
+                frame_ring_unlock(ring);
+            }
+            continue;
+        }
+        job.nv12_fd = fd;
+        job.annot_nv12 = annot;
+
+        /* 与停池互斥：push 前持生产者锁，停池清理队列时不会漏掉这一帧 */
+        pthread_mutex_lock(&g_producer_mutex);
+        if (!g_yolo.running || !g_yolo.pool_running || yolo_queue_push(&job) != 0)
+            yolo_job_discard(&job);
+        pthread_mutex_unlock(&g_producer_mutex);
+    }
+    jpeg_decoder_close(decoder);
+    return NULL;
+}
+
+/* 投递前等空位：满队列时在这里背压，不把 claim 的槽位堆在解码队列里 */
+static int yolo_decode_wait_room(void)
+{
+    pthread_mutex_lock(&g_decode.lock);
+    while (g_decode.count >= YOLO_DECODE_THREADS && !atomic_load(&g_decode.stop) &&
+           g_yolo.running && g_yolo.pool_running)
+        pthread_cond_wait(&g_decode.not_full, &g_decode.lock);
+    int ready = !atomic_load(&g_decode.stop) && g_yolo.running && g_yolo.pool_running;
+    pthread_mutex_unlock(&g_decode.lock);
+    return ready ? 0 : -1;
+}
+
+/* 调用方已确认有空位（只有采集线程一个生产者） */
+static void yolo_decode_submit(const decode_item_t *item)
+{
+    pthread_mutex_lock(&g_decode.lock);
+    g_decode.q[g_decode.tail] = *item;
+    g_decode.tail = (g_decode.tail + 1) % YOLO_DECODE_THREADS;
+    g_decode.count++;
+    pthread_cond_signal(&g_decode.not_empty);
+    pthread_mutex_unlock(&g_decode.lock);
+}
+
+static void yolo_decode_stop(void);
+
+static int yolo_decode_start(void)
+{
+    atomic_store(&g_decode.stop, 0);
+    g_decode.head = g_decode.tail = g_decode.count = 0;
+    for (int i = 0; i < YOLO_DECODE_THREADS; i++) {
+        if (app_thread_create(&g_decode.tid[i], "decode", yolo_decode_task, NULL, 0) != 0) {
+            LOG_ERROR("decode: thread %d create failed", i);
+            yolo_decode_stop();
+            return -1;
+        }
+        g_decode.created = i + 1;
+    }
+    LOG_INFO("decode: %d libjpeg worker threads on the decode pair", YOLO_DECODE_THREADS);
+    return 0;
+}
+
+static void yolo_decode_stop(void)
+{
+    pthread_mutex_lock(&g_decode.lock);
+    atomic_store(&g_decode.stop, 1);
+    pthread_cond_broadcast(&g_decode.not_empty);
+    pthread_cond_broadcast(&g_decode.not_full);
+    pthread_mutex_unlock(&g_decode.lock);
+    for (int i = 0; i < g_decode.created; i++) pthread_join(g_decode.tid[i], NULL);
+    g_decode.created = 0;
+    /* 队列里没被取走的任务：摘 claim 并释放解码副本 */
+    for (int i = 0; i < g_decode.count; i++)
+        yolo_job_discard(&g_decode.q[(g_decode.head + i) % YOLO_DECODE_THREADS].job);
+    g_decode.head = g_decode.tail = g_decode.count = 0;
 }
 
 /* ---- 任务队列 ---- */
@@ -867,6 +1037,9 @@ static void yolo_stop_pool(void)
     pthread_cond_broadcast(&g_yolo.r_not_full);
     pthread_mutex_unlock(&g_yolo.r_lock);
 
+    /* 解码线程先收：它会把在途帧投递/作废掉，再等 worker 退出 */
+    yolo_decode_stop();
+
     for (int i = 0; i < g_yolo.n_created; i++)
         pthread_join(g_yolo.w_tid[i], NULL);
     g_yolo.n_created = 0;
@@ -880,10 +1053,11 @@ static void yolo_stop_pool(void)
     pthread_mutex_lock(&g_producer_mutex);
     /* 释放队列中未被消费的任务（已消费槽位 rgb 已置 NULL） */
     for (int i = 0; i < YOLO_QUEUE_CAP; i++) {
-        if (g_yolo.jobs[i].rgb) {
+        if (g_yolo.jobs[i].rgb || g_yolo.jobs[i].annot_nv12) {
             yolo_job_t job = g_yolo.jobs[i];
             g_yolo.jobs[i].rgb = NULL;
-            yolo_job_abandon(&job);
+            g_yolo.jobs[i].annot_nv12 = NULL;
+            yolo_job_discard(&job);
         }
     }
     g_yolo.q_head = g_yolo.q_tail = g_yolo.q_count = 0;
@@ -1008,6 +1182,11 @@ static int yolo_start_pool(void)
 
     /* 启动推理工作线程池 + 按序渲染线程 */
     g_yolo.pool_running = 1;
+    /* 解码线程先起来：worker 依赖解码投递的任务 */
+    if (yolo_decode_start() < 0) {
+        yolo_stop_pool();
+        return -1;
+    }
     for (int i = 0; i < g_yolo.nthreads; i++) {
         if (app_thread_create(&g_yolo.w_tid[i], "yolo_infer", yolo_worker_task,
                               (void *)(intptr_t)i, 0) != 0) {
@@ -1074,6 +1253,9 @@ int rknn_yolo_init(void *arg)
     pthread_mutex_init(&g_yolo.r_lock, NULL);
     pthread_cond_init(&g_yolo.r_not_empty, NULL);
     pthread_cond_init(&g_yolo.r_not_full, NULL);
+    pthread_mutex_init(&g_decode.lock, NULL);
+    pthread_cond_init(&g_decode.not_empty, NULL);
+    pthread_cond_init(&g_decode.not_full, NULL);
 
     /* 解码固定走 libjpeg-turbo 软解。libjpeg 是链接期依赖，探测只用于状态上报。 */
     atomic_store(&g_yolo.decoder_ready, jpeg_decoder_available());
@@ -1129,8 +1311,6 @@ void *rknn_yolo_task(void *arg)
         return NULL;
     }
 
-    jpeg_decoder_t *decoder = NULL;
-
     frame_ring_t *ring = yolo_ring();
     frame_subscription_t capture;
     if (ring) frame_ring_subscribe(ring, &capture, FRAME_TOPIC_CAPTURED);
@@ -1141,6 +1321,9 @@ void *rknn_yolo_task(void *arg)
         /* 未启用 / 池未运行（重载中）/ video 未初始化：空转喂狗，不占推理资源。
            重载后 enabled 恢复时自动继续采集 */
         if (!ring || !g_yolo.enabled || !g_yolo.pool_running) { usleep(200000); continue; }
+
+        /* 解码队列满就在这里背压，避免把 claim 的槽位堆在队列里等 */
+        if (yolo_decode_wait_room() < 0) { usleep(1000); continue; }
 
         pthread_mutex_lock(&g_producer_mutex);
         if (!g_yolo.enabled || !g_yolo.pool_running) {
@@ -1160,6 +1343,15 @@ void *rknn_yolo_task(void *arg)
            claim 随任务移交 worker（写槽时 unclaim），任务在途期间槽位
            被 claims 钉住，不会被采集复用，raw 也不会被释放 */
         frame_ring_lock(ring);
+        /* 在途上限：解码并行后生产速率追平消费，队列一旦填满就不再排空（实测
+           端到端 169 ms，单线程解码时 65 ms）。把未完成的 claim 压到两帧以内，
+           延迟回到两个帧周期量级；单帧处理 15 ms 远小于 33 ms 帧周期，不丢帧。 */
+        if (yolo_inflight_locked(ring) >= YOLO_MAX_INFLIGHT) {
+            frame_ring_unlock(ring);
+            pthread_mutex_unlock(&g_producer_mutex);
+            usleep(2000);
+            continue;
+        }
         frame_slot_t *s = NULL;
         while (g_yolo.last_seq < ring->produce_seq) {
             s = frame_ring_infer_claim_locked(ring, g_yolo.last_seq + 1);
@@ -1179,66 +1371,49 @@ void *rknn_yolo_task(void *arg)
         int fmt = s->fmt, w = s->w, h = s->h;
         unsigned char *raw = s->raw.buf;
         size_t raw_len = s->raw.len;
-        /* 解码结果只以 NV12 dma-buf 形式交给 RGA，不再产生 RGB。 */
-        ring_buf_t rgbb = { 0 };
-        int nv12_fd = -1;
         frame_ring_unlock(ring);
 
-        /* The claim holds the camera buffer while JPEG is submitted to DMA. */
-        int decode_ok = 0, decoder_unavailable = 0;
-        unsigned char *annot_copy = NULL;
-        unsigned long long decode_start_us = yolo_now_us();
-        if (raw && w > 0 && h > 0) {
-            if (fmt == FRAME_RING_FMT_MJPEG) {
-                if (!decoder) decoder = jpeg_decoder_open();
-                decoder_unavailable = !decoder;
-                if (decoder) {
-                    atomic_store(&g_yolo.decoder_ready, 1);
-                    {
-                    size_t need = (size_t)w * h * 3 / 2;
-                    free(annot_copy);
-                    annot_copy = malloc(need);
-                    decode_ok = jpeg_decoder_nv12(decoder, raw, raw_len, w, h,
-                                                  &nv12_fd, annot_copy) == 0;
-                }
-                }
-            } else if (fmt == FRAME_RING_FMT_YUYV) {
-                /* YUYV 需要 RGA 直接吃 4:2:2，当前通路只实现 NV12 */
-                LOG_ERROR("yolo: 取流只支持 MJPEG/NV12 输入，当前帧格式不支持");
-                decoder_unavailable = 1;
-            }
-        }
+        /* 解码结果只以 NV12 dma-buf 形式交给 RGA；解码本身在 decode 线程里，
+           这里只投递。claim 随任务一路走到 worker 写槽，在途期间钉住槽位。 */
         g_yolo.last_seq = seq;
-        if (!decode_ok) {
-            frame_ring_lock(ring);
-            frame_ring_infer_unclaim_locked(ring, s, 0);   /* 解码失败：infer_dropped++ */
-            frame_ring_unlock(ring);
+
+        int supported = raw && raw_len && w > 0 && h > 0;
+        if (supported && fmt == FRAME_RING_FMT_MJPEG) {
+            decode_item_t item;
+            memset(&item, 0, sizeof(item));
+            item.raw = raw;
+            item.raw_len = raw_len;
+            item.job.w = w;
+            item.job.h = h;
+            item.job.seq = seq;
+            item.job.capture_ms = capture_ms;
+            item.job.deliver_ms = deliver_ms;
+            item.job.decode_start_us = yolo_now_us();
+            item.job.metadata = metadata;
+            /* wait_room 已确认空位，投递不阻塞 */
+            yolo_decode_submit(&item);
             pthread_mutex_unlock(&g_producer_mutex);
-            if (decoder_unavailable) {
-                atomic_store(&g_yolo.decoder_ready, 0);
-                LOG_ERROR("yolo: MJPEG capture requires a working JPEG decoder; stopping");
-                app->fatal = 1;
-                app->running = 0;
-                break;
-            }
-            usleep(1000);   /* 坏帧退避，避免忙转 */
             continue;
         }
 
-        yolo_job_t job = { .rgb = rgbb.buf, .rgb_cap = rgbb.cap, .nv12_fd = nv12_fd,
-                           .annot_nv12 = annot_copy,
-                           .w = w, .h = h, .seq = seq, .capture_ms = capture_ms, .deliver_ms = deliver_ms,
-                           .decode_start_us = decode_start_us, .decode_end_us = yolo_now_us(),
-                           .metadata = metadata };
-        if (yolo_queue_push(&job) != 0)
-            yolo_job_abandon(&job);   /* 停池/退出中：claim 摘除 + rgb 回池 */
+        /* 无帧内容或格式不支持：摘 claim（解码未发生，计 infer_dropped） */
+        frame_ring_lock(ring);
+        frame_ring_infer_unclaim_locked(ring, s, 0);
+        frame_ring_unlock(ring);
         pthread_mutex_unlock(&g_producer_mutex);
-
-        /* The frame condition variable supplies pacing; no extra interval. */
+        if (supported) {
+            /* YUYV 需要 RGA 直接吃 4:2:2，当前通路只实现 NV12 */
+            LOG_ERROR("yolo: 取流只支持 MJPEG/NV12 输入，当前帧格式不支持");
+            atomic_store(&g_yolo.decoder_ready, 0);
+            LOG_ERROR("yolo: MJPEG capture requires a working JPEG decoder; stopping");
+            app->fatal = 1;
+            app->running = 0;
+            break;
+        }
+        usleep(1000);   /* 坏帧退避，避免忙转 */
     }
     if (app->running) app->fatal = 1;
     app->running = 0;
-    jpeg_decoder_close(decoder);
     watchdog_unregister_self("yolo");
     return NULL;
 }

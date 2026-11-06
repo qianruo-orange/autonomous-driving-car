@@ -119,6 +119,11 @@ static const module_t g_modules[] = {
     /* SCHED_DEADLINE 要求亲和性覆盖整个 root domain，故用 CPU_ALL；绑核与
        deadline 在内核里互斥（__check_sched_dl_overflow 直接返回 EPERM）。 */
     {"video",           video_stream_init,  video_stream_shutdown,  video_stream_task,  SCHED_FIFO,  15,       CPU_ALL,    2000,      34000,       34000},
+    /* 解码双线程（yolo 模块各开一个 libjpeg 实例）：固定绑 heavy 组前两核，
+       把解码从采集线程里剥出来并行。本内核 DL 与收窄亲和性互斥（实测先绑后 DL
+       得 EPERM、先 DL 后绑得 EBUSY、cpuset 收窄同样 EPERM），所以这里用 FIFO，
+       回退优先级即最终生效优先级。 */
+    {"decode",          NULL,               NULL,                   NULL,               SCHED_FIFO,  15,       CPU_BIG_PAIR},
     /* YOLO 为必要模块：初始化失败即回滚启动。 */
     {"yolo",            rknn_yolo_init,     rknn_yolo_destroy,      rknn_yolo_task,     SCHED_FIFO,  10,       CPU_BIG},
     {"yolo_infer",      NULL,               NULL,                   NULL,               SCHED_FIFO,  12,       CPU_BIG},

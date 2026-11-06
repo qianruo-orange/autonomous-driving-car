@@ -12,7 +12,7 @@ The frame ring publishes two topics under its mutex:
 
 `FRAME_TOPIC_DISPLAYED` was removed with the encoder stage. Rendering still advances `display_seq`, which is what lets the maintain pass return the RGB buffer of skipped and superseded slots to the pool.
 
-Decode hands each RGB job to the bounded inference queue and wakes eligible workers. Workers publish results to the result queue, which wakes the renderer. These queues preserve backpressure and the renderer's latest-result policy. No broker thread or additional image copy is needed for notification.
+Decoding is a separate stage with two worker threads, each owning a `jpeg_decompress_struct` and an 8-slot NV12 dma-buf ring. The capture thread only claims the next frame and submits it to a two-deep decode queue; it waits for room before claiming, so the claim window never blocks inside the queue. Decode threads hand each finished job to the bounded inference queue and wake eligible workers. Workers publish results to the result queue, which wakes the renderer. These queues preserve backpressure and the renderer's latest-result policy. No broker thread or additional image copy is needed for notification.
 
 Each subscriber tracks a frame sequence and cancellation generation. Checking availability and waiting use the same mutex as publication, so a frame published before a wait is still observed. Capture wakes capture subscribers; the recording thread waits on the same topic and copies each frame in sequence. Live viewers take the newest frame by copying it under the ring lock, so a slow client never pins a slot.
 

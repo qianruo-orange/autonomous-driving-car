@@ -2,22 +2,30 @@
 
 本文记录 2026-11-05 的延迟优化过程、每一项的实测结论，以及当前基线。所有数字来自板端日志与 `/api/video/stats`，不是估算。
 
+2026-11-06 更新：JPEG 软解拆成两个线程（各持一个 libjpeg 实例，FIFO 15 绑 cpu4、5）。解码从采集线程移出后生产速率追平相机，管线会永久积压，端到端一度升到 169 ms；加入在途上限 `YOLO_MAX_INFLIGHT = 2` 后回到 80 ms，`infer_dropped` 保持 0、解码 29 fps。下文 2026-11-05 的 44 ms 是单线程解码时代的测值，不再代表当前构建。
+
 ## 1. 当前基线
 
 ```
-端到端 processing_age : 44 ms（stdev <1）
+端到端 processing_age : 80 ms（max 126）
 采集                   : 1280×720 MJPEG 30 fps，丢帧 0
+解码                   : 2 线程 × 约 5 ms/帧（并行，绑 cpu4、5）
 模型                   : YOLO26n 512×512，INT8 类别 + FP16 框
 NPU                    : 1188 MHz，Core0/Core1 各一个 worker
 CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /api/cpu_freq 控制）
+整机 CPU               : 约 4 %（60 秒平均）
 ```
 
-46 ms 的构成：
+80 ms 的构成（实测 `yolo timing`）：
 
 | 部分 | 耗时 | 说明 |
 |---|---:|---|
 | 相机侧 | 33 ms | 驱动时间戳 → DQBUF 返回，UVC 固有的一帧延迟 |
-| 我们的流水线 | 11 ms | decode 1 + RGA letterbox 1 + run 8 + post 1 |
+| 解码 | 5 ms | libjpeg-turbo 软解到 NV12，两个线程并行 |
+| RGA letterbox | 1–2 ms | NV12 → RGB、缩放、居中 |
+| NPU run | 9–10 ms | 512×512，双核各一个 worker |
+| 后处理 | 1 ms | 阈值 + top-K + 类内 NMS |
+| 渲染节拍 | ≤33 ms | 画框流按 30 fps 提交，最多等一个帧周期 |
 
 ## 2. 测量方法
 
@@ -27,7 +35,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 |---|---|
 | `capture_to_decode` | 帧时间戳 → 开始解码（含相机侧延迟） |
 | `deliver_to_decode` | DQBUF 返回 → 开始解码（应用自身排队） |
-| `decode` | libjpeg-turbo 软解 + NV12→RGB |
+| `decode` | 投递到解码线程 → 解出 NV12 的耗时（含等解码线程的排队，CSC 由 RGA 做） |
 | `resize` | letterbox 缩放到模型输入 |
 | `inputs` / `run` / `outputs` | NPU 三段 |
 | `post` | 候选筛选 + NMS |

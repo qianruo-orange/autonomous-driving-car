@@ -13,7 +13,7 @@
 #define CPU_AFFINITY_ROOT "/sys/devices/system/cpu"
 
 static pthread_once_t affinity_once = PTHREAD_ONCE_INIT;
-static cpu_set_t heavy_set, light_set, all_set;
+static cpu_set_t heavy_set, light_set, big_pair_set, all_set;
 static int affinity_ready, affinity_error;
 
 /* Only initially permitted CPUs participate. Do not infer core numbers from
@@ -84,6 +84,18 @@ static void describe_set(const cpu_set_t *set, char *text, size_t size)
     }
 }
 
+/* 解码对的固定两核：heavy 组里编号最小的两个。heavy 不足两核时整组退让，
+ * 保证解码线程不会因为分组缺失而失去亲和性。 */
+static void build_big_pair(void)
+{
+    big_pair_set = heavy_set;
+    int kept = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (!CPU_ISSET(cpu, &heavy_set)) continue;
+        if (++kept > 2) CPU_CLR(cpu, &big_pair_set);
+    }
+}
+
 static void initialize_affinity(void)
 {
     cpu_set_t allowed;
@@ -96,11 +108,14 @@ static void initialize_affinity(void)
     }
     const char *source = detect_groups(CPU_AFFINITY_ROOT, &allowed, &heavy_set, &light_set);
     all_set = allowed;
+    build_big_pair();
     affinity_ready = 1;
-    char heavy[4096], light[4096];
+    char heavy[4096], light[4096], pair[256];
     describe_set(&heavy_set, heavy, sizeof(heavy));
     describe_set(&light_set, light, sizeof(light));
-    LOG_INFO("cpu: heavy CPUs [%s], light CPUs [%s], detected by %s", heavy, light, source);
+    describe_set(&big_pair_set, pair, sizeof(pair));
+    LOG_INFO("cpu: heavy CPUs [%s], light CPUs [%s], decode pair [%s], detected by %s",
+             heavy, light, pair, source);
 }
 
 int cpu_affinity_init(void)
@@ -113,11 +128,13 @@ int cpu_affinity_init(void)
 
 int cpu_affinity_get(cpu_group_t group, cpu_set_t *set)
 {
-    if (!set || (group != CPU_LITTLE && group != CPU_BIG && group != CPU_ALL)) {
+    if (!set || (group != CPU_LITTLE && group != CPU_BIG && group != CPU_BIG_PAIR && group != CPU_ALL)) {
         errno = EINVAL;
         return -1;
     }
     if (cpu_affinity_init()) return -1;
-    *set = group == CPU_BIG ? heavy_set : group == CPU_LITTLE ? light_set : all_set;
+    *set = group == CPU_BIG ? heavy_set
+         : group == CPU_BIG_PAIR ? big_pair_set
+         : group == CPU_LITTLE ? light_set : all_set;
     return 0;
 }
