@@ -102,3 +102,26 @@ a:hover{color:var(--accent-hover)}
 /* 主题/语言按钮一律留在顶栏内，避免 position:fixed 在窄窗口下压住导航按钮 */
 .top-bar .theme-btn,.top-bar .pwr{position:static;right:auto;top:auto;margin:0;flex:0 0 auto}
 
+
+/* ===== design tokens v1 ===== */
+:root{
+  --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;
+  --r-sm:8px;--r-md:10px;--r-lg:16px;
+  --ctl-h:36px;
+  --f11:11px;--f12:12px;--f13:13px;--f14:14px;--f16:16px;--f20:20px;
+  --ok:#4cc9a0;--warn:#e9bd63;--danger:#e0556a;
+}
+/* 表单控件统一高度，避免 33/36/38 混排 */
+.row input,.row select,.field-unit input,.field-unit select,
+.net-field>input,.net-field>select,.nt-input-group input,.nt-input-group select,
+.codex-run-field select{height:var(--ctl-h);box-sizing:border-box}
+/* 卡片内的操作按钮统一高度 */
+.card-save,.nt-go{height:30px;box-sizing:border-box;line-height:1}
+/* 禁用态与焦点环统一 */
+button:disabled,select:disabled,input:disabled{opacity:.45;cursor:not-allowed}
+input:focus-visible,select:focus-visible,button:focus-visible{
+  outline:2px solid rgba(94,194,240,.45);outline-offset:1px}
+/* 所有数值使用等宽数字，纵向不跳动 */
+.val,.card-status,.ip-cur,.codex-meter-val,.used,.val-row,.core-freq{font-variant-numeric:tabular-nums}
+/* 进度条统一 8px 高、4px 圆角（额度条单独 12px 保持不变） */
+.bar,.core-bar{height:8px;border-radius:4px}
