@@ -94,7 +94,6 @@
   align-items: center;
   gap: var(--sp-3);
   padding: 22px 14px 12px;
-  background: linear-gradient(to top, rgba(4, 10, 18, .9) 0%, rgba(4, 10, 18, .55) 55%, rgba(4, 10, 18, 0) 100%);
   color: #eef4fb;
   font-size: var(--fs-12);
   pointer-events: none;
