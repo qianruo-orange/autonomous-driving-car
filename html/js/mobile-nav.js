@@ -8,8 +8,10 @@
   'use strict';
 
   var ICONS = {
-    car: '<path d="M4 16.5h16"/><path d="M6 16.5l1.5-5A2 2 0 0 1 9.4 10h5.2a2 2 0 0 1 1.9 1.5l1.5 5"/>' +
-         '<circle cx="7.5" cy="18.2" r="1.7"/><circle cx="16.5" cy="18.2" r="1.7"/>',
+    car: '<path d="M12 3.2v2.3"/><circle cx="12" cy="2.6" r="0.6"/>' +
+         '<rect x="4" y="5.5" width="16" height="12.5" rx="2.6"/>' +
+         '<circle cx="9" cy="11" r="1.4"/><circle cx="15" cy="11" r="1.4"/>' +
+         '<path d="M8.5 15.5h7"/>',
     pulse: '<path d="M3 12h3.5l2.5-7 4 14 2.5-7H21"/>',
     sliders: '<path d="M4 7h9M17.5 7H20M4 17h2.5M11 17h9"/>' +
              '<circle cx="15" cy="7" r="2.3"/><circle cx="6.5" cy="17" r="2.3"/>',
