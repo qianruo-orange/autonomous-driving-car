@@ -427,6 +427,30 @@ int bt_device_action(const char *address, const char *action)
     if (!address || strlen(address) != 17) { set_err("invalid device address"); return -1; }
     if (!action) { set_err("missing action"); return -1; }
 
+    /* 先看 BlueZ 里的真实状态：已满足的动作直接返回，未发现的设备快速失败。
+     * 否则对已配对设备再执行 pair 会一直等到 bluetoothctl 超时（35s），
+     * 前端只能干等。 */
+    int present = 0, paired = 0, connected = 0, trusted = 0;
+    if (device_state(address, &present, &paired, &connected, &trusted) == 0) {
+        if (!strcmp(action, "pair")) {
+            if (paired) return 0;
+        } else if (!strcmp(action, "connect")) {
+            if (connected) return 0;
+        } else if (!strcmp(action, "disconnect")) {
+            if (!connected) return 0;
+        } else if (!strcmp(action, "trust")) {
+            if (trusted) return 0;
+        } else if (!strcmp(action, "untrust")) {
+            if (!trusted) return 0;
+        } else if (!strcmp(action, "remove")) {
+            if (!present) return 0;
+        }
+        if (!present) {
+            set_err("%s: device %s not in BlueZ cache — scan first", action, address);
+            return -1;
+        }
+    }
+
     char out[2048] = "";
     int rc;
 
@@ -438,7 +462,7 @@ int bt_device_action(const char *address, const char *action)
         rc = run_bluetoothctl(args, out, sizeof(out));
     } else if (!strcmp(action, "pair") || !strcmp(action, "connect") ||
                !strcmp(action, "disconnect")) {
-        const char *args[] = { "bluetoothctl", "--timeout", "35", action, address, NULL };
+        const char *args[] = { "bluetoothctl", "--timeout", "20", action, address, NULL };
         rc = run_bluetoothctl(args, out, sizeof(out));
     } else {
         set_err("unknown action '%s'", action);
@@ -447,7 +471,6 @@ int bt_device_action(const char *address, const char *action)
 
     /* bluetoothctl 的退出码和文案都不足以判定结果（"Pairing successful" 之后
      * 仍可能因对端拒绝而没有真正配对），这里以 BlueZ 的实际属性为准。 */
-    int present = 0, paired = 0, connected = 0, trusted = 0;
     int state_ok = device_state(address, &present, &paired, &connected, &trusted) == 0;
 
     int ok;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+﻿// SPDX-License-Identifier: GPL-3.0-or-later
 /* bt-config.js — 配置页「蓝牙连接」卡片：适配器开关、扫描、下拉选择设备后配对/连接/断开/忘记。 */
 (function () {
   'use strict';
@@ -16,7 +16,10 @@
   var pairBtn = document.getElementById('bt_pairforget');
 
   var timer = null;
-  var busy = false;
+  var busy = false;        /* 适配器级操作（开关/可被发现/扫描），会禁用这些控件 */
+  var actionBusy = false;  /* 设备级动作（配对/连接），只禁用两个设备按钮 */
+  var holdUntil = 0;       /* 用户刚操作过，短暂不接受服务端回写的开关状态 */
+  var pollSeq = 0;
   var scanning = false;
   var devices = [];
   var selected = '';
@@ -67,7 +70,7 @@
   /* 两个按钮按选中设备的状态切换语义：连接/断开、配对/忘记 */
   function renderButtons(st) {
     var d = current();
-    var avail = !!(st && st.available && st.powered && d) && !busy;
+    var avail = !!(st && st.available && st.powered && d) && !busy && !actionBusy;
     if (connBtn) {
       connBtn.textContent = (d && d.connected) ? t('断开') : t('连接');
       connBtn.disabled = !avail;
@@ -105,8 +108,17 @@
 
   function applyState(st) {
     var avail = !!(st && st.available);
-    if (powerBox) { powerBox.checked = !!(st && st.powered); powerBox.disabled = !avail || busy; }
-    if (discBox) { discBox.checked = !!(st && st.discoverable); discBox.disabled = !avail || busy; }
+    /* 开关状态在用户操作后 1.5s 内不跟服务端同步：轮询可能带回操作前的旧值，
+       会造成"点了又跳回去"的闪回。 */
+    var canSync = Date.now() > holdUntil;
+    if (powerBox) {
+      if (canSync) powerBox.checked = !!(st && st.powered);
+      powerBox.disabled = !avail || busy;
+    }
+    if (discBox) {
+      if (canSync) discBox.checked = !!(st && st.discoverable);
+      discBox.disabled = !avail || busy;
+    }
     if (scanBtn) {
       scanning = !!(st && st.discovering);
       scanBtn.textContent = scanning ? t('停止扫描') : t('扫描');
@@ -123,11 +135,13 @@
 
   async function refresh(force) {
     if (busy && !force) return;
+    var seq = ++pollSeq;
     try {
       var rs = await Promise.all([
         fetch('/api/bluetooth/status').then(function (r) { return r.json(); }),
         fetch('/api/bluetooth/devices').then(function (r) { return r.json(); })
       ]);
+      if (seq !== pollSeq) return;   /* 更新的轮询已发起，丢弃这次的旧响应 */
       var st = rs[0], list = rs[1];
       devices = (list && list.devices) || [];
       var sig = signature(st);
@@ -166,8 +180,8 @@
   }
 
   async function act(address, action) {
-    if (!address || busy) return;
-    busy = true;
+    if (!address || busy || actionBusy) return;
+    actionBusy = true;
     setStatus(t('正在执行…'), '');
     renderButtons({available: true, powered: true});
     try {
@@ -191,7 +205,7 @@
     } catch (e) {
       setStatus(t('操作失败') + ': ' + e.message, 'err');
     } finally {
-      busy = false;
+      actionBusy = false;
       await refresh(true);
     }
   }
@@ -212,6 +226,7 @@
 
   if (powerBox) powerBox.addEventListener('change', async function () {
     busy = true;
+    holdUntil = Date.now() + 1500;
     try {
       await post('/api/bluetooth/adapter', {powered: powerBox.checked ? 'on' : 'off'});
       setStatus(powerBox.checked ? t('蓝牙已开启') : t('蓝牙已关闭'), 'ok');
@@ -223,6 +238,7 @@
 
   if (discBox) discBox.addEventListener('change', async function () {
     busy = true;
+    holdUntil = Date.now() + 1500;
     try {
       await post('/api/bluetooth/adapter', {discoverable: discBox.checked ? 'on' : 'off'});
       setStatus(discBox.checked ? t('已设为可被发现') : t('已取消可被发现'), 'ok');

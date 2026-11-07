@@ -1,4 +1,4 @@
-# 板载蓝牙（AIC8800D80 → BlueZ）
+﻿# 板载蓝牙（AIC8800D80 → BlueZ）
 
 ROCK 4D 上的 WiFi/蓝牙是同一颗 **AICSemi AIC8800D80**（USB，`1a40:0101` 之后的 `a69c:8d81`）。
 厂商内核驱动 `aic_btusb` 默认编成 **Android bluedroid 模式**：只向用户态暴露
@@ -69,3 +69,43 @@ sudo systemctl enable --now bluetooth
   BLE 传感器/耳机这类 JustWorks 设备正常。
 - 扫描期间 `bluetoothd` 会持续占用 HCI；本工程只在用户点「扫描」时开启。
 - 蓝牙与 WiFi 共用一颗芯片，2.4G 频段高负载时相互影响（固件 coexistence 官方即如此）。
+
+## 2.5 蓝牙音频端点（A2DP / HFP）
+
+AirPods、蓝牙耳机/音箱属于 BR/EDR 音频设备：配对完成后 BlueZ 必须立刻建立
+A2DP（或 HFP）连接。系统里若没有音频守护进程向 BlueZ 注册 `MediaEndpoint`，
+`bluetoothd` 会报
+
+```
+btd_service_connect() a2dp-sink profile connect failed ... Protocol not available
+```
+
+对端随即断开，bond 来不及落盘，表现就是"配对不上"（`bluetoothctl pair` 当下会
+打印 `Pairing successful`，但设备很快从缓存消失、`/var/lib/bluetooth/<adapter>/`
+下没有设备目录）。
+
+安装（无桌面会话也能用，PulseAudio 系统模式）：
+
+```bash
+sudo ./install-bt-audio.sh
+```
+
+它会装 `pulseaudio` + `pulseaudio-module-bluetooth`，在 `/etc/pulse/system.pa` 里
+启用 `module-bluetooth-discover`，并以 `pulseaudio-system.service` 常驻。成功后
+`bluetoothctl show` 的 UUID 里会出现：
+
+```
+Audio Source (0000110a)  Audio Sink (0000110b)
+Headset (00001108)       Handsfree Audio Gateway (0000111f)
+```
+
+验证：
+
+```bash
+bluetoothctl show | grep -iE "Audio Sink|Audio Source"
+journalctl -u bluetooth | grep -i "Endpoint registered"
+```
+
+> 之前尝试过 PipeWire + WirePlumber（`libspa-0.2-bluetooth`）：WirePlumber 的
+> `monitor.bluez` 脚本能加载，但始终没有向 BlueZ 注册端点，`busctl tree org.bluez`
+> 里看不到 `/MediaEndpoint/*`，因此改用 PulseAudio 系统模式。
