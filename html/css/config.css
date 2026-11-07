@@ -168,7 +168,9 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 
 /* CPU 频率卡标题栏：左侧标题（无左边线，因为卡片自带分区色）+ 中间当前值 + 右侧保存 */
 #card_cpufreq>h3>span:first-child{border-left:0;padding-left:0}
-#card_cpufreq>h3 .ip-cur{padding-left:2px}
+/* 空状态不占 flex 空间，避免标题与当前值之间被撑出一大段空白 */
+#card_cpufreq>h3 .card-status:empty{display:none}
+#card_cpufreq>h3 .ip-cur{padding-left:2px;margin-top:0}
 
 /* ===== 窄屏（≤720） =====
    配置页字段本身已经是单列纵向，这里只做"手机尺寸下的收边"：
