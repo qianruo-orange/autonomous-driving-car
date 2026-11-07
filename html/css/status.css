@@ -1,67 +1,58 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* status.css — 系统状态页（/status）：四张卡片 2×2，铺满视口且等高。
-   度量控件（进度条、核占用、内存/磁盘）的样式在 monitor.css，
-   这里只负责这一页的栅格。 */
-/* 这一页内容量本来就轻：不硬撑满屏，卡片按内容取自然高度，
-   整块在视口里垂直居中，空白上下均分，比"内容顶在上、底下一大片空"更稳 */
+/* status.css — 系统状态页（/status）：四组度量（CPU/加速器/存储/网络）合并进
+   一张卡片，内部 2×2 排布。度量控件（进度条、核占用、内存/磁盘）的样式在
+   monitor.css，这里只管这一页的栅格。 */
+/* 内容量轻：卡片按内容取自然高度，整块在视口里垂直居中，不铺满全屏。 */
 .grid {
   justify-content: center;
 }
-.status-page-grid {
+
+/* 单张容器卡内的 2×2 栅格 */
+.status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  grid-auto-rows: minmax(0, auto);
   gap: var(--sp-4);
-  flex: 0 1 auto;
 }
 
-/* 桌面/横屏（>900px）：2×2 卡片铺满视口高度、两行等高撑开，
-   消除"内容顶在上、底部一大片黑空"的观感。窄屏仍按自然高度纵向排布，
-   下方媒体查询不受影响。 */
-@media (min-width: 901px) {
-  body {
-    display: flex;
-    flex-direction: column;
-  }
-  .grid {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-  .status-page-grid {
-    flex: 1 1 auto;
-    width: 100%;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
-  }
-}
-.status-card {
+/* 每个度量组：标题 + 度量区 */
+.status-metric {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-4);
+  gap: var(--sp-2);
   min-height: 0;
 }
-/* 标题固定在顶，度量在剩余空间里垂直居中：卡片被拉高时不会散架 */
-.status-body {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--sp-3);
-  min-height: 0;
-}
-.status-card > h3 { margin-bottom: var(--sp-2); }
-
-/* 状态页的条更高更疏：卡片被拉满一屏时，8 根占位条要有"仪表"的存在感 */
-.status-card .core-bar { height: 9px; }
-.status-card .core-bars { gap: 16px 18px; }
-.status-body .sec + .sec { margin-top: 0; }
-
-/* CPU 卡：核占用是主角，标题行右侧只放温度 */
-.status-cpu > h3 {
+/* 组标题沿用卡片标题样式（左 accent 竖线），但 h3 不再是 .card 的直接子级 */
+.status-metric > h3 {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
+  min-height: var(--ctl-h);
+  margin: 0 0 var(--sp-2);
+  padding-left: 10px;
+  border-left: 3px solid var(--section-mark, var(--accent));
+  border-radius: 0 4px 4px 0;
+  font-size: var(--fs-14);
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--text-strong);
+}
+
+/* 度量区纵向排布 */
+.status-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-height: 0;
+}
+
+/* 状态页的条更高更疏 */
+.status-metric .core-bar { height: 9px; }
+.status-metric .core-bars { gap: 16px 18px; }
+.status-body .sec + .sec { margin-top: 0; }
+
+/* CPU 组：核占用是主角，标题行右侧只放温度 */
+.status-cpu > h3 {
+  justify-content: space-between;
 }
 .status-cpu .cpu-temp {
   font-size: var(--fs-20);
@@ -73,32 +64,26 @@
   margin-top: 2px;
 }
 
-/* 内存与磁盘并排：卡够宽，两列比竖排更省高度、也不浪费横向空间 */
-.status-page-grid .duo {
+/* 内存与磁盘并排：组够宽，两列比竖排更省高度 */
+.status-grid .duo {
   flex-direction: row;
   gap: var(--sp-4);
 }
-.status-page-grid .duo > .half { flex: 1 1 0; width: auto; }
+.status-grid .duo > .half { flex: 1 1 0; width: auto; }
 
-/* 卡片内容不足时靠上排布，别被 1fr 拉散 */
+/* 窄屏：单列排布、自然高度，靠滚动承载 */
 @media (max-width: 900px) {
-  .status-page-grid { grid-template-columns: minmax(0, 1fr); grid-auto-rows: auto; }
+  .status-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* 窄屏：8 个核排 4 列时每格只有 ~90px，"Core0 1%"和进度条挤在一起，
-   降到两列让每根条都能看清。选择器比 .core-bars[data-cols] 更具体，
-   所以能盖掉 JS 写的列数，不用 !important。 */
+/* 窄屏：8 个核排两列，让每根条都能看清；选择器比 .core-bars[data-cols] 更具体 */
 @media (max-width: 720px) {
-  .status-page-grid { gap: var(--sp-3); }
-  .status-page-grid .status-card {
-    padding: 14px;
-    gap: var(--sp-2);
-  }
-  .status-page-grid .core-bars {
+  .status-grid { gap: var(--sp-3); }
+  .status-metric { gap: var(--sp-2); }
+  .status-metric .core-bars {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px 14px;
   }
   .status-cpu .cpu-temp { font-size: var(--fs-16); }
-  /* 内存/磁盘在窄卡里仍是两列，但要允许各自收缩 */
-  .status-page-grid .duo { gap: var(--sp-3); }
+  .status-grid .duo { gap: var(--sp-3); }
 }

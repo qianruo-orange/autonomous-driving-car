@@ -27,33 +27,35 @@
 </div>
 
 <div class="grid">
-  <div class="status-page-grid">
-    <div class="card status-card status-cpu"><h3>CPU <span class="cpu-temp" id="temp">-°C</span></h3>
-      <div class="status-body"><div class="core-bars" id="cpu_cores"></div></div>
-    </div>
-    <div class="card status-card">
-      <h3><span data-i18n="加速器">加速器</span></h3>
-      <div class="status-body">
-        <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
-        <div class="sec"><h4>RGA</h4><div class="core-bars" id="rga_cores"></div></div>
+  <div class="card status-card">
+    <div class="status-grid">
+      <div class="status-metric status-cpu"><h3>CPU <span class="cpu-temp" id="temp">-°C</span></h3>
+        <div class="status-body"><div class="core-bars" id="cpu_cores"></div></div>
       </div>
-    </div>
-    <div class="card status-card">
-      <h3><span data-i18n="存储">存储</span></h3>
-      <div class="status-body">
-        <div class="sec duo">
-          <div class="half"><h4><span data-i18n="内存">内存</span><b id="mem_val">--%</b></h4>
-          <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div></div>
-          <div class="used"><b id="mem_used">-</b> / <span id="mem_total">-</span></div></div>
-          <div class="half"><h4><span data-i18n="磁盘">磁盘</span><b id="disk_val">--%</b></h4>
-          <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div></div>
-          <div class="used"><b id="disk_used">-</b> / <span id="disk_total">-</span></div></div>
+      <div class="status-metric">
+        <h3><span data-i18n="加速器">加速器</span></h3>
+        <div class="status-body">
+          <div class="sec"><h4>NPU</h4><div class="core-bars" id="npu_cores"></div></div>
+          <div class="sec"><h4>RGA</h4><div class="core-bars" id="rga_cores"></div></div>
         </div>
       </div>
-    </div>
-    <div class="card status-card">
-      <h3 data-i18n="网络速度">网络速度</h3>
-      <div class="status-body"><div id="net_speed"></div></div>
+      <div class="status-metric">
+        <h3><span data-i18n="存储">存储</span></h3>
+        <div class="status-body">
+          <div class="sec duo">
+            <div class="half"><h4><span data-i18n="内存">内存</span><b id="mem_val">--%</b></h4>
+            <div class="bar"><div class="blue" id="mem_bar" style="width:0%"></div></div>
+            <div class="used"><b id="mem_used">-</b> / <span id="mem_total">-</span></div></div>
+            <div class="half"><h4><span data-i18n="磁盘">磁盘</span><b id="disk_val">--%</b></h4>
+            <div class="bar"><div class="yellow" id="disk_bar" style="width:0%"></div></div>
+            <div class="used"><b id="disk_used">-</b> / <span id="disk_total">-</span></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="status-metric">
+        <h3 data-i18n="网络速度">网络速度</h3>
+        <div class="status-body"><div id="net_speed"></div></div>
+      </div>
     </div>
   </div>
 </div>
