@@ -183,11 +183,14 @@
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-/* 逐核频率：第三行，比标签更弱 */
+/* 逐核频率：第三行，比标签更弱。
+   min-height 让 NPU/RGA 的空占位频率行也能撑满一行，
+   使两卡每个核块等高、各行（Core0-3↔NPU、Core4-7↔RGA）水平对齐 */
 .core-freq {
   margin-top: 3px;
   font-size: var(--fs-11);
   line-height: 1.2;
+  min-height: 1.2em;
   color: var(--muted-2);
   white-space: nowrap;
   overflow: hidden;

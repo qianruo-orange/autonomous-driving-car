@@ -485,7 +485,9 @@
     for (var i = 0; i < names.length; i++)
       h += '<div><div class="core-label"><span>' + names[i] + '</span><span id="' + id + '_pct' + i + '">0%</span></div>' +
            '<div class="core-bar"><div id="' + id + '_bar' + i + '" style="width:0%"></div></div>' +
-           (withFreq ? '<div class="core-freq" id="' + id + '_freq' + i + '">-</div>' : '') + '</div>';
+           /* 频率行始终渲染：CPU 显示实时频率，NPU/RGA 无逐核频率则留空占位，
+              靠 CSS 的 min-height 撑出同等高度，保证两卡各行（Core0-3↔NPU、Core4-7↔RGA）水平对齐 */
+           '<div class="core-freq" id="' + id + '_freq' + i + '">' + (withFreq ? '-' : '') + '</div></div>';
     var el = document.getElementById(id);
     el.innerHTML = h;
     /* 列数随核数自适应（最多 4 列），列宽由 CSS 的 1fr 均分铺满容器，

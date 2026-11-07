@@ -41,7 +41,10 @@
 /* 状态页的条更高更疏 */
 .status-metric .core-bar { height: 9px; }
 .status-metric .core-bars { gap: 16px 18px; }
-.status-metric .sec + .sec { margin-top: var(--sp-3); }
+/* NPU→RGA 两节的行间距对齐 CPU 卡两行核的行间距(16px)：
+   .status-metric 的 flex gap(12px) + 本 margin(4px) = 16px，
+   两卡各行才能水平对齐 */
+.status-metric .sec + .sec { margin-top: var(--sp-1); }
 
 /* 内存与磁盘并排：卡够宽，两列比竖排更省高度 */
 .status-grid .duo {
