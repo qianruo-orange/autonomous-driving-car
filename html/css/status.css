@@ -9,24 +9,24 @@
   justify-content: flex-start;
 }
 
-/* ===== 标签栏 ===== */
+/* ===== 标签栏：四个标签块等宽横排，均匀铺满横条 ===== */
 .status-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding-bottom: var(--sp-3);
-  margin-bottom: var(--sp-3);
-  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
 }
 
 .status-tab {
-  display: inline-flex;
+  display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 7px 16px;
-  border: 1px solid transparent;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
   border-radius: var(--r-md);
-  background: transparent;
+  background: var(--btn-bg);
   color: var(--muted);
   font: inherit;
   font-size: var(--fs-14);
@@ -38,13 +38,13 @@
 
 .status-tab:hover {
   color: var(--text);
-  background: var(--btn-bg);
+  border-color: var(--border-strong);
 }
 
 .status-tab.is-active {
   color: var(--accent);
   background: var(--accent-weak);
-  border-color: var(--border-strong);
+  border-color: var(--accent);
 }
 
 /* CPU 温度显示在标签内 */
@@ -75,8 +75,12 @@
 }
 .status-panel .duo > .half { flex: 1 1 0; width: auto; }
 
-/* 窄屏：8 个核排两列，让每根条都能看清 */
+/* 窄屏：8 个核排两列，让每根条都能看清；标签块 2×2 */
 @media (max-width: 720px) {
+  .status-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-2);
+  }
   .status-panel .core-bars {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px 14px;
