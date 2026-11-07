@@ -538,7 +538,7 @@ static void file_bulk(file_job_t *job,int clear)
         logs+recordings+results,logs,recordings,results);file_response(job,200,"application/json",NULL,json,(size_t)n);return;}
     char stamp[24], pack_name[96];
     local_stamp(stamp,sizeof(stamp));
-    snprintf(pack_name,sizeof(pack_name),"autonomous-driving-car_files_%s.zip",stamp);
+    snprintf(pack_name,sizeof(pack_name),"intelligent-robot_files_%s.zip",stamp);
     file_send_archive(job,output,"application/zip",pack_name);
 }
 

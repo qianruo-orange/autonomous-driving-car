@@ -18,7 +18,7 @@
 
 #include "http/http_internal.h"
 
-#define CODEX_ROOT   "/opt/autonomous-driving-car"
+#define CODEX_ROOT   "/opt/intelligent-robot"
 #define CODEX_BRIDGE CODEX_ROOT "/bin/codex-bridge"
 #define CODEX_OUT    CODEX_ROOT "/.codex/out"
 #define CODEX_INBOX  CODEX_ROOT "/.codex/inbox"

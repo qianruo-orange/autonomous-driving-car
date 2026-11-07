@@ -46,7 +46,7 @@
 
 #define CLI_USER        "qianruo"
 #define CLI_HOME        "/home/qianruo"
-#define DEFAULT_ROOT    "/opt/autonomous-driving-car"
+#define DEFAULT_ROOT    "/opt/intelligent-robot"
 #define FORCED_SANDBOX  "danger-full-access"
 #define CLI_PATH_DEF    "/home/qianruo/.local/bin/codex"
 #define CLI_PATH_ENV    "/usr/local/bin:/usr/bin:/bin:/home/qianruo/.local/bin"
@@ -1792,7 +1792,7 @@ static jval *app_server_call(const char *method, jval *params, int timeout_ms,
     sb_adds(&req,
             "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"initialize\", "
             "\"params\": {\"clientInfo\": {\"name\": "
-            "\"autonomous-driving-car\", \"title\": \"Board\", "
+            "\"intelligent-robot\", \"title\": \"Board\", "
             "\"version\": \"1.0.0\"}}}\n");
     if (write(as.in_fd, req.p, req.n) < 0) {
         /* the CLI died immediately; reported by the handshake below */
@@ -2207,7 +2207,7 @@ void config_toml(jval *s)
 {
     sb_t o;
     sb_init(&o);
-    sb_adds(&o, "# Managed by the autonomous-driving-car web UI.\n"
+    sb_adds(&o, "# Managed by the intelligent-robot web UI.\n"
                 "approval_policy = \"never\"\n"
                 "sandbox_mode = \"");
     sb_adds(&o, FORCED_SANDBOX);

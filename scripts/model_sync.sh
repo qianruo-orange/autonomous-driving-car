@@ -257,7 +257,7 @@ install_config() {
 
 command=${1:-}; [[ -n $command ]] || fail 'A command is required'
 shift
-project=''; deployment=/opt/autonomous-driving-car; platform=''; model=
+project=''; deployment=/opt/intelligent-robot; platform=''; model=
 while (($#)); do
     [[ $# -ge 2 ]] || fail "Missing value for $1"
     case $1 in

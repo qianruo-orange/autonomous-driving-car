@@ -1,7 +1,7 @@
 # 工程功能验证报告
 
 验证时间：2026-11-01 晚至 2026-11-02 凌晨，Asia/Shanghai。
-设备：Radxa ROCK 4D，实际部署服务 `autonomous-driving-car.service`，USB 相机 `/dev/video1`，RK3576 NPU。
+设备：Radxa ROCK 4D，实际部署服务 `intelligent-robot.service`，USB 相机 `/dev/video1`，RK3576 NPU。
 基线为 `baf11a5`，随后加入本报告记录的上传及热重载修复。使用项目脚本完成 Release 构建与部署。
 
 ## 结论与覆盖

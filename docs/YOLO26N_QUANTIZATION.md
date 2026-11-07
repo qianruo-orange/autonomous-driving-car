@@ -14,7 +14,7 @@
 > 第 1–13 节是 11 月 2 日单输出方案的历史记录，第 14–17 节记录后续迁移（双输出、全 INT8 → FP16 框、512 输入），
 > 延迟剖析见 [LATENCY_PROFILE.md](LATENCY_PROFILE.md)。
 
-报告日期：2026 年 11 月 2 日（Asia/Shanghai）。设备：Radxa ROCK 4D / RK3576。应用：autonomous-driving-car。
+报告日期：2026 年 11 月 2 日（Asia/Shanghai）。设备：Radxa ROCK 4D / RK3576。应用：intelligent-robot。
 
 本文记录本次已完成的模型转换、校准、板端精度验证与问题定位，并说明去掉模型特征输出后的交付方案。数据来自本机固定验证集和保存的转换产物；不同阶段的模型和测试结果分别标明。
 
@@ -325,8 +325,8 @@ mAP50 提升 2.3 个点，mAP50–95 下降 3.15 个点：one2one 头在高 IoU 
 回滚只需重新产出一份单输出模型（流程见第 11 节）并替换 `config/yolo26.rknn`：
 
 ```bash
-sudo cp <single-output>.rknn /opt/autonomous-driving-car/config/yolo26.rknn
-sudo systemctl restart autonomous-driving-car
+sudo cp <single-output>.rknn /opt/intelligent-robot/config/yolo26.rknn
+sudo systemctl restart intelligent-robot
 ```
 
 运行时无需降级：`librknnrt` 2.5.0 向前兼容 2.3.2 编译的模型。

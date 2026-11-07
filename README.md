@@ -4,7 +4,7 @@
 
 </div>
 
-# autonomous-driving-car
+# intelligent-robot
 
 **Radxa ROCK 4D（RK3576）上的视觉循迹小车。相机到电机的整条链路在一个 C 进程内完成，实测端到端时延 79 ms；板载一个语言智能体，当前仅有观测权限。**
 
@@ -496,7 +496,7 @@ sudo scripts/deploy.sh -i        # 安装至 /opt，注册并重启 systemd 单�
 
 浏览器访问 `http://<board>/`，使用系统账号通过 Basic 认证（`getpwnam` + `getspnam` + `crypt`，无独立用户库）。只读接口对局域网开放。
 
-构建产出三个可执行文件：`bin/autonomous-driving-car`（服务）、`bin/adc-agent`（智能体的看与做）、
+构建产出三个可执行文件：`bin/intelligent-robot`（服务）、`bin/adc-agent`（智能体的看与做）、
 `bin/codex-bridge`（Codex CLI 桥接）。三者都是 C11，板上不需要任何解释器或第三方运行时：
 
 ```bash
@@ -540,7 +540,7 @@ docs/             设计文档与测试记录
 ### D. 运维
 
 ```bash
-journalctl -u autonomous-driving-car -f     # 服务日志
+journalctl -u intelligent-robot -f     # 服务日志
 recordings/logs/log_info_YYYYMMDD.log       # 按天切分，含 10 s 计时行
 recordings/videos/                          # 分段录像
 recordings/results/                         # 检测日报
@@ -1003,7 +1003,7 @@ sudo scripts/deploy.sh -i        # install to /opt, register and restart the uni
 
 Open `http://<board>/`; Basic authentication is checked against system accounts (`getpwnam` + `getspnam` + `crypt`, no separate user store). Read-only endpoints are reachable from the LAN without credentials.
 
-The build produces three executables: `bin/autonomous-driving-car` (service), `bin/adc-agent` (the agent's eyes and hands) and `bin/codex-bridge` (Codex CLI bridge). All three are C11; the board needs no interpreter and no third-party runtime:
+The build produces three executables: `bin/intelligent-robot` (service), `bin/adc-agent` (the agent's eyes and hands) and `bin/codex-bridge` (Codex CLI bridge). All three are C11; the board needs no interpreter and no third-party runtime:
 
 ```bash
 git ls-files | grep -E '\.py$'     # empty output: the tree contains no Python
@@ -1046,7 +1046,7 @@ docs/             design documents and test records
 ### D. Operations
 
 ```bash
-journalctl -u autonomous-driving-car -f     # service log
+journalctl -u intelligent-robot -f     # service log
 recordings/logs/log_info_YYYYMMDD.log       # daily, includes the 10 s timing line
 recordings/videos/                          # segmented recordings
 recordings/results/                         # daily detection reports

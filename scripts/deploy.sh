@@ -3,7 +3,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_NAME="autonomous-driving-car"
+APP_NAME="intelligent-robot"
 DEPLOY_DIR="/opt/$APP_NAME"
 BINARY="$PROJECT_DIR/bin/$APP_NAME"
 SERVICE_SRC="$PROJECT_DIR/$APP_NAME.service"
@@ -50,8 +50,8 @@ prepare_realtime_cgroup() {
 
     echo "[RT] disabling cgroup v2 CPU group quotas/weights for FIFO compatibility"
     mkdir -p /etc/systemd/system/-.slice.d
-    cat > /etc/systemd/system/-.slice.d/90-autonomous-driving-car-rt.conf <<'EOF'
-# Managed by autonomous-driving-car/scripts/deploy.sh.
+    cat > /etc/systemd/system/-.slice.d/90-intelligent-robot-rt.conf <<'EOF'
+# Managed by intelligent-robot/scripts/deploy.sh.
 [Slice]
 DisableControllers=cpu
 EOF

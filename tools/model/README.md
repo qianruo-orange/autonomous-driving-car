@@ -98,8 +98,8 @@ gcc -O2 -o dump_outputs dump_outputs.c -I../../include/yolo -l:librknnrt.so
 
 ```sh
 # 板子上：替换模型后重启服务
-cp yolo26n-512-box16.rknn /opt/autonomous-driving-car/config/yolo26.rknn
-systemctl restart autonomous-driving-car
+cp yolo26n-512-box16.rknn /opt/intelligent-robot/config/yolo26.rknn
+systemctl restart intelligent-robot
 
 # 或者用仓库流程（会做哈希比对，避免覆盖前端上传的模型）
 bash scripts/deploy.sh -i

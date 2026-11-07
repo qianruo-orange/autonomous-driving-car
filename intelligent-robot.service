@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Unit]
+Description=Intelligent Robot Service (CAN FD / Web / ANO / Video / YOLO)
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=all
+
+WorkingDirectory=/opt/intelligent-robot
+ExecStart=/opt/intelligent-robot/bin/intelligent-robot
+
+WatchdogSec=10
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=15
+LimitCORE=infinity
+
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/intelligent-robot/config /opt/intelligent-robot/recordings /opt/intelligent-robot/.codex /etc/proxy-client.conf
+ReadOnlyPaths=/opt/intelligent-robot/html
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=intelligent-robot
+
+[Install]
+WantedBy=multi-user.target

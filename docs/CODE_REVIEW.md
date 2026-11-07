@@ -115,7 +115,7 @@ buf_in/buf_out 为 ENC_BUFS=3 的固定数组；VIDIOC_REQBUFS 返回后只检�
 
 ## 验证记录与限制
 
-- 通过 `bash scripts/build.sh -R` 完成最新版 Release 编译与链接，目标为 bin/autonomous-driving-car。
+- 通过 `bash scripts/build.sh -R` 完成最新版 Release 编译与链接，目标为 bin/intelligent-robot。
 - `git diff --check` 通过。
 - 原 tests/http_input_test.c 编译运行通过；该测试代码随后按要求删除。
 - 使用实际模块对象验证 8 个入口的看门狗注册失败、6 个入口的提前失败以及录像线程正常停机，核对注册/注销次数与 fatal/running 标志；屏蔽了设备调用。

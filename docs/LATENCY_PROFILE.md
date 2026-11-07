@@ -85,7 +85,7 @@ CPU                    : performance 调速器，2016 / 2208 MHz（由前端 /ap
 # 调速器（仓库内 config/cpu_freq.conf，应用启动时恢复）
 cat /sys/devices/system/cpu/cpufreq/policy4/scaling_governor   # performance
 # 阶段耗时
-grep "yolo timing" /opt/autonomous-driving-car/recordings/logs/*.log | tail
+grep "yolo timing" /opt/intelligent-robot/recordings/logs/*.log | tail
 # 端到端
 curl -s http://127.0.0.1/api/video/stats | grep -o '"processing_age_ms":[0-9]*'
 ```

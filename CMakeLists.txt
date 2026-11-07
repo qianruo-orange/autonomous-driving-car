@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 cmake_minimum_required(VERSION 3.18)
-project(autonomous-driving-car VERSION 1.1.0 LANGUAGES C CXX)
+project(intelligent-robot VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -78,49 +78,49 @@ endif()
 file(GLOB APP_SOURCES CONFIGURE_DEPENDS source/**/*.c source/**/*.cpp)
 file(GLOB APP_HEADERS CONFIGURE_DEPENDS include/**/*.h)
 
-add_executable(autonomous-driving-car ${APP_SOURCES} ${APP_HEADERS})
+add_executable(intelligent-robot ${APP_SOURCES} ${APP_HEADERS})
 
 # Keep source lines and variable information in optimized crash dumps for both
 # C and C++, including builds using an existing CMake cache.
-target_compile_options(autonomous-driving-car PRIVATE $<$<CONFIG:Release>:-g>)
+target_compile_options(intelligent-robot PRIVATE $<$<CONFIG:Release>:-g>)
 
-target_include_directories(autonomous-driving-car PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(intelligent-robot PRIVATE ${PROJECT_SOURCE_DIR}/source ${PROJECT_SOURCE_DIR}/include)
 
 # libnl3 headers are under /usr/include/libnl3
-target_include_directories(autonomous-driving-car PRIVATE /usr/include/libnl3)
+target_include_directories(intelligent-robot PRIVATE /usr/include/libnl3)
 
-set_target_properties(autonomous-driving-car PROPERTIES
+set_target_properties(intelligent-robot PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_SOURCE_DIR}/bin"
 )
 
-target_link_libraries(autonomous-driving-car PRIVATE pthread crypt m)
+target_link_libraries(intelligent-robot PRIVATE pthread crypt m)
 
 find_library(LIBSYSTEMD systemd REQUIRED)
-target_link_libraries(autonomous-driving-car PRIVATE ${LIBSYSTEMD})
+target_link_libraries(intelligent-robot PRIVATE ${LIBSYSTEMD})
 
 find_library(LIBNL3 nl-3 REQUIRED)
-target_link_libraries(autonomous-driving-car PRIVATE ${LIBNL3})
+target_link_libraries(intelligent-robot PRIVATE ${LIBNL3})
 
 find_library(LIBNLROUTE3 nl-route-3 REQUIRED)
-target_link_libraries(autonomous-driving-car PRIVATE ${LIBNLROUTE3})
+target_link_libraries(intelligent-robot PRIVATE ${LIBNLROUTE3})
 
 # RKNN NPU 运行时（librknnrt.so，板载 /usr/lib）
 # Rockchip MPP（librockchip_mpp）：标注录像用硬件 H.264 编码
 find_library(LIBRKMPP rockchip_mpp)
 if (LIBRKMPP)
-    target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKMPP})
-    target_include_directories(autonomous-driving-car PRIVATE /usr/local/include)
+    target_link_libraries(intelligent-robot PRIVATE ${LIBRKMPP})
+    target_include_directories(intelligent-robot PRIVATE /usr/local/include)
 else()
     message(WARNING "librockchip_mpp 未找到：标注录像不可用")
 endif()
 
 find_library(LIBRKNNRT rknnrt REQUIRED)
-target_link_libraries(autonomous-driving-car PRIVATE ${LIBRKNNRT})
+target_link_libraries(intelligent-robot PRIVATE ${LIBRKNNRT})
 
 # libjpeg-turbo：相机 MJPEG -> NV12 解码（硬件 rockchip-jpegd 的块写回有缺陷，
 # 同帧多次解码结果不一致，故固定使用软件解码）
 find_library(LIBJPEG jpeg REQUIRED)
-target_link_libraries(autonomous-driving-car PRIVATE ${LIBJPEG})
+target_link_libraries(intelligent-robot PRIVATE ${LIBJPEG})
 
 # ---- 板载命令行工具 ----
 # 两个工具不进 source/ 的 glob：它们是给人（和语言模型）直接调用的可执行文件，

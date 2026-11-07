@@ -49,7 +49,7 @@ codex-bridge <command> --out <path> [--input <path>] [--arg <str>]
 
 | 变量 | 说明 |
 | --- | --- |
-| `CODEX_WEB_ROOT` | 运行根目录，默认 `/opt/autonomous-driving-car` |
+| `CODEX_WEB_ROOT` | 运行根目录，默认 `/opt/intelligent-robot` |
 
 派生子进程时本程序自行设置：`CODEX_HOME=$CODEX_WEB_ROOT/.codex`、`HOME`（同上）、
 `NO_COLOR=1`、`TERM=dumb`、`PATH=/usr/local/bin:/usr/bin:/bin:/home/qianruo/.local/bin`；
