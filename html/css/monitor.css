@@ -119,20 +119,22 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 右栏：对话卡撑满整列高度 */
+/* 右栏：对话卡与视频画面上下边界对齐（高度由 JS 同步到视频，垂直居中） */
 .status-column {
   display: flex;
   flex-direction: column;
+  justify-content: center;
   gap: 10px;
   min-height: 0;
   min-width: 0;
 }
 .status-column > .card {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: var(--sp-4);
+  width: 100%;
 }
 
 /* ===== 度量区块（状态页与主界面共用） ===== */

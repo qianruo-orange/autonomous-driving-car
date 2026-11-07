@@ -714,4 +714,29 @@
 
   window.reboot = function() { if (!confirm(t('确定要重启设备吗？'))) return; authFetch('/api/reboot').catch(function(){}); };
   window.shutdown = function() { if (!confirm(t('确定要关闭设备吗？'))) return; authFetch('/api/shutdown').catch(function(){}); };
+
+  /* 让右侧 Codex 面板高度与视频画面一致，上下边界对齐。
+     视频 wrapper 是 16:9（高度随列宽自适应），同步到 codex 面板并垂直居中。
+     仅双列桌面布局（>1000px）生效；窄屏单列时 codex 面板回落到自然高度。 */
+  if (HAS_VIDEO) {
+    var vidWrap = document.querySelector('.video-wrapper');
+    var chatSide = document.querySelector('.codex-chat-side');
+    var desktopMq = window.matchMedia('(min-width: 1001px)');
+    var alignCodex = function() {
+      if (!vidWrap || !chatSide) return;
+      if (desktopMq.matches) {
+        var h = vidWrap.getBoundingClientRect().height;
+        if (h > 0) chatSide.style.height = h + 'px';
+      } else {
+        chatSide.style.height = '';
+      }
+    };
+    if (window.ResizeObserver) {
+      new ResizeObserver(alignCodex).observe(vidWrap);
+    }
+    if (desktopMq.addEventListener) desktopMq.addEventListener('change', alignCodex);
+    else if (desktopMq.addListener) desktopMq.addListener(alignCodex);
+    window.addEventListener('resize', alignCodex);
+    alignCodex();
+  }
 })();
