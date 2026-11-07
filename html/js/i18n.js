@@ -352,7 +352,7 @@
     "记录已开始下载": "Download started",
     "记录下载失败": "Could not download records",
     "输入消息，Enter 发送，Shift+Enter 换行": "Type a message; Enter sends, Shift+Enter adds a line",
-    "Codex CLI 配置": "Codex CLI settings",
+    "Codex配置": "Codex settings",
     "模型": "Model",
     "推理速率": "Reasoning effort",
     "默认（跟随 CLI）": "Default (follow the CLI)",
