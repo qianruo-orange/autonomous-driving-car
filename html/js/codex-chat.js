@@ -10,7 +10,6 @@
   var send = document.getElementById('codex_send_btn');
   var stopBtn = document.getElementById('codex_stop_btn');
   var badge = document.getElementById('codex_login_badge');
-  var meta = document.getElementById('codex_chat_meta');
   if (!log || !form) return;
 
   var signature = '';
@@ -128,12 +127,6 @@
     badge.className = 'codex-badge ' + cls;
     stopBtn.hidden = !data.busy;
     send.disabled = sending || data.busy;
-    var parts = [];
-    if (data.settings && data.settings.sandbox) parts.push(t('沙箱') + ': ' + data.settings.sandbox);
-    if (data.thread_id) parts.push(t('会话') + ': ' + data.thread_id.slice(0, 8));
-    if (data.records && data.records.files) parts.push(t('记录') + ': ' + data.records.files + ' ' + t('个文件'));
-    if (!data.logged_in) parts.push(t('请先在配置页登录 Codex'));
-    meta.textContent = parts.join(' · ');
   }
 
   async function refresh(signal) {
