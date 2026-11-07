@@ -488,14 +488,12 @@
            (withFreq ? '<div class="core-freq" id="' + id + '_freq' + i + '">-</div>' : '') + '</div>';
     var el = document.getElementById(id);
     el.innerHTML = h;
-    /* 列数随核数自适应，但每列有上限宽度：核少时不要把"核名 —— 百分比"
-       拉到整行两端，那样两者看起来像不相干的两个数据。
-       上限同时受容器宽度约束（min(100%, N*112px)），窄屏下自动收缩不溢出。 */
+    /* 列数随核数自适应（最多 4 列），列宽由 CSS 的 1fr 均分铺满容器，
+       不再限制 maxWidth，让长条在卡片内均匀分布 */
     var cols = Math.min(names.length, 4);
     /* 列数只写在 data-cols 上，网格由 CSS 决定：
        内联 grid-template-columns 会盖掉窄屏媒体查询，手机上就无法降成两列 */
     el.dataset.cols = String(cols);
-    el.style.maxWidth = 'min(100%, ' + (cols * 112) + 'px)';
   }
 
   /* 逐核频率：后端 cpu_freqs 单位 MHz，-1/缺失表示读不到 */
