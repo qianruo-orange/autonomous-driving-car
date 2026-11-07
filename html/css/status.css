@@ -1,88 +1,75 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* status.css — 系统状态页（/status）：四组度量（CPU/加速器/存储/网络速度）
-   合并进一张卡片，用标签页（tab）切换，一次只显示一个面板。
-   度量控件（进度条、核占用、内存/磁盘）的样式在 monitor.css，这里只管
-   标签栏与面板的排布。 */
+   合并进一张卡片，内部 2×2 排布，四个块同时显示。
+   度量控件（进度条、核占用、内存/磁盘）的样式在 monitor.css，这里只管这一页的栅格。 */
 
 /* 卡片贴顶排布，内容按自然高度，不铺满全屏 */
 .grid {
   justify-content: flex-start;
 }
 
-/* ===== 标签栏：四个标签块等宽横排，均匀铺满横条 ===== */
-.status-tabs {
+/* 单张容器卡内的 2×2 栅格 */
+.status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--sp-3);
-  margin-bottom: var(--sp-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-4);
 }
 
-.status-tab {
+/* 每个度量块：标题 + 度量区 */
+.status-metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  min-height: 0;
+}
+
+/* 组标题沿用卡片标题样式（左 accent 竖线） */
+.status-metric > h3 {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 46px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--btn-bg);
-  color: var(--muted);
-  font: inherit;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: var(--ctl-h);
+  margin: 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 4px 4px 0;
   font-size: var(--fs-14);
-  font-weight: 600;
+  font-weight: 650;
   line-height: 1.3;
-  cursor: pointer;
-  transition: color .15s, background .15s, border-color .15s;
+  color: var(--text-strong);
 }
 
-.status-tab:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-}
-
-.status-tab.is-active {
-  color: var(--accent);
-  background: var(--accent-weak);
-  border-color: var(--accent);
-}
-
-/* CPU 温度显示在标签内 */
-.status-tab .cpu-temp {
-  font-size: var(--fs-13);
+/* CPU 组：核占用是主角，标题行右侧只放温度 */
+.status-cpu .cpu-temp {
+  font-size: var(--fs-20);
   font-weight: 700;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
 
-/* ===== 面板 ===== */
-.status-panel {
-  display: none;
-}
-.status-panel.is-active {
-  display: block;
-}
+/* 状态页的条更高更疏 */
+.status-metric .core-bar { height: 9px; }
+.status-metric .core-bars { gap: 16px 18px; }
+.status-metric .sec + .sec { margin-top: var(--sp-3); }
 
-/* 面板内度量控件：条更高更疏 */
-.status-panel .core-bar { height: 9px; }
-.status-panel .core-bars { gap: 16px 18px; }
-.status-panel .sec + .sec { margin-top: var(--sp-3); }
-
-/* 内存与磁盘并排 */
-.status-panel .duo {
+/* 内存与磁盘并排：组够宽，两列比竖排更省高度 */
+.status-grid .duo {
   flex-direction: row;
   gap: var(--sp-4);
 }
-.status-panel .duo > .half { flex: 1 1 0; width: auto; }
+.status-grid .duo > .half { flex: 1 1 0; width: auto; }
 
-/* 窄屏：8 个核排两列，让每根条都能看清；标签块 2×2 */
+/* 窄屏：单列排布、自然高度，靠滚动承载 */
+@media (max-width: 900px) {
+  .status-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 窄屏：8 个核排两列，让每根条都能看清 */
 @media (max-width: 720px) {
-  .status-tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--sp-2);
-  }
-  .status-panel .core-bars {
+  .status-metric .core-bars {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px 14px;
   }
+  .status-cpu .cpu-temp { font-size: var(--fs-16); }
 }
