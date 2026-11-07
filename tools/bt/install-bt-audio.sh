@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # 让 BlueZ 具备 A2DP / HFP 音频端点。
@@ -34,6 +34,12 @@ load-module module-bluetooth-policy
 load-module module-bluetooth-discover
 .endif
 EOF
+fi
+
+# 系统模式下 root 默认连不上 pulse 的本地 socket（pactl 报 Access denied）。
+# 板子是单用户设备，这里放开本地匿名访问，方便后续用 pactl/parec 取蓝牙麦克风。
+if ! grep -q 'module-native-protocol-unix auth-anonymous=1' /etc/pulse/system.pa 2>/dev/null; then
+    sed -i 's|^load-module module-native-protocol-unix$|load-module module-native-protocol-unix auth-anonymous=1|' /etc/pulse/system.pa
 fi
 
 echo "[BT-AUDIO] installing pulseaudio-system.service"

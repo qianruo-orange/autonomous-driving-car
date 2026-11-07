@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+﻿/* SPDX-License-Identifier: GPL-3.0-or-later */
 /**
  * bt_manager.c — 通过 BlueZ 的 D-Bus 接口管理板载蓝牙。
  *
@@ -494,6 +494,14 @@ int bt_device_action(const char *address, const char *action)
         }
         LOG_ERROR("bluetooth: %s", g_err);
         return -1;
+    }
+
+    /* 配对成功后顺手置信任：BlueZ 只会自动重连 trusted 设备，
+     * 否则耳机下次还得在页面上手点一次连接。 */
+    if (!strcmp(action, "pair") && !trusted) {
+        const char *args[] = { "bluetoothctl", "trust", address, NULL };
+        char tout[512] = "";
+        (void)run_bluetoothctl(args, tout, sizeof(tout));
     }
     return 0;
 }
