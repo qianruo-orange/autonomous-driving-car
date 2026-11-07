@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 /* bt-config.js — 配置页「蓝牙连接」卡片：适配器开关、扫描、下拉选择设备后配对/连接/断开/忘记。 */
 (function () {
   'use strict';
@@ -11,7 +11,6 @@
   var scanBtn = document.getElementById('bt_scan');
   var metaEl = document.getElementById('bt_meta');
   var selEl = document.getElementById('bt_device_sel');
-  var detailEl = document.getElementById('bt_detail');
   var statusEl = document.getElementById('status_bt');
   var connBtn = document.getElementById('bt_conn');
   var pairBtn = document.getElementById('bt_pairforget');
@@ -36,13 +35,13 @@
     return n;
   }
 
+  /* 下拉框选项：设备名 · MAC · 配对状态 · 信号 */
   function deviceLabel(d) {
     var name = d.alias || d.name || d.address;
-    var extra = [];
-    if (d.connected) extra.push(t('已连接'));
-    else if (d.paired) extra.push(t('已配对'));
-    if (d.has_rssi) extra.push(d.rssi + ' dBm');
-    return extra.length ? (name + ' · ' + extra.join(' · ')) : name;
+    var state = d.connected ? t('已连接') : (d.paired ? t('已配对') : t('未配对'));
+    var parts = [name, d.address, state];
+    if (d.has_rssi) parts.push(d.rssi + ' dBm');
+    return parts.join('  ·  ');
   }
 
   function current() {
@@ -63,20 +62,7 @@
     if (st.discovering) metaEl.appendChild(el('span', 'bt-badge live', t('扫描中…')));
   }
 
-  function renderDetail(st) {
-    var d = current();
-    detailEl.innerHTML = '';
-    if (!d) {
-      detailEl.appendChild(el('span', 'bt-hint', t('请选择要操作的设备')));
-      return;
-    }
-    detailEl.appendChild(el('span', 'bt-addr', d.address));
-    if (d.connected) detailEl.appendChild(el('span', 'bt-badge ok', t('已连接')));
-    else if (d.paired) detailEl.appendChild(el('span', 'bt-badge', t('已配对')));
-    else detailEl.appendChild(el('span', 'bt-badge', t('未配对')));
-    if (d.trusted) detailEl.appendChild(el('span', 'bt-badge', t('已信任')));
-    if (d.has_rssi) detailEl.appendChild(el('span', 'bt-rssi', d.rssi + ' dBm'));
-  }
+
 
   /* 两个按钮按选中设备的状态切换语义：连接/断开、配对/忘记 */
   function renderButtons(st) {
@@ -150,7 +136,6 @@
         lastSig = sig;
         renderMeta(st);
         renderSelect(st);
-        renderDetail(st);
       }
       renderButtons(st);
     } catch (e) {
@@ -213,7 +198,6 @@
 
   if (selEl) selEl.addEventListener('change', function () {
     selected = selEl.value;
-    renderDetail({available: true, powered: !!(powerBox && powerBox.checked)});
     renderButtons({available: true, powered: !!(powerBox && powerBox.checked)});
   });
 
