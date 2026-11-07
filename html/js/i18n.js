@@ -103,7 +103,7 @@
     '无法读取相机配置，请重试': 'Unable to load camera settings. Please retry',
     '正在保存相机配置…': 'Saving camera settings...',
     /* ---- brand / navigation / common ---- */
-    '自动驾驶小车': 'Autonomous Driving Car',
+    '智能机器人': 'Intelligent Robot',
     '系统配置': 'System Configuration',
     '仪表盘': 'Dashboard',
     '主界面': 'Home',
