@@ -7,8 +7,8 @@
 .proxy-badge.warn { color: var(--warn); border-color: var(--warn-border); }
 /* Save sits at the right of the card title bar and shares .card-save geometry. */
 .proxy-head-actions{margin-left:auto;display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.proxy-status{display:block;margin:8px 0 0;font-size:12px;line-height:1.5;min-height:0;white-space:normal;word-break:break-word}
-/* 无提示文字时不占高度，卡片底部贴合内容 */
+/* 错误/状态提示显示在卡片标题栏（与测试结果、服务状态并列），不占字段下方一行 */
+.proxy-status{margin:0;font-size:12px;line-height:1.5;min-height:0}
 .proxy-status:empty{display:none;margin:0}
 @media (max-width:720px){
   .proxy-head-actions{margin-left:0;width:100%;justify-content:flex-start}
