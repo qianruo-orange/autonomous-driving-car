@@ -16,14 +16,16 @@ table{min-width:480px;border:1px solid var(--border);border-radius:var(--r-md);o
 .file-col-date{width:112px}
 .file-col-name{width:auto}
 .file-col-size{width:100px}
+.file-col-ctime{width:170px}
 .file-col-mtime{width:170px}
 .file-col-actions{width:220px}
 @media(min-width:1280px){
-  .file-col-date{width:12%}
-  .file-col-name{width:34%}
-  .file-col-size{width:12%}
-  .file-col-mtime{width:24%}
-  .file-col-actions{width:18%}
+  .file-col-date{width:10%}
+  .file-col-name{width:28%}
+  .file-col-size{width:10%}
+  .file-col-ctime{width:16%}
+  .file-col-mtime{width:16%}
+  .file-col-actions{width:20%}
 }
 .file-section th,.file-section td{overflow:hidden;text-overflow:ellipsis}
 .file-section th:last-child,.file-section td:last-child{text-align:right}

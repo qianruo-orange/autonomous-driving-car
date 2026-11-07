@@ -2620,6 +2620,16 @@ static jval *build_status(void)
 /* record listing / export                                             */
 /* ------------------------------------------------------------------ */
 
+/* 文件创建时间（birth time）：statx 优先（ext4 crtime），回退 ctime。 */
+static time_t file_ctime(const char *path, const struct stat *st)
+{
+    struct statx stx;
+    if (statx(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BTIME, &stx) == 0 &&
+        (stx.stx_mask & STATX_BTIME) && stx.stx_btime.tv_sec > 0)
+        return (time_t)stx.stx_btime.tv_sec;
+    return st ? st->st_ctime : 0;
+}
+
 static jval *record_files(void)
 {
     jval *files = jarr();
@@ -2654,10 +2664,15 @@ static jval *record_files(void)
         fmt_localtime((long long)st.st_mtime, "%Y-%m-%d %H:%M:%S", mtime,
                       sizeof(mtime));
 
+        char ctime_str[64];
+        fmt_localtime((long long)file_ctime(path, &st), "%Y-%m-%d %H:%M:%S",
+                      ctime_str, sizeof(ctime_str));
+
         jval *row = jobj();
         jo_setstr(row, "name", name);
         jo_setstr(row, "date", date);
         jo_setint(row, "size", (long long)st.st_size);
+        jo_setstr(row, "ctime", ctime_str);
         jo_setstr(row, "mtime", mtime);
         ja_add(files, row);
     }

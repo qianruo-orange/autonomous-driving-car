@@ -56,6 +56,9 @@
     var tdSize = document.createElement('td');
     tdSize.textContent = fmtSize(f.size);
 
+    var tdCtime = document.createElement('td');
+    tdCtime.textContent = f.ctime || '—';
+
     var tdTime = document.createElement('td');
     tdTime.textContent = f.mtime || '—';
 
@@ -88,6 +91,7 @@
     tr.appendChild(tdDate);
     tr.appendChild(tdName);
     tr.appendChild(tdSize);
+    tr.appendChild(tdCtime);
     tr.appendChild(tdTime);
     tr.appendChild(tdOp);
     tbody.appendChild(tr);
@@ -102,7 +106,7 @@
     try {
     var tbody = document.getElementById(tbodyId);
     function message(key, cls) {
-      tbody.innerHTML = '<tr><td colspan="5"></td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6"></td></tr>';
       tbody.firstChild.firstChild.className = cls;
       setI18nText(tbody.firstChild.firstChild, key);
     }

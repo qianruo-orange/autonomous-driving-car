@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#define _GNU_SOURCE
 #include <time.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/epoll.h>
@@ -10,6 +12,17 @@
 /**
  * http_logs.c — 日志管理路由（列表 / 下载 / 删除 / 打包）。
  */
+
+/* 文件创建时间（birth time）：statx 优先（ext4 crtime），回退 ctime。
+   返回 epoch 秒，未知返回 0。 */
+static time_t file_ctime(const char *path, const struct stat *st)
+{
+    struct statx stx;
+    if (statx(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BTIME, &stx) == 0 &&
+        (stx.stx_mask & STATX_BTIME) && stx.stx_btime.tv_sec > 0)
+        return (time_t)stx.stx_btime.tv_sec;
+    return st ? st->st_ctime : 0;
+}
 
 #include "http/http_internal.h"
 #include "watchdog/watchdog.h"
@@ -61,12 +74,18 @@ static void serve_logs(int fd, const char *log_dir, int clear)
         localtime_r(&st.st_mtime, &modified);
         strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M", &modified);
 
+        char ctime_str[32];
+        time_t ct = file_ctime(path, &st);
+        struct tm created;
+        localtime_r(&ct, &created);
+        strftime(ctime_str, sizeof(ctime_str), "%Y-%m-%d %H:%M", &created);
+
         char name[sizeof(de->d_name) * 2];
         http_json_escape(de->d_name, name, sizeof(name));
         off = http_json_append(json, sizeof(json), off,
-            "%s{\"name\":\"%s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            "%s{\"name\":\"%s\",\"size\":%lld,\"ctime\":\"%s\",\"mtime\":\"%s\"}",
             first ? "" : ",", name,
-            (long long)st.st_size, time_str);
+            (long long)st.st_size, ctime_str, time_str);
         if (off < 0) break;
         first = 0;
     }

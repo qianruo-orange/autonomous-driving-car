@@ -11,7 +11,7 @@
   function message(key) {
     rows.replaceChildren();
     var cell = rows.insertRow().insertCell();
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     setI18nText(cell, key);
   }
 
@@ -84,6 +84,7 @@
         nameCell.textContent = file.name;
         nameCell.title = file.name;
         row.insertCell().textContent = window.carFiles.formatSize(file.size);
+        row.insertCell().textContent = file.ctime || '—';
         row.insertCell().textContent = file.mtime || '—';
         var actions = row.insertCell();
         var link = document.createElement('a');

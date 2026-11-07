@@ -10,8 +10,10 @@
  *   GET  /recfile/<name>  下载录制文件（recordings/videos/ 一级平铺）
  */
 
+#define _GNU_SOURCE
 #include <time.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
@@ -19,6 +21,17 @@
 #include "video/video_session.h"
 
 #define REC_DIR PATH_VIDEOS
+
+/* 文件创建时间（birth time）：statx 优先（ext4 crtime），回退 ctime。
+   返回 epoch 秒，未知返回 0。 */
+static time_t file_ctime(const char *path, const struct stat *st)
+{
+    struct statx stx;
+    if (statx(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BTIME, &stx) == 0 &&
+        (stx.stx_mask & STATX_BTIME) && stx.stx_btime.tv_sec > 0)
+        return (time_t)stx.stx_btime.tv_sec;
+    return st ? st->st_ctime : 0;
+}
 
 /* 单文件名合法性：video_YYYYMMDD.mp4（同一天重开时带 _N 后缀）；不含路径分隔符 */
 static int rec_file_valid(const char *name)
@@ -58,7 +71,7 @@ static void serve_rec_status(int fd)
 /* 录制文件列表（按 mtime 倒序；recordings/videos/ 一级平铺） */
 static void serve_rec_list(int fd)
 {
-    struct ent { char name[160]; time_t mtime; int64_t size; };
+    struct ent { char name[160]; time_t mtime; time_t ctime; int64_t size; };
     static struct ent ents[1024];
     int n = 0;
     int cap = (int)(sizeof(ents)/sizeof(ents[0]));
@@ -78,6 +91,7 @@ static void serve_rec_list(int fd)
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
         safe_strncpy(ents[n].name, sizeof(ents[n].name), de->d_name);
         ents[n].mtime = st.st_mtime;
+        ents[n].ctime = file_ctime(path, &st);
         ents[n].size  = (int64_t)st.st_size;
         n++;
     }
@@ -99,9 +113,11 @@ static void serve_rec_list(int fd)
         if (off < 0 || (size_t)off + 128 > sizeof(json)) break;
         char ts[32];
         strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", localtime(&ents[i].mtime));
+        char cts[32];
+        strftime(cts, sizeof(cts), "%Y-%m-%d %H:%M:%S", localtime(&ents[i].ctime));
         int noff = http_json_append(json, sizeof(json), off,
-            "%s{\"name\":\"%s\",\"size\":%lld,\"mtime\":\"%s\"}",
-            emitted ? "," : "", ents[i].name, (long long)ents[i].size, ts);
+            "%s{\"name\":\"%s\",\"size\":%lld,\"ctime\":\"%s\",\"mtime\":\"%s\"}",
+            emitted ? "," : "", ents[i].name, (long long)ents[i].size, cts, ts);
         if (noff < 0) break;
         off = noff;
         emitted++;

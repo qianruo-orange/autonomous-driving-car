@@ -425,6 +425,7 @@
     "检测录像": "Detection recordings",
     "检测结果": "Detection results",
     "Codex 记录": "Codex records",
+    "创建时间": "Created",
     "清空记录": "Clear records",
     "暂无交互记录": "No interaction records",
     "确定清空全部 Codex 交互记录？此操作不可恢复。": "Delete all Codex interaction records? This cannot be undone.",

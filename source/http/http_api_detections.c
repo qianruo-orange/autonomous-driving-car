@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#define _GNU_SOURCE
 #include "http/http_internal.h"
 #include "yolo/yolo_events.h"
 #include <dirent.h>
@@ -6,6 +7,17 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+/* 文件创建时间（birth time）：statx 优先（ext4 crtime），回退 ctime。
+   返回 epoch 秒，未知返回 0。 */
+static time_t file_ctime_at(int dirfd, const char *name, const struct stat *st)
+{
+    struct statx stx;
+    if (statx(dirfd, name, AT_SYMLINK_NOFOLLOW, STATX_BTIME, &stx) == 0 &&
+        (stx.stx_mask & STATX_BTIME) && stx.stx_btime.tv_sec > 0)
+        return (time_t)stx.stx_btime.tv_sec;
+    return st ? st->st_ctime : 0;
+}
 
 void http_detection_reports_clear(app_ctx_t *app, int fd, const char *method, const char *uri, const char *req)
 {
@@ -217,6 +229,7 @@ typedef struct {
     char day[9];
     off_t size;
     time_t modified;
+    time_t created;
 } detection_report_t;
 
 static int report_newest_first(const void *left, const void *right)
@@ -246,7 +259,8 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         struct stat st;
         if (fstatat(root_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) ||
             !S_ISREG(st.st_mode) || st.st_size <= 0) continue;
-        detection_report_t candidate = {.size = st.st_size, .modified = st.st_mtime};
+        detection_report_t candidate = {.size = st.st_size, .modified = st.st_mtime,
+                                        .created = file_ctime_at(root_fd, entry->d_name, &st)};
         memcpy(candidate.day, stamp, 8); candidate.day[8] = '\0';
         if (count < DETECTION_LIST_MAX) entries[count++] = candidate;
         else {
@@ -263,10 +277,13 @@ void http_detection_reports_list(app_ctx_t *app, int fd, const char *method, con
         char modified[32]; struct tm local;
         if (!localtime_r(&entries[i].modified, &local) || !strftime(modified, sizeof(modified), "%Y-%m-%d %H:%M:%S", &local))
             snprintf(modified, sizeof(modified), "Unknown");
+        char created[32]; struct tm clocal;
+        if (!localtime_r(&entries[i].created, &clocal) || !strftime(created, sizeof(created), "%Y-%m-%d %H:%M:%S", &clocal))
+            snprintf(created, sizeof(created), "Unknown");
         off = http_json_append(json, sizeof(json), off,
-            "%s{\"name\":\"result_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"mtime\":\"%s\"}",
+            "%s{\"name\":\"result_%s.txt\",\"date\":\"%.4s-%.2s-%.2s\",\"size\":%lld,\"ctime\":\"%s\",\"mtime\":\"%s\"}",
             i ? "," : "", entries[i].day, entries[i].day, entries[i].day + 4,
-            entries[i].day + 6, (long long)entries[i].size, modified);
+            entries[i].day + 6, (long long)entries[i].size, created, modified);
         if (off < 0) { http_err(fd, 500, "Error", NULL); return; }
     }
     off = http_json_append(json, sizeof(json), off, "]}");

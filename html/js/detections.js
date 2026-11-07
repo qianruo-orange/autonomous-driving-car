@@ -57,13 +57,14 @@
       var data = await App.json('/api/detections/reports', {authenticated: true});
       reports.replaceChildren();
       if (!data.files || !data.files.length) {
-        var empty = reports.insertRow().insertCell(); empty.colSpan = 5; setI18nText(empty, '暂无结果文件');
+        var empty = reports.insertRow().insertCell(); empty.colSpan = 6; setI18nText(empty, '暂无结果文件');
       } else data.files.forEach(function (report) {
         var row = reports.insertRow();
         row.insertCell().textContent = window.carFiles.formatDate(report.date, report.mtime);
         var filename = row.insertCell();
         filename.textContent = report.name.split('/').pop(); filename.title = filename.textContent;
         row.insertCell().textContent = window.carFiles.formatSize(report.size);
+        row.insertCell().textContent = report.ctime || '—';
         row.insertCell().textContent = report.mtime || '—';
         var actions = row.insertCell();
         window.carFiles.addPreviewButton(actions, 'result', report.name, false);
