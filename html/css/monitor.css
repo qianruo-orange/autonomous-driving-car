@@ -23,12 +23,12 @@
 }
 
 /* 视频无边框圆角：去掉卡片外框，画面直接以圆角矩形呈现。
-   画面按 16:9 居中，多出来的高度留成留白，而不是画面黑边。 */
+   画面按 16:9 贴顶排布，多余高度统一留到底部，避免顶栏下出现大片蓝色空白。 */
 .video-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  justify-content: center;   /* 视频 16:9 固定后，多余高度留成留白，而不是画面黑边 */
+  justify-content: flex-start;   /* 视频贴顶：顶部不留白，底部统一留白 */
   width: 100%;
   min-height: 0;
   background: transparent;
@@ -119,11 +119,11 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 右栏：对话卡与视频画面上下边界对齐（高度由 JS 同步到视频，垂直居中） */
+/* 右栏：对话卡与视频画面上下边界对齐（高度由 JS 同步到视频，贴顶） */
 .status-column {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 10px;
   min-height: 0;
   min-width: 0;
