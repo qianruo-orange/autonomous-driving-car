@@ -27,6 +27,7 @@
   position: relative;
   display: flex;
   flex-direction: column;
+  justify-content: center;   /* 视频 16:9 固定后，多余高度留成卡片留白，而不是画面黑边 */
   gap: 10px;
   width: 100%;
   padding: 12px;
@@ -34,7 +35,7 @@
 }
 .video-wrapper {
   position: relative;
-  flex: 1 1 auto;
+  flex: 0 0 auto;      /* 不随 flex 拉伸：保持 16:9，否则容器变高后 contain 会上下留黑边 */
   min-height: 0;
   width: 100%;
   max-width: 100%;
