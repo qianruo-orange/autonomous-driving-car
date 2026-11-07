@@ -22,16 +22,16 @@
   min-height: 0;
 }
 
-/* 视频卡撑满所在列：画面按 16:9 居中，多出来的高度留在卡内而不是页面底部 */
+/* 视频无边框圆角：去掉卡片外框，画面直接以圆角矩形呈现。
+   画面按 16:9 居中，多出来的高度留成留白，而不是画面黑边。 */
 .video-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  justify-content: center;   /* 视频 16:9 固定后，多余高度留成卡片留白，而不是画面黑边 */
-  gap: 10px;
+  justify-content: center;   /* 视频 16:9 固定后，多余高度留成留白，而不是画面黑边 */
   width: 100%;
-  padding: 12px;
-  overflow: hidden;
+  min-height: 0;
+  background: transparent;
 }
 .video-wrapper {
   position: relative;
@@ -42,7 +42,7 @@
   aspect-ratio: 16 / 9;
   margin-inline: auto;
   background: #000;
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   overflow: hidden;
 }
 .video-wrapper video,
@@ -63,12 +63,11 @@
   z-index: 2;
 }
 
-/* 画面角标：右上角 FPS。整个页面只在底部状态行显示一次实时 FPS，
-   角标只留编号，避免两处同时给出不一致的数字 */
+/* 画面角标：右上角 FPS，悬浮在视频画面之上 */
 .video-fps {
   position: absolute;
-  top: 20px;
-  right: 20px;
+  top: 12px;
+  right: 12px;
   z-index: 10;
   padding: 3px 9px;
   border-radius: var(--r-sm);
@@ -83,15 +82,22 @@
   backdrop-filter: blur(4px);
 }
 
-/* 视频下方状态行：左侧追踪提示，右侧统计 */
+/* 状态行悬浮在画面底部：左追踪提示、右统计，
+   底部渐隐遮罩保证文字在画面上可读，不拦截鼠标 */
 .tracking-toolbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  flex: none;
-  padding: 0 2px;
-  color: var(--muted);
+  padding: 20px 14px 12px;
+  background: linear-gradient(to top, rgba(4, 10, 18, .8), rgba(4, 10, 18, 0));
+  color: #eef4fb;
   font-size: var(--fs-12);
+  pointer-events: none;
 }
 .tracking-toolbar #tracking_status {
   flex: 0 1 auto;
@@ -104,7 +110,7 @@
   flex: 0 1 auto;
   min-width: 0;
   margin-left: auto;
-  color: var(--muted);
+  color: #eef4fb;
   font-size: var(--fs-12);
   line-height: 1.5;
   white-space: nowrap;
@@ -261,8 +267,7 @@
      会被本文件更靠后的 .grid 定义盖掉（同特异性、后定义优先），
      结果 .grid 仍按 100vh 撑高，行被 stretch 拉开 → 视频上下出现黑边。 */
   .grid { min-height: 0; }
-  .video-card { padding: 10px; gap: 8px; }
-  .video-fps { top: 14px; right: 14px; }
+  .video-fps { top: 10px; right: 10px; }
   .tracking-toolbar {
     flex-direction: column;
     align-items: stretch;
