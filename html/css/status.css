@@ -1,21 +1,21 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* status.css — 系统状态页（/status）：四组度量（CPU/加速器/存储/网络速度）
-   合并进一张卡片，内部 2×2 排布，四个块同时显示。
-   度量控件（进度条、核占用、内存/磁盘）的样式在 monitor.css，这里只管这一页的栅格。 */
+/* status.css — 系统状态页（/status）：四张独立卡片（CPU/加速器/存储/网络速度），
+   2×2 排布、同时显示。每个度量块自带 .card 衬底/边框/内边距。
+   度量控件（进度条、核占用、内存/磁盘）样式在 monitor.css，这里只管本页栅格。 */
 
 /* 卡片贴顶排布，内容按自然高度，不铺满全屏 */
 .grid {
   justify-content: flex-start;
 }
 
-/* 单张容器卡内的 2×2 栅格 */
+/* 四张独立卡片的 2×2 栅格（作为 .grid 纵向 flex 的子项横向拉伸铺满） */
 .status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--sp-4);
 }
 
-/* 每个度量块：标题 + 度量区 */
+/* 每个度量卡：标题 + 度量区（衬底/边框/内边距由 .card 提供） */
 .status-metric {
   display: flex;
   flex-direction: column;
@@ -23,24 +23,14 @@
   min-height: 0;
 }
 
-/* 组标题沿用卡片标题样式（左 accent 竖线） */
+/* 标题栏：复用 .card > h3 的左竖线样式；间距交给 flex gap，
+   标题左右两端顶开（右侧放温度等次级值） */
 .status-metric > h3 {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: var(--ctl-h);
   margin: 0;
-  padding-left: 10px;
-  border-left: 3px solid var(--accent);
-  border-radius: 0 4px 4px 0;
-  font-size: var(--fs-14);
-  font-weight: 650;
-  line-height: 1.3;
-  color: var(--text-strong);
+  justify-content: space-between;
 }
 
-/* CPU 组：核占用是主角，标题行右侧只放温度 */
+/* CPU 卡：标题行右侧只放温度 */
 .status-cpu .cpu-temp {
   font-size: var(--fs-20);
   font-weight: 700;
@@ -53,7 +43,7 @@
 .status-metric .core-bars { gap: 16px 18px; }
 .status-metric .sec + .sec { margin-top: var(--sp-3); }
 
-/* 内存与磁盘并排：组够宽，两列比竖排更省高度 */
+/* 内存与磁盘并排：卡够宽，两列比竖排更省高度 */
 .status-grid .duo {
   flex-direction: row;
   gap: var(--sp-4);

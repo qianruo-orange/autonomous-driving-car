@@ -137,6 +137,8 @@
     '用户名': 'Username',
 
     /* ---- dashboard (monitor.js) ---- */
+    '加速器': 'Accelerator',
+    '存储': 'Storage',
     '内存': 'Memory',
     '磁盘': 'Disk',
     '网络速度': 'Network',
