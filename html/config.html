@@ -3,7 +3,7 @@
 <link rel="stylesheet" href="/css/tokens.css?v=2026110722">
 <link rel="stylesheet" href="/css/layout.css?v=2026110722">
 <link rel="stylesheet" href="/css/components.css?v=2026110722">
-<link rel="stylesheet" href="/css/config.css?v=2026110806">
+<link rel="stylesheet" href="/css/config.css?v=2026110808">
 <link rel="stylesheet" href="/css/camera.css?v=2026110722">
 <link rel="stylesheet" href="/css/codex-chat.css?v=2026110722">
 <link rel="stylesheet" href="/css/proxy-config.css?v=2026110722">
@@ -135,6 +135,28 @@
 </div>
 
 <div class="bottom-grid">
+<section class="card" id="card_bluetooth" aria-labelledby="bt_title">
+  <h3 id="bt_title"><span data-i18n="蓝牙连接">蓝牙连接</span>
+    <label class="toggle" data-i18n-title="蓝牙开关" title="蓝牙开关"><input type="checkbox" id="bt_powered"><span class="slider"></span></label>
+    <span class="bt-adapter" id="bt_adapter"></span>
+    <span class="card-status" id="status_bt" role="status" aria-live="polite"></span>
+    <span class="bt-head-actions">
+      <label class="bt-disc" data-i18n-title="广播本机，便于其他设备发现" title="广播本机，便于其他设备发现"><input type="checkbox" id="bt_discoverable"><span data-i18n="可被发现">可被发现</span></label>
+      <button type="button" class="btn btn-back" id="bt_scan"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg> <span data-i18n="扫描">扫描</span></button>
+    </span>
+  </h3>
+  <div class="bt-picker">
+    <label for="bt_device_sel" data-i18n="设备">设备</label>
+    <select id="bt_device_sel"></select>
+    <div class="bt-actions">
+      <button type="button" class="btn btn-back" id="bt_conn" data-i18n="连接">连接</button>
+      <button type="button" class="btn btn-back" id="bt_pairforget" data-i18n="配对">配对</button>
+    </div>
+  </div>
+</section>
+</div>
+
+<div class="bottom-grid">
 <section class="card" id="card_network" aria-labelledby="network_title">
   <h3 id="network_title"><span data-i18n="网络代理与测试">网络代理与测试</span>
     <label class="toggle" data-i18n-title="代理开关" title="代理开关"><input type="checkbox" id="proxy_enabled"><span class="slider"></span></label>
@@ -157,28 +179,6 @@
     </div>
     <div class="net-field w6"><label for="nt_speed_target" data-i18n="网速测试">网速测试</label>
       <div class="nt-input-group"><select id="nt_speed_target"><option value="https://speed.cloudflare.com/__down?bytes=5000000" data-i18n="Cloudflare CDN">Cloudflare CDN</option><option value="https://proof.ovh.net/files/1Mb.dat" data-i18n="OVH (欧洲)">OVH (欧洲)</option><option value="custom" data-i18n="自定义地址">自定义地址</option></select><input type="text" id="nt_speed_custom" placeholder="https://..." style="display:none"><button type="button" class="btn btn-back nt-go" data-net-test="speed" data-i18n="测速">测速</button></div>
-    </div>
-  </div>
-</section>
-</div>
-
-<div class="bottom-grid">
-<section class="card" id="card_bluetooth" aria-labelledby="bt_title">
-  <h3 id="bt_title"><span data-i18n="蓝牙连接">蓝牙连接</span>
-    <label class="toggle" data-i18n-title="蓝牙开关" title="蓝牙开关"><input type="checkbox" id="bt_powered"><span class="slider"></span></label>
-    <span class="bt-adapter" id="bt_adapter"></span>
-    <span class="card-status" id="status_bt" role="status" aria-live="polite"></span>
-    <span class="bt-head-actions">
-      <label class="bt-disc" data-i18n-title="广播本机，便于其他设备发现" title="广播本机，便于其他设备发现"><input type="checkbox" id="bt_discoverable"><span data-i18n="可被发现">可被发现</span></label>
-      <button type="button" class="btn btn-back" id="bt_scan"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg> <span data-i18n="扫描">扫描</span></button>
-    </span>
-  </h3>
-  <div class="bt-picker">
-    <label for="bt_device_sel" data-i18n="设备">设备</label>
-    <select id="bt_device_sel"></select>
-    <div class="bt-actions">
-      <button type="button" class="btn btn-back" id="bt_conn" data-i18n="连接">连接</button>
-      <button type="button" class="btn btn-back" id="bt_pairforget" data-i18n="配对">配对</button>
     </div>
   </div>
 </section>

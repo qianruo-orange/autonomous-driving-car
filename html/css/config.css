@@ -109,7 +109,7 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
 #card_net{grid-column:1;grid-row:3}
 #camera_form{grid-column:2;grid-row:3}
 @media(min-width:641px){
-  .can-grid.can-disabled #card_net,.can-grid.can-disabled #camera_form{grid-row:2}
+  .can-grid.can-disabled #card_net,.can-grid.can-disabled #camera_form{grid-row:1}
 }
 /* 网络测试控件（平铺在合并网络卡片内） */
 .nt-input-group{display:flex;align-items:center;gap:8px;min-width:0}
