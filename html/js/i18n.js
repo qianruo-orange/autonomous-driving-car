@@ -505,7 +505,7 @@
 
   window.updateLangBtn = function () {
     var b = document.getElementById('langBtn');
-    if (b) b.textContent = getLang() === 'en' ? 'Chinese' : 'English';
+    if (b) b.textContent = getLang() === 'en' ? '简体中文' : 'English';
   };
 
   window.setLang = function (l) {
