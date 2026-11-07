@@ -869,6 +869,11 @@ static void http_process_request(http_conn_t *c)
         { "/api/codex/export",        0, NULL,   http_codex_export,        http_check_auth_root },
         { "/api/proxy/config",        0, NULL,   http_proxy_config,        http_check_auth_root },
         { "/api/proxy/test",          0, NULL,   http_proxy_test,          http_check_auth_root },
+        { "/api/bluetooth/status",    0, NULL,   http_bluetooth_status,    NULL },
+        { "/api/bluetooth/devices",   0, NULL,   http_bluetooth_devices,   NULL },
+        { "/api/bluetooth/adapter",   0, "POST", http_bluetooth_adapter,   http_check_auth_root },
+        { "/api/bluetooth/scan",      0, "POST", http_bluetooth_scan,      http_check_auth_root },
+        { "/api/bluetooth/device",    0, "POST", http_bluetooth_device,    http_check_auth_root },
         /* 智能体能力层：凭证由 root 签发，动作由 root arm；
            motion/observe/stop 只认凭证，不认 Basic，避免把 root 密码交给模型。 */
         { "/api/agent/token",         0, "POST", http_agent_token,         http_check_auth_root },

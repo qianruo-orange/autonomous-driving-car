@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+﻿/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* config.css — 配置页面样式 毛玻璃水滴风（主题变量化） */
 /* 顶栏：左侧标题+功能按钮，右侧导航按钮 */
 .tb-left{flex-wrap:wrap}
@@ -194,3 +194,51 @@ html[data-theme="light"] #card_car_ctrl{--section-mark:#8655ba}
   /* 保存按钮跟着标题走，手机上标题可能换行，别让它掉到第二行中间 */
   .card > h3 > .card-save { align-self: flex-start; }
 }
+
+/* ===== 蓝牙连接卡 ===== */
+#card_bluetooth{--section-mark:#7ea6ff}
+html[data-theme="light"] #card_bluetooth{--section-mark:#3b63c9}
+#card_bluetooth>h3{flex-wrap:wrap}
+#card_bluetooth .card-status:empty{display:none}
+.bt-head-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
+.bt-head-actions .btn{margin:0;padding:4px 12px;font-size:12px;white-space:nowrap}
+.bt-disc{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer}
+.bt-meta{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin:10px 0 12px;font-size:13px;color:var(--muted)}
+.bt-meta .bt-adapter-name{color:var(--text);font-weight:600}
+.bt-addr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted);letter-spacing:.3px}
+.bt-badge{display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:11px;line-height:1.7;border:1px solid var(--card-border);color:var(--muted)}
+.bt-badge.ok{color:#4cc9a0;border-color:rgba(76,201,160,.45);background:rgba(76,201,160,.08)}
+.bt-badge.off{color:var(--muted);opacity:.8}
+.bt-badge.live{color:var(--accent);border-color:var(--accent);background:rgba(94,194,240,.08)}
+.bt-list{display:flex;flex-direction:column;gap:8px}
+.bt-hint{padding:10px 2px;font-size:13px;color:var(--muted)}
+.bt-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--card-border);border-radius:12px;background:linear-gradient(135deg,rgba(94,194,240,.04),rgba(94,194,240,.01))}
+.bt-main{min-width:0;flex:1}
+.bt-name{font-size:14px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bt-sub{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:3px}
+.bt-rssi{font-size:11px;color:var(--muted)}
+.bt-actions{display:flex;gap:6px;flex:none}
+.bt-actions .btn{margin:0;padding:4px 12px;font-size:12px;white-space:nowrap}
+.bt-actions .bt-danger{color:var(--danger);border-color:var(--danger-border)}
+.bt-actions .btn:disabled{opacity:.5;cursor:default}
+@media(max-width:720px){
+  .bt-row{align-items:flex-start;flex-wrap:wrap}
+  .bt-actions{width:100%;justify-content:flex-end}
+}
+/* 蓝牙卡整行铺开：设备列表需要横向空间 */
+.bottom-grid #card_bluetooth{grid-column:1 / -1}
+.bt-list{max-height:340px;overflow:auto}
+
+/* 蓝牙设备选择：三列网格，按钮固定在下拉框右侧，桌面端不换行 */
+.bt-picker{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;margin-bottom:10px}
+.bt-picker>label{font-size:13px;color:var(--muted);white-space:nowrap}
+.bt-picker>select{width:100%;min-width:0;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--card-border);background:var(--input-bg);color:var(--text);font-family:inherit;font-size:13px}
+.bt-picker>select:focus{outline:none;border-color:var(--accent)}
+.bt-picker>select:disabled{opacity:.6}
+.bt-picker .bt-actions{width:auto;flex-wrap:nowrap;justify-content:flex-end}
+@media(max-width:640px){
+  .bt-picker{grid-template-columns:auto minmax(0,1fr)}
+  .bt-picker .bt-actions{grid-column:1 / -1;justify-content:flex-end}
+}
+.bt-detail{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:12px;color:var(--muted);min-height:18px}
+.bt-detail:empty{display:none}

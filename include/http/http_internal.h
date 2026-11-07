@@ -105,4 +105,11 @@ void http_codex_export(app_ctx_t *, int, const char *, const char *, const char 
 void http_proxy_config(app_ctx_t *, int, const char *, const char *, const char *);
 void http_proxy_test(app_ctx_t *, int, const char *, const char *, const char *);
 
+/* On-board Bluetooth (BlueZ) adapter/device control (source/http/http_api_bluetooth.c). */
+void http_bluetooth_status(app_ctx_t *, int, const char *, const char *, const char *);
+void http_bluetooth_devices(app_ctx_t *, int, const char *, const char *, const char *);
+void http_bluetooth_adapter(app_ctx_t *, int, const char *, const char *, const char *);
+void http_bluetooth_scan(app_ctx_t *, int, const char *, const char *, const char *);
+void http_bluetooth_device(app_ctx_t *, int, const char *, const char *, const char *);
+
 #endif

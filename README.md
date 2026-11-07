@@ -60,6 +60,7 @@ flowchart LR
 | 媒体栈 | V4L2 / libjpeg-turbo / RGA（2 核）/ Rockchip MPP |
 | 相机 | USB UVC，MJPEG 1280×720@30 |
 | 总线 | CAN FD（SocketCAN），当前 `can_enabled off` |
+| 蓝牙 | AIC8800D80（USB 二合一）→ BlueZ 模式驱动，`hci0`，BLE + BR/EDR |
 | 模型 | YOLO26n，INT8 量化，80 类 COCO |
 | 进程形态 | 单进程、多线程，systemd `Type=notify`，`WatchdogSec=10` |
 
@@ -78,6 +79,22 @@ flowchart LR
 | CAN FD 收发与 DBC 解析 | 代码就绪，总线未接入 |
 | 录像与回放 | 可用 |
 | 语言智能体 | 可用，只读 |
+
+### 1.4 板载蓝牙
+
+板载 WiFi/蓝牙是同一颗 AICSemi AIC8800D80。厂商内核驱动 `aic_btusb` 默认编成 Android
+bluedroid 模式，只暴露 `/dev/aicbt_dev` 字符设备，标准 BlueZ 看不到这块蓝牙。本工程用
+同一份驱动源码以 `CONFIG_BLUEDROID=0` 重编，驱动改走标准 HCI 分支并注册 `hci0`，
+`bluetoothctl` / BlueZ 直接可用。
+
+- 重编与安装：`sudo tools/bt/build-aic-bt-bluez.sh`，说明见 [`tools/bt/README.md`](tools/bt/README.md)
+- 运行时依赖：`bluez` + `bluetoothd`（`systemctl enable --now bluetooth`）
+- Web 面：配置页「蓝牙连接」卡片——适配器开关、可被发现、扫描，下拉框选中设备后配对/连接/断开/忘记
+- 接口：`/api/bluetooth/status`、`/devices`、`/adapter`、`/scan`、`/device`
+  （`source/http/http_api_bluetooth.c`，底层 `source/bluetooth/bt_manager.c`）
+- 语义：状态查询走 sd-bus 的 `GetManagedObjects` + `GetProperty`；配对/连接放进 worker
+  线程执行 `bluetoothctl`（它自带配对 agent），结果以 BlueZ 的 `Paired`/`Connected`
+  属性回查判定，不依赖命令行文本
 
 ## 2. 时延预算
 

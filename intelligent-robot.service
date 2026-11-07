@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [Unit]
-Description=Intelligent Robot Service (CAN FD / Web / ANO / Video / YOLO)
-After=network.target
+Description=Intelligent Robot Service (CAN FD / Web / ANO / Video / YOLO / Bluetooth)
+After=network.target bluetooth.target
+Wants=bluetooth.target
 
 [Service]
 Type=notify
