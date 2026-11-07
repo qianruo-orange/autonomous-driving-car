@@ -236,9 +236,15 @@ html[data-theme="light"] #card_bluetooth{--section-mark:#3b63c9}
 .bt-picker>select:focus{outline:none;border-color:var(--accent)}
 .bt-picker>select:disabled{opacity:.6}
 .bt-picker .bt-actions{width:auto;flex-wrap:nowrap;justify-content:flex-end}
+/* 窄屏也保持一行：下拉框可压缩，按钮不换行 */
 @media(max-width:640px){
-  .bt-picker{grid-template-columns:auto minmax(0,1fr)}
-  .bt-picker .bt-actions{grid-column:1 / -1;justify-content:flex-end}
+  .bt-picker{gap:8px}
+  .bt-picker>label{font-size:12px}
+  .bt-picker .bt-actions .btn{padding:6px 12px}
+}
+@media(max-width:420px){
+  .bt-picker{grid-template-columns:minmax(0,1fr) auto}
+  .bt-picker>label{display:none}
 }
 .bt-detail{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:12px;color:var(--muted);min-height:18px}
 .bt-detail:empty{display:none}
