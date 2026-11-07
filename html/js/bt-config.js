@@ -9,7 +9,7 @@
   var powerBox = document.getElementById('bt_powered');
   var discBox = document.getElementById('bt_discoverable');
   var scanBtn = document.getElementById('bt_scan');
-  var metaEl = document.getElementById('bt_meta');
+  var adapterEl = document.getElementById('bt_adapter');
   var selEl = document.getElementById('bt_device_sel');
   var statusEl = document.getElementById('status_bt');
   var connBtn = document.getElementById('bt_conn');
@@ -52,17 +52,17 @@
     return null;
   }
 
+  /* 适配器信息进标题栏：名称 · MAC · 状态 */
   function renderMeta(st) {
-    metaEl.innerHTML = '';
+    if (!adapterEl) return;
     if (!st || !st.available) {
-      metaEl.appendChild(el('span', 'bt-hint', t('未检测到蓝牙适配器')));
+      adapterEl.textContent = t('未检测到蓝牙适配器');
       return;
     }
-    metaEl.appendChild(el('span', 'bt-adapter-name', st.alias || st.name || t('未知设备名')));
-    metaEl.appendChild(el('span', 'bt-addr', st.address || ''));
-    metaEl.appendChild(el('span', 'bt-badge ' + (st.powered ? 'ok' : 'off'),
-      st.powered ? t('已开启') : t('已关闭')));
-    if (st.discovering) metaEl.appendChild(el('span', 'bt-badge live', t('扫描中…')));
+    var parts = [st.alias || st.name || t('未知设备名'), st.address || ''];
+    parts.push(st.powered ? t('已开启') : t('已关闭'));
+    if (st.discovering) parts.push(t('扫描中…'));
+    adapterEl.textContent = parts.join('  ·  ');
   }
 
 

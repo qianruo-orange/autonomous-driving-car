@@ -203,8 +203,8 @@ html[data-theme="light"] #card_bluetooth{--section-mark:#3b63c9}
 .bt-head-actions{margin-left:auto;display:flex;align-items:center;gap:10px}
 .bt-head-actions .btn{margin:0;padding:4px 12px;font-size:12px;white-space:nowrap}
 .bt-disc{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer}
-.bt-meta{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;margin:0 0 var(--sp-3);font-size:13px;color:var(--muted)}
-.bt-meta .bt-adapter-name{color:var(--text);font-weight:600}
+.bt-adapter{flex:0 1 auto;min-width:0;font-size:12px;font-weight:400;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bt-adapter .bt-adapter-name{color:var(--text);font-weight:600}
 .bt-addr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--muted);letter-spacing:.3px}
 .bt-badge{display:inline-flex;align-items:center;padding:1px 8px;border-radius:999px;font-size:11px;line-height:1.7;border:1px solid var(--card-border);color:var(--muted)}
 .bt-badge.ok{color:#4cc9a0;border-color:rgba(76,201,160,.45);background:rgba(76,201,160,.08)}
@@ -248,3 +248,6 @@ html[data-theme="light"] #card_bluetooth{--section-mark:#3b63c9}
 }
 .bt-detail{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;font-size:12px;color:var(--muted);min-height:18px}
 .bt-detail:empty{display:none}
+
+/* 行间距统一：CPU/Codex、网络代理、蓝牙、Web/视频 四处容器同一节奏 */
+#f>.bottom-grid,#f>.can-grid{margin-bottom:var(--sp-4)}
