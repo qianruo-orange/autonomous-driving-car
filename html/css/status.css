@@ -14,6 +14,25 @@
   gap: var(--sp-4);
   flex: 0 1 auto;
 }
+
+/* 桌面/横屏（>900px）：2×2 卡片铺满视口高度、两行等高撑开，
+   消除"内容顶在上、底部一大片黑空"的观感。窄屏仍按自然高度纵向排布，
+   下方媒体查询不受影响。 */
+@media (min-width: 901px) {
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  .grid {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .status-page-grid {
+    flex: 1 1 auto;
+    width: 100%;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+}
 .status-card {
   display: flex;
   flex-direction: column;
