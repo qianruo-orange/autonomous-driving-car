@@ -475,7 +475,8 @@
     try { await authFetch('/api/shutdown'); } catch(e) {}
   };
 
-  /* 先扫描设备列表、CAN 接口与网卡列表，再加载配置 */
-  loadCanIfaces().then(loadIfaces).then(loadCfg);
+  /* 先并行扫描 CAN 接口与网卡列表，两者都就绪后再加载主配置。
+     原来串行（can→ifaces→cfg）要多等两次往返，改成并行省掉中间等待。 */
+  Promise.all([loadCanIfaces(), loadIfaces()]).then(loadCfg);
 
 })();
