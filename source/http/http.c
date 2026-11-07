@@ -660,9 +660,20 @@ void http_serve_file(int fd, const char *uri)
         return;
     }
 
-    /* no-cache：部署后立即生效，但允许浏览器保留副本并在切换页面时复用，
-       避免每次导航都重新下载十几个 JS/CSS（板子 WiFi 下单页要几百毫秒） */
-    http_serve_stream(fd, http_mime_type(path), "Cache-Control: no-cache\r\n", fp, size, NULL);
+    /* 带版本号（?v=...）刷新的静态资源用 max-age 长缓存：切换页面/再次访问时
+       浏览器直接复用副本，不再逐个重新验证（板子 WiFi 下单页十几份 JS/CSS，
+       每份一次往返叠加起来要几百毫秒）。HTML 不带版本号，必须保持 no-cache，
+       每次拿到最新内容（内含新的资源版本号）。 */
+    const char *ext = strrchr(uri, '.');
+    int cacheable = ext && (
+        strcmp(ext, ".css") == 0 || strcmp(ext, ".js") == 0 ||
+        strcmp(ext, ".png") == 0 || strcmp(ext, ".svg") == 0 ||
+        strcmp(ext, ".ico") == 0 || strcmp(ext, ".woff") == 0 ||
+        strcmp(ext, ".woff2") == 0 || strcmp(ext, ".ttf") == 0);
+    const char *cache_ctl = cacheable
+        ? "Cache-Control: max-age=86400, public\r\n"
+        : "Cache-Control: no-cache\r\n";
+    http_serve_stream(fd, http_mime_type(path), cache_ctl, fp, size, NULL);
 }
 
 /* 视频推流线程退出回调：关闭 fd 并归还连接计数 */
