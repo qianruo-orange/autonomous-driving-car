@@ -13,20 +13,12 @@
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:8px;border-radius:10px}
 table{min-width:480px;border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden}
 .file-section table{table-layout:fixed;min-width:880px}
-.file-col-date{width:112px}
-.file-col-name{width:auto}
-.file-col-size{width:100px}
-.file-col-ctime{width:170px}
-.file-col-mtime{width:170px}
-.file-col-actions{width:220px}
-@media(min-width:1280px){
-  .file-col-date{width:10%}
-  .file-col-name{width:28%}
-  .file-col-size{width:10%}
-  .file-col-ctime{width:16%}
-  .file-col-mtime{width:16%}
-  .file-col-actions{width:20%}
-}
+.file-col-date{width:14%}
+.file-col-name{width:20%}
+.file-col-size{width:12%}
+.file-col-ctime{width:18%}
+.file-col-mtime{width:18%}
+.file-col-actions{width:18%}
 .file-section th,.file-section td{overflow:hidden;text-overflow:ellipsis}
 .file-section th:last-child,.file-section td:last-child{text-align:right}
 .del{background:transparent;border:1px solid var(--danger-border);color:var(--danger);padding:3px 9px;border-radius:var(--r-sm);cursor:pointer;font-size:var(--fs-11);transition:background .15s,border-color .15s}
